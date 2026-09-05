@@ -717,6 +717,13 @@ function registerFeatures() {
             async: false,
         },
         {
+            key: 'marketItemHop',
+            name: 'Market Item Hop',
+            category: 'Market',
+            module: Market.marketItemHop,
+            async: false,
+        },
+        {
             key: 'bulkSellAssistant',
             name: 'Bulk Sell Assistant',
             category: 'Market',

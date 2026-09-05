@@ -215,6 +215,15 @@ class Config {
                 description: 'Refresh on My Listings, then Next/Back to My Listings on each order-book page',
                 settingKey: 'market_listingRefreshNavigator',
             },
+            // Keyed by the feature-registry key (see entrypoint.js), not the setting id, so the
+            // registry's own enabled check finds it and routes through settingKey below.
+            marketItemHop: {
+                enabled: false,
+                name: 'Market Item Hop',
+                category: 'Market',
+                description: 'Step to the previous/next marketplace item without returning to the item grid',
+                settingKey: 'market_itemHop',
+            },
             market_showPhiloCalculator: {
                 enabled: true,
                 name: 'Philo Gamba Calculator',

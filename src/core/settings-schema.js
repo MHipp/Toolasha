@@ -1304,6 +1304,16 @@ export const settingsGroups = {
                     'Adds a "Refresh" button on My Listings that opens your first listing\'s order book, then a ' +
                     '"Next" button on each listing\'s page to move to the next one, ending in "Back to My Listings"',
             },
+            market_itemHop: {
+                id: 'market_itemHop',
+                label: 'Market: Step between items without going back to the list',
+                type: 'checkbox',
+                default: false,
+                help:
+                    "On an item's marketplace page, [ and ] open the previous/next item from the item grid you " +
+                    'came from (respecting any filter you had applied), and Escape goes back to the grid. The same ' +
+                    'steps are on ◀ / ▶ buttons next to Refresh. Stepping stops at the ends of the list.',
+            },
             market_collectableListingsToTop: {
                 id: 'market_collectableListingsToTop',
                 label: 'Market: Move collectable listings to top of My Listings',
