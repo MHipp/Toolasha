@@ -6,6 +6,11 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Step between marketplace items without going back to the grid
+
+Checking live prices across a set of items meant opening one, clicking "View All Items" at the far left, opening the next, and repeating. The marketplace now remembers the list you were looking at, so `[` and `]` move straight to the previous or next item's order book, and Escape returns to the grid. There are matching arrows beside the game's own Refresh button, with the position in the list, so the keys are discoverable and the ends of the list are visible before you hit them. It follows whatever filter is applied, so a sweep covers the handful you filtered to rather than the whole catalogue. Off by default; the keys are named in its setting.
+
+
 ### The task zone number updates when you reroll
 
 Rerolling a task left the old zone number beside the new task until you tabbed away and back. Yesterday's performance work gave that label's handler a class filter, and the shared page watcher only notices elements being _inserted_ — a reroll rewrites the task's text in place, so nothing fired. It had been relying on unrelated page activity to re-run it. It now listens for the game's own quest update, which is what every other task feature already uses and is a far better signal than incidental churn. The other five filtered handlers were checked for the same shape: each either has its own watcher for in-place changes or cannot be affected.
