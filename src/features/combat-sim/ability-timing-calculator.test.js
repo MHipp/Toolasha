@@ -13,6 +13,8 @@ import { describe, test, expect, vi, beforeEach } from 'vitest';
 const mocks = vi.hoisted(() => ({
     gameData: { abilityDetailMap: {} },
     dto: null,
+    gameDataError: null,
+    dtoError: null,
     characterData: null,
     playerFactory: null,
     extraBuffsSeen: null,
@@ -27,8 +29,14 @@ vi.mock('../../core/data-manager.js', () => ({
 }));
 
 vi.mock('./combat-sim-adapter.js', () => ({
-    buildGameDataPayload: () => mocks.gameData,
-    buildPlayerDTO: () => mocks.dto,
+    buildGameDataPayload: () => {
+        if (mocks.gameDataError) throw mocks.gameDataError;
+        return mocks.gameData;
+    },
+    buildPlayerDTO: () => {
+        if (mocks.dtoError) throw mocks.dtoError;
+        return mocks.dto;
+    },
     getCommunityBuffs: () => ({ mooPass: false, comExp: 0, comDrop: 0 }),
 }));
 
@@ -71,6 +79,8 @@ function fakePlayer({ abilityHaste = 0, castSpeed = 0, attackLevel = 1 } = {}) {
 beforeEach(() => {
     mocks.gameData = { abilityDetailMap: {} };
     mocks.dto = { hrid: 'player1' };
+    mocks.gameDataError = null;
+    mocks.dtoError = null;
     mocks.characterData = {};
     mocks.extraBuffsSeen = null;
     mocks.playerFactory = () => fakePlayer();
@@ -168,6 +178,24 @@ describe('getCurrentAbilityTimingStats', () => {
         mocks.gameData = { abilityDetailMap: {} };
         mocks.dto = null;
         expect(getCurrentAbilityTimingStats()).toBeNull();
+    });
+
+    test('returns null rather than throwing when reading the live character throws', () => {
+        // This runs on a hover, off the tooltip observer's dispatch. The DTO builder
+        // walks live character data, and a half-written field mid-switch throws out of
+        // it — before the fix those two calls sat outside the try and the throw escaped.
+        const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        mocks.dtoError = new Error('characterSkills half written');
+        expect(() => getCurrentAbilityTimingStats()).not.toThrow();
+        expect(getCurrentAbilityTimingStats()).toBeNull();
+
+        mocks.dtoError = null;
+        mocks.gameDataError = new Error('initClientData half written');
+        expect(() => getCurrentAbilityTimingStats()).not.toThrow();
+        expect(getCurrentAbilityTimingStats()).toBeNull();
+
+        spy.mockRestore();
     });
 
     test('returns null rather than a partial figure when the reconstruction throws', () => {

@@ -81,13 +81,17 @@ function liveCastSpeedFlatBoost(characterData) {
  *   Live stats, or null when the character or game data cannot be read
  */
 export function getCurrentAbilityTimingStats() {
-    const gameData = buildGameDataPayload();
-    if (!gameData) return null;
-
-    const dto = buildPlayerDTO();
-    if (!dto) return null;
-
     try {
+        const gameData = buildGameDataPayload();
+        if (!gameData) return null;
+
+        // Inside the try with the reconstruction, not before it: the DTO builder walks
+        // live character data (skills, equipment, house rooms) and a half-written field
+        // mid-switch throws out of it. This runs on a hover, off the tooltip observer's
+        // dispatch, and a base figure is the right answer for every one of those.
+        const dto = buildPlayerDTO();
+        if (!dto) return null;
+
         setGameData(gameData);
         const player = Player.createFromDTO(dto);
         // CombatUnit defaults zoneBuffs/extraBuffs to {}, and generatePermanentBuffs()
