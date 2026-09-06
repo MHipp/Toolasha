@@ -252,7 +252,17 @@ export function describeKeyCost(keyHrid, options = {}) {
  */
 const CRAFT_COST_TTL_MS = 60_000;
 
-/** `keyHrid|priceSide` to `{at, unitCost}`; keyed on the side so a setting change misses */
+/**
+ * `keyHrid|priceSide|characterId` to `{at, unitCost}`.
+ *
+ * The side is in the key so a setting change misses. The character is in it
+ * for a stronger reason: a craft cost is personal — artisan tea removes
+ * materials, efficiency gives free actions, gear moves the action time — so a
+ * figure priced for one character is simply wrong for the next, and this cache
+ * outlives a character switch. Net worth, the inventory badges, the item
+ * tooltip and the chest model all read through here; without the character in
+ * the key an alt spends its first minute deducting somebody else's key cost.
+ */
 const craftCostCache = new Map();
 
 /**
@@ -274,11 +284,18 @@ export function getKeyUnitCost(keyHrid) {
     const { priceSide, basis } = resolveKeyPricing();
     if (basis !== 'craft') return buyPriceFor(keyHrid, priceSide);
 
-    const cacheKey = `${keyHrid}|${priceSide}`;
+    const cacheKey = `${keyHrid}|${priceSide}|${dataManager.getCurrentCharacterId?.() ?? '?'}`;
     const cached = craftCostCache.get(cacheKey);
     if (cached && Date.now() - cached.at < CRAFT_COST_TTL_MS) return cached.unitCost;
 
     const { unitCost } = describeKeyCost(keyHrid, { mode: priceSide, basis: 'craft' });
+    // A null is "nothing could price this yet", not an answer worth keeping.
+    // The market snapshot loads asynchronously at start-up, so the first pass
+    // over an inventory can legitimately see an empty book; caching that for a
+    // minute would leave every `?? 0` downstream deducting a free key long
+    // after the prices arrived. The market basis has no cache and self-heals on
+    // the next read; the craft basis has to be told to.
+    if (unitCost === null) return null;
     craftCostCache.set(cacheKey, { at: Date.now(), unitCost });
     return unitCost;
 }

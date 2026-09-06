@@ -28,6 +28,9 @@ const market = vi.hoisted(() => ({
 
 const buffs = vi.hoisted(() => ({ actionStats: { actionTime: 60, totalEfficiency: 0 } }));
 
+/** Who is logged in, and the artisan bonus that makes their craft cost theirs */
+const player = vi.hoisted(() => ({ id: 'char-1', artisan: 0 }));
+
 vi.mock('../core/config.js', () => ({
     default: {
         getSettingValue: (id) => (id === 'profitCalc_pricingMode' ? settings.pricingMode : settings.keyPricingMode),
@@ -41,6 +44,7 @@ vi.mock('../core/data-manager.js', () => ({
         getEquipment: () => new Map(),
         getActionDrinkSlots: () => [],
         getSkills: () => [],
+        getCurrentCharacterId: () => player.id,
     },
 }));
 
@@ -62,7 +66,7 @@ vi.mock('./market-data.js', () => ({
 
 vi.mock('./game-lookups.js', () => ({ getShopCoinCost: () => 0 }));
 
-vi.mock('./tea-parser.js', () => ({ parseArtisanBonus: () => 0, getDrinkConcentration: () => 0 }));
+vi.mock('./tea-parser.js', () => ({ parseArtisanBonus: () => player.artisan, getDrinkConcentration: () => 0 }));
 
 vi.mock('./action-calculator.js', () => ({ calculateActionStats: () => buffs.actionStats }));
 
@@ -96,6 +100,8 @@ function essenceRecipe(itemHrid, count = 5) {
 beforeEach(() => {
     settings.keyPricingMode = 'ask';
     settings.pricingMode = 'hybrid';
+    player.id = 'char-1';
+    player.artisan = 0;
     invalidateKeyCostCache();
     buffs.actionStats = { actionTime: 60, totalEfficiency: 0 };
 
@@ -414,5 +420,28 @@ describe('getKeyUnitCost', () => {
 
         settings.pricingMode = 'patientBuy';
         expect(getKeyUnitCost(CHEST_KEY)).toBe(4500);
+    });
+
+    test('does not serve one character the craft cost priced for another', () => {
+        // A craft cost is personal, and this cache outlives a character switch:
+        // net worth, the badges, the tooltip and the chest model all read it
+        settings.keyPricingMode = 'craft';
+        expect(getKeyUnitCost(CHEST_KEY)).toBe(5000);
+
+        // An alt with artisan tea up buys a fifth fewer materials
+        player.id = 'char-2';
+        player.artisan = 0.2;
+        expect(getKeyUnitCost(CHEST_KEY)).toBe(4000);
+    });
+
+    test('does not cache a key nothing could price yet', () => {
+        // The market snapshot loads asynchronously, so the first badge pass can
+        // legitimately see an empty book; a cached null leaves every `?? 0`
+        // downstream deducting a free key for the rest of the minute
+        settings.keyPricingMode = 'craft';
+        expect(getKeyUnitCost(SINISTER_KEY)).toBeNull();
+
+        market.book[SINISTER_KEY] = { ask: 700, bid: 500 };
+        expect(getKeyUnitCost(SINISTER_KEY)).toBe(700);
     });
 });
