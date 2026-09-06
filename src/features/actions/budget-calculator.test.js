@@ -166,3 +166,67 @@ describe('budget calculator unpriced materials', () => {
         expect(modal.querySelector('#mwi-budget-unpriced-note')).toBeNull();
     });
 });
+
+describe('budget calculator breakdown modal Escape listener', () => {
+    const ACTION = '/actions/cooking/omelette';
+
+    beforeEach(() => {
+        world.gameData = {
+            actionDetailMap: {
+                [ACTION]: { type: '/action_types/cooking', inputItems: [{ itemHrid: '/items/egg' }] },
+            },
+            itemDetailMap: { '/items/egg': { isTradable: true } },
+        };
+        world.prices = { '/items/egg': { ask: 10 } };
+        world.materials = [{ itemHrid: '/items/egg', itemName: 'Egg', perUnit: 1, have: 0, isTradeable: true }];
+    });
+
+    /** Open the breakdown modal via Calculate and return it. */
+    function openModal() {
+        budgetCalculator.initialize();
+        dispatcher.callback(resolveDetailPanel(mountPanel()));
+        const ui = document.getElementById('mwi-budget-calculator');
+        ui.querySelector('input').value = '1000';
+        ui.querySelector('button').click();
+        return document.getElementById('mwi-budget-modal-overlay');
+    }
+
+    test('dismissing via the × button removes the document-level Escape listener, not just the overlay', () => {
+        const addSpy = vi.spyOn(document, 'addEventListener');
+        const removeSpy = vi.spyOn(document, 'removeEventListener');
+
+        const modal = openModal();
+        const keydownAdds = addSpy.mock.calls.filter((call) => call[0] === 'keydown').length;
+        expect(keydownAdds).toBe(1);
+
+        modal.querySelector('#mwi-budget-modal-close').click();
+
+        const keydownRemoves = removeSpy.mock.calls.filter((call) => call[0] === 'keydown').length;
+        expect(keydownRemoves).toBe(1);
+    });
+
+    test('opening and closing the modal by mouse repeatedly never grows the document listener count', () => {
+        for (let i = 0; i < 5; i++) {
+            const modal = openModal();
+            modal.querySelector('#mwi-budget-modal-close').click();
+        }
+
+        // A stray Escape press after every dismissal must trigger no leftover close() calls
+        // beyond whatever the still-open modal (there is none) would need.
+        const overlaysBefore = document.querySelectorAll('#mwi-budget-modal-overlay').length;
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+        expect(document.querySelectorAll('#mwi-budget-modal-overlay').length).toBe(overlaysBefore);
+    });
+
+    test('clicking the backdrop also detaches its Escape listener', () => {
+        const removeSpy = vi.spyOn(document, 'removeEventListener');
+        const overlay = openModal();
+
+        // Dispatched straight on the overlay, so e.target === overlay (a click on the modal
+        // content itself would bubble from a descendant and correctly not close it).
+        overlay.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+        const keydownRemoves = removeSpy.mock.calls.filter((call) => call[0] === 'keydown').length;
+        expect(keydownRemoves).toBe(1);
+    });
+});

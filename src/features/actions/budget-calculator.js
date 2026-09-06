@@ -257,17 +257,23 @@ function showBreakdownModal(budget, result) {
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
 
-    const close = () => overlay.remove();
+    // close() is reachable three ways (×, backdrop click, Escape), but only the Escape path used
+    // to detach this listener. Dismissing via the other two left it on `document` forever, and
+    // since a fresh listener is added every time the modal reopens, repeatedly opening and
+    // closing it by mouse alone grew an unbounded pile of keydown listeners that outlived the
+    // panel — and even disable(), which only ever removed the overlay element.
+    const onEsc = (e) => {
+        if (e.key === 'Escape') close();
+    };
+    const close = () => {
+        overlay.remove();
+        document.removeEventListener('keydown', onEsc);
+    };
     overlay.querySelector('#mwi-budget-modal-close').addEventListener('click', close);
     overlay.addEventListener('click', (e) => {
         if (e.target === overlay) close();
     });
-    document.addEventListener('keydown', function onEsc(e) {
-        if (e.key === 'Escape') {
-            close();
-            document.removeEventListener('keydown', onEsc);
-        }
-    });
+    document.addEventListener('keydown', onEsc);
 }
 
 class BudgetCalculator {
