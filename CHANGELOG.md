@@ -6,6 +6,16 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Audit round: a sync pull could wipe records it was meant to combine
+
+Two records the replay checker keeps — every recording you have watched and every check you have run — were missing from the list of things a pull merges rather than replaces, so a sync overwrote them with whatever the sending device had. They live in the settings store, which every sync scope carries, so this fired on the smallest sync you can configure. That is the third time a record has been forgotten this way, so there is now a test that walks the source and fails when a new one is added without being registered.
+
+A pull could also overwrite a record whose local copy it had failed to read. The code that guards against that could not tell a read that failed from a key that was simply absent, and in the failed case handed the record to the blind overwrite it exists to prevent — destroying exactly the entries the failure had hidden, while the pull reported that records had been combined. And a device running an older build stripped every setting id it did not recognise the first time you toggled anything, so settings made on a newer build vanished from the account.
+
+Clearing a history could still report success while deleting nothing: the delete calls answer rather than throw when a database is unavailable — during a backup restore, for one — and nobody read the answer. The alchemy trackers also threw away the session in progress on a clear that was refused, so nothing was deleted and something was lost anyway.
+
+Elsewhere: Queue Time Left counted the action already in progress at its full duration, overestimating by up to one action; the Goal Planner could file a plan under whoever you switched to mid-removal; and the budget calculator's breakdown modal left a key listener behind every time it was closed with the mouse.
+
 ### The leftovers: a panel that could not tell "empty" from "could not look"
 
 Storage diagnostics no longer report a store the browser could not list as holding zero records — it says the size is unreadable, which is the truth. Clearing a history that cannot be listed now refuses outright rather than deleting nothing, forgetting everything, and letting the next read bring it all back; the alchemy history viewers say the clear did not happen instead of announcing success over data that is still there. And the trade ledger's day records, one per character per trading day, are budgeted per character rather than against a store-wide limit they share with account-wide caches, so a multi-character account no longer trips a warning no single character is near.
