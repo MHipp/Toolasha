@@ -779,13 +779,14 @@ class LabyrinthClearRate {
      *
      * Read through `getCommunityBuffLevel` rather than off
      * `communityActionTypeBuffsMap`, and that is the whole point of the method.
-     * The map is only ever written from the `init_character_data` payload —
-     * nothing refreshes it — while `characterData.communityBuffs`, which is what
-     * this reads, is replaced on every `community_buffs_updated` message. A room
-     * scored off the map was being scored against the buff levels as they stood
-     * when the page was loaded, which drifts away from the truth every time
-     * anybody on the server donates, and disagreed with the Lab Sim panel (whose
-     * DTO has always read the live levels) for the rest of the session.
+     * The map used to be written only from the `init_character_data` payload, so
+     * a room scored off it was scored against the buff levels as they stood when
+     * the page was loaded — drifting every time anybody on the server donated,
+     * and disagreeing with the Lab Sim panel (whose DTO has always read the live
+     * levels) for the rest of the session. The map is mirrored live now, but this
+     * stays the levels route: the Lab Sim's skilling tab builds its buffs from
+     * levels through the same helper, so the tile and the panel cannot disagree
+     * about what a community buff is worth.
      *
      * @returns {{productionEfficiency: number, enhancingSpeed: number, gatheringQuantity: number, experience: number}}
      */
@@ -980,11 +981,10 @@ class LabyrinthClearRate {
 
         const buffSources = [
             loadoutEquipBuffs || charData.equipmentActionTypeBuffsMap?.[actionTypeHrid],
-            // Built from the levels the server is running now rather than read
-            // from `communityActionTypeBuffsMap`, which is written once at login
-            // and never again — see `getLiveCommunityBuffLevels`. Built by the
-            // same helper the Lab Sim's skilling tab uses, so the tile and the
-            // panel cannot disagree about what a community buff is worth.
+            // Built from the levels the server is running now, by the same helper
+            // the Lab Sim's skilling tab uses, so the tile and the panel cannot
+            // disagree about what a community buff is worth — see
+            // `getLiveCommunityBuffLevels`.
             buildCommunityBuffsForSkill(this.getLiveCommunityBuffLevels(), actionTypeHrid),
             charData.houseActionTypeBuffsMap?.[actionTypeHrid],
             charData.guildActionTypeBuffsMap?.[actionTypeHrid],
