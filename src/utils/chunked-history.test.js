@@ -736,6 +736,42 @@ describe('a listing that could not be made is not an empty history', () => {
         expect(storageMock.store.get('rec_c1_2026-06')).toHaveLength(1);
     });
 
+    // `_read` used to clear `_unreadableFor` before checking whether its own
+    // read was still the current one, so a read abandoned by a character switch
+    // could answer late and erase the failure flag a *current* read had just
+    // set — and the save waiting on that current read then wrote its single
+    // entry over the month it had never managed to read.
+    test('a read abandoned by a character switch does not clear a current failure', async () => {
+        storageMock.store.set('rec_c1_2026-06', [at(2026, 6), at(2026, 6, 2), at(2026, 6, 3)]);
+
+        /** Each listing's resolver, in call order, so the two reads can be landed out of order */
+        const gates = [];
+        storageMock.tryGetAllKeys.mockImplementation(() => new Promise((resolve) => gates.push(resolve)));
+
+        const store = build();
+        const abandoned = store.load('c1');
+        await Promise.resolve();
+        await Promise.resolve();
+        store.forget();
+
+        // The read that replaces it, and the save that waits on that same read
+        const reloaded = store.load('c1');
+        const saved = store.save('c1', [at(2026, 6, 4)]);
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(gates).toHaveLength(2);
+
+        // The current read cannot list the store; the abandoned one answers
+        // afterwards, and its answer is about nobody
+        gates[1](null);
+        gates[0]([]);
+
+        await abandoned;
+        await reloaded;
+        expect(await saved).toBe(false);
+        expect(storageMock.store.get('rec_c1_2026-06')).toHaveLength(3);
+    });
+
     test('a genuinely empty store still loads as empty and saves', async () => {
         const store = build();
         expect(await store.load('c1')).toEqual([]);
