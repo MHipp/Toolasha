@@ -44,35 +44,24 @@ jobs:
               run: npm run build
 
             - name: Verify bundle sizes
-              # The ceiling is a guard against a module being silently duplicated
-              # into several bundles, not a hosting limit — Greasyfork accepts
-              # library files far larger than this.
+              # 2 MiB is a real delivery limit, not a style preference: every
+              # library ships to users through an `@require` URL, and the
+              # userscript manager refuses a response over 2097152 bytes
+              # ("Response too large (>2097152 bytes)"). A bundle past it does
+              # not load at all — the script is simply broken for everyone.
               #
-              # It was 2 MiB (2097152). The ui bundle passed it, and the first
-              # thing checked was duplication: gathering-profit.js and
-              # production-profit.js were being copied whole into every bundle
-              # that imported them, and are now shared through Toolasha.Market
-              # (see marketExternalGlobals in rollup.config.js), taking ~19 KB off
-              # both ui and actions. That was the real duplication and it is
-              # fixed; the remainder is simply that ui legitimately carries the
-              # most feature code of any bundle and has grown past 2 MiB honestly.
+              # The ceiling used to be a duplication proxy that drifted upward
+              # (2 -> 2.5 -> 3 -> 3.5 MiB) every time a bundle grew. That job now
+              # belongs to scripts/check-bundle-sharing.mjs, which walks the real
+              # import graph on every production build and fails on a shared
+              # module inlined into two bundles — so this check is free to go
+              # back to enforcing the limit that actually exists.
               #
-              # So the limit moves to 2.5 MiB rather than the check being deleted
-              # or ui exempted: ~270 KB of headroom over today's largest bundle is
-              # enough that a genuinely new duplicate still trips it, which is the
-              # whole point of having the check.
+              # When a bundle approaches it, the fix is to split it (the sim
+              # bundle is the precedent), never to raise this number.
               run: |
-                  # Raised 3 -> 3.5 MiB: the ui bundle grew past 3 MiB across a
-                  # feature-heavy stretch with duplication *decreasing* — the
-                  # bundle rebalance that landed alongside this shrank every
-                  # bundle by sharing 26 more utils. Duplication is no longer
-                  # this ceiling's job at all: scripts/check-bundle-sharing.mjs
-                  # now walks the real import graph on every production build
-                  # and fails it on any shared util inlined into two bundles,
-                  # which catches the guarded failure exactly rather than by
-                  # weight. The ceiling stays as a sanity backstop only.
-                  limit=3670016
-                  human="3.5MB"
+                  limit=2097152
+                  human="2MB"
                   entrypoint_size=$(wc -c < "dist/Toolasha.user.js")
                   if [ "$entrypoint_size" -gt "$limit" ]; then
                     echo "❌ dist/Toolasha.user.js is over the $human limit ($entrypoint_size bytes)"
