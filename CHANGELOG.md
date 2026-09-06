@@ -6,6 +6,11 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Ability tooltips can show the cooldown you actually get
+
+The game's ability tooltip only ever shows base cooldown and cast time, so the numbers are wrong for anyone with haste or cast speed. Hovering an ability can now append the effective figure, worked out from the same reconstruction the combat simulator uses, so the tooltip and the simulator agree. Where a modifier cannot be read it leaves the game's own line alone rather than showing a guess. Off by default.
+
+
 ### Upstream sweep: live buffs, a duplicated core module, and the bundle limit
 
 A comparison against upstream turned up three real bugs here and two of our own. Every buff map was read once at login and never again, so a house upgrade, tea swap, re-equip or guild buff purchase left the enhancement, action timing and clear-rate readouts working from stale figures for the rest of the session; they now follow the game's live updates. A profit calculation still running when you switched character could paint the departing character's figure into the arriving one's action bar. And a queue shorter than one action cycle could report a finish time below a single cycle.
