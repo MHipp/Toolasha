@@ -250,6 +250,48 @@ describe('pruning past the cap', () => {
         await lootLogHistory.mergeAndSave([entry(9999, '2027-01-01T00:00:00Z')]);
         expect(storageMock.delete).toHaveBeenCalledWith('lootLogRec_char-1_2026-01-01T01', 'lootLogHistory');
     });
+
+    test('a history of exactly the cap loses nothing', async () => {
+        const hours = Array.from({ length: MAX_ENTRIES }, (_, i) => {
+            const at = new Date(Date.UTC(2026, 0, 1) + i * 3_600_000).toISOString();
+            return entry(i + 1, at);
+        });
+
+        await lootLogHistory.mergeAndSave(hours);
+
+        expect(storageMock.store.has('lootLogRec_char-1_2026-01-01T00')).toBe(true);
+        expect(await lootLogHistory._load()).toHaveLength(MAX_ENTRIES);
+    });
+});
+
+describe('the merge sort', () => {
+    // The comparator used to build two Dates per comparison; it now parses each entry's
+    // start time once, up front. Equivalent everywhere the old one was well defined, and
+    // a total order where the old one was not: `new Date('nonsense') - x` is NaN, and a
+    // comparator returning NaN is not a valid ordering.
+    test('keeps the newest first, and every entry, when start times are equal', async () => {
+        const same = '2026-08-01T10:00:00Z';
+        await lootLogHistory.mergeAndSave([entry(1, same), entry(2, same), entry(3, same)]);
+
+        const stored = storageMock.store.get('lootLogRec_char-1_2026-08-01T10');
+        expect(stored.map((e) => e.characterActionId).sort()).toEqual([1, 2, 3]);
+    });
+
+    test('a malformed start time is sorted last rather than scrambling the window', async () => {
+        await lootLogHistory.mergeAndSave([
+            entry(1, '2026-08-01T10:00:00Z'),
+            entry(2, 'not a date'),
+            entry(3, '2026-08-01T12:00:00Z'),
+        ]);
+
+        // The two real entries keep their own hours and their newest-first order; the
+        // unparseable one sorts to epoch rather than turning the comparison into NaN
+        expect(storageMock.store.get('lootLogRec_char-1_2026-08-01T12').map((e) => e.characterActionId)).toEqual([3]);
+        expect(storageMock.store.get('lootLogRec_char-1_2026-08-01T10').map((e) => e.characterActionId)).toEqual([1]);
+        const all = await lootLogHistory._load();
+        expect(all.map((e) => e.characterActionId)).toContain(2);
+        expect(all).toHaveLength(3);
+    });
 });
 
 describe('standing down when storage is full', () => {

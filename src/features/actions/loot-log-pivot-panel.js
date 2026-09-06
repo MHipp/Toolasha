@@ -85,6 +85,9 @@ let currentEntries = [];
 let historicalEntries = [];
 let historyLoaded = false;
 
+/** See `aggregatedViews` — the memo of the last aggregation, keyed on its two inputs' identity */
+let aggregateCache = { current: null, historical: null, rows: null };
+
 /**
  * Forget everything the panel is holding.
  *
@@ -102,6 +105,9 @@ export function resetPivotState() {
     currentEntries = [];
     historicalEntries = [];
     historyLoaded = false;
+    // A character switch must not leave the departing character's sums behind a
+    // pair of array identities the arriving character could coincidentally match
+    aggregateCache = { current: null, historical: null, rows: null };
 }
 
 /**
@@ -179,12 +185,39 @@ export function buildRowView(row) {
 }
 
 /**
+ * The aggregation, reused while its two inputs are the same arrays they were.
+ *
+ * Summing a full history is the expensive half of a redraw — 2,000 entries of a
+ * few dozen drop kinds each is ~13 ms, and every keystroke in the filter box and
+ * every click on a column heading re-renders. Neither changes an entry, so
+ * neither has any business re-summing them.
+ *
+ * Keyed on array identity rather than on a hash: both arrays are replaced
+ * wholesale when they change — `currentEntries` by each `loot_log_updated`
+ * payload, `historicalEntries` by a fresh `_load()` — so identity changes
+ * exactly when the contents do.
+ *
+ * Prices are deliberately outside the cache. `buildRowView` resolves the market
+ * on every call, so a price update reaches the table on the next redraw rather
+ * than waiting for an entry to change.
+ */
+/**
+ * @returns {Array<Object>} One priced view per action/tier
+ */
+function aggregatedViews() {
+    if (aggregateCache.current !== currentEntries || aggregateCache.historical !== historicalEntries) {
+        const entries = mergeCurrentAndHistoricalEntries(currentEntries, historicalEntries);
+        aggregateCache = { current: currentEntries, historical: historicalEntries, rows: aggregatePivotRows(entries) };
+    }
+    return aggregateCache.rows.map(buildRowView);
+}
+
+/**
  * The rows to draw: aggregated, priced, filtered and sorted.
  * @returns {Array<Object>}
  */
 function visibleRows() {
-    const entries = mergeCurrentAndHistoricalEntries(currentEntries, historicalEntries);
-    const views = aggregatePivotRows(entries).map(buildRowView);
+    const views = aggregatedViews();
 
     const needle = filterText.trim().toLowerCase();
     const matching = needle ? views.filter((view) => view.displayName.toLowerCase().includes(needle)) : views;

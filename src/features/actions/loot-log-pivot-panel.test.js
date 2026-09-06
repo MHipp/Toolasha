@@ -13,7 +13,20 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
 /** What the mocked game and storage serve, swapped between tests */
-const world = vi.hoisted(() => ({ history: [], skills: {}, settingOn: true }));
+const world = vi.hoisted(() => ({ history: [], skills: {}, settingOn: true, askPerDrop: 2 }));
+
+/** How many times the panel summed the history, so the memo can be pinned */
+const analytics = vi.hoisted(() => ({ aggregateCalls: 0 }));
+vi.mock('./loot-log-analytics.js', async (importOriginal) => {
+    const actual = await importOriginal();
+    return {
+        ...actual,
+        aggregatePivotRows: (entries) => {
+            analytics.aggregateCalls += 1;
+            return actual.aggregatePivotRows(entries);
+        },
+    };
+});
 
 /** The data manager's bus, reduced to the one event the feature listens for */
 const bus = vi.hoisted(() => ({ handlers: {} }));
@@ -89,7 +102,7 @@ vi.mock('./loot-log-stats.js', () => ({
         // Two coins per item at ask, one at bid, so a row's Value is predictable
         calculateTotalValue: (drops) => {
             const count = Object.values(drops || {}).reduce((sum, n) => sum + n, 0);
-            return { askTotal: count * 2, bidTotal: count };
+            return { askTotal: count * world.askPerDrop, bidTotal: count };
         },
         getActionName: (hrid) => hrid.split('/').pop().replace(/_/g, ' '),
         getActionCategory: (hrid) => hrid.split('/')[2] || null,
@@ -157,6 +170,8 @@ beforeEach(() => {
         '/skills/defense': { name: 'Defense', sortIndex: 3 },
     };
     world.settingOn = true;
+    world.askPerDrop = 2;
+    analytics.aggregateCalls = 0;
     socket.handlers = {};
     observers.registered = [];
     bus.handlers = {};
@@ -255,6 +270,60 @@ describe('drawing the pivot', () => {
         const headings = Array.from(lootLogPivotPanel.panel.querySelectorAll('th')).map((th) => th.textContent);
         expect(headings.join(' ')).toContain('Value (ask/bid)');
         expect(headings.join(' ')).toContain('Gold/hr (ask/bid)');
+    });
+});
+
+describe('re-summing the history', () => {
+    // The cap went from 500 sessions to 2,000, and summing a full one is ~13 ms. A
+    // keystroke in the filter box and a click on a heading each re-render, and neither
+    // changes an entry, so neither has any business re-summing them.
+    test('filtering and sorting reuse the aggregation instead of re-summing', async () => {
+        world.history = [
+            entry({ characterActionId: 1, actionHrid: '/actions/milking/cow' }),
+            entry({ characterActionId: 2, actionHrid: '/actions/brewing/tea' }),
+        ];
+        await open();
+        const afterFirstDraw = analytics.aggregateCalls;
+        expect(afterFirstDraw).toBeGreaterThan(0);
+
+        const box = lootLogPivotPanel.panel.querySelector('input[type="text"]');
+        for (const value of ['t', 'te', 'tea']) {
+            box.value = value;
+            box.dispatchEvent(new Event('input'));
+        }
+        Array.from(lootLogPivotPanel.panel.querySelectorAll('th'))
+            .find((th) => th.textContent.startsWith('Actions'))
+            .click();
+
+        expect(analytics.aggregateCalls).toBe(afterFirstDraw);
+        expect(bodyRows()).toHaveLength(1);
+        expect(text()).not.toContain('could not be drawn');
+    });
+
+    test('a new loot message is re-summed rather than served from the memo', async () => {
+        world.history = [entry({ characterActionId: 1, actionCount: 10 })];
+        await lootLogPivot.initialize();
+        await open();
+        const before = analytics.aggregateCalls;
+
+        socket.handlers.loot_log_updated[0]({ lootLog: [entry({ characterActionId: 2, actionCount: 900 })] });
+        lootLogPivotPanel.render();
+
+        expect(analytics.aggregateCalls).toBeGreaterThan(before);
+        expect(text()).toContain('910');
+        expect(text()).not.toContain('could not be drawn');
+    });
+
+    test('prices are resolved per draw, so a market move lands without an entry changing', async () => {
+        world.history = [entry({ drops: { '/items/milk': 100 } })];
+        await open();
+        expect(text()).toContain('200 / 100');
+
+        world.askPerDrop = 5;
+        lootLogPivotPanel.render();
+
+        expect(text()).toContain('500 / 100');
+        expect(text()).not.toContain('could not be drawn');
     });
 });
 
