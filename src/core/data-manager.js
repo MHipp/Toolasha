@@ -802,10 +802,13 @@ class DataManager {
         this.webSocketHook.on('house_rooms_updated', (data, context) => {
             if (!this._isFromActiveSocket(context)) return;
 
-            // Update house room map with new levels
+            // Update house room map with new levels. `updateHouseRoomMap` merges the
+            // payload into the init snapshot on purpose — the message names the rooms
+            // that changed, not the whole house — so nothing may assign the payload over
+            // `characterData.characterHouseRoomMap` afterwards: that drops every room the
+            // message did not mention, and the simulators' player DTO reads that map.
             if (data.characterHouseRoomMap !== undefined) {
                 this.updateHouseRoomMap(data.characterHouseRoomMap);
-                if (this.characterData) this.characterData.characterHouseRoomMap = data.characterHouseRoomMap;
             }
             if (data.houseActionTypeBuffsMap !== undefined && this.characterData) {
                 this.characterData.houseActionTypeBuffsMap = data.houseActionTypeBuffsMap;

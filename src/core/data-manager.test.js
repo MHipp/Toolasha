@@ -1261,6 +1261,34 @@ describe('live buff state mirroring', () => {
         expect(dataManager.characterData.communityActionTypeBuffsMap).toEqual(fresh);
     });
 
+    /**
+     * `house_rooms_updated` names the rooms that changed, not the whole house, which is
+     * why `updateHouseRoomMap` merges. Assigning the payload over
+     * `characterData.characterHouseRoomMap` afterwards dropped every room the message did
+     * not mention — and the simulators' player DTO reads that map.
+     */
+    test('a house upgrade keeps the rooms its message did not mention', () => {
+        dataManager.characterData.characterHouseRoomMap = {
+            '/house_rooms/dairy_barn': { houseRoomHrid: '/house_rooms/dairy_barn', level: 5 },
+            '/house_rooms/garden': { houseRoomHrid: '/house_rooms/garden', level: 3 },
+        };
+
+        webSocketHandlers.get('house_rooms_updated')(
+            {
+                characterHouseRoomMap: {
+                    '/house_rooms/garden': { houseRoomHrid: '/house_rooms/garden', level: 4 },
+                },
+            },
+            { socket: socketA }
+        );
+
+        expect(dataManager.characterData.characterHouseRoomMap['/house_rooms/garden'].level).toBe(4);
+        expect(dataManager.characterData.characterHouseRoomMap['/house_rooms/dairy_barn']).toEqual({
+            houseRoomHrid: '/house_rooms/dairy_barn',
+            level: 5,
+        });
+    });
+
     test('a message from a foreign socket is ignored', () => {
         const before = dataManager.characterData.guildActionTypeBuffsMap;
         webSocketHandlers.get('guild_buffs_updated')(
