@@ -485,6 +485,8 @@ class DungeonTrackerStorage {
      * @param {boolean} [run.validated] - False for a run timed by the client's own clock
      *   (a solo run, which has no party "Key counts" messages to time it by). Defaults
      *   to true, which is what every party and backfill run has always been.
+     * @param {boolean} [run.startRecovered] - True when the run's start was recovered from the
+     *   chat log rather than watched; such a run may not set the recovery plausibility bound
      * @param {string} [run.source] - Where the run came from: 'chat' (default) or 'tracker'
      * @returns {Promise<boolean>} Success status
      */
@@ -559,6 +561,10 @@ class DungeonTrackerStorage {
                 // A solo run is timed by the wall clock, not the server's own
                 // timestamps, and says so — see the tracker's solo save path
                 validated: run.validated !== false,
+                // A run whose start came back from the chat log rather than being
+                // watched. Its duration is only as good as the bound that admitted
+                // the anchor, so it may not set that bound for the next recovery
+                startRecovered: run.startRecovered === true,
                 source: run.source || 'chat',
                 waveTimes: Array.isArray(run.waveTimes) && run.waveTimes.length > 0 ? [...run.waveTimes] : null,
                 avgWaveTime: Number.isFinite(run.avgWaveTime) ? run.avgWaveTime : null,

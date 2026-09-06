@@ -1162,6 +1162,8 @@ describe('finishing a run', () => {
             // The party's "Key counts" messages timed this one, so it is stored as
             // server-validated — the distinction a solo run's wall-clock time lacks
             validated: true,
+            // Watched from its own start, so it may set the recovery bound
+            startRecovered: false,
             source: 'chat',
         });
     });

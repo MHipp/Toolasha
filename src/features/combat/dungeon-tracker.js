@@ -1663,6 +1663,10 @@ class DungeonTracker {
                     waveTimes: startRecovered ? [] : completedWaveTimes,
                     avgWaveTime: startRecovered ? 0 : avgWaveTime,
                     validated: canBankParty,
+                    // A recovered run's duration was measured from an anchor the
+                    // recovery bound let through, so history has to know not to
+                    // let it widen that bound next time (see `plausibleMaxRunMs`)
+                    startRecovered,
                     // Unchanged for a party run; a solo run says which clock timed it
                     source: canBankParty ? 'chat' : 'tracker',
                 };

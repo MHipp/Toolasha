@@ -234,14 +234,30 @@ export function paceChip(percent) {
  */
 
 /**
- * How much longer than the longest run you have on record for this dungeon and
- * tier a recovered start may imply. A run is bounded from above by the party's
- * worst night, and your own worst night is the only figure available that knows
- * anything about this dungeon; 1.5× leaves room for a party slower than any you
- * have recorded without admitting an anchor a whole run too early (which, at any
- * wave, implies at least ~2× the run).
+ * How much longer than the longest clean run you have on record for this dungeon
+ * and tier a recovered start may imply, when there are too few clean runs for the
+ * median bound below. A run is bounded from above by the party's worst night, and
+ * your own worst night is the only figure available that knows anything about this
+ * dungeon; 1.5× leaves room for a party slower than any you have recorded without
+ * admitting an anchor a whole run too early (which, at any wave, implies at least
+ * ~2× the run).
  */
 export const RECOVERY_DURATION_SLACK = 1.5;
+
+/**
+ * How much longer than your median run for this dungeon and tier a recovered
+ * start may imply. 2× matches `RECOVERY_WAVE_TOLERANCE`: the two checks then
+ * refuse the same thing — a run at twice its usual pace — from the whole-run and
+ * the per-wave side, rather than one quietly admitting what the other refuses.
+ */
+export const RECOVERY_MEDIAN_SLACK = 2;
+
+/**
+ * How many clean runs the median needs before it is a statistic rather than one
+ * or two nights. Below this the max-based bound stands in: it is the behaviour
+ * this had before, and with three runs the median is barely more robust anyway.
+ */
+export const RECOVERY_MIN_MEDIAN_SAMPLE = 5;
 
 /**
  * The bound with no history to derive one from. The longest dungeon in the game
@@ -264,7 +280,29 @@ export const RECOVERY_FALLBACK_MAX_MS = 45 * 60 * 1000;
 export const RECOVERY_WAVE_TOLERANCE = 2;
 
 /**
+ * Whether a stored run may set the recovery bound.
+ *
+ * A recovered run's own duration was measured from the anchor this bound let
+ * through, so feeding it back in is a ratchet: one over-long recovery raises the
+ * ceiling, the raised ceiling admits a longer one, and the bound only ever
+ * widens. An unvalidated run is the client's own wall clock rather than the
+ * server's timestamps, which is the clock this check exists to doubt. Neither
+ * may vote on how long a run of this dungeon can be.
+ *
+ * @param {Object} run - A stored run
+ * @returns {boolean}
+ */
+function boundsRecovery(run) {
+    return run.startRecovered !== true && run.validated !== false;
+}
+
+/**
  * The longest a run of this dungeon may plausibly have taken, from history.
+ *
+ * Derived from the median of the clean runs rather than their maximum: the
+ * maximum is one night, and one night that ran long — or one duration inflated
+ * by any of the mishaps this file already heals — sets the ceiling for every
+ * recovery after it. The median moves only when most of your runs do.
  *
  * @param {Array<Object>} runs - Stored runs, already narrowed to the character
  * @param {Object} current - The live run's identity
@@ -275,19 +313,31 @@ export const RECOVERY_WAVE_TOLERANCE = 2;
 export function plausibleMaxRunMs(runs, { dungeonName, tier } = {}) {
     if (!dungeonName || dungeonName === 'Unknown') return null;
 
-    let longest = null;
+    const durations = [];
     for (const run of runs || []) {
         if (!run || run.dungeonName !== dungeonName) continue;
         if (tier !== null && tier !== undefined && run.tier !== null && run.tier !== undefined && run.tier !== tier) {
             continue;
         }
+        if (!boundsRecovery(run)) continue;
         const duration = Number(run.duration ?? run.totalTime);
         if (!Number.isFinite(duration) || duration <= 0) continue;
-        if (longest === null || duration > longest) longest = duration;
+        durations.push(duration);
     }
 
-    if (longest === null) return null;
-    return longest * RECOVERY_DURATION_SLACK;
+    if (!durations.length) return null;
+
+    durations.sort((a, b) => a - b);
+    if (durations.length < RECOVERY_MIN_MEDIAN_SAMPLE) {
+        // Too few to call a median; the old max-based bound stands in, over the
+        // clean runs only — no bound at all would hand the caller its 45-minute
+        // fallback, which is looser than anything this history supports.
+        return durations[durations.length - 1] * RECOVERY_DURATION_SLACK;
+    }
+
+    const middle = Math.floor(durations.length / 2);
+    const median = durations.length % 2 === 1 ? durations[middle] : (durations[middle - 1] + durations[middle]) / 2;
+    return median * RECOVERY_MEDIAN_SLACK;
 }
 
 /**

@@ -16,6 +16,12 @@ import {
     splitPacePercent,
     pacePercent,
     paceChip,
+    plausibleMaxRunMs,
+    assessRecoveredStart,
+    RECOVERY_DURATION_SLACK,
+    RECOVERY_MEDIAN_SLACK,
+    RECOVERY_MIN_MEDIAN_SAMPLE,
+    RECOVERY_FALLBACK_MAX_MS,
 } from './dungeon-pace.js';
 
 const MAX_WAVES = 50;
@@ -210,5 +216,60 @@ describe('the split-time pace', () => {
         expect(splitPacePercent(Array(MIN_WAVES_FOR_PACE - 1).fill(10_000), profile)).toBeNull();
         expect(splitPacePercent(Array(10).fill(10_000), null)).toBeNull();
         expect(splitPacePercent(Array(MAX_WAVES + 1).fill(10_000), profile)).toBeNull();
+    });
+});
+
+describe('the recovery plausibility bound', () => {
+    const MINUTE = 60_000;
+    /** `n` clean runs of `durationMs`, as a party's own chat timestamps record them */
+    const clean = (n, durationMs) => Array.from({ length: n }, () => chatRun('D', durationMs));
+
+    test('the median sets it, so one long night cannot', () => {
+        const runs = [...clean(RECOVERY_MIN_MEDIAN_SAMPLE, 10 * MINUTE), chatRun('D', 40 * MINUTE)];
+
+        expect(plausibleMaxRunMs(runs, { dungeonName: 'D', tier: null })).toBe(10 * MINUTE * RECOVERY_MEDIAN_SLACK);
+    });
+
+    test('a recovered run cannot widen the bound it was itself admitted by', () => {
+        // The ratchet: a recovered run banks the duration this bound let through,
+        // that duration raised the ceiling, and the raised ceiling then admitted a
+        // longer recovery — the bound only ever opened.
+        const runs = clean(RECOVERY_MIN_MEDIAN_SAMPLE, 10 * MINUTE);
+        const before = plausibleMaxRunMs(runs, { dungeonName: 'D', tier: null });
+
+        runs.push({ ...chatRun('D', 19 * MINUTE), startRecovered: true });
+
+        expect(plausibleMaxRunMs(runs, { dungeonName: 'D', tier: null })).toBe(before);
+    });
+
+    test('a run timed by this client’s own clock does not set it either', () => {
+        const runs = clean(RECOVERY_MIN_MEDIAN_SAMPLE, 10 * MINUTE);
+        const before = plausibleMaxRunMs(runs, { dungeonName: 'D', tier: null });
+
+        runs.push({ ...chatRun('D', 30 * MINUTE), validated: false });
+
+        expect(plausibleMaxRunMs(runs, { dungeonName: 'D', tier: null })).toBe(before);
+    });
+
+    test('too few clean runs for a median falls back to the longest of them', () => {
+        const runs = [...clean(RECOVERY_MIN_MEDIAN_SAMPLE - 2, 10 * MINUTE), chatRun('D', 12 * MINUTE)];
+
+        expect(plausibleMaxRunMs(runs, { dungeonName: 'D', tier: null })).toBe(12 * MINUTE * RECOVERY_DURATION_SLACK);
+    });
+
+    test('nothing clean to derive one from leaves the caller its own ceiling', () => {
+        const runs = [{ ...chatRun('D', 30 * MINUTE), startRecovered: true }];
+
+        expect(plausibleMaxRunMs(runs, { dungeonName: 'D', tier: null })).toBeNull();
+        expect(
+            assessRecoveredStart({
+                impliedElapsedMs: RECOVERY_FALLBACK_MAX_MS + 1,
+                currentWave: 10,
+                maxWaves: MAX_WAVES,
+                runs,
+                dungeonName: 'D',
+                tier: null,
+            }).credible
+        ).toBe(false);
     });
 });
