@@ -27,6 +27,7 @@ import { getCommunityGatheringQuantity } from '../../utils/community-buffs.js';
 import { createCleanupRegistry } from '../../utils/cleanup-registry.js';
 import { isMobileMode } from '../../utils/mobile.js';
 import { createMutationWatcher } from '../../utils/dom-observer-helpers.js';
+import { addStyles, removeStyles } from '../../utils/dom.js';
 import {
     parseArtisanBonus,
     getDrinkConcentration,
@@ -54,6 +55,42 @@ import { BASE_SUCCESS_RATES } from '../../utils/enhancement-calculator.js';
 function formatCompletionTime(completionTime, includeDate) {
     return formatDateTime(completionTime, { includeDate, includeTime: true, includeSeconds: true });
 }
+
+// Marks a native QueuedActions edit-menu once Toolasha has enhanced it, so the width contract
+// below and the row-wrapping rules only ever apply to that specific popup - never to unrelated
+// MUI tooltips/poppers elsewhere in the game.
+const QUEUE_EDIT_MENU_MARKER_CLASS = 'toolasha-queue-edit-menu-enhanced';
+const QUEUE_EDIT_MENU_STYLE_ID = 'toolasha-queue-edit-menu-width-styles';
+
+// The native popup declares no width, so it sizes to its intrinsic content and Toolasha's own
+// injected timing/profit rows drive it: measured 164px with short rows and 338px once a row
+// carries a "Complete at ..." suffix. 414px is the preferred desktop inner width; on constrained
+// viewports it shrinks continuously (min() formula) rather than switching at a fixed breakpoint,
+// staying fully on-screen. dvw is preferred where supported, falling back to vw.
+const QUEUE_EDIT_MENU_CSS = `
+.${QUEUE_EDIT_MENU_MARKER_CLASS} {
+    width: min(414px, calc(100vw - 64px));
+    max-width: min(414px, calc(100vw - 64px));
+    min-width: min(280px, calc(100vw - 64px));
+    box-sizing: border-box;
+}
+@supports (width: 100dvw) {
+    .${QUEUE_EDIT_MENU_MARKER_CLASS} {
+        width: min(414px, calc(100dvw - 64px));
+        max-width: min(414px, calc(100dvw - 64px));
+        min-width: min(280px, calc(100dvw - 64px));
+    }
+}
+.${QUEUE_EDIT_MENU_MARKER_CLASS} .mwi-queue-action-time,
+.${QUEUE_EDIT_MENU_MARKER_CLASS} .mwi-queue-action-profit {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    box-sizing: border-box;
+}
+`;
 
 /**
  * ActionTimeDisplay class manages the time display panel and queue tooltips
@@ -255,11 +292,17 @@ class ActionTimeDisplay {
      * Initialize observer for queue tooltip
      */
     initializeQueueObserver() {
+        this.ensureQueueEditMenuStyles();
+
         // Register with centralized DOM observer to watch for queue menu
         this.unregisterQueueObserver = domObserver.onClass(
             'ActionTimeDisplay-Queue',
             'QueuedActions_queuedActionsEditMenu',
             (queueMenu) => {
+                // classList.add is a no-op if already present, so repeated mounts/reorders of the
+                // same element can never duplicate the marker.
+                queueMenu.classList.add(QUEUE_EDIT_MENU_MARKER_CLASS);
+
                 this.injectQueueTimes(queueMenu);
 
                 this.setupQueueMenuObserver(queueMenu);
@@ -272,6 +315,21 @@ class ActionTimeDisplay {
                 this.unregisterQueueObserver = null;
             }
         });
+
+        this.cleanupRegistry.registerCleanup(() => {
+            removeStyles(QUEUE_EDIT_MENU_STYLE_ID);
+        });
+    }
+
+    /**
+     * Inject the Queued Actions edit-menu width stylesheet once. Idempotent so re-initializing
+     * (e.g. disabling and re-enabling the feature) never appends a duplicate `<style>` element.
+     */
+    ensureQueueEditMenuStyles() {
+        if (document.getElementById(QUEUE_EDIT_MENU_STYLE_ID)) {
+            return;
+        }
+        addStyles(QUEUE_EDIT_MENU_CSS, QUEUE_EDIT_MENU_STYLE_ID);
     }
 
     /**
