@@ -240,7 +240,11 @@ export function calculateLevelFromActions(
         finalLevel: level,
         finalXP: xp,
         xpGained: xp - currentXP,
-        timeElapsed,
+        // Efficiency buys extra completions inside one timed cycle, not a shorter cycle, so a
+        // queue of one or more actions cannot finish before the first cycle does. The mid-level
+        // branch above prorates a whole cycle's time by the fraction of the level consumed,
+        // which for a short queue at high efficiency lands under actionTime.
+        timeElapsed: actionCount > 0 ? Math.max(actionTime, timeElapsed) : timeElapsed,
         percentToNext,
     };
 }

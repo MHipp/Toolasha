@@ -57,6 +57,19 @@ describe('calculateLevelFromActions', () => {
         expect(r.timeElapsed).toBeCloseTo(12);
     });
 
+    test('one queued action never estimates below a single action cycle', () => {
+        // 1 action at +65% efficiency. Efficiency buys extra completions per cycle; it
+        // cannot make the first timed cycle finish early, so the estimate floors at
+        // actionTime (6s) rather than the ~3.6s continuous-throughput arithmetic gives.
+        const r = calculateLevelFromActions(1, 0, 1, 65, 6, 25, table);
+        expect(r.timeElapsed).toBeGreaterThanOrEqual(6);
+    });
+
+    test('an empty queue still estimates zero time', () => {
+        const r = calculateLevelFromActions(1, 0, 0, 65, 6, 25, table);
+        expect(r.timeElapsed).toBe(0);
+    });
+
     test('running off the end of the table stops at the last level', () => {
         const r = calculateLevelFromActions(4, 700, 1_000_000, 0, 6, 25, table);
         expect(r.finalLevel).toBe(5);
