@@ -1225,7 +1225,10 @@ class DungeonTracker {
                 // match — so a genuinely new run falls through to a fresh start.
                 const restored = await this.restoreInProgressRun(battleId);
                 if (currentOwner() !== owner) return;
-                if (restored) return;
+                if (restored) {
+                    this.learnPartyNames(data);
+                    return;
+                }
             } else {
                 // Clear any stale saved state first (in case previous run didn't clear properly)
                 await this.clearInProgressRun();
@@ -1245,6 +1248,8 @@ class DungeonTracker {
             if (!restored) {
                 // No restore - initialize tracking anyway
                 this.startDungeon(data);
+            } else {
+                this.learnPartyNames(data);
             }
         } else {
             // Subsequent wave (already tracking)
@@ -1393,6 +1398,24 @@ class DungeonTracker {
     }
 
     /**
+     * Take the run's composition from a `new_battle` that carries one.
+     *
+     * A run restored from storage, or one started before a roster arrived, learns
+     * it from the next fight. A restore is the case that needs this most: the
+     * record may predate `partyNames` entirely, and the message that triggered the
+     * restore is holding the roster the record lacks — a run restored onto its
+     * last wave would otherwise never see another one, and a solo run that cannot
+     * say who was in it is not banked at all.
+     *
+     * @param {Object} data - `new_battle` message data
+     */
+    learnPartyNames(data) {
+        if (!this.currentRun) return;
+        const partyNames = battlePartyNames(data);
+        if (partyNames) this.currentRun.partyNames = partyNames;
+    }
+
+    /**
      * Start tracking a new wave
      * @param {Object} data - new_battle message data
      */
@@ -1412,10 +1435,7 @@ class DungeonTracker {
         // combatStartTime in startDungeon, which is correct for run totals.)
         this.waveStartTime = new Date();
         this.currentRun.currentWave = data.wave;
-        // A run restored from storage, or one started before a roster arrived,
-        // learns its composition from the next wave
-        const partyNames = battlePartyNames(data);
-        if (partyNames) this.currentRun.partyNames = partyNames;
+        this.learnPartyNames(data);
 
         this.notifyUpdate();
 

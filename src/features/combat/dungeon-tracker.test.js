@@ -2500,6 +2500,46 @@ describe('banking a solo run', () => {
         expect(game.savedRuns).toEqual([]);
     });
 
+    test('a run parked before rosters were recorded learns one from the battle that resumes it', async () => {
+        // An in-progress record written by the version before `partyNames` has
+        // none, and the message that restores it is holding the roster the record
+        // lacks. Thrown away, a run resumed onto its last wave never sees another
+        // `new_battle` — and a solo run that cannot say who was in it is refused,
+        // so the upgrade silently eats the run in progress across it.
+        vi.useFakeTimers();
+        vi.setSystemTime(Date.parse('2026-08-04T10:00:00.000Z'));
+        game.actions = [{ actionHrid: DEN, difficultyTier: 1, isDone: false }];
+        mockStorage.storeFor('settings').set(`${IN_PROGRESS}_market123`, {
+            battleId: 42,
+            dungeonHrid: DEN,
+            tier: 1,
+            startTime: Date.parse('2026-08-04T09:55:00.000Z'),
+            currentWave: 10,
+            maxWaves: 10,
+            wavesCompleted: 9,
+            waveTimes: [],
+            keyCountsMap: null,
+            lastUpdateTime: Date.now(),
+            // No `partyNames`: this record predates them
+        });
+
+        await tracker.onNewBattle({
+            wave: 10,
+            battleId: 42,
+            combatStartTime: '2026-08-04T09:55:00.000Z',
+            players: [{ character: { name: 'Marketcow' } }],
+        });
+        await flush();
+
+        expect(tracker.currentRun.partyNames).toEqual(['Marketcow']);
+
+        tracker.onActionCompleted({ endCharacterAction: { actionHrid: DEN, wave: 10, isDone: true } });
+        await flush();
+
+        expect(game.savedRuns).toHaveLength(1);
+        expect(game.savedRuns[0].teamKey).toBe('Marketcow');
+    });
+
     test('a hibernated run is not saved: the wall clock is all it has', async () => {
         vi.useFakeTimers();
         vi.setSystemTime(Date.parse('2026-08-04T10:00:00.000Z'));
