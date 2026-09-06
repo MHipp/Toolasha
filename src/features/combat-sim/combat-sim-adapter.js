@@ -1320,13 +1320,14 @@ export function taxedDropValue(itemHrid, grossValue) {
 }
 
 /**
- * Calculate revenue and consumable costs from a sim result.
- * Respects the user's profitCalc_pricingMode setting.
+ * Calculate revenue and costs from a sim result.
+ * Respects the user's profitCalc_pricingMode setting. `costPerHour` covers consumables and, in a
+ * dungeon, the entry and chest keys the runs consume.
  * @param {Object} simResult - SimResult from runSimulation()
  * @param {Object} gameData - Game data payload from buildGameDataPayload()
  * @param {string} playerHrid - Player HRID to read drop multipliers and consumables for
  * @param {number} hours - Number of hours simulated
- * @returns {{ revenuePerHour: number, costPerHour: number, netPerHour: number,
+ * @returns {{ revenuePerHour: number, costPerHour: number, keyCostPerHour: number, netPerHour: number,
  *             dropEntries: Array, consumableEntries: Array }}
  */
 export function calculateSimRevenue(simResult, gameData, playerHrid, hours) {
@@ -1369,9 +1370,25 @@ export function calculateSimRevenue(simResult, gameData, playerHrid, hours) {
         }
     }
 
+    // Dungeon keys are a cost of running the dungeon, and every caller of this
+    // function was reading a net figure that left them out: the all-zones table
+    // ranked dungeons against zones on revenue that had not paid for entry, the
+    // upgrade advisor priced a faster clear without the keys the extra runs eat,
+    // and the task profit display did the same. The Results detail view is the
+    // only place that ever added them, and it computes its own figure from the
+    // same helper rather than reading this one, so nothing double-counts.
+    let keyCostPerHour = 0;
+    if (simResult.isDungeon) {
+        for (const key of calculateDungeonKeyCosts(dropMap, (keyHrid) => getBuyPrice(marketAPI.getPrice(keyHrid)))) {
+            keyCostPerHour += key.totalCost / hours;
+        }
+        costPerHour += keyCostPerHour;
+    }
+
     return {
         revenuePerHour,
         costPerHour,
+        keyCostPerHour,
         netPerHour: revenuePerHour - costPerHour,
         dropEntries,
         consumableEntries,

@@ -45,6 +45,44 @@ vi.mock('../enhancement/tooltip-enhancement.js', () => ({ getProductionCost: () 
 const { calculateSimRevenue } = await import('./combat-sim-adapter.js');
 
 /**
+ * A dungeon run whose completion always drops one chimerical chest, which costs
+ * one entry key and one chest key.
+ */
+function simClearingDungeon(completions, chestPrice, keyPrice) {
+    mocks.prices['/items/chimerical_chest'] = { ask: chestPrice, bid: chestPrice };
+    mocks.prices['/items/chimerical_entry_key'] = { ask: keyPrice, bid: keyPrice };
+    mocks.prices['/items/chimerical_chest_key'] = { ask: keyPrice, bid: keyPrice };
+    const simResult = {
+        deaths: {},
+        dropRateMultiplier: { player1: 1 },
+        rareFindMultiplier: { player1: 1 },
+        combatDropQuantity: { player1: 0 },
+        debuffOnLevelGap: { player1: 0 },
+        numberOfPlayers: 1,
+        difficultyTier: 0,
+        isDungeon: true,
+        dungeonsCompleted: completions,
+        zoneName: '/actions/combat/chimerical_den',
+        consumablesUsed: { player1: {} },
+    };
+    const gameData = {
+        combatMonsterDetailMap: {},
+        actionDetailMap: {
+            '/actions/combat/chimerical_den': {
+                combatZoneInfo: {
+                    dungeonInfo: {
+                        rewardDropTable: [
+                            { itemHrid: '/items/chimerical_chest', dropRate: 0.2, minCount: 1, maxCount: 1 },
+                        ],
+                    },
+                },
+            },
+        },
+    };
+    return { simResult, gameData };
+}
+
+/**
  * A sim where killing one monster always drops exactly one of `itemHrid`, so the
  * expected drop count is the kill count and the revenue math is easy to pin.
  */
@@ -103,5 +141,39 @@ describe('calculateSimRevenue drop tax', () => {
 
         // One coin per kill, valued at 1 apiece, untouched by tax
         expect(revenuePerHour).toBeCloseTo(1, 9);
+    });
+});
+
+/**
+ * A dungeon's keys are a cost of running it.
+ *
+ * Only the Results detail view ever priced them, and it computes its own figure.
+ * Every reader of `netPerHour` — the all-zones table that ranks dungeons against
+ * zones, the upgrade advisor, the task profit display — was handed a dungeon's
+ * revenue with entry and chest keys unpaid.
+ */
+describe('calculateSimRevenue dungeon key cost', () => {
+    test('entry and chest keys are charged against the run', () => {
+        // 10 completions × 0.2 = 2 chests, over 10 hours = 0.2 chests/hr, each
+        // owing one entry key and one chest key at 1000 apiece
+        const { simResult, gameData } = simClearingDungeon(10, 5000, 1000);
+        const { keyCostPerHour, costPerHour, revenuePerHour, netPerHour } = calculateSimRevenue(
+            simResult,
+            gameData,
+            'player1',
+            HOURS
+        );
+
+        expect(keyCostPerHour).toBeCloseTo(0.2 * 2000, 6);
+        expect(costPerHour).toBeCloseTo(keyCostPerHour, 6);
+        expect(netPerHour).toBeCloseTo(revenuePerHour - keyCostPerHour, 6);
+    });
+
+    test('a non-dungeon run is charged nothing', () => {
+        const { simResult, gameData } = simDropping('/items/cheese', KILLS, 1000);
+        const { keyCostPerHour, costPerHour } = calculateSimRevenue(simResult, gameData, 'player1', HOURS);
+
+        expect(keyCostPerHour).toBe(0);
+        expect(costPerHour).toBe(0);
     });
 });
