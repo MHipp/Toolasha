@@ -49,7 +49,22 @@ vi.mock('../../utils/tea-optimizer.js', () => ({
     skillGoldHasUnpricedMaterials: () => scoring.goldHasMissingPrices,
 }));
 
+// calculateSlotUpgradeCost is the only consumer. Each entry is keyed by side so a test can
+// state, as data, what each leg of a buy/sell comparison resolves to — including a leg that
+// resolves to nothing at all.
+const priceBook = vi.hoisted(() => ({ entries: {}, calls: [] }));
+vi.mock('../../utils/profit-helpers.js', () => ({
+    resolveItemPrice: (itemHrid, options = {}) => {
+        priceBook.calls.push({ itemHrid, options });
+        const { side, enhancementLevel = 0 } = options;
+        const price = priceBook.entries[`${side}:${itemHrid}@${enhancementLevel}`];
+        if (typeof price !== 'number') return { price: null, missing: true, estimated: false, custom: false };
+        return { price, missing: false, estimated: false, custom: false };
+    },
+}));
+
 const {
+    calculateSlotUpgradeCost,
     getPlayerSkillLevel,
     getItemsForSlot,
     getSkillDrinkItems,
@@ -411,5 +426,55 @@ describe('optimizeSkill', () => {
         const planned = optimizeSkill('Cheesesmithing', 50);
         expect(planned.playerLevel).toBe(50);
         expect(planned.slots['/item_locations/cheesesmithing_tool'].progression[0].itemHrid).toBe(VERDANT_TOOL);
+    });
+});
+
+describe('calculateSlotUpgradeCost', () => {
+    beforeEach(() => {
+        priceBook.entries = {};
+        priceBook.calls = [];
+    });
+
+    test('with no current item, the cost is the full buy price at the scored enhancement level', () => {
+        priceBook.entries[`buy:${VERDANT_TOOL}@10`] = 750;
+        expect(calculateSlotUpgradeCost(VERDANT_TOOL, 10, null)).toBe(750);
+    });
+
+    test('with a current item, the cost is netted against selling it', () => {
+        priceBook.entries[`buy:${VERDANT_TOOL}@10`] = 750;
+        priceBook.entries[`sell:${CHEESE_TOOL}@3`] = 200;
+        const cost = calculateSlotUpgradeCost(VERDANT_TOOL, 10, { itemHrid: CHEESE_TOOL, enhancementLevel: 3 });
+        expect(cost).toBe(550);
+    });
+
+    test('both legs resolve under the player pricing mode, so neither side is priced differently', () => {
+        priceBook.entries[`buy:${VERDANT_TOOL}@0`] = 750;
+        priceBook.entries[`sell:${CHEESE_TOOL}@0`] = 200;
+        calculateSlotUpgradeCost(VERDANT_TOOL, 0, { itemHrid: CHEESE_TOOL, enhancementLevel: 0 });
+        expect(priceBook.calls.map((c) => c.options.context)).toEqual(['profit', 'profit']);
+        // A hard-coded `mode` would override the player's setting on that leg only — the exact
+        // one-sided-basis bug this comparison must not have.
+        expect(priceBook.calls.every((c) => c.options.mode === undefined)).toBe(true);
+    });
+
+    test('a current item worth more than the upgrade floors at zero rather than paying you', () => {
+        priceBook.entries[`buy:${VERDANT_TOOL}@0`] = 100;
+        priceBook.entries[`sell:${CHEESE_TOOL}@0`] = 900;
+        const cost = calculateSlotUpgradeCost(VERDANT_TOOL, 0, { itemHrid: CHEESE_TOOL, enhancementLevel: 0 });
+        expect(cost).toBe(0);
+    });
+
+    test('an unpriceable upgrade is null, not free', () => {
+        expect(calculateSlotUpgradeCost(VERDANT_TOOL, 10, null)).toBeNull();
+    });
+
+    test('an unpriceable current item makes the net cost unknown rather than the gross price', () => {
+        priceBook.entries[`buy:${VERDANT_TOOL}@10`] = 750;
+        const cost = calculateSlotUpgradeCost(VERDANT_TOOL, 10, { itemHrid: CHEESE_TOOL, enhancementLevel: 3 });
+        expect(cost).toBeNull();
+    });
+
+    test('no item to buy is unpriceable, not free', () => {
+        expect(calculateSlotUpgradeCost(null, 10, null)).toBeNull();
     });
 });

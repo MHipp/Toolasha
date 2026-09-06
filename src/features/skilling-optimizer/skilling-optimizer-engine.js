@@ -13,6 +13,7 @@ import {
     calculateSkillPerformance,
     skillGoldHasUnpricedMaterials,
 } from '../../utils/tea-optimizer.js';
+import { resolveItemPrice } from '../../utils/profit-helpers.js';
 
 export { getSkillActionsForDisplay, calculateSkillPerformance, findOptimalTeas };
 
@@ -321,6 +322,41 @@ export function getSkillDrinkItems() {
     }
 
     return result.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Gold cost of moving into a recommended item, netted against selling whatever currently
+ * occupies the slot (the Combat Sim Upgrade Advisor's tier-upgrade convention: buy target -
+ * sell current). With no current item the cost is the full buy price.
+ *
+ * Both legs resolve under the player's own pricing mode (`context: 'profit'`), so a comparison
+ * never charges one side at the user's mode and credits the other at a different one.
+ *
+ * Returns null when either leg has no resolvable price: an unpriceable upgrade is reported as
+ * unpriceable rather than costed at zero, matching the optimizer's existing treatment of
+ * unpriced materials.
+ *
+ * @param {string} itemHrid - Item being recommended
+ * @param {number} enhancementLevel - Enhancement level the recommendation is scored at
+ * @param {{itemHrid: string, enhancementLevel: number}|null} currentEquipped - Item to net against
+ * @returns {number|null} Net gold cost, or null when it cannot be priced
+ */
+export function calculateSlotUpgradeCost(itemHrid, enhancementLevel, currentEquipped = null) {
+    if (!itemHrid) return null;
+
+    const buy = resolveItemPrice(itemHrid, { context: 'profit', side: 'buy', enhancementLevel });
+    if (buy.missing || typeof buy.price !== 'number') return null;
+
+    if (!currentEquipped?.itemHrid) return buy.price;
+
+    const sell = resolveItemPrice(currentEquipped.itemHrid, {
+        context: 'profit',
+        side: 'sell',
+        enhancementLevel: currentEquipped.enhancementLevel || 0,
+    });
+    if (sell.missing || typeof sell.price !== 'number') return null;
+
+    return Math.max(0, buy.price - sell.price);
 }
 
 /**

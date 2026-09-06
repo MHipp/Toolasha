@@ -34,6 +34,7 @@ vi.mock('./skilling-optimizer-engine.js', () => ({
     getPlayerSkillLevel: () => 50,
     optimizeSkill: () => null,
     findOptimalTeas: () => null,
+    calculateSlotUpgradeCost: () => null,
     SKILL_NAMES: ['Woodcutting'],
     SKILLING_LOCATIONS: [],
     SLOT_DISPLAY_NAMES: {},

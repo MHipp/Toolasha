@@ -15,13 +15,14 @@ import {
     getPlayerSkillLevel,
     optimizeSkill,
     findOptimalTeas,
+    calculateSlotUpgradeCost,
     SKILL_NAMES,
     SKILLING_LOCATIONS,
     SLOT_DISPLAY_NAMES,
     SKILL_TOOL_LOCATION,
 } from './skilling-optimizer-engine.js';
 import { scoreEquipmentSetup } from '../../utils/tea-optimizer.js';
-import { formatKMB } from '../../utils/formatters.js';
+import { formatKMB, timeReadable } from '../../utils/formatters.js';
 import { buildEnhancementLevelMap } from '../../utils/loadout-scraper.js';
 import loadoutSnapshotLocal from '../combat/loadout-snapshot.js';
 import { loadoutSnapshot, dataManager as sharedDataManager } from '../../utils/bundle-bridge.js';
@@ -34,6 +35,11 @@ function getLoadoutSnapshot() {
 // price data — mirrors actionHasUnpricedMaterials in tea-optimizer.js. The tea-recommendation
 // popup uses the same wording so a player sees one consistent warning across surfaces.
 const UNPRICED_WARNING_TITLE = 'Leans on an unpriced material — gold figures treat it as free';
+
+// Shown once above the Equipment Progression when at least one recommendation could not be
+// priced. Costing an unpriceable upgrade at zero would make it look free (and unbeatable on
+// every value ratio), so those rows say so and carry no cost, ratio, or payback at all.
+const UNPRICED_COST_WARNING = 'Some upgrades have no market price — those rows show no cost or payback';
 
 /**
  * Check whether any mutation added nodes that are, contain, or sit under a tablist.
@@ -1102,6 +1108,8 @@ class SkillingSimulatorUI {
             warning.textContent = '⚠ This ranking leans on an unpriced material — gold figures treat it as free';
             container.appendChild(warning);
         }
+        const rowsWrap = document.createElement('div');
+        let anyUnpricedCost = false;
         for (const [locationHrid, slotData] of slotEntries) {
             const loadoutEntry = loadoutItemMap?.get(locationHrid) ?? null;
 
@@ -1116,8 +1124,19 @@ class SkillingSimulatorUI {
                 slotGoldBaseline = scoreEquipmentSetup(result.skill, 'gold', equipment, result.playerLevel);
             }
 
-            this._renderSlotRow(container, slotData, loadoutEntry, slotXpBaseline, slotGoldBaseline);
+            if (this._renderSlotRow(rowsWrap, slotData, loadoutEntry, slotXpBaseline, slotGoldBaseline)) {
+                anyUnpricedCost = true;
+            }
         }
+
+        if (anyUnpricedCost) {
+            const warning = document.createElement('div');
+            warning.style.cssText = 'font-size: 11px; color: #eab308; margin-bottom: 8px;';
+            warning.title = UNPRICED_COST_WARNING;
+            warning.textContent = `⚠ ${UNPRICED_COST_WARNING}`;
+            container.appendChild(warning);
+        }
+        container.appendChild(rowsWrap);
 
         const xpResult = achievableStats?.xpResult;
         const goldResult = achievableStats?.goldResult;
@@ -1160,8 +1179,18 @@ class SkillingSimulatorUI {
         container.appendChild(note);
     }
 
+    /**
+     * Render one slot's recommendation(s) into the container.
+     * @param {HTMLElement} container
+     * @param {Object} slotData - One entry of optimizeSkill()'s `slots`
+     * @param {{itemHrid: string, enhancementLevel: number}|null} loadoutEntry - Compare loadout item
+     * @param {number} xpBaseline - XP/hr this slot's gains are measured against
+     * @param {number} goldBaseline - Gold/hr this slot's gains are measured against
+     * @returns {boolean} Whether any rendered row could not be priced (drives the panel warning)
+     */
     _renderSlotRow(container, slotData, loadoutEntry = null, xpBaseline = 0, goldBaseline = 0) {
         const loadoutItemHrid = loadoutEntry?.itemHrid ?? null;
+        let hasUnpricedCost = false;
         const optimalItemHrid = slotData.progression[slotData.progression.length - 1]?.itemHrid;
 
         const row = document.createElement('div');
@@ -1244,6 +1273,17 @@ class SkillingSimulatorUI {
                 const gainEl = this._makeGainEl(entry.xpScore, xpBaseline, entry.goldScore, goldBaseline, spriteUrl);
                 if (gainEl) entryRow.appendChild(gainEl);
 
+                // Netted against selling the compared loadout's item for this slot — the player
+                // is swapping, not buying a second copy.
+                const cost = calculateSlotUpgradeCost(
+                    entry.itemHrid,
+                    entry.enhancementLevel ?? entry.breakpoint,
+                    loadoutEntry
+                );
+                if (cost === null) hasUnpricedCost = true;
+                const costEl = this._makeCostPaybackEl(cost, xpDelta, goldDelta, spriteUrl);
+                if (costEl) entryRow.appendChild(costEl);
+
                 row.appendChild(entryRow);
                 prevItemHrid = entry.itemHrid;
                 break; // only show the immediate next step
@@ -1278,11 +1318,23 @@ class SkillingSimulatorUI {
                 const gainEl = this._makeGainEl(tier.xpScore, xpBaseline, tier.goldScore, goldBaseline, spriteUrl);
                 if (gainEl) tierRow.appendChild(gainEl);
 
+                // No Compare loadout means no item to sell against, so this is the full buy price.
+                const cost = calculateSlotUpgradeCost(tier.itemHrid, tier.fromEnhancementLevel, null);
+                if (cost === null) hasUnpricedCost = true;
+                const costEl = this._makeCostPaybackEl(
+                    cost,
+                    tier.xpScore - xpBaseline,
+                    tier.goldScore - goldBaseline,
+                    spriteUrl
+                );
+                if (costEl) tierRow.appendChild(costEl);
+
                 row.appendChild(tierRow);
             }
         }
 
         container.appendChild(row);
+        return hasUnpricedCost;
     }
 
     _makeGainEl(xpScore, xpBaseline, goldScore, goldBaseline, spriteUrl) {
@@ -1330,6 +1382,75 @@ class SkillingSimulatorUI {
         return wrapper;
     }
 
+    /**
+     * Cost of a recommendation, plus the value-for-money context the raw XP/Gold gains lack:
+     * XP/hr bought per 1M gold, and how long the Gold/hr gain takes to pay the purchase back.
+     * A row with no gain on an axis simply omits that ratio, so neither is ever divided by zero.
+     * @param {number|null} cost - Net gold cost, or null when the upgrade cannot be priced
+     * @param {number} xpDelta - XP/hr gain over baseline
+     * @param {number} goldDelta - Gold/hr gain over baseline
+     * @param {string|null} spriteUrl - Item sprite sheet URL, for the coin glyph
+     * @returns {HTMLElement|null} Null when there is nothing to say (a free or net-zero upgrade)
+     */
+    _makeCostPaybackEl(cost, xpDelta, goldDelta, spriteUrl) {
+        const parts = [];
+
+        if (cost === null) {
+            const span = document.createElement('span');
+            span.textContent = 'Cost: unpriced';
+            span.title = UNPRICED_COST_WARNING;
+            span.style.cursor = 'help';
+            parts.push(span);
+        } else {
+            if (cost <= 0) return null;
+
+            const costSpan = document.createElement('span');
+            costSpan.style.cssText = 'display: inline-flex; align-items: center; gap: 2px;';
+            costSpan.appendChild(document.createTextNode(`Cost: ${formatKMB(cost)}`));
+            costSpan.appendChild(this._makeCoinNode(spriteUrl));
+            parts.push(costSpan);
+
+            if (xpDelta > 0) {
+                const span = document.createElement('span');
+                span.textContent = `${formatKMB((xpDelta / cost) * 1_000_000)} XP/hr per 1M gold`;
+                parts.push(span);
+            }
+
+            if (goldDelta > 0) {
+                const span = document.createElement('span');
+                span.textContent = `Payback: ${timeReadable((cost / goldDelta) * 3600)}`;
+                parts.push(span);
+            }
+        }
+
+        const wrapper = document.createElement('span');
+        wrapper.style.cssText =
+            'font-size: 10px; color: rgba(255,255,255,0.4); margin-left: auto; flex-shrink: 0; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px;';
+        for (let i = 0; i < parts.length; i++) {
+            if (i > 0) wrapper.appendChild(document.createTextNode(' · '));
+            wrapper.appendChild(parts[i]);
+        }
+        return wrapper;
+    }
+
+    /**
+     * Coin glyph from the page's item sprite sheet, falling back to a plain ' G' when the sheet
+     * is not on the page (it is absent until the game renders an item icon).
+     * @param {string|null} spriteUrl
+     * @returns {Node}
+     */
+    _makeCoinNode(spriteUrl) {
+        if (!spriteUrl) return document.createTextNode(' G');
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('width', '12');
+        svg.setAttribute('height', '12');
+        svg.style.flexShrink = '0';
+        const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+        use.setAttribute('href', `${spriteUrl}#coin`);
+        svg.appendChild(use);
+        return svg;
+    }
+
     _groupTiers(progression) {
         const tiers = [];
         let current = null;
@@ -1345,6 +1466,11 @@ class SkillingSimulatorUI {
                     itemName: entry.itemName,
                     fromBp: entry.breakpoint,
                     toBp: entry.breakpoint,
+                    // Enhancement level this tier's first breakpoint was actually scored at
+                    // (refined items are scored at +10 even in lower buckets). xpScore/goldScore
+                    // below come from that same entry, so costing the tier at any other level
+                    // would divide a gain at one enhancement by a price at another.
+                    fromEnhancementLevel: entry.enhancementLevel ?? entry.breakpoint,
                     score: entry.score,
                     xpScore: entry.xpScore,
                     goldScore: entry.goldScore,
