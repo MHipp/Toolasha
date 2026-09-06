@@ -3717,6 +3717,46 @@ describe('formulas across the widened ±1000 threshold range', () => {
         vi.spyOn(labyrinthClearRate, 'getPlayerEffectiveCombatLevel').mockReturnValue(150);
         expect(labyrinthClearRate.getCombatSkipRoomLevel('/monsters/imp')).toBe(1149);
     });
+
+    // Native MWI persists skip thresholds across -999..999 and the recommendation
+    // search above spans the same signed window, so a saved negative threshold is a
+    // real setting. Reading it back as 0 stopped Apply Skip matching the row and
+    // dropped the clear-rate badge for every negative or zero threshold.
+    describe('signed skip thresholds survive the round trip', () => {
+        afterEach(() => {
+            dataManagerMock.characterData = null;
+        });
+
+        test('a negative skilling threshold reads back with its sign', () => {
+            dataManagerMock.characterData = { characterSetting: { labyrinthSkipMilking: -22 } };
+            expect(labyrinthClearRate.getSkipThreshold('/skills/milking')).toBe(-22);
+        });
+
+        test('a negative combat threshold reads back with its sign', () => {
+            dataManagerMock.characterData = { characterSetting: { labyrinthSkipGiantShoeBird: -7 } };
+            expect(labyrinthClearRate.getCombatSkipThreshold('/monsters/giant_shoe_bird')).toBe(-7);
+        });
+
+        test('a negative threshold still names the room it fights, not zero', () => {
+            dataManagerMock.characterData = { characterSetting: { labyrinthSkipMilking: -22 } };
+            dataManagerMock.getSkills.mockImplementation(() => [{ skillHrid: '/skills/milking', level: 100 }]);
+            // floor(100 + -22 - 1)
+            expect(labyrinthClearRate.getTargetRoomLevel('/skills/milking')).toBe(77);
+        });
+
+        test('a negative combat threshold names its room too', () => {
+            vi.spyOn(labyrinthClearRate, 'getCombatSkipThreshold').mockReturnValue(-30);
+            vi.spyOn(labyrinthClearRate, 'getPlayerEffectiveCombatLevel').mockReturnValue(150);
+            expect(labyrinthClearRate.getCombatSkipRoomLevel('/monsters/imp')).toBe(119);
+        });
+
+        test('only the derived room level is clamped, never the threshold', () => {
+            dataManagerMock.characterData = { characterSetting: { labyrinthSkipMilking: -400 } };
+            dataManagerMock.getSkills.mockImplementation(() => [{ skillHrid: '/skills/milking', level: 100 }]);
+            expect(labyrinthClearRate.getSkipThreshold('/skills/milking')).toBe(-400);
+            expect(labyrinthClearRate.getTargetRoomLevel('/skills/milking')).toBe(0);
+        });
+    });
 });
 
 describe('the stale-gear marker on a cached room tile', () => {

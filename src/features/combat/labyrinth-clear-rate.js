@@ -383,8 +383,11 @@ class LabyrinthClearRate {
         const current = roomHrid.startsWith('/skills/')
             ? this.getSkipThreshold(roomHrid)
             : this.getCombatSkipThreshold(roomHrid);
-        const value = Number.isFinite(recommended) && recommended > 0 ? recommended : current;
-        if (!(value > 0)) return;
+        // Thresholds are signed: a negative recommendation is as fillable as a positive
+        // one. Zero is the only value worth refusing, because it is also what the reader
+        // returns for a setting that was never saved.
+        const value = Number.isFinite(recommended) && recommended !== 0 ? recommended : current;
+        if (!Number.isFinite(value) || value === 0) return;
 
         // React renders the input a beat after the click; retry briefly
         let attempts = 0;
@@ -1428,7 +1431,16 @@ class LabyrinthClearRate {
     }
 
     /**
-     * Get the skip threshold for a skill from characterSetting
+     * Get the signed skip threshold for a skill from characterSetting.
+     *
+     * Native MWI persists thresholds across -999..999 and a negative one is a real
+     * setting, not an unset sentinel: it skips rooms that far *below* the character's
+     * effective level. The recommendation search here spans the same signed range, so
+     * clamping the reader to zero made a saved -22 unreadable. Only the derived room
+     * level is clamped (see getTargetRoomLevel), never the threshold.
+     *
+     * @param {string} skillHrid
+     * @returns {number} Signed threshold, 0 when unset
      */
     getSkipThreshold(skillHrid) {
         const charSetting = dataManager.characterData?.characterSetting;
@@ -1436,7 +1448,7 @@ class LabyrinthClearRate {
 
         const skillId = skillHrid.replace('/skills/', '');
         const key = `labyrinthSkip${skillId.charAt(0).toUpperCase()}${skillId.slice(1)}`;
-        return Math.max(0, Math.floor(Number(charSetting[key]) || 0));
+        return Math.floor(Number(charSetting[key]) || 0);
     }
 
     /**
@@ -1622,19 +1634,25 @@ class LabyrinthClearRate {
     }
 
     /**
-     * Compute target room level from effective level + skip threshold
-     * Matches reference script: floor(effectiveLevel + skipThreshold - 1)
+     * Compute target room level from effective level + signed skip threshold.
+     * Matches native MWI's boundary: floor(effectiveLevel + skipThreshold - 1).
+     * The clamp belongs here, on the derived level, not on the threshold.
+     *
+     * @param {string} skillHrid
+     * @returns {number} Room level, 0 when the threshold puts it below room 1
      */
     getTargetRoomLevel(skillHrid) {
         const effectiveLevel = this.getEffectiveLevel(skillHrid);
         const skipThreshold = this.getSkipThreshold(skillHrid);
-        if (skipThreshold <= 0) return 0;
-
-        return Math.floor(effectiveLevel + skipThreshold - 1);
+        return Math.max(0, Math.floor(effectiveLevel + skipThreshold - 1));
     }
 
     /**
-     * Get the skip threshold for a combat room from characterSetting
+     * Get the signed skip threshold for a combat room from characterSetting.
+     * Native MWI uses the same -999..999 setting domain for combat and skilling rooms.
+     *
+     * @param {string} monsterHrid
+     * @returns {number} Signed threshold, 0 when unset
      */
     getCombatSkipThreshold(monsterHrid) {
         const charSetting = dataManager.characterData?.characterSetting;
@@ -1646,7 +1664,7 @@ class LabyrinthClearRate {
             .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
             .join('');
         const key = `labyrinthSkip${pascal}`;
-        return Math.max(0, Math.floor(Number(charSetting[key]) || 0));
+        return Math.floor(Number(charSetting[key]) || 0);
     }
 
     /**
@@ -1655,11 +1673,9 @@ class LabyrinthClearRate {
      */
     getCombatSkipRoomLevel(monsterHrid) {
         const skipThreshold = this.getCombatSkipThreshold(monsterHrid);
-        if (skipThreshold <= 0) return 0;
-
         const effectiveCombatLevel = this.getPlayerEffectiveCombatLevel();
         if (!(effectiveCombatLevel > 0)) return 0;
-        return Math.floor(effectiveCombatLevel + skipThreshold - 1);
+        return Math.max(0, Math.floor(effectiveCombatLevel + skipThreshold - 1));
     }
 
     /**
