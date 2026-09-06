@@ -25,9 +25,13 @@ const STORE_KEY_BUDGETS = {
     // Per character: ~25 item-level detail snapshots plus one series record per
     // calendar month, capped by a year of full retention beneath the thinning
     networthHistory: 600,
-    // Per character: one record per hour of play, and the log keeps 500 entries,
-    // so a few dozen live records at a time plus the calibration keys
-    lootLogHistory: 500,
+    // Per character: one record per hour of play, and the log keeps 2,000
+    // entries (`MAX_ENTRIES` in loot-log-history.js). Typical play puts several
+    // entries in an hour, so the real count is a few hundred; the budget matches
+    // the cap because the worst case — one long run per hour — is one record per
+    // entry, and a store must not be flagged for doing exactly what it is sized
+    // to do
+    lootLogHistory: 2000,
     guildHistory: 80,
     leaderboardHistory: 80,
     // Per character: the XP tracker's one rolling week, plus two unbounded

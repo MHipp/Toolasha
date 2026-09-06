@@ -8,16 +8,36 @@ import dataManager from '../../core/data-manager.js';
 import { createChunkedHistory, timeChunkId } from '../../utils/chunked-history.js';
 
 const STORE_NAME = 'lootLogHistory';
-const MAX_ENTRIES = 500;
+
+/**
+ * How many sessions the log keeps.
+ *
+ * Five hundred is a fortnight of hard play, which is enough to scroll back
+ * through and not enough to aggregate: the analytics pivot divides a whole
+ * history into per-action rows, and a rate over three sessions of an action is
+ * noise wearing a decimal point.
+ *
+ * Two thousand rather than upstream's five thousand, because the ceiling here is
+ * key count rather than bytes. Entries are grouped into one record per hour of
+ * play, so the worst case — a long gathering run per hour, one entry per chunk —
+ * is one key per entry: 2,000 keys against the store's 500-key soft budget,
+ * which is raised in lockstep in `core/storage.js`. Five thousand would put the
+ * worst case at ten times that budget in a store shared across characters. Size
+ * is the lesser constraint: a combat entry with three dozen drop kinds and eight
+ * skills serialises to about 2 KB and a gathering entry to about 0.4 KB, so
+ * 2,000 entries is ~1.4 MB for a mixed history and ~3.9 MB if every one of them
+ * is combat.
+ */
+export const MAX_ENTRIES = 2000;
 
 /**
  * One record per hour of play.
  *
  * `loot_log_updated` arrives every few seconds while a fast action runs, and
- * each one used to rewrite all five hundred entries. Hourly buckets hold the
- * dozen or so entries recorded since the hour began, so the write is that dozen
- * — and the four hundred and ninety entries from previous hours, which have not
- * changed and cannot change, are never touched again.
+ * each one used to rewrite the whole window. Hourly buckets hold the dozen or so
+ * entries recorded since the hour began, so the write is that dozen — and every
+ * entry from a previous hour, which has not changed and cannot change, is never
+ * touched again.
  *
  * An hour rather than a day because a day of hard play is most of the window,
  * which would leave the amplification roughly where it started.
@@ -147,7 +167,7 @@ class LootLogHistory {
     async _merge(lootLog) {
         if (!lootLog || lootLog.length === 0) return;
         // Nothing that follows can be stored, and building it costs a full
-        // merge over 500 entries per loot message
+        // merge over the whole window per loot message
         if (storage.isQuotaExceeded()) return;
 
         // Captured once and threaded through the load and the save below,
@@ -168,7 +188,7 @@ class LootLogHistory {
 
         const byId = new Map(existing.map((e) => [e.characterActionId, e]));
 
-        // A loot message is a handful of actions against a 500-entry window spread
+        // A loot message is a handful of actions against a window of thousands spread
         // over hundreds of hourly chunks; naming the hours that moved is what keeps
         // the save from re-serialising all of them
         const touchedChunks = new Set();
@@ -185,8 +205,15 @@ class LootLogHistory {
         }
         if (!changed) return;
 
+        // Parsed once per entry rather than once per comparison: the sort runs on
+        // every loot message, and `new Date(...)` inside the comparator is two
+        // string parses per comparison — about 2·n·log₂n of them, so roughly
+        // 44,000 across a full window where this is 2,000
+        const startMs = new Map();
+        for (const entry of byId.values()) startMs.set(entry, Date.parse(entry?.startTime) || 0);
+
         const merged = [...byId.values()];
-        merged.sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
+        merged.sort((a, b) => startMs.get(b) - startMs.get(a));
 
         // Entries past the cap fall out of the array here; the chunks they were
         // the last of are deleted by the save that notices they have gone

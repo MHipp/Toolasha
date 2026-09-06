@@ -1,5 +1,5 @@
 /**
- * The loot log's history, which used to rewrite all 500 entries on every
+ * The loot log's history, which used to rewrite every stored entry on every
  * `loot_log_updated` — a full-array write every few seconds while a fast action
  * runs, for a list that changes by one entry.
  *
@@ -44,7 +44,7 @@ const storageMock = vi.hoisted(() => {
 vi.mock('../../core/storage.js', () => ({ default: storageMock }));
 vi.mock('../../core/data-manager.js', () => ({ default: { getCurrentCharacterId: () => character.id } }));
 
-const { default: lootLogHistory } = await import('./loot-log-history.js');
+const { default: lootLogHistory, MAX_ENTRIES } = await import('./loot-log-history.js');
 
 /**
  * A loot log entry as the game sends it.
@@ -230,20 +230,20 @@ describe('the one-time split of the legacy array', () => {
 describe('pruning past the cap', () => {
     test('an hour that loses its last entry loses its record', async () => {
         // One entry per hour, one more than the log keeps
-        const hours = Array.from({ length: 501 }, (_, i) => {
+        const hours = Array.from({ length: MAX_ENTRIES + 1 }, (_, i) => {
             const at = new Date(Date.UTC(2026, 0, 1) + i * 3_600_000).toISOString();
             return entry(i + 1, at);
         });
 
         await lootLogHistory.mergeAndSave(hours);
 
-        // The oldest hour is the one pushed out of the 500-entry window
+        // The oldest hour is the one pushed out of the window
         expect(storageMock.delete).not.toHaveBeenCalled();
         expect(storageMock.store.has('lootLogRec_char-1_2026-01-01T00')).toBe(false);
         expect(storageMock.store.has('lootLogRec_char-1_2026-01-01T01')).toBe(true);
 
         // And once it has been stored, a later merge deletes its key
-        await lootLogHistory.mergeAndSave([entry(9999, '2026-03-01T00:00:00Z')]);
+        await lootLogHistory.mergeAndSave([entry(9999, '2027-01-01T00:00:00Z')]);
         expect(storageMock.delete).toHaveBeenCalledWith('lootLogRec_char-1_2026-01-01T01', 'lootLogHistory');
     });
 });
