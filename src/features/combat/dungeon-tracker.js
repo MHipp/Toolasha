@@ -19,6 +19,25 @@ import { runningCombatAction } from '../../utils/combat-actions.js';
 import { assessRecoveredStart } from './dungeon-pace.js';
 
 /**
+ * The party the server says is in this fight, from a `new_battle` message.
+ *
+ * The only statement of a run's composition that does not depend on chat: the
+ * "Key counts" messages can be missed (a page loaded mid-queue scrolls in after
+ * them, and a chat channel can be muted), and a run with none of them used to be
+ * indistinguishable from a solo run.
+ *
+ * @param {Object} data - `new_battle` message data
+ * @returns {Array<string>|null} Character names, or null when the message did not say
+ */
+export function battlePartyNames(data) {
+    const players = Array.isArray(data?.players) ? data.players : null;
+    if (!players || players.length === 0) return null;
+
+    const names = players.map((player) => player?.character?.name).filter((name) => typeof name === 'string' && name);
+    return names.length === players.length ? names.sort() : null;
+}
+
+/**
  * The run currently under way, parked so a refresh mid-dungeon does not lose it.
  *
  * Scoped per character and resolved at each read and write — the user switches
@@ -165,6 +184,8 @@ class DungeonTracker {
             // since scrolled — the same message may no longer be there.
             startRecovered: this.currentRun.startRecovered === true,
             recoveredStartTime: this.currentRun.recoveredStartTime ?? null,
+            // Who the server said was fighting; see `battlePartyNames`
+            partyNames: this.currentRun.partyNames ?? null,
         };
 
         return writeScoped(IN_PROGRESS_KEY, stateToSave, 'settings', true);
@@ -282,6 +303,7 @@ class DungeonTracker {
             joinedAtWave: saved.joinedAtWave ?? null,
             startRecovered: saved.startRecovered === true,
             recoveredStartTime: saved.recoveredStartTime ?? null,
+            partyNames: Array.isArray(saved.partyNames) ? [...saved.partyNames] : null,
         };
 
         this.notifyUpdate();
@@ -449,6 +471,7 @@ class DungeonTracker {
                 joinedAtWave: saved.joinedAtWave ?? null,
                 startRecovered: saved.startRecovered === true,
                 recoveredStartTime: saved.recoveredStartTime ?? null,
+                partyNames: Array.isArray(saved.partyNames) ? [...saved.partyNames] : null,
             };
 
             // Trigger UI update to show immediately
@@ -1353,6 +1376,10 @@ class DungeonTracker {
             hibernationDetected: false, // Track if computer sleep detected during this run
             joinedMidRun, // No true start time; see above
             joinedAtWave: joinedMidRun ? data.wave : null,
+            // The run's composition, straight from the fight. Null until a
+            // `new_battle` says; every wave carries one, so a run tracked from
+            // wave 1 has it from the start.
+            partyNames: battlePartyNames(data),
         };
 
         this.notifyUpdate();
@@ -1385,6 +1412,10 @@ class DungeonTracker {
         // combatStartTime in startDungeon, which is correct for run totals.)
         this.waveStartTime = new Date();
         this.currentRun.currentWave = data.wave;
+        // A run restored from storage, or one started before a roster arrived,
+        // learns its composition from the next wave
+        const partyNames = battlePartyNames(data);
+        if (partyNames) this.currentRun.partyNames = partyNames;
 
         this.notifyUpdate();
 
@@ -1628,7 +1659,24 @@ class DungeonTracker {
         // `!joinedMidRun` as well as the anchor test: recovery is a party-chat
         // mechanism and a solo run has no server timestamps to recover from, so a
         // partial solo run stays refused however the rest of this lines up.
-        const canBankSolo = !joinedMidRun && !validated && firstTimestamp === null && !hibernated && Boolean(soloName);
+        //
+        // "No key count was seen" is not the same as "there was nobody to send
+        // one". A party run whose key counts never reached this client — the page
+        // loaded after them, the party channel was muted, the scan raced the
+        // messages — used to bank as solo: a party pace filed under a one-name
+        // team key that will never match the real party, dragging the solo
+        // averages down with clears no solo player can match. The fight's own
+        // roster settles the composition without chat, so it is required: a run
+        // that cannot say who was in it is not banked at all.
+        const observedParty = completedRunData.partyNames;
+        const soloComposition = Array.isArray(observedParty) && observedParty.length === 1;
+        const canBankSolo =
+            !joinedMidRun &&
+            !validated &&
+            firstTimestamp === null &&
+            !hibernated &&
+            Boolean(soloName) &&
+            soloComposition;
 
         if (!unrecoveredPartial && completedRunData.dungeonHrid && (canBankParty || canBankSolo)) {
             try {

@@ -2443,11 +2443,17 @@ describe('banking a solo run', () => {
         maxWaves = 10,
         startAt = Date.parse('2026-08-04T10:00:00.000Z'),
         lengthMs = 300_000,
+        players = [{ character: { name: 'Marketcow' } }],
     } = {}) {
         vi.useFakeTimers();
         vi.setSystemTime(startAt);
         game.actions = [{ actionHrid: DEN, difficultyTier: 1, isDone: false }];
-        await tracker.onNewBattle({ wave: 1, battleId: 42, combatStartTime: '2026-08-04T09:00:00.000Z' });
+        await tracker.onNewBattle({
+            wave: 1,
+            battleId: 42,
+            combatStartTime: '2026-08-04T09:00:00.000Z',
+            players,
+        });
         await flush();
         tracker.currentRun.maxWaves = maxWaves;
         tracker.currentRun.currentWave = maxWaves;
@@ -2473,6 +2479,25 @@ describe('banking a solo run', () => {
         expect(run.source).toBe('tracker');
         expect(run.dungeonName).toBe('Chimerical Den');
         expect(run.tier).toBe(1);
+    });
+
+    test('a party run whose key counts never arrived is not banked as solo', async () => {
+        // The failure this closes: chat is the only thing that used to say a run
+        // was in a party, so a party run whose "Key counts" messages never reached
+        // this client — page loaded after them, party channel muted, scan raced
+        // them — banked as solo. That filed a party's pace under a one-name team
+        // key nothing will ever match, and put party clears into the solo average.
+        await soloRun({ players: [{ character: { name: 'Marketcow' } }, { character: { name: 'Alice' } }] });
+
+        expect(game.savedRuns).toEqual([]);
+    });
+
+    test('a run whose fight never said who was in it is not banked', async () => {
+        // No roster and no key counts is not evidence of solitude, only of
+        // silence, and a run banked as solo on silence cannot be un-mislabelled
+        await soloRun({ players: [] });
+
+        expect(game.savedRuns).toEqual([]);
     });
 
     test('a hibernated run is not saved: the wall clock is all it has', async () => {
