@@ -62,7 +62,7 @@ const projectRoot = join(__dirname, '..');
 /**
  * Stateful feature modules that must never be carried inline by two bundles.
  *
- * The sweep below only polices src/utils — feature modules can and do get
+ * The sweep below polices only POLICED_PREFIXES — feature modules can and do get
  * duplicated freely, and most of that is benign (dead fallback copies behind
  * bundle-bridge accessors, or pure math). These are the ones a second copy has
  * actually broken: each holds module-level state that a user-facing surface in
@@ -321,7 +321,9 @@ async function main() {
         process.exit(1);
     }
 
-    console.log(`[check-bundle-sharing] OK: no unshared cross-bundle src/utils or src/core modules (${inlineIn.size} checked).`);
+    console.log(
+        `[check-bundle-sharing] OK: no unshared cross-bundle src/utils or src/core modules (${inlineIn.size} checked).`
+    );
 }
 
 await main();
