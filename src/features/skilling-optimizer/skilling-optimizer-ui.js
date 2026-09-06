@@ -1179,14 +1179,7 @@ class SkillingSimulatorUI {
         const ordered =
             this.optimizerSortMode === 'slot'
                 ? slotViews
-                : [...slotViews].sort((a, b) => {
-                      const diff =
-                          this._sortValueFor(a.metrics, result.goal, this.optimizerSortMode) -
-                          this._sortValueFor(b.metrics, result.goal, this.optimizerSortMode);
-                      // Slot order is the tiebreak, so an unrankable pair keeps a stable, familiar
-                      // layout instead of shuffling between renders.
-                      return diff !== 0 ? diff : a.index - b.index;
-                  });
+                : [...slotViews].sort((a, b) => this._compareSlotViews(a, b, result.goal, this.optimizerSortMode));
 
         const rowsWrap = document.createElement('div');
         let anyUnpricedCost = false;
@@ -1326,6 +1319,26 @@ class SkillingSimulatorUI {
             xpPerMillion,
             paybackHours,
         };
+    }
+
+    /**
+     * Order two slots under the chosen sort mode.
+     *
+     * Slot order is the tiebreak, so an unrankable pair keeps a stable, familiar layout
+     * instead of shuffling between renders. Reaching that tiebreak needs the NaN guard:
+     * an unpriceable slot scores `Infinity` and a slot the sale pays for outright scores
+     * `-Infinity`, so two of either subtract to NaN — and a comparator that returns NaN is
+     * not a total order.
+     *
+     * @param {{index: number, metrics: Object}} a - One slot view
+     * @param {{index: number, metrics: Object}} b - The other
+     * @param {string} goal - 'xp' | 'gold', the skill's own optimization goal
+     * @param {string} sortMode - One of SORT_MODES' `value`s
+     * @returns {number} Negative when `a` sorts first
+     */
+    _compareSlotViews(a, b, goal, sortMode) {
+        const diff = this._sortValueFor(a.metrics, goal, sortMode) - this._sortValueFor(b.metrics, goal, sortMode);
+        return diff !== 0 && !Number.isNaN(diff) ? diff : a.index - b.index;
     }
 
     /**
@@ -1565,7 +1578,8 @@ class SkillingSimulatorUI {
      * @param {number} xpDelta - XP/hr gain over baseline
      * @param {number} goldDelta - Gold/hr gain over baseline
      * @param {string|null} spriteUrl - Item sprite sheet URL, for the coin glyph
-     * @returns {HTMLElement|null} Null when there is nothing to say (a free or net-zero upgrade)
+     * @returns {HTMLElement} The cost line; a net-zero cost says "free" rather than nothing,
+     *   because the sort ranks that case first
      */
     _makeCostPaybackEl(cost, xpDelta, goldDelta, spriteUrl) {
         const parts = [];
@@ -1576,9 +1590,18 @@ class SkillingSimulatorUI {
             span.title = UNPRICED_COST_WARNING;
             span.style.cursor = 'help';
             parts.push(span);
+        } else if (cost <= 0) {
+            // `calculateSlotUpgradeCost` floors a swap at zero, so this is an upgrade the
+            // sale of the current item fully pays for. Saying so matters because
+            // `_computeSlotMetrics` scores exactly this case as instant payback and infinite
+            // XP per gold — it sorts to the top of Payback, Cost and Value, and a top row
+            // that showed no cost line at all read as a row with nothing to say.
+            const span = document.createElement('span');
+            span.textContent = 'Cost: free';
+            span.title = 'Selling what this slot holds now covers the whole purchase';
+            span.style.cursor = 'help';
+            parts.push(span);
         } else {
-            if (cost <= 0) return null;
-
             const costSpan = document.createElement('span');
             costSpan.style.cssText = 'display: inline-flex; align-items: center; gap: 2px;';
             costSpan.appendChild(document.createTextNode(`Cost: ${formatKMB(cost)}`));
