@@ -32,6 +32,10 @@
  * this module, imported before any of them, is exactly what makes the
  * registrations from every bundle land in the same array.
  */
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { describe, test, expect, vi } from 'vitest';
 
 import { mergeForKey } from './sync-merge-registry.js';
@@ -302,5 +306,101 @@ describe('every additive history is reachable by its real key shape', () => {
 describe('lookalike keys are not swept up by a broader matcher', () => {
     test.each(corpus.filter((entry) => entry.label === null))('$store/$key has no merge', ({ store, key }) => {
         expect(mergeForKey(store, key)).toBeNull();
+    });
+});
+
+/**
+ * The corpus above is a list someone has to remember to add to, and the cost of
+ * forgetting is silent: a new additive record simply gets overwritten on a pull,
+ * with nothing failing anywhere. Twice now that has shipped and been found only
+ * by an audit.
+ *
+ * So the last check is not about the registry at all — it is about the source.
+ * `createChunkedHistory` registers itself, so a chunked history cannot be
+ * forgotten; `createPersistedRecord` cannot, because the fold belongs to the
+ * feature and the registry deliberately does not import features. That leaves
+ * exactly one shape that can go missing, and it is greppable: a module that
+ * calls `createPersistedRecord` and never calls `registerSyncMerge`.
+ *
+ * `createCuratedRecord` is not in scope. A curated record is one the user
+ * edits — deletions are meaningful, and a union would resurrect them — so
+ * whole-key replacement is the correct pull behaviour for it, which is the
+ * distinction `persisted-record.js` draws between the two constructors.
+ */
+const SRC = fileURLToPath(new URL('..', import.meta.url));
+
+/**
+ * Modules that build a `createPersistedRecord` and do not themselves call
+ * `registerSyncMerge`, each with the reason that is right.
+ *
+ * Two shapes qualify, and only two: the key is registered by another module
+ * that owns the fold, or a whole-key write really is the correct pull
+ * behaviour. Anything else on this list is the data-loss bug wearing a
+ * comment, so each entry names which of the two it is.
+ * @type {Record<string, string>}
+ */
+const UNREGISTERED_ON_PURPOSE = {
+    // Registered by `utils/chest-tally.js`, which owns `mergeStoredTally` and
+    // claims `settings/treasureTally` for it — the tracker imports that fold
+    // rather than declaring a second claim on the same key, which the registry
+    // would report as an overlap. The key is in the corpus above.
+    'features/inventory/treasure-tracker.js': 'registered by utils/chest-tally.js, which owns the fold',
+
+    // A price cache with a max age, refilled from the marketplace within
+    // minutes of a pull. There is nothing in it a device can be the only
+    // holder of, and its fold is newest-wins on the writing device's clock —
+    // which is the one merge shape that a skewed clock could get wrong.
+    'features/market/mooket/market-price-store.js': 'a self-refilling price cache, not a history',
+};
+
+/**
+ * Every `.js` file under `src`, tests excluded.
+ * @param {string} directory - Absolute path to walk
+ * @param {Array<string>} out - Accumulator of paths relative to `src`
+ * @returns {Array<string>} `out`
+ */
+function collectSources(directory, out = []) {
+    for (const entry of readdirSync(directory)) {
+        const full = join(directory, entry);
+        if (statSync(full).isDirectory()) {
+            collectSources(full, out);
+            continue;
+        }
+        if (!entry.endsWith('.js') || entry.includes('.test.')) continue;
+        out.push(full.slice(SRC.length).replace(/[\\]/g, '/'));
+    }
+    return out;
+}
+
+describe('a new additive record cannot be forgotten by the registry', () => {
+    test('every createPersistedRecord module registers a sync merge', () => {
+        const missing = [];
+
+        for (const relative of collectSources(SRC)) {
+            if (relative === 'utils/persisted-record.js') continue;
+            const source = readFileSync(join(SRC, relative), 'utf8');
+            if (!source.includes('createPersistedRecord(')) continue;
+            if (source.includes('registerSyncMerge')) continue;
+            if (relative in UNREGISTERED_ON_PURPOSE) continue;
+            missing.push(relative);
+        }
+
+        expect(
+            missing,
+            'These modules keep an additive record that a cross-device sync pull would overwrite whole. ' +
+                'Call registerSyncMerge() with the fold the record already owns, add its key shapes to the ' +
+                'corpus above, ' +
+                'or — if a whole-key write really is right for it — say why in UNREGISTERED_ON_PURPOSE.'
+        ).toEqual([]);
+    });
+
+    test('the deliberate exceptions still exist and still build a persisted record', () => {
+        // An exception that has been renamed or converted to a curated record is
+        // a licence nobody is using any more, and it would silently cover a
+        // future file that lands on the same path
+        for (const relative of Object.keys(UNREGISTERED_ON_PURPOSE)) {
+            const source = readFileSync(join(SRC, relative), 'utf8');
+            expect(source, `${relative} no longer builds a persisted record`).toContain('createPersistedRecord(');
+        }
     });
 });
