@@ -6,6 +6,16 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Audit round: a late read could erase the guard that stops history being overwritten
+
+The worst of these is a data-loss race, and it is the same shape as the fix it defeated. When a read of your history cannot list the store, it raises a flag, and that flag is the only thing stopping the next save from writing over records it never read. But a read abandoned by a character switch — about a character who has already left — cleared that flag on its way out, so a save that was about to decline went ahead and wrote its in-memory list, which for a recorder that appends is a single entry, over a month of data.
+
+Two faults in yesterday's own dungeon fixes were caught here. Excluding unvalidated runs from the recovery bound excluded every solo run, since a solo run is timed by the client's own clock and says so — so a player who had only ever soloed a dungeon lost the bound entirely and fell back to a 45-minute ceiling, which is looser than what they had before. And a run parked mid-dungeon by an older version was refused outright on completion, because the battle that restored it was the one message whose roster was never read.
+
+The storage health panel also could not see the networth detail snapshots at all, which is the one thing in that store that can leak — they are dropped by a delete nobody waits for, so a delete that never lands grows the store an entry an hour.
+
+In the companion script, a flip whose size was cut down by a thin top of book had a chip that said so and a tooltip that did not — and for a size you typed in yourself, that tooltip asserted the request was inside both caps while naming a limit far below it.
+
 ### Follow-ups: a pace bound that only ever widened, and a party run filed as solo
 
 Four fixes carried over from the last audit round. When a dungeon run's start had to be recovered from chat, the check on whether that start was plausible was drawn from your longest run ever — and a recovered run then banked its own recovered duration into that same history, so each recovery raised the ceiling for the next one and the bound only ever loosened. It now comes from the median of your clean runs, and recovered or unvalidated runs no longer get a vote.
