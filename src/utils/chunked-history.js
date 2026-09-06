@@ -136,7 +136,10 @@ const chunkedStorePrefixes = new Map();
 
 /**
  * Note that a store now has a chunked recorder under this prefix.
-
+ *
+ * Idempotent: the pairs live in a `Set`, so a recorder built more than once in
+ * a session — `createAlchemySessionStore` is called afresh on every gold-source
+ * collection — registers the same pair again and changes nothing.
  * @param {string} storeName - Object store the records live in
  * @param {string} prefix - Record key prefix, without its trailing underscore
  */
@@ -144,6 +147,28 @@ function registerChunkedStore(storeName, prefix) {
     if (!storeName || !prefix) return;
     if (!chunkedStorePrefixes.has(storeName)) chunkedStorePrefixes.set(storeName, new Set());
     chunkedStorePrefixes.get(storeName).add(prefix);
+}
+
+/**
+ * Count a `<prefix>_<charId>_<suffix>` key family that this file does not own.
+ *
+ * A per-character budget covers everything one character keeps in the store,
+ * and not every such key family goes through `ChunkedHistory`. `networthHistory`
+ * budgets twenty-five item-level detail snapshots per character beside the
+ * series chunks (see `STORE_KEY_BUDGETS`), and those are written key by key by
+ * `networth-history.js`; left unregistered they vanish from the per-character
+ * count, so the budget can no longer see them grow — and they are deleted
+ * fire-and-forget, which is exactly how a key family leaks.
+ *
+ * The key must carry a chunk-like third segment: the id is read as the run up
+ * to the next underscore, so a two-segment `<base>_<charId>` key is ignored,
+ * which is what keeps a legacy key out of the count.
+ * @param {string} storeName - Object store the keys live in
+ * @param {string} prefix - Key prefix, without its trailing underscore
+ * @returns {void}
+ */
+export function registerCharacterScopedPrefix(storeName, prefix) {
+    registerChunkedStore(storeName, prefix);
 }
 
 /**
@@ -907,4 +932,11 @@ function normalizeChunkHint(hint) {
     return new Set([String(hint)]);
 }
 
-export default { createChunkedHistory, timeChunkId, idsFromRecordKeys, recordKeysFor };
+export default {
+    createChunkedHistory,
+    timeChunkId,
+    idsFromRecordKeys,
+    recordKeysFor,
+    maxRecordsPerCharacter,
+    registerCharacterScopedPrefix,
+};

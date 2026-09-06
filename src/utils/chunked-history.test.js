@@ -46,8 +46,14 @@ const storageMock = vi.hoisted(() => {
 
 vi.mock('../core/storage.js', () => ({ default: storageMock }));
 
-const { createChunkedHistory, timeChunkId, idsFromRecordKeys, recordKeysFor, maxRecordsPerCharacter } =
-    await import('./chunked-history.js');
+const {
+    createChunkedHistory,
+    timeChunkId,
+    idsFromRecordKeys,
+    recordKeysFor,
+    maxRecordsPerCharacter,
+    registerCharacterScopedPrefix,
+} = await import('./chunked-history.js');
 
 /** A history keyed by the month each point falls in */
 const build = () =>
@@ -833,6 +839,35 @@ describe('maxRecordsPerCharacter', () => {
         const keys = ['seriesA_alice_2026-01', 'seriesA_alice_2026-02', 'seriesB_alice_2026-01'];
 
         expect(maxRecordsPerCharacter('multiPrefixStore', keys)).toBe(3);
+    });
+
+    // A per-character budget covers every key family the character keeps in the
+    // store, and `networthHistory` budgets twenty-five item-level detail
+    // snapshots per character that are written key by key rather than through a
+    // `ChunkedHistory`. Unregistered they would drop out of the count entirely,
+    // and a leak in them could never trip the budget.
+    test('a key family registered without a ChunkedHistory counts toward its character', () => {
+        registerCharacterScopedPrefix('detailStore', 'detailRec');
+
+        const keys = ['detailRec_alice_1', 'detailRec_alice_2', 'detailRec_bob_1'];
+        expect(maxRecordsPerCharacter('detailStore', keys)).toBe(2);
+    });
+
+    test('registering the same pair twice does not double-count it', () => {
+        registerCharacterScopedPrefix('twiceStore', 'twiceRec');
+        registerCharacterScopedPrefix('twiceStore', 'twiceRec');
+
+        expect(maxRecordsPerCharacter('twiceStore', ['twiceRec_alice_1', 'twiceRec_alice_2'])).toBe(2);
+    });
+
+    // The legacy single-array key is `<base>_<charId>` and shares the stem, so
+    // a count that read it as a record would credit a character with a key
+    // that is not one of theirs — the id is read up to the next underscore, and
+    // a two-segment key has none
+    test('a two-segment legacy key sharing the stem is not counted as a record', () => {
+        registerCharacterScopedPrefix('legacyStemStore', 'stemRec');
+
+        expect(maxRecordsPerCharacter('legacyStemStore', ['stemRec_alice', 'stemRec_alice_1'])).toBe(1);
     });
 
     test('a store nothing here chunks defers to the flat count', () => {

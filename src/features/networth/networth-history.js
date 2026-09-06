@@ -8,11 +8,24 @@ import storage from '../../core/storage.js';
 import dataManager from '../../core/data-manager.js';
 import connectionState from '../../core/connection-state.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
-import { createChunkedHistory, timeChunkId } from '../../utils/chunked-history.js';
+import { createChunkedHistory, registerCharacterScopedPrefix, timeChunkId } from '../../utils/chunked-history.js';
 
 const STORE_NAME = 'networthHistory';
 const SNAPSHOT_INTERVAL = 60 * 60 * 1000; // 1 hour
 const MAX_DETAIL_SNAPSHOTS = 25; // ~24h of hourly snapshots + 1 buffer
+
+/**
+ * The stem of the item-level detail snapshot keys, `networthDetail_<id>_<t>`.
+ *
+ * Registered as character-scoped because `networthHistory`'s budget is sized
+ * per character and counts these twenty-five beside the series chunks (see
+ * `STORE_KEY_BUDGETS` in `core/storage.js`). They are not a `ChunkedHistory`,
+ * so nothing else tells the budget check they belong to a character — and the
+ * rolling window drops them with fire-and-forget deletes, so a delete that
+ * never lands is precisely the growth the budget exists to notice.
+ */
+const DETAIL_PREFIX = 'networthDetail';
+registerCharacterScopedPrefix(STORE_NAME, DETAIL_PREFIX);
 
 /** Beyond this age, the history is thinned rather than kept point for point */
 const RETENTION_FULL_MS = 365 * 24 * 60 * 60 * 1000;
@@ -127,12 +140,12 @@ class NetworthHistory {
      * @returns {string} The key that one detail snapshot lives under
      */
     _detailKey(t) {
-        return `networthDetail_${this.characterId}_${t}`;
+        return `${DETAIL_PREFIX}_${this.characterId}_${t}`;
     }
 
     /** @returns {string} The pre-split key that held the whole detail array */
     _legacyDetailKey() {
-        return `networthDetail_${this.characterId}`;
+        return `${DETAIL_PREFIX}_${this.characterId}`;
     }
 
     /**

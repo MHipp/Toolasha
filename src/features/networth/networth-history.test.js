@@ -407,3 +407,33 @@ describe('a character switch mid-initialize', () => {
         }
     });
 });
+
+/**
+ * `networthHistory`'s soft budget (`STORE_KEY_BUDGETS` in `core/storage.js`) is
+ * sized per character and names the twenty-five item-level detail snapshots
+ * alongside the series chunks. The health panel's per-character count is built
+ * from prefixes registered in `utils/chunked-history.js`, and the detail
+ * snapshots are written key by key rather than through a `ChunkedHistory` — so
+ * without an explicit registration they drop out of the count and a leak in
+ * them (their deletes are fire-and-forget) could never trip the budget.
+ */
+describe('the detail snapshots are visible to the per-character budget count', () => {
+    test('a character is credited with its detail keys as well as its series chunks', async () => {
+        const { maxRecordsPerCharacter } = await import('../../utils/chunked-history.js');
+
+        const keys = [
+            'networthSeries_char-1_2026-07',
+            'networthSeries_char-1_2026-08',
+            'networthDetail_char-1_1000',
+            'networthDetail_char-1_2000',
+            'networthDetail_char-1_3000',
+            // Another character, whose keys must not be added to char-1's
+            'networthSeries_char-2_2026-08',
+            'networthDetail_char-2_1000',
+            // The pre-split single key, which is not a record
+            'networthDetail_char-1',
+        ];
+
+        expect(maxRecordsPerCharacter('networthHistory', keys)).toBe(5);
+    });
+});
