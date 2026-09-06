@@ -1208,3 +1208,65 @@ describe('socket ownership across a character switch', () => {
         expect(dataManager.getCommunityBuffLevel('/community_buff_types/experience')).toBe(4);
     });
 });
+
+describe('live buff state mirroring', () => {
+    let dataManager;
+    const socketA = { id: 'socket-a' };
+
+    beforeEach(async () => {
+        dataManager = (await import('./data-manager.js')).default;
+        resetCharacter(dataManager);
+        dataManager.activeSocket = socketA;
+        dataManager.characterData = {
+            houseActionTypeBuffsMap: {
+                '/action_types/enhancing': [{ typeHrid: '/buff_types/action_speed', flatBoost: 0.01 }],
+            },
+            achievementActionTypeBuffsMap: { '/action_types/enhancing': [] },
+            equipmentActionTypeBuffsMap: { '/action_types/enhancing': [] },
+            guildActionTypeBuffsMap: { '/action_types/enhancing': [] },
+            mooPassActionTypeBuffsMap: {},
+            communityActionTypeBuffsMap: {},
+            consumableActionTypeBuffsMap: {},
+        };
+    });
+
+    // Every derived buff map used to be written once at init and never again, so a house
+    // upgrade / achievement / re-equip / guild purchase left every consumer of
+    // characterData.*ActionTypeBuffsMap reading login-time buffs for the whole session.
+    const cases = [
+        ['house_rooms_updated', 'houseActionTypeBuffsMap'],
+        ['achievement_buffs_updated', 'achievementActionTypeBuffsMap'],
+        ['equipment_buffs_updated', 'equipmentActionTypeBuffsMap'],
+        ['guild_buffs_updated', 'guildActionTypeBuffsMap'],
+        ['moo_pass_buffs_updated', 'mooPassActionTypeBuffsMap'],
+        ['consumable_buffs_updated', 'consumableActionTypeBuffsMap'],
+    ];
+
+    test.each(cases)('%s replaces %s on characterData', (messageType, mapField) => {
+        const fresh = { '/action_types/enhancing': [{ typeHrid: '/buff_types/action_speed', flatBoost: 0.42 }] };
+        const handler = webSocketHandlers.get(messageType);
+        expect(handler).toBeTypeOf('function');
+        handler({ [mapField]: fresh }, { socket: socketA });
+        expect(dataManager.characterData[mapField]).toEqual(fresh);
+    });
+
+    test('an emptied map is stored rather than ignored as falsy', () => {
+        webSocketHandlers.get('equipment_buffs_updated')({ equipmentActionTypeBuffsMap: {} }, { socket: socketA });
+        expect(dataManager.characterData.equipmentActionTypeBuffsMap).toEqual({});
+    });
+
+    test('community_buffs_updated mirrors its action-type map too', () => {
+        const fresh = { '/action_types/enhancing': [{ typeHrid: '/buff_types/efficiency', flatBoost: 0.1 }] };
+        webSocketHandlers.get('community_buffs_updated')({ communityActionTypeBuffsMap: fresh }, { socket: socketA });
+        expect(dataManager.characterData.communityActionTypeBuffsMap).toEqual(fresh);
+    });
+
+    test('a message from a foreign socket is ignored', () => {
+        const before = dataManager.characterData.guildActionTypeBuffsMap;
+        webSocketHandlers.get('guild_buffs_updated')(
+            { guildActionTypeBuffsMap: { '/action_types/enhancing': [{ flatBoost: 9 }] } },
+            { socket: { id: 'other' } }
+        );
+        expect(dataManager.characterData.guildActionTypeBuffsMap).toBe(before);
+    });
+});

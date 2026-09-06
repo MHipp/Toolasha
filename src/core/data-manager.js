@@ -740,11 +740,24 @@ class DataManager {
             this.emit('consumables_updated', data);
         });
 
+        // The live-buff family below. Every derived `*ActionTypeBuffsMap` on `characterData` was
+        // written once, at init_character_data, and never again — so a house upgrade, an
+        // achievement, a MooPass change, a re-equip, a tea swap or a guild buff purchase left
+        // every reader (enhancement XP, action timing, the labyrinth clear rate, the tea
+        // optimizer) computing against login-time buffs for the rest of the session. The server
+        // replaces each map wholesale, so mirroring it is an assignment, not a merge; `undefined`
+        // means "absent from this message" and is left alone, while an explicit empty map is a
+        // real "those buffs are gone" and must be stored.
+
         // Handle consumable_buffs_updated (when buffs expire/refresh)
         this.webSocketHook.on('consumable_buffs_updated', (data, context) => {
             if (!this._isFromActiveSocket(context)) return;
 
-            // Buffs updated - next hover will show updated values
+            if (data.consumableActionTypeBuffsMap !== undefined && this.characterData) {
+                this.characterData.consumableActionTypeBuffsMap = data.consumableActionTypeBuffsMap;
+            }
+
+            this.emit('consumable_buffs_updated', data);
             this.emit('buffs_updated', data);
         });
 
@@ -755,20 +768,34 @@ class DataManager {
         // Server-wide buffs, the same for every character on the world — left unguarded
         // by the socket-ownership check for the same reason as the order books.
         this.webSocketHook.on('community_buffs_updated', (data) => {
-            if (this.characterData && Array.isArray(data.communityBuffs)) {
-                this.characterData.communityBuffs = data.communityBuffs;
+            if (this.characterData) {
+                if (Array.isArray(data.communityBuffs)) {
+                    this.characterData.communityBuffs = data.communityBuffs;
+                }
+                if (data.communityActionTypeBuffsMap !== undefined) {
+                    this.characterData.communityActionTypeBuffsMap = data.communityActionTypeBuffsMap;
+                }
             }
             this.emit('community_buffs_updated', data);
+            this.emit('buffs_updated', data);
         });
 
         // Handle personal_buffs_updated (seal buffs from Labyrinth)
         this.webSocketHook.on('personal_buffs_updated', (data, context) => {
             if (!this._isFromActiveSocket(context)) return;
 
-            if (data.personalActionTypeBuffsMap) {
+            if (data.personalActionTypeBuffsMap !== undefined) {
                 this.personalActionTypeBuffsMap = data.personalActionTypeBuffsMap;
+                if (this.characterData) {
+                    this.characterData.personalActionTypeBuffsMap = data.personalActionTypeBuffsMap;
+                }
             }
+            if (data.characterBuffs !== undefined && this.characterData) {
+                this.characterData.characterBuffs = data.characterBuffs || [];
+            }
+
             this.emit('personal_buffs_updated', data);
+            this.emit('buffs_updated', data);
         });
 
         // Handle house_rooms_updated (when user upgrades house rooms)
@@ -776,11 +803,74 @@ class DataManager {
             if (!this._isFromActiveSocket(context)) return;
 
             // Update house room map with new levels
-            if (data.characterHouseRoomMap) {
+            if (data.characterHouseRoomMap !== undefined) {
                 this.updateHouseRoomMap(data.characterHouseRoomMap);
+                if (this.characterData) this.characterData.characterHouseRoomMap = data.characterHouseRoomMap;
+            }
+            if (data.houseActionTypeBuffsMap !== undefined && this.characterData) {
+                this.characterData.houseActionTypeBuffsMap = data.houseActionTypeBuffsMap;
             }
 
             this.emit('house_rooms_updated', data);
+            this.emit('buffs_updated', data);
+        });
+
+        // Handle achievement_buffs_updated (an achievement completing changes its action buffs)
+        this.webSocketHook.on('achievement_buffs_updated', (data, context) => {
+            if (!this._isFromActiveSocket(context)) return;
+
+            if (data.achievementActionTypeBuffsMap !== undefined && this.characterData) {
+                this.characterData.achievementActionTypeBuffsMap = data.achievementActionTypeBuffsMap;
+            }
+
+            this.emit('achievement_buffs_updated', data);
+            this.emit('buffs_updated', data);
+        });
+
+        // Handle moo_pass_buffs_updated (a subscription starting, lapsing or changing tier)
+        this.webSocketHook.on('moo_pass_buffs_updated', (data, context) => {
+            if (!this._isFromActiveSocket(context)) return;
+
+            if (this.characterData) {
+                if (data.mooPassBuffs !== undefined) this.characterData.mooPassBuffs = data.mooPassBuffs;
+                if (data.mooPassActionTypeBuffsMap !== undefined) {
+                    this.characterData.mooPassActionTypeBuffsMap = data.mooPassActionTypeBuffsMap;
+                }
+            }
+
+            this.emit('moo_pass_buffs_updated', data);
+            this.emit('buffs_updated', data);
+        });
+
+        // Handle equipment_buffs_updated (every re-equip, enhancement and loadout swap)
+        this.webSocketHook.on('equipment_buffs_updated', (data, context) => {
+            if (!this._isFromActiveSocket(context)) return;
+
+            if (this.characterData) {
+                if (data.equipmentActionTypeBuffsMap !== undefined) {
+                    this.characterData.equipmentActionTypeBuffsMap = data.equipmentActionTypeBuffsMap;
+                }
+                if (data.equipmentTaskActionBuffs !== undefined) {
+                    this.characterData.equipmentTaskActionBuffs = data.equipmentTaskActionBuffs;
+                }
+            }
+
+            this.emit('equipment_buffs_updated', data);
+            this.emit('buffs_updated', data);
+        });
+
+        // Handle guild_buffs_updated (purchased shrine levels + the action buffs they grant).
+        // The shrine *building's* unlocked cap rides on other guild traffic and is captured by
+        // the shape-matched wildcard handler above, not here.
+        this.webSocketHook.on('guild_buffs_updated', (data, context) => {
+            if (!this._isFromActiveSocket(context)) return;
+
+            if (data.guildActionTypeBuffsMap !== undefined && this.characterData) {
+                this.characterData.guildActionTypeBuffsMap = data.guildActionTypeBuffsMap;
+            }
+
+            this.emit('guild_buffs_updated', data);
+            this.emit('buffs_updated', data);
         });
 
         // Handle skills_updated (when user gains skill levels)

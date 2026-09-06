@@ -56,6 +56,11 @@ import performanceMonitor from '../utils/performance-monitor.js';
  *   whose first 100 characters are identical — same type, same chest, same
  *   count — so the content hash would drop the second and the treasure ledger
  *   would undercount every repeat opening.
+ * - the live-buff family (`house_rooms_updated`, `achievement_buffs_updated`,
+ *   `moo_pass_buffs_updated`, `equipment_buffs_updated`, `personal_buffs_updated`,
+ *   `guild_buffs_updated`): each replaces a whole action-type buff map, and two
+ *   genuine consecutive updates share the type plus the first map key, so the
+ *   100-character prefix hash collapses them and the second change is lost.
  * - `guild_updated`: guild updates open with the same guild id and name every
  *   time; what changed (xp, level, member counts) sits past the hash window,
  *   so a quick pair would drop the second and leave the guild panels a step
@@ -86,6 +91,12 @@ const SKIP_DEDUP_TYPES = new Set([
     'action_type_consumable_slots_updated',
     'consumable_buffs_updated',
     'community_buffs_updated',
+    'house_rooms_updated',
+    'achievement_buffs_updated',
+    'moo_pass_buffs_updated',
+    'equipment_buffs_updated',
+    'personal_buffs_updated',
+    'guild_buffs_updated',
     'character_info_updated',
     'labyrinth_updated',
     'loadouts_updated',
