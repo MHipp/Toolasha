@@ -136,6 +136,7 @@ const chunkedStorePrefixes = new Map();
 
 /**
  * Note that a store now has a chunked recorder under this prefix.
+
  * @param {string} storeName - Object store the records live in
  * @param {string} prefix - Record key prefix, without its trailing underscore
  */
@@ -469,12 +470,18 @@ class ChunkedHistory {
             this._unreadableFor = charId;
             return state.entries;
         }
-        this._unreadableFor = null;
-
         // A character switch during the read means these entries belong to
         // nobody now; handing them back is fine, writing them into the store's
-        // memory under the arriving character is not
+        // memory under the arriving character is not.
+        //
+        // Clearing `_unreadableFor` belongs on this side of the check for the
+        // same reason. A read abandoned here is about a character who has
+        // already left, so its success says nothing about the read the store is
+        // actually waiting on — and answering after a *current* read has failed,
+        // it used to erase that read's flag, which is the one thing keeping
+        // `save()` from writing the caller's list over history it never read.
         if (this._loadToken !== token) return state.entries;
+        this._unreadableFor = null;
 
         this._charId = charId;
         this._entries = state.entries;
