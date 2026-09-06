@@ -1284,6 +1284,13 @@ function registerFeatures() {
             async: false,
         },
         {
+            key: 'combatConsumableRunway',
+            name: 'Combat Consumable Runway',
+            category: 'Combat',
+            module: Combat.combatConsumableRunway,
+            async: false,
+        },
+        {
             key: 'combatDpsPanel',
             name: 'Combat DPS Panel',
             category: 'Combat',

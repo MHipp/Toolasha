@@ -256,6 +256,33 @@ export function drinkRatePerDay(durationNs, drinkConcentration = 0) {
 }
 
 /**
+ * A breakdown with each drink's rate replaced by the one its buff duration implies.
+ *
+ * The tracker measures food honestly — it is eaten on a cooldown as the fight demands — but a
+ * drink is not consumed by the fight at all: it is re-poured when its buff lapses, so its rate is
+ * arithmetic on the duration and the drinker's concentration, not something to be observed. Every
+ * surface that shows a drink's runway has to apply this same substitution or the same stock reads
+ * as a different number in each place.
+ *
+ * An entry whose item has no buff duration (all food, and anything unknown) is passed through
+ * untouched rather than zeroed.
+ *
+ * @param {Array<Object>} breakdown - From `calculatePlayerStats`
+ * @param {number} [drinkConcentration] - The player's concentration, as a fraction
+ * @param {Function} [itemDetails] - `(itemHrid) => itemDetail`, for the buff duration
+ * @returns {Array<Object>} The same entries, drinks re-rated
+ */
+export function exactDrinkRates(breakdown, drinkConcentration = 0, itemDetails = () => null) {
+    return (breakdown || []).map((entry) => {
+        const duration = itemDetails(entry?.itemHrid)?.consumableDetail?.buffs?.[0]?.duration;
+        const perDay = drinkRatePerDay(duration, drinkConcentration);
+        if (perDay === null) return entry;
+
+        return { ...entry, consumptionRate: perDay / 86400, consumedPerDay: Math.ceil(perDay) };
+    });
+}
+
+/**
  * Whether to place a buy order or simply take the ask.
  *
  * The bulk sell assistant's judgement, mirrored: an order at the bid saves the

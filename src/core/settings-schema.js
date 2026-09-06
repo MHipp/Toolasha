@@ -2388,6 +2388,13 @@ export const settingsGroups = {
                 default: false,
                 help: "A small “1,240/s · 22%” on every party tile, matched by name. The narrow mini units get a compact “1,240/s” pinned to the bottom edge instead, so nothing lands on the name along their top. During a guild trial it reads the spectated trial split instead of this client's own fight. With Portrait DPS also on, the badge leaves the full cards to it and covers the mini units it never reaches — the two never state the same run twice. Off by default because the portraits are already busy",
             },
+            combatConsumableRunway: {
+                id: 'combatConsumableRunway',
+                label: 'Consumable runway: Show how long each food and drink lasts on the battle grid',
+                type: 'checkbox',
+                default: false,
+                help: 'A small duration under each icon in the in-battle Consumables grid — how long that stock lasts at the rate it is actually being used, red once it drops under the low-consumable warning hours, ∞ for a slot that is filled but not being drunk. Same figure as the Consumables panel and the low-consumable alert, from the same forecast; what is new is only that it is readable mid-fight without a click. Needs Combat Statistics on, since its tracker measures the rate. Off by default.',
+            },
             portraitDpsPosition: {
                 id: 'portraitDpsPosition',
                 label: 'Portrait DPS: Where to put it',
