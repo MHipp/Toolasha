@@ -14,6 +14,10 @@ A party run whose "Key counts" messages never reached the client was banked as a
 
 The guild trial "starts soon" alert marked itself announced before it was delivered, so a notice that reached no channel — the page hidden with no notification permission — was never retried and the cycle passed in silence. And the storage health panel compared per-character history budgets against every character's records added together, warning that you were over budget when no single character was close.
 
+### Housekeeping
+
+The changelog was the only CRLF file in the repo while Prettier was configured for LF, so any commit that ran the hooks rewrote all eleven thousand of its lines. It is LF now, and a `.gitattributes` pins LF for the repo so nothing can drift back.
+
 ### Audit round: a history that could not be read was being written back empty
 
 The worst of these could lose months of records. When the browser cannot list a store — a dropped database connection, a tab under memory pressure — it answers with an empty list, which is indistinguishable from a store that really is empty. The chunked history believed it, and the next save wrote that emptiness over the real data: one hourly networth snapshot could replace a month's series with a single point, and the same shape applied to alchemy sessions, the loot log and task completions. An unreadable listing is now told apart from an empty one, and a save that cannot see what it is replacing declines to run.
