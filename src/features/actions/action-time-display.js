@@ -650,8 +650,12 @@ class ActionTimeDisplay {
      * Clean up old observers and re-initialize for new character's action panel
      */
     handleCharacterSwitch() {
-        // Cancel any active profit calculations to prevent stale data
+        // Cancel any active profit calculations to prevent stale data. Both guards, not just the
+        // action-card one: the bar's own calculation writes into `this.profitElement` at whatever
+        // node that points to when it resolves, so leaving `activeBarProfitId` matching lets the
+        // old character's figure land in the row created for the new one.
         this.activeProfitCalculationId = null;
+        this.activeBarProfitId = null;
 
         // Clear appended stats from old character's action panel (before it's removed)
         const oldActionNameElement = document.querySelector('div[class*="Header_actionName"]');
