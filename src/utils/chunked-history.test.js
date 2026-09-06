@@ -14,7 +14,7 @@ import { describe, test, expect, beforeEach, vi } from 'vitest';
 
 const storageMock = vi.hoisted(() => {
     const store = new Map();
-    return {
+    const mock = {
         store,
         get: vi.fn(async (key, storeName, fallback) => (store.has(key) ? store.get(key) : fallback)),
         set: vi.fn(async (key, value) => {
@@ -37,6 +37,11 @@ const storageMock = vi.hoisted(() => {
         }),
         isQuotaExceeded: vi.fn(() => false),
     };
+    // Delegates, so a test that makes `getAllKeys` hang or throw exercises the
+    // listing the store actually calls. `null` is the real storage's "could not
+    // be listed", which the tests below drive through this.
+    mock.tryGetAllKeys = vi.fn(async (...args) => mock.getAllKeys(...args));
+    return mock;
 });
 
 vi.mock('../core/storage.js', () => ({ default: storageMock }));
@@ -78,6 +83,12 @@ beforeEach(() => {
         return true;
     });
     storageMock.getAllKeys.mockImplementation(async () => [...storageMock.store.keys()]);
+    storageMock.tryGetAllKeys.mockImplementation(async (...args) => storageMock.getAllKeys(...args));
+    storageMock.getMany.mockImplementation(async (keys) => {
+        const result = new Map();
+        for (const key of keys) result.set(key, storageMock.store.has(key) ? storageMock.store.get(key) : null);
+        return result;
+    });
     storageMock.putAll.mockImplementation(async (storeName, entries) => {
         for (const [key, value] of Object.entries(entries)) storageMock.store.set(key, value);
         return Object.keys(entries).length;
@@ -668,5 +679,86 @@ describe('the sync merge every chunked history registers', () => {
         // The same action, recorded twice with different running totals: one
         // entry out, and it is this device's — the live one
         expect(merge(local, incoming)).toEqual([{ id: 7, t: 1, count: 12 }]);
+    });
+});
+
+describe('a listing that could not be made is not an empty history', () => {
+    test('an unreadable store does not become an empty history that is written back', async () => {
+        // A month of loot, already on disk
+        storageMock.store.set('rec_c1_2026-06', [at(2026, 6), at(2026, 6, 2), at(2026, 6, 3)]);
+
+        // The database says it cannot list the store. Before, `getAllKeys`
+        // answered that with `[]`, the history read as empty, and the append
+        // below wrote its single entry over the month.
+        storageMock.tryGetAllKeys.mockImplementation(async () => null);
+
+        const store = build();
+        expect(await store.load('c1')).toEqual([]);
+        expect(store._loaded).toBe(false);
+
+        expect(await store.save('c1', [at(2026, 6, 4)])).toBe(false);
+        expect(storageMock.store.get('rec_c1_2026-06')).toHaveLength(3);
+    });
+
+    test('the next save reads again once the store answers', async () => {
+        storageMock.store.set('rec_c1_2026-06', [at(2026, 6), at(2026, 6, 2)]);
+        storageMock.tryGetAllKeys.mockImplementation(async () => null);
+
+        const store = build();
+        expect(await store.save('c1', [at(2026, 6, 4)])).toBe(false);
+
+        storageMock.tryGetAllKeys.mockImplementation(async (...args) => storageMock.getAllKeys(...args));
+        const entries = await store.load('c1');
+        expect(entries).toHaveLength(2);
+
+        expect(await store.save('c1', [...entries, at(2026, 6, 4)])).toBe(true);
+        expect(storageMock.store.get('rec_c1_2026-06')).toHaveLength(3);
+    });
+
+    test('a chunk the listing named and the read did not deliver is not silently dropped', async () => {
+        storageMock.store.set('rec_c1_2026-05', [at(2026, 5)]);
+        storageMock.store.set('rec_c1_2026-06', [at(2026, 6)]);
+
+        // `getMany` seeds every key with null and only overwrites what it read,
+        // so an aborted transaction comes back as nulls rather than an error
+        storageMock.getMany.mockImplementation(async (keys) => {
+            const result = new Map();
+            for (const key of keys) result.set(key, null);
+            return result;
+        });
+
+        const store = build();
+        expect(await store.load('c1')).toEqual([]);
+        expect(store._loaded).toBe(false);
+        expect(await store.save('c1', [at(2026, 6, 2)])).toBe(false);
+        expect(storageMock.store.get('rec_c1_2026-05')).toHaveLength(1);
+        expect(storageMock.store.get('rec_c1_2026-06')).toHaveLength(1);
+    });
+
+    test('a genuinely empty store still loads as empty and saves', async () => {
+        const store = build();
+        expect(await store.load('c1')).toEqual([]);
+        expect(store._loaded).toBe(true);
+        expect(await store.save('c1', [at(2026, 6)])).toBe(true);
+        expect(storageMock.store.get('rec_c1_2026-06')).toHaveLength(1);
+    });
+});
+
+describe('a split that cannot see what is already stored', () => {
+    test('a listing that could not be made leaves the legacy key and the records alone', async () => {
+        // A pull from a device whose split stalled dropped a legacy key beside
+        // this device's records; a listing that fails here used to read as
+        // "no records yet", and the split wrote the legacy chunks over them
+        storageMock.store.set('legacy_c1', [at(2026, 6, 9)]);
+        storageMock.store.set('rec_c1_2026-06', [at(2026, 6), at(2026, 6, 2)]);
+        storageMock.tryGetAllKeys.mockImplementation(async () => null);
+
+        const store = build();
+        const entries = await store.load('c1');
+
+        expect(store.isLegacy()).toBe(true);
+        expect(entries.map((p) => p.v)).toEqual(['2026-6-9']);
+        expect(storageMock.store.get('legacy_c1')).toHaveLength(1);
+        expect(storageMock.store.get('rec_c1_2026-06')).toHaveLength(2);
     });
 });

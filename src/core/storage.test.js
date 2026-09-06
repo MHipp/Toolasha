@@ -1445,3 +1445,67 @@ describe('Storage.flushAll: a straggler retry against a write that overtook it',
         expect(written.has('k')).toBe(false);
     });
 });
+
+describe('tryGetAllKeys separates an empty store from one that could not be listed', () => {
+    afterEach(() => {
+        storage.db = null;
+    });
+
+    /**
+     * A key-listing fake.
+     * @param {Object} options - How the listing behaves
+     * @param {Array<string>} [options.keys] - What a successful listing returns
+     * @param {'error'|'abort'|'throw'} [options.fail] - How it fails instead
+     * @returns {Object} A db stand-in
+     */
+    function listingDb({ keys = [], fail = null }) {
+        return {
+            transaction() {
+                if (fail === 'throw') throw new Error('no transaction');
+                const transaction = { objectStore: null, onabort: null, error: new Error('aborted') };
+                transaction.objectStore = () => ({
+                    getAllKeys() {
+                        const request = { onsuccess: null, onerror: null, result: keys, error: new Error('failed') };
+                        queueMicrotask(() => {
+                            if (fail === 'error') request.onerror?.();
+                            else if (fail === 'abort') transaction.onabort?.();
+                            else request.onsuccess?.();
+                        });
+                        return request;
+                    },
+                });
+                return transaction;
+            },
+        };
+    }
+
+    test('an empty store lists as an empty array, not as a failure', async () => {
+        storage.db = listingDb({ keys: [] });
+        expect(await storage.tryGetAllKeys('settings')).toEqual([]);
+    });
+
+    test('a store that lists answers with its keys', async () => {
+        storage.db = listingDb({ keys: ['a', 'b'] });
+        expect(await storage.tryGetAllKeys('settings')).toEqual(['a', 'b']);
+    });
+
+    test.each(['error', 'abort', 'throw'])(
+        'a listing that fails (%s) answers null, where getAllKeys says []',
+        async (fail) => {
+            storage.db = listingDb({ keys: ['a'], fail });
+            expect(await storage.tryGetAllKeys('settings')).toBeNull();
+
+            storage.db = listingDb({ keys: ['a'], fail });
+            // The conflation this exists to undo: a record kept as many keys reads
+            // an empty listing as "this history does not exist"
+            expect(await storage.getAllKeys('settings')).toEqual([]);
+        }
+    );
+
+    test('no database at all is a failure, not an empty store', async () => {
+        storage.db = null;
+        storage._dbNulledReason = null;
+        storage._reconnecting = false;
+        expect(await storage.tryGetAllKeys('settings')).toBeNull();
+    });
+});

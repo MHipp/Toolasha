@@ -1088,6 +1088,55 @@ class Storage {
     }
 
     /**
+     * List a store's keys and say whether the listing itself worked.
+     *
+     * `getAllKeys` folds "the store is empty" and "the store could not be
+     * listed" into the same empty array — the same conflation `tryGet` exists
+     * to undo for a single key, and it is worse here: a record kept as many
+     * keys (`utils/chunked-history.js`) reads its whole history through this
+     * listing, so an empty answer says the history does not exist. A caller
+     * that then writes what it holds back writes it over the chunk the
+     * listing failed to mention.
+     *
+     * Returns `null` when the listing could not be made — database
+     * unavailable, a failed request, an aborted transaction — so such a caller
+     * can decline to write rather than write blind.
+     * @param {string} storeName - Object store name (default: 'settings')
+     * @returns {Promise<Array<string>|null>} The keys, or null when they could not be listed
+     */
+    async tryGetAllKeys(storeName = 'settings') {
+        if (!this.db && !(await this._awaitConnection())) {
+            console.warn(`[Storage] Database not available, cannot list keys in store: ${storeName}`);
+            return null;
+        }
+
+        return new Promise((resolve) => {
+            try {
+                const transaction = this.db.transaction([storeName], 'readonly');
+                const store = transaction.objectStore(storeName);
+                const request = store.getAllKeys();
+
+                request.onsuccess = () => {
+                    resolve(request.result || []);
+                };
+
+                request.onerror = () => {
+                    console.error(`[Storage] Failed to list keys in ${storeName}:`, request.error);
+                    resolve(null);
+                };
+
+                transaction.onabort = () => {
+                    console.warn(`[Storage] Key listing aborted for ${storeName}:`, transaction.error);
+                    resolve(null);
+                };
+            } catch (error) {
+                console.error(`[Storage] Key listing failed for store ${storeName}:`, error);
+                resolve(null);
+            }
+        });
+    }
+
+    /**
      * Get all key-value pairs from an object store
      * @param {string} storeName - Object store name
      * @returns {Promise<Object>} Map of key → value

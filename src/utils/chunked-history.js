@@ -176,6 +176,17 @@ class ChunkedHistory {
          */
         this._legacy = false;
 
+        /**
+         * The character whose last read could not be made at all.
+         *
+         * Distinct from "not loaded": a load superseded by a character switch
+         * read fine and is simply not ours to commit, and `save()` still writes
+         * for it. A read that *failed* means the disk holds entries this store
+         * has never seen, and writing the caller's list over them is the one
+         * thing that must not happen.
+         */
+        this._unreadableFor = null;
+
         /** The read in flight, so two concurrent `load()`s share one */
         this._loading = null;
         /** Which read is current, so one abandoned by `forget()` does not commit */
@@ -362,7 +373,7 @@ class ChunkedHistory {
      * @private
      */
     async _read(charId, token) {
-        const state = { entries: [], snapshot: new Map(), legacy: false };
+        const state = { entries: [], snapshot: new Map(), legacy: false, readable: true };
 
         try {
             const legacy = await storage.get(this.legacyKey(charId), this.storeName, null);
@@ -376,12 +387,28 @@ class ChunkedHistory {
                     // An empty legacy array is nothing to split and nothing to keep
                     await storage.delete(this.legacyKey(charId), this.storeName);
                 }
-                state.entries = await this._readRecords(charId, state.snapshot);
+                const records = await this._readRecords(charId, state.snapshot);
+                if (records === null) state.readable = false;
+                else state.entries = records;
             }
         } catch (error) {
             console.error(`[${this.label}] Reading the history failed:`, error);
+            state.readable = false;
             state.entries = [];
         }
+
+        // A read that could not be made is not an empty history. Committing it
+        // would mark the store loaded with nothing in it, and the next `save()`
+        // would write the caller's list — one appended entry, for an appending
+        // recorder — over the bucket on disk. Remember the failure instead:
+        // `_loaded` stays false so the next `load()` reads again, and `save()`
+        // declines to write over what it could not read.
+        if (!state.readable) {
+            console.warn(`[${this.label}] The history for ${charId} could not be read; not treating it as empty`);
+            this._unreadableFor = charId;
+            return state.entries;
+        }
+        this._unreadableFor = null;
 
         // A character switch during the read means these entries belong to
         // nobody now; handing them back is fine, writing them into the store's
@@ -419,6 +446,16 @@ class ChunkedHistory {
         // A save before any read has nothing to diff against, and taking the
         // list as the whole truth would delete every chunk it does not mention
         if (!this._loaded || this._charId !== charId) await this.load(charId);
+
+        // The read above could not be made — a disconnected database, an
+        // aborted transaction. What is on disk is unknown, and the list in hand
+        // is whatever the caller has accumulated since, which for an appending
+        // recorder is a single entry; writing it would replace the current
+        // bucket with that entry. Decline, and let a later save retry the read.
+        if (this._unreadableFor === charId && !(this._loaded && this._charId === charId)) {
+            console.warn(`[${this.label}] Not saving ${charId}: the stored history could not be read`);
+            return false;
+        }
 
         // The load above can be superseded: a character switch starting its own
         // load takes the `_loadToken`, so this one returns its entries without
@@ -565,6 +602,7 @@ class ChunkedHistory {
     forget() {
         this._charId = null;
         this._loaded = false;
+        this._unreadableFor = null;
         this._entries = [];
         this._snapshot = new Map();
         this._legacy = false;
@@ -610,13 +648,27 @@ class ChunkedHistory {
         // them are entries somebody recorded.
         const existing = new Map();
         try {
-            const keys = await storage.getAllKeys(this.storeName);
+            // `tryGetAllKeys`, so a listing that could not be made is not read
+            // as "there are no records yet". That reading is what would let the
+            // split below write the legacy key's chunks straight over the
+            // records it failed to see.
+            const keys = await storage.tryGetAllKeys(this.storeName);
+            if (keys === null) {
+                console.warn(`[${this.label}] Could not list existing chunks before the split; keeping the legacy key`);
+                return { ok: false, entries: legacy };
+            }
             const recordKeys = recordKeysFor(keys, this.prefix, charId);
             if (recordKeys.length > 0) {
                 const buckets = await storage.getMany(recordKeys, this.storeName);
                 const prefixLength = `${this.prefix}_${charId}_`.length;
                 for (const key of recordKeys) {
                     const bucket = buckets.get(key);
+                    // A key the listing named whose value did not come back is
+                    // a failed read, not an absent chunk — see `_readRecords`
+                    if (bucket === null) {
+                        console.warn(`[${this.label}] Could not read ${key} before the split; keeping the legacy key`);
+                        return { ok: false, entries: legacy };
+                    }
                     if (Array.isArray(bucket)) existing.set(key.slice(prefixLength), bucket);
                 }
             }
@@ -696,7 +748,15 @@ class ChunkedHistory {
      * @private
      */
     async _readRecords(charId, snapshot) {
-        const keys = await storage.getAllKeys(this.storeName);
+        // `tryGetAllKeys`, not `getAllKeys`: the latter answers a listing it
+        // could not make with an empty array, which here reads as "this
+        // character has no history at all" — and the caller then appends one
+        // entry and saves, writing that single entry over the bucket it never
+        // saw. Null is the store saying it could not answer, and an unanswered
+        // read is not an empty history.
+        const keys = await storage.tryGetAllKeys(this.storeName);
+        if (keys === null) return null;
+
         const recordKeys = recordKeysFor(keys, this.prefix, charId);
         if (recordKeys.length === 0) return [];
 
@@ -708,6 +768,12 @@ class ChunkedHistory {
         // list are built in the same deterministic order as before
         for (const key of recordKeys) {
             const bucket = buckets.get(key);
+            // `getMany` seeds every key with null and only overwrites the ones
+            // it actually read, so a null here is a key the listing named and
+            // the read did not deliver — the same untrustworthy answer as
+            // above, one chunk deep. A non-array that is not null is a
+            // genuinely corrupt bucket, and is skipped as it always was.
+            if (bucket === null) return null;
             if (!Array.isArray(bucket)) continue;
             snapshot.set(key.slice(prefixLength), { json: JSON.stringify(bucket), count: bucket.length });
             entries.push(...bucket);

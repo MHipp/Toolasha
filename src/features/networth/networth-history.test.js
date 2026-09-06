@@ -20,6 +20,9 @@ const storageMock = vi.hoisted(() => ({
         return result;
     }),
     getAllKeys: vi.fn(async () => []),
+    // Delegates, so the per-test `getAllKeys` implementations below drive
+    // the listing `chunked-history.js` actually reads through
+    tryGetAllKeys: vi.fn(async (...args) => storageMock.getAllKeys(...args)),
     putAll: vi.fn(async () => 0),
     isQuotaExceeded: vi.fn(() => false),
 }));
@@ -49,6 +52,7 @@ beforeEach(() => {
     for (const fn of Object.values(storageMock)) fn.mockClear?.();
     storageMock.get.mockImplementation(async (key, store, fallback) => fallback);
     storageMock.getAllKeys.mockImplementation(async () => []);
+    storageMock.tryGetAllKeys.mockImplementation(async (...args) => storageMock.getAllKeys(...args));
     storageMock.putAll.mockImplementation(async () => 0);
     storageMock.delete.mockImplementation(async () => true);
     storageMock.isQuotaExceeded.mockImplementation(() => false);

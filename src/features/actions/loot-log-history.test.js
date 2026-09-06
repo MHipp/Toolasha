@@ -33,6 +33,10 @@ const storageMock = vi.hoisted(() => {
             return result;
         }),
         getAllKeys: vi.fn(async () => [...store.keys()]),
+        // Delegates to the listing above, so a test that changes how keys are
+        // listed changes both. `chunked-history.js` reads through this one
+        // because an unlistable store must not read as an empty history.
+        tryGetAllKeys: vi.fn(async () => [...store.keys()]),
         putAll: vi.fn(async (storeName, entries) => {
             for (const [key, value] of Object.entries(entries)) store.set(key, value);
             return Object.keys(entries).length;
