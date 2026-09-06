@@ -211,6 +211,7 @@ import { ROW_COLORS } from '../../utils/overlay-format.js';
 import { formatRelativeTime, formatKMB } from '../../utils/formatters.js';
 import { readScoped, writeScoped } from '../../utils/character-key.js';
 import { createPersistedRecord, mergeById } from '../../utils/persisted-record.js';
+import { registerSyncMerge } from '../../utils/sync-merge-registry.js';
 import { scriptVersion } from '../../utils/script-version.js';
 import { hashPlayerName } from './labyrinth-accuracy-export.js';
 
@@ -1638,12 +1639,32 @@ const oldestFirst = (field) => (a, b) => (Number(a?.[field]) || 0) - (Number(b?.
  * identity is the same signature `remember` dedupes on; the newest
  * MAX_OBSERVATIONS survive the fold.
  */
+/**
+ * Fold two copies of the observation list together, newest MAX_OBSERVATIONS
+ * surviving. An observation's identity is the signature `remember` dedupes on.
+ * @param {Array<Object>} stored - The base copy
+ * @param {Array<Object>} memory - The copy folded on top
+ * @returns {Array<Object>} Union, oldest first
+ */
+function mergeObservations(stored, memory) {
+    return mergeById(observationSignature, oldestFirst('recordedAt'))(stored, memory).slice(-MAX_OBSERVATIONS);
+}
+
+/**
+ * Fold two copies of the check history together, newest MAX_HISTORY surviving.
+ * @param {Array<Object>} stored - The base copy
+ * @param {Array<Object>} memory - The copy folded on top
+ * @returns {Array<Object>} Union, oldest first
+ */
+function mergeCheckHistory(stored, memory) {
+    return pruneHistory(mergeById((entry) => entry?.at)(stored, memory));
+}
+
 const observationRecord = createPersistedRecord({
     base: STORAGE_KEY,
     store: 'settings',
     empty: () => [],
-    merge: (stored, memory) =>
-        mergeById(observationSignature, oldestFirst('recordedAt'))(stored, memory).slice(-MAX_OBSERVATIONS),
+    merge: mergeObservations,
     migrate: 'discard',
     label: 'ReplayCheck',
 });
@@ -1653,9 +1674,35 @@ const historyRecord = createPersistedRecord({
     base: HISTORY_KEY,
     store: 'settings',
     empty: () => [],
-    merge: (stored, memory) => pruneHistory(mergeById((entry) => entry?.at)(stored, memory)),
+    merge: mergeCheckHistory,
     migrate: 'discard',
     label: 'ReplayCheck',
+});
+
+/*
+ * Registered so a cross-device sync PULL combines these two records instead of
+ * overwriting them. Both only ever gain entries, and both live in the `settings`
+ * store, which every sync scope carries — so an unregistered key here is written
+ * whole by `importEverything` on the smallest sync a player can configure. That
+ * throws away every recording the pulling device observed and every check it ran
+ * that the sending device had never seen, silently: a replay check is a claim
+ * about the simulator's accuracy, and it is only as good as the runs behind it.
+ *
+ * The folds are the same pure `(base, fresh)` functions two tabs on one machine
+ * already share. Registration runs at import time, long before the earliest pull
+ * (the staggered startup pull, 20s+ after load). See utils/sync-merge-registry.js.
+ */
+registerSyncMerge({
+    store: 'settings',
+    base: STORAGE_KEY,
+    merge: mergeObservations,
+    label: 'Replay check observations',
+});
+registerSyncMerge({
+    store: 'settings',
+    base: HISTORY_KEY,
+    merge: mergeCheckHistory,
+    label: 'Replay check history',
 });
 
 class ReplayCheck {

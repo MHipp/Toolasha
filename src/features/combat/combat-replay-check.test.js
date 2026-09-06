@@ -2819,3 +2819,39 @@ describe('per-wave timing of a dungeon recording', () => {
         vi.restoreAllMocks();
     });
 });
+
+describe('a cross-device sync pull combines the replay-check records', () => {
+    test('the observation list is unioned by signature, not replaced', async () => {
+        const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
+
+        // Both key shapes: the scoped one every account writes, and the bare
+        // pre-scoping key still sitting on accounts that never migrated
+        for (const key of ['combatReplayCheck_observations', 'combatReplayCheck_observations_char-A']) {
+            const registration = mergeForKey('settings', key);
+            expect(registration, `settings/${key} has no sync merge`).toBeTruthy();
+
+            // This device watched one recording, the laptop watched another.
+            // A whole-key write leaves the pull with only the laptop's, and
+            // the run this device measured stops having been measured
+            const local = [{ recordedAt: 10, fights: [{ damageDealt: 5 }] }];
+            const incoming = [{ recordedAt: 20, fights: [{ damageDealt: 7 }, { damageDealt: 9 }] }];
+
+            expect(registration.merge(local, incoming).map((entry) => entry.recordedAt)).toEqual([10, 20]);
+        }
+    });
+
+    test('the check history is unioned by when the check ran', async () => {
+        const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
+
+        for (const key of ['combatReplayCheck_history', 'combatReplayCheck_history_char-A']) {
+            const registration = mergeForKey('settings', key);
+            expect(registration, `settings/${key} has no sync merge`).toBeTruthy();
+
+            const now = Date.now();
+            const local = [{ at: now - 2_000, ratio: 0.9 }];
+            const incoming = [{ at: now - 1_000, ratio: 1.1 }];
+
+            expect(registration.merge(local, incoming).map((entry) => entry.ratio)).toEqual([0.9, 1.1]);
+        }
+    });
+});

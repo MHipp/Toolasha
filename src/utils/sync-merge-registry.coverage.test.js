@@ -45,6 +45,7 @@ await import('../features/combat-stats/combat-session-history.js');
 await import('../features/combat/labyrinth-fight-recorder.js');
 await import('../features/combat/labyrinth-room-logs.js');
 await import('../features/combat/labyrinth-outcomes.js');
+await import('../features/combat/combat-replay-check.js');
 await import('../features/combat/labyrinth-run-ledger.js');
 await import('../features/combat/labyrinth-tracker.js');
 await import('../features/guild/guild-xp-tracker.js');
@@ -169,6 +170,14 @@ const corpus = [
     // cache alongside it shares the `labyrinth` stem and must stay unclaimed
     { store: 'settings', key: 'labyrinthFightOutcomes', label: 'Labyrinth fight outcomes' },
     { store: 'settings', key: `labyrinthFightOutcomes_${CHAR}`, label: 'Labyrinth fight outcomes' },
+
+    // combat/combat-replay-check.js — two lists in the settings store, which
+    // every sync scope carries. `combatReplayCheck_` is one stem shared by two
+    // registrations, so each must claim only its own half
+    { store: 'settings', key: 'combatReplayCheck_observations', label: 'Replay check observations' },
+    { store: 'settings', key: `combatReplayCheck_observations_${CHAR}`, label: 'Replay check observations' },
+    { store: 'settings', key: 'combatReplayCheck_history', label: 'Replay check history' },
+    { store: 'settings', key: `combatReplayCheck_history_${CHAR}`, label: 'Replay check history' },
 
     // combat/labyrinth-run-ledger.js
     { store: 'labyrinth', key: 'labyrinthRunLedger', label: 'Labyrinth run ledger' },
