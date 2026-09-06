@@ -747,9 +747,17 @@ class Storage {
     /**
      * Key counts per store, against their soft budgets.
      *
-     * Counting keys is one `getAllKeys()` per store and never touches a value,
-     * which is why this is affordable at all — a byte-accurate size would mean
-     * reading and serializing the entire database.
+     * Counting keys is one `tryGetAllKeys()` per store and never touches a
+     * value, which is why this is affordable at all — a byte-accurate size
+     * would mean reading and serializing the entire database.
+     *
+     * A store the browser could not list is reported as `keys: null,
+     * unknown: true`, never as zero. `getAllKeys` answers an unmade listing
+     * with an empty array, which here reads as "empty, comfortably under
+     * budget" — the same false-empty this class's `tryGetAllKeys` exists to
+     * undo on the write path, and a diagnostic that cannot tell "nothing
+     * stored" from "could not look" is worse than one that admits it does not
+     * know. An unknown row is never `over`: nothing was counted to compare.
      *
      * @param {Array<string>} [storeNames] - Restrict to these stores; defaults to all
      * @param {(storeName: string, keys: Array<string>) => number|null} [perCharacterCount] -
@@ -760,28 +768,41 @@ class Storage {
      *   apart from any other on its own — that knowledge lives with the
      *   recorders that build the keys — so the caller supplies it; see
      *   `utils/chunked-history.js`'s `maxRecordsPerCharacter`.
-     * @returns {Promise<Array<{storeName: string, keys: number, perCharacter: boolean,
-     *   budget: number|null, over: boolean}>>} One row per store, over-budget rows first
+     * @returns {Promise<Array<{storeName: string, keys: number|null, unknown: boolean,
+     *   perCharacter: boolean, budget: number|null, over: boolean}>>} One row per store,
+     *   over-budget rows first, then the ones that could not be listed
      */
     async budgetReport(storeNames, perCharacterCount) {
         const names = storeNames ?? (await this.listStores());
         const rows = [];
 
         for (const storeName of names) {
-            const keys = await this.getAllKeys(storeName);
+            const keys = await this.tryGetAllKeys(storeName);
             const budget = STORE_KEY_BUDGETS[storeName] ?? null;
+            if (keys === null) {
+                rows.push({ storeName, keys: null, unknown: true, perCharacter: false, budget, over: false });
+                continue;
+            }
             const perCharacter = typeof perCharacterCount === 'function' ? perCharacterCount(storeName, keys) : null;
             const count = perCharacter !== null && perCharacter !== undefined ? perCharacter : keys.length;
             rows.push({
                 storeName,
                 keys: count,
+                unknown: false,
                 perCharacter: perCharacter !== null && perCharacter !== undefined,
                 budget,
                 over: budget !== null && count > budget,
             });
         }
 
-        rows.sort((a, b) => Number(b.over) - Number(a.over) || b.keys - a.keys);
+        // A store that could not be listed sorts with the problems, not with
+        // the zero-key stores its count would otherwise put it among.
+        rows.sort(
+            (a, b) =>
+                Number(b.over) - Number(a.over) ||
+                Number(b.unknown) - Number(a.unknown) ||
+                (b.keys ?? 0) - (a.keys ?? 0)
+        );
         return rows;
     }
 

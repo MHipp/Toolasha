@@ -68,8 +68,8 @@ beforeEach(() => {
         estimate: { usage: 25_000_000, quota: 100_000_000, percent: 25, at: 0 },
     };
     storageMock.budgets = [
-        { storeName: 'lootLogHistory', keys: 41, budget: 40, over: true },
-        { storeName: 'settings', keys: 120, budget: 500, over: false },
+        { storeName: 'lootLogHistory', keys: 41, unknown: false, perCharacter: false, budget: 40, over: true },
+        { storeName: 'settings', keys: 120, unknown: false, perCharacter: false, budget: 500, over: false },
     ];
     window.Toolasha = {
         version: '2.88.0',
@@ -169,10 +169,41 @@ describe('what the report says about storage', () => {
     });
 
     test('nothing over budget is stated as nothing, not left out', async () => {
-        storageMock.budgets = [{ storeName: 'settings', keys: 10, budget: 500, over: false }];
+        storageMock.budgets = [
+            { storeName: 'settings', keys: 10, unknown: false, perCharacter: false, budget: 500, over: false },
+        ];
         await refreshStorageFacts();
 
         expect(buildDiagnosticReport([])).toContain('stores over their soft budget: none');
+    });
+
+    /*
+     * `budgetReport` reports a store the browser could not list as `keys: null,
+     * unknown: true` rather than as zero. Printing that null as a number would
+     * put back the "0 keys, comfortably under budget" reading the null exists
+     * to remove, so the report says the word instead.
+     */
+    test('a store that could not be listed reads as unreadable, never as a count', async () => {
+        storageMock.budgets = [
+            { storeName: 'lootLogHistory', keys: null, unknown: true, perCharacter: false, budget: 40, over: false },
+            { storeName: 'settings', keys: 120, unknown: false, perCharacter: false, budget: 500, over: false },
+        ];
+        await refreshStorageFacts();
+
+        const report = buildDiagnosticReport([]);
+        expect(report).toContain('stores that could not be listed (1): lootLogHistory=unreadable');
+        expect(report).toContain('unknown, not zero');
+        expect(report).toContain('largest stores by key count: lootLogHistory=unreadable, settings=120');
+        expect(report).not.toContain('lootLogHistory=0');
+        expect(report).not.toContain('lootLogHistory=null');
+        // It is not over budget either — nothing was counted to compare
+        expect(report).toContain('stores over their soft budget: none');
+    });
+
+    test('nothing unlistable adds no line about it', async () => {
+        await refreshStorageFacts();
+
+        expect(buildDiagnosticReport([])).not.toContain('could not be listed');
     });
 
     test('the machine-readable copy carries the same storage facts', async () => {
@@ -216,6 +247,21 @@ describe('a full database reaching the player', () => {
         const block = document.querySelector('.toolasha-health-storage');
         expect(block.textContent).toContain('Storage: 23.8 MB of 95.4 MB');
         expect(document.querySelector('.toolasha-health-quota')).toBeTruthy();
+    });
+
+    test('the panel says which stores it could not look inside', async () => {
+        storageMock.budgets = [
+            { storeName: 'lootLogHistory', keys: null, unknown: true, perCharacter: false, budget: 40, over: false },
+        ];
+        healthStatusPanel.show([]);
+
+        await vi.waitFor(() => {
+            const block = document.querySelector('.toolasha-health-storage');
+            expect(block.textContent).toContain('Could not be listed: lootLogHistory');
+        });
+        const block = document.querySelector('.toolasha-health-storage');
+        expect(block.textContent).toContain('unknown, not zero');
+        expect(block.textContent).not.toContain('Over soft budget');
     });
 });
 

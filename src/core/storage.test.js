@@ -653,7 +653,7 @@ describe('Storage.budgetReport', () => {
             somethingUnbudgeted: ['x'],
         };
         storage.db = { objectStoreNames: Object.keys(keysByStore) };
-        vi.spyOn(storage, 'getAllKeys').mockImplementation(async (name) => keysByStore[name] || []);
+        vi.spyOn(storage, 'tryGetAllKeys').mockImplementation(async (name) => keysByStore[name] || []);
 
         const rows = await storage.budgetReport();
 
@@ -661,6 +661,7 @@ describe('Storage.budgetReport', () => {
         expect(rows[0]).toEqual({
             storeName: 'lootLogHistory',
             keys: budget + 1,
+            unknown: false,
             perCharacter: false,
             budget,
             over: true,
@@ -669,13 +670,14 @@ describe('Storage.budgetReport', () => {
         expect(unbudgeted).toEqual({
             storeName: 'somethingUnbudgeted',
             keys: 1,
+            unknown: false,
             perCharacter: false,
             budget: null,
             over: false,
         });
         expect(rows.every((row) => row.storeName === 'lootLogHistory' || !row.over)).toBe(true);
 
-        storage.getAllKeys.mockRestore();
+        storage.tryGetAllKeys.mockRestore();
     });
 
     // A store budgeted "per character" (see the comment on STORE_KEY_BUDGETS)
@@ -690,7 +692,7 @@ describe('Storage.budgetReport', () => {
         // would trip a flat comparison.
         const keysByStore = { lootLogHistory: Array.from({ length: budget + 100 }, (_, i) => `k${i}`) };
         storage.db = { objectStoreNames: Object.keys(keysByStore) };
-        vi.spyOn(storage, 'getAllKeys').mockImplementation(async (name) => keysByStore[name] || []);
+        vi.spyOn(storage, 'tryGetAllKeys').mockImplementation(async (name) => keysByStore[name] || []);
 
         const perCharacterCount = (storeName) => (storeName === 'lootLogHistory' ? budget - 1 : null);
         const rows = await storage.budgetReport(['lootLogHistory'], perCharacterCount);
@@ -698,30 +700,78 @@ describe('Storage.budgetReport', () => {
         expect(rows[0]).toEqual({
             storeName: 'lootLogHistory',
             keys: budget - 1,
+            unknown: false,
             perCharacter: true,
             budget,
             over: false,
         });
 
-        storage.getAllKeys.mockRestore();
+        storage.tryGetAllKeys.mockRestore();
     });
 
     test('a per-character counter that declines (returns null) falls back to the flat count', async () => {
         const keysByStore = { settings: ['a', 'b', 'c'] };
         storage.db = { objectStoreNames: Object.keys(keysByStore) };
-        vi.spyOn(storage, 'getAllKeys').mockImplementation(async (name) => keysByStore[name] || []);
+        vi.spyOn(storage, 'tryGetAllKeys').mockImplementation(async (name) => keysByStore[name] || []);
 
         const rows = await storage.budgetReport(['settings'], () => null);
 
         expect(rows[0]).toEqual({
             storeName: 'settings',
             keys: 3,
+            unknown: false,
             perCharacter: false,
             budget: STORE_KEY_BUDGETS.settings,
             over: false,
         });
 
-        storage.getAllKeys.mockRestore();
+        storage.tryGetAllKeys.mockRestore();
+    });
+
+    /*
+     * `getAllKeys` answers a listing it could not make with an empty array, so
+     * a store the browser refuses to list came back as "0 keys" and read as
+     * comfortably under budget — the diagnostic-path half of the false-empty
+     * 9e40d6a05 fixed on the write path. Fails before the switch to
+     * `tryGetAllKeys`: the row was `{ keys: 0, over: false }`.
+     */
+    test('a store that could not be listed is unknown, not zero', async () => {
+        storage.db = { objectStoreNames: ['settings', 'lootLogHistory'] };
+        vi.spyOn(storage, 'tryGetAllKeys').mockImplementation(async (name) =>
+            name === 'lootLogHistory' ? null : ['a']
+        );
+
+        const rows = await storage.budgetReport(undefined, () => 5);
+        const unlistable = rows.find((row) => row.storeName === 'lootLogHistory');
+
+        expect(unlistable).toEqual({
+            storeName: 'lootLogHistory',
+            keys: null,
+            unknown: true,
+            // Nothing was counted, so neither the per-character count nor the
+            // budget comparison can have an opinion
+            perCharacter: false,
+            budget: STORE_KEY_BUDGETS.lootLogHistory,
+            over: false,
+        });
+        expect(unlistable.keys).not.toBe(0);
+
+        storage.tryGetAllKeys.mockRestore();
+    });
+
+    test('an unlistable store sorts above the stores that really are small', async () => {
+        storage.db = { objectStoreNames: ['settings', 'combatStats', 'lootLogHistory'] };
+        vi.spyOn(storage, 'tryGetAllKeys').mockImplementation(async (name) => {
+            if (name === 'lootLogHistory') return null;
+            if (name === 'settings') return ['a', 'b', 'c'];
+            return [];
+        });
+
+        const rows = await storage.budgetReport();
+
+        expect(rows.map((row) => row.storeName)).toEqual(['lootLogHistory', 'settings', 'combatStats']);
+
+        storage.tryGetAllKeys.mockRestore();
     });
 });
 

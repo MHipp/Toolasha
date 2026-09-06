@@ -85,6 +85,19 @@ export async function refreshStorageFacts() {
 }
 
 /**
+ * One `store=count` term, where the count may be that nobody could count it.
+ *
+ * `budgetReport` reports a store it could not list as `keys: null` rather than
+ * as zero, and rendering that as a number would put back exactly the confusion
+ * the null exists to remove.
+ * @param {{storeName: string, keys: number|null, unknown: boolean}} row - A budget row
+ * @returns {string} The term
+ */
+function storeCount(row) {
+    return `${row.storeName}=${row.unknown ? 'unreadable' : row.keys}`;
+}
+
+/**
  * What the database is using, whether that has already cost anything, and which
  * stores have outgrown the size they were meant to stay.
  *
@@ -132,7 +145,17 @@ function storageLines() {
         } else {
             lines.push('stores over their soft budget: none');
         }
-        const biggest = lastBudgetRows.slice(0, 5).map((row) => `${row.storeName}=${row.keys}`);
+
+        // A store the browser refused to list is not an empty store, and must
+        // not be read as one: it is stated on its own line, and its count is a
+        // word rather than a number wherever counts are printed.
+        const unknown = lastBudgetRows.filter((row) => row.unknown);
+        if (unknown.length) {
+            lines.push(`stores that could not be listed (${unknown.length}): ${unknown.map(storeCount).join(', ')}`);
+            lines.push('Their key counts are unknown, not zero — a budget cannot be checked against them.');
+        }
+
+        const biggest = lastBudgetRows.slice(0, 5).map(storeCount);
         lines.push(`largest stores by key count: ${biggest.join(', ')}`);
     }
 
@@ -290,6 +313,16 @@ class HealthStatusPanel {
         if (over.length) {
             const line = document.createElement('div');
             line.textContent = `Over soft budget: ${over.map((row) => `${row.storeName} (${row.keys})`).join(', ')}`;
+            Object.assign(line.style, { color: COLORS.textDim, fontSize: '12px', marginTop: '4px' });
+            block.appendChild(line);
+        }
+
+        const unknown = (lastBudgetRows || []).filter((row) => row.unknown);
+        if (unknown.length) {
+            const line = document.createElement('div');
+            line.textContent =
+                `Could not be listed: ${unknown.map((row) => row.storeName).join(', ')} — ` +
+                'their sizes are unknown, not zero.';
             Object.assign(line.style, { color: COLORS.textDim, fontSize: '12px', marginTop: '4px' });
             block.appendChild(line);
         }
