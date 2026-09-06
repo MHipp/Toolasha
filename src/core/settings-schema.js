@@ -791,6 +791,13 @@ export const settingsGroups = {
                 default: false,
                 help: 'When hovering an ability (in a loadout or ability slot, including on another player’s profile), adds what it would cost to buy that ability up to the level shown. Uses the level in the tooltip, so it is correct on other players’ profiles too.',
             },
+            abilityTooltip_effectiveTiming: {
+                id: 'abilityTooltip_effectiveTiming',
+                label: 'Show effective cooldown/cast time on ability hovers',
+                type: 'checkbox',
+                default: false,
+                help: 'The game’s ability tooltip always shows base Cooldown and Cast Time. This adds, in parentheses, what they actually are with your Ability Haste, Cast Speed and Attack level applied — and adds nothing when the figures match.',
+            },
             itemTooltip_enhancementMilestones: {
                 id: 'itemTooltip_enhancementMilestones',
                 label: 'Show enhancement milestones (+5/+7/+10/+12)',

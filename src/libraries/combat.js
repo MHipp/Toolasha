@@ -70,6 +70,7 @@ import * as combatRecordControl from '../features/combat/combat-record-control.j
 
 // Abilities
 import abilityBookCalculator from '../features/abilities/ability-book-calculator.js';
+import abilityTooltipTiming from '../features/abilities/ability-tooltip-timing.js';
 import manaTracker from '../features/combat/mana-tracker.js';
 // Namespaces, not default exports: both are in rollup's externals map, so
 // another bundle importing `{ damageBreakdown }` from one of them compiles to
@@ -153,6 +154,7 @@ toolashaRoot.Combat = {
     salesTaxView,
     combatRecordControl,
     abilityBookCalculator,
+    abilityTooltipTiming,
     manaTracker,
     damageTracker,
     damageTakenTracker,

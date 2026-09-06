@@ -1130,6 +1130,14 @@ function registerFeatures() {
             async: false,
         },
         {
+            key: 'abilityTooltipTiming',
+            name: 'Ability Tooltip Timing',
+            category: 'Combat',
+            module: Combat.abilityTooltipTiming,
+            async: false,
+            customCheck: () => config.getSetting('abilityTooltip_effectiveTiming'),
+        },
+        {
             key: 'abilityDictionaryButton',
             name: 'Ability Dictionary Button',
             category: 'Combat',

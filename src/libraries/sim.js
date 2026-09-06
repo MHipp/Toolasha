@@ -20,6 +20,7 @@ import combatSim from '../features/combat-sim/combat-sim.js';
 import labSim from '../features/combat-sim/lab-sim.js';
 import combatSimUI from '../features/combat-sim/combat-sim-ui.js';
 import * as combatSimAdapter from '../features/combat-sim/combat-sim-adapter.js';
+import * as abilityTimingCalculator from '../features/combat-sim/ability-timing-calculator.js';
 import * as combatSimRunner from '../features/combat-sim/combat-sim-runner.js';
 import * as wilson from '../features/combat-sim/engine/wilson.js';
 import * as gameData from '../features/combat-sim/engine/game-data.js';
@@ -38,6 +39,9 @@ toolashaRoot.Sim = {
     labSim,
     combatSimUI,
     combatSimAdapter,
+    // The ability tooltip's effective cooldown/cast time. Its home is here because
+    // it reconstructs a Player; the combat bundle reads it through this global.
+    abilityTimingCalculator,
     combatSimRunner,
     wilson,
     gameData,

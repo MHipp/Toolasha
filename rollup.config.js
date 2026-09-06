@@ -265,6 +265,12 @@ const simExternalGlobals = new Map([
     [normalize(join(__dirname, 'src/features/combat-sim/combat-sim-ui.js')), 'Toolasha.Sim.combatSimUI'],
     [normalize(join(__dirname, 'src/features/combat-sim/combat-sim-adapter.js')), 'Toolasha.Sim.combatSimAdapter'],
     [normalize(join(__dirname, 'src/features/combat-sim/combat-sim-runner.js')), 'Toolasha.Sim.combatSimRunner'],
+    // The ability tooltip (combat bundle) needs it, and it pulls Player and the
+    // adapter behind it — inline that is the whole engine copied into combat.
+    [
+        normalize(join(__dirname, 'src/features/combat-sim/ability-timing-calculator.js')),
+        'Toolasha.Sim.abilityTimingCalculator',
+    ],
     [normalize(join(__dirname, 'src/features/combat-sim/engine/wilson.js')), 'Toolasha.Sim.wilson'],
     [normalize(join(__dirname, 'src/features/combat-sim/engine/game-data.js')), 'Toolasha.Sim.gameData'],
     [normalize(join(__dirname, 'src/features/combat-sim/engine/monster.js')), 'Toolasha.Sim.monster'],
