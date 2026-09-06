@@ -34,8 +34,11 @@ export const IRON_COW_SETTINGS = new Set([
     'market_showTopOrderAge',
     'market_showEstimatedListingAge',
     'market_listingAgeFormat',
-    'market_listingTimeFormat',
-    'market_listingDateFormat',
+    // market_listingTimeFormat / market_listingDateFormat are deliberately absent: the
+    // market_ prefix is legacy naming, and they are general date/time display preferences
+    // read by formatters.js's formatDateTime, the Character Activity collector and Pop-out
+    // Chat — none of which an Iron Cow character loses access to. Leaving them out also
+    // means disable() skips them in any snapshot an older build already wrote.
     'market_showOrderTotals',
     'market_showHistoryViewer',
     'market_showPhiloCalculator',

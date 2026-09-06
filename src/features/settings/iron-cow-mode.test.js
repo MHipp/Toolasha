@@ -51,14 +51,19 @@ vi.mock('../../core/storage.js', () => ({
 
 vi.mock('../../core/config.js', () => ({
     default: {
-        settingsMap: { invWorth: { type: 'checkbox', isTrue: true } },
+        settingsMap: {
+            invWorth: { type: 'checkbox', isTrue: true },
+            market_showOrderTotals: { type: 'checkbox', isTrue: true },
+            market_listingDateFormat: { type: 'select', value: 'MM-DD' },
+            market_listingTimeFormat: { type: 'select', value: '24hour' },
+        },
         getSetting: () => true,
         setSetting: (id, value) => world.restored.push([id, value]),
         setSettingValue: (id, value) => world.restored.push([id, value]),
     },
 }));
 
-const { default: ironCowMode } = await import('./iron-cow-mode.js');
+const { default: ironCowMode, IRON_COW_SETTINGS } = await import('./iron-cow-mode.js');
 
 describe('iron cow mode — the snapshot key survives a mid-teardown character switch', () => {
     beforeEach(() => {
@@ -83,5 +88,37 @@ describe('iron cow mode — the snapshot key survives a mid-teardown character s
         expect(world.deleted).toEqual(['toolasha_ironCowSnapshot_char1']);
         // ...and the character who just arrived still has theirs
         expect(world.store.has('settings::toolasha_ironCowSnapshot_char2')).toBe(true);
+    });
+});
+
+// The market_ prefix on the date/time format preferences is legacy naming: they are
+// read by formatDateTime, the Character Activity collector and Pop-out Chat, none of
+// which an Iron Cow character loses. Forcing them to schema defaults reset the
+// player's clock and date display every time the mode was toggled.
+describe('iron cow mode leaves the date and time display formats alone', () => {
+    beforeEach(() => {
+        world.characterId = 'char1';
+        world.store = new Map();
+        world.deleted = [];
+        world.restored = [];
+    });
+
+    test('neither format setting is managed by the mode', () => {
+        expect(IRON_COW_SETTINGS.has('market_listingDateFormat')).toBe(false);
+        expect(IRON_COW_SETTINGS.has('market_listingTimeFormat')).toBe(false);
+        // A genuinely marketplace-only neighbour still is
+        expect(IRON_COW_SETTINGS.has('market_showOrderTotals')).toBe(true);
+    });
+
+    test('a snapshot an older build wrote does not write the formats back', async () => {
+        world.store.set('settings::toolasha_ironCowSnapshot_char1', {
+            market_showOrderTotals: { type: 'checkbox', value: true },
+            market_listingDateFormat: { type: 'select', value: 'MM-DD' },
+            market_listingTimeFormat: { type: 'select', value: '24hour' },
+        });
+
+        await ironCowMode.disable();
+
+        expect(world.restored).toEqual([['market_showOrderTotals', true]]);
     });
 });
