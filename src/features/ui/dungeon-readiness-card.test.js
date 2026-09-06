@@ -432,6 +432,34 @@ describe('the party key counts the game itself broadcasts', () => {
         expect(text()).not.toContain('Ally');
     });
 
+    test('an emptied slot map still tells you apart from the party', async () => {
+        // Mid-battle every roster entry comes from the name-only fallback with
+        // no character id, so an id test says none of them is you: your gear
+        // goes unchecked and your own key pile is read off party chat
+        inParty();
+        game.characterData.partyInfo.partySlotMap = {};
+        tracking({ dungeonHrid: DEN, keyCountsMap: { Me: 4, Ally: 3 } });
+        await render();
+
+        const body = text();
+        expect(body).toContain('Gear and auras checked for Me');
+        expect(body).not.toContain('not for Me');
+    });
+
+    test('a character block with no id does not make the whole party you', async () => {
+        // `null === null` for every nameless roster entry, which put your name,
+        // your gear and your key pile on every line in the party
+        inParty();
+        game.characterData.character = { name: 'Me' };
+        game.characterData.partyInfo.partySlotMap = {};
+        tracking({ dungeonHrid: DEN, keyCountsMap: { Me: 4, Ally: 3 } });
+        await render();
+
+        const body = text();
+        expect(body).toContain('Ally');
+        expect(body).toContain('3 keys');
+    });
+
     test('a tracked run of another dungeon does not lend this card its counts', async () => {
         inParty();
         tracking({ dungeonHrid: '/actions/combat/pirate_cove', keyCountsMap: { Ally: 3 } });

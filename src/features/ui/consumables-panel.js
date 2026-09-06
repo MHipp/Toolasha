@@ -669,7 +669,12 @@ class ConsumablesPanel {
         // Part of the cache identity, not just of the answer: a key priced at
         // ask is not the same costing as the same key priced at craft cost, and
         // a mode changed on the Settings page must not read stale for a minute.
-        const pricing = this._keyPricingMode();
+        // The resolved pricing, not the stored word: 'synced' and 'craft' both
+        // take their market side from `profitCalc_pricingMode`, so that setting
+        // moving underneath them changes the costing without changing the name
+        // of the mode.
+        const resolved = resolveKeyPricing();
+        const pricing = `${resolved.setting}|${resolved.priceSide}|${resolved.basis}`;
         const cached = this._keyCostCache;
         if (cached?.keyHrid === keyHrid && cached.pricing === pricing && Date.now() - cached.at < KEY_COST_TTL_MS) {
             return cached.cost;
@@ -858,7 +863,36 @@ class ConsumablesPanel {
             name: detail.name || actionHrid.split('/').pop(),
             characterId: characterData.character?.id ?? null,
             selfName: characterData.character?.name || 'You',
+            // The name the game gave, never the 'You' placeholder: it is an
+            // identity test in `isSelfMember`, and matching a member called
+            // 'You' would hand them your equipment and your key pile.
+            selfRealName: characterData.character?.name || null,
         };
+    }
+
+    /**
+     * Whether a roster entry is the logged-in character.
+     *
+     * Not an id comparison alone, for two reasons the roster makes routine.
+     * `partySlotMap` empties for the whole of a battle, so mid-run every entry
+     * comes from `mergePartyRoster`'s name-only fallback with a null
+     * `characterID` — including your own — and an id test says none of them is
+     * you. And where the character block carries no id, `null === null` says
+     * *all* of them are you, which puts your gear and your key count on every
+     * line in the party.
+     *
+     * So ids decide it only when there is an id on both sides; otherwise the
+     * name does, against the name the game stated rather than the placeholder.
+     *
+     * @param {Object} member - A roster entry from `mergePartyRoster`
+     * @param {Object} context - From `_dungeonContext`
+     * @returns {boolean}
+     */
+    _isSelfMember(member, context) {
+        if (member?.characterID != null && context?.characterId != null) {
+            return member.characterID === context.characterId;
+        }
+        return Boolean(context?.selfRealName) && member?.characterName === context.selfRealName;
     }
 
     /**
@@ -900,7 +934,7 @@ class ConsumablesPanel {
 
         context.roster.forEach((member, index) => {
             const hrid = `player${index + 1}`;
-            const isSelf = member.characterID === context.characterId;
+            const isSelf = this._isSelfMember(member, context);
             const name = isSelf ? context.selfName : member.characterName || `Player ${index + 1}`;
             const equipment = {};
             const abilities = [];
@@ -918,7 +952,12 @@ class ConsumablesPanel {
                     if (ability?.abilityHrid) abilities.push({ hrid: ability.abilityHrid, level: ability.level || 1 });
                 }
             } else {
-                const profile = (this._profiles || []).find((entry) => entry?.characterID === member.characterID);
+                // A null id matches a stored profile that also lacks one, which
+                // would dress a stranger in somebody else's gear
+                const profile =
+                    member.characterID != null
+                        ? (this._profiles || []).find((entry) => entry?.characterID === member.characterID)
+                        : null;
                 if (!profile) {
                     uncheckable.push(name);
                     return;
@@ -1013,14 +1052,17 @@ class ConsumablesPanel {
             : [{ characterID: context.characterId, characterName: context.selfName }];
 
         const members = roster.map((member) => {
-            const isSelf = member.characterID === context.characterId;
+            const isSelf = this._isSelfMember(member, context);
             const name = isSelf ? context.selfName : member.characterName || 'Unknown player';
             const seen = measured.get(name);
 
             let level = null;
             if (isSelf) level = this._combatLevelOf(dataManager.getSkills?.());
             else {
-                const profile = (this._profiles || []).find((entry) => entry?.characterID === member.characterID);
+                const profile =
+                    member.characterID != null
+                        ? (this._profiles || []).find((entry) => entry?.characterID === member.characterID)
+                        : null;
                 level = this._combatLevelOf(profile?.profile?.characterSkills);
             }
 
