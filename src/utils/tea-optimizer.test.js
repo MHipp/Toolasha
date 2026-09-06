@@ -64,6 +64,7 @@ const {
     scoreEquipmentSetup,
     calculateSkillPerformance,
     findOptimalTeas,
+    getSkillActionsForDisplay,
 } = await import('./tea-optimizer.js');
 
 const knownItems = [
@@ -489,5 +490,65 @@ describe('findOptimalTeas — gold ranking picks the best average, not the best 
         expect(result.error).toBeUndefined();
         const bestAvg = Math.max(...result.allResults.map((r) => r.avgScore));
         expect(result.optimal.avgScore).toBeCloseTo(bestAvg, 6);
+    });
+});
+
+describe('getSkillActionsForDisplay — game order', () => {
+    // The picker used to sort by level then name, which reorders actions that share a level
+    // requirement against the order the game itself lists them in (Foraging's level-1 actions
+    // are the visible case). The game's sortIndex is the authority.
+    beforeEach(() => {
+        state.gameData.actionDetailMap = {
+            '/actions/foraging/egg': {
+                type: '/action_types/foraging',
+                name: 'Egg',
+                levelRequirement: { level: 1 },
+                sortIndex: 3,
+            },
+            '/actions/foraging/apple': {
+                type: '/action_types/foraging',
+                name: 'Apple',
+                levelRequirement: { level: 1 },
+                sortIndex: 1,
+            },
+            '/actions/foraging/blueberry': {
+                type: '/action_types/foraging',
+                name: 'Blueberry',
+                levelRequirement: { level: 20 },
+                sortIndex: 2,
+            },
+            '/actions/milking/cow': {
+                type: '/action_types/milking',
+                name: 'Cow',
+                levelRequirement: { level: 1 },
+                sortIndex: 1,
+            },
+        };
+    });
+
+    test('orders by sortIndex, not by level then name', () => {
+        const actions = getSkillActionsForDisplay('Foraging', 30);
+        expect(actions.map((a) => a.name)).toEqual(['Apple', 'Blueberry', 'Egg']);
+    });
+
+    test('an action with no sortIndex sorts first, ties broken by name', () => {
+        state.gameData.actionDetailMap['/actions/foraging/zucchini'] = {
+            type: '/action_types/foraging',
+            name: 'Zucchini',
+            levelRequirement: { level: 1 },
+        };
+        state.gameData.actionDetailMap['/actions/foraging/acorn'] = {
+            type: '/action_types/foraging',
+            name: 'Acorn',
+            levelRequirement: { level: 1 },
+        };
+        const actions = getSkillActionsForDisplay('Foraging', 30);
+        expect(actions.slice(0, 2).map((a) => a.name)).toEqual(['Acorn', 'Zucchini']);
+    });
+
+    test('still reports availability against the player level', () => {
+        const actions = getSkillActionsForDisplay('Foraging', 5);
+        expect(actions.find((a) => a.name === 'Blueberry')).toMatchObject({ requiredLevel: 20, available: false });
+        expect(actions.find((a) => a.name === 'Apple')).toMatchObject({ requiredLevel: 1, available: true });
     });
 });
