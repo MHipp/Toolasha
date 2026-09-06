@@ -96,4 +96,30 @@ describe('_computeSlotMetrics against a zero baseline', () => {
         // at all, and it sorted after bigPct (and after a real no-gain row) purely by index.
         expect(ui._compareSlotViews(fromZero, bigPct, 'gold', 'goldGain')).toBeLessThan(0);
     });
+
+    test('a zero panel baseline ranks its rows by the size of the gain, not by slot order', () => {
+        // The baseline belongs to the panel, so when it is zero every row's percentage is
+        // Infinity at once. Without a secondary key the whole list ties and falls to slot
+        // order, which puts a 10 gold/hr upgrade above a 5,000 gold/hr one for no reason.
+        const small = { index: 0, metrics: ui._computeSlotMetrics(slotData(0, 10), null, 0, 0) };
+        const large = { index: 1, metrics: ui._computeSlotMetrics(slotData(0, 5000), null, 0, 0) };
+        expect(small.metrics.goldPct).toBe(Infinity);
+        expect(large.metrics.goldPct).toBe(Infinity);
+        expect(ui._compareSlotViews(large, small, 'gold', 'goldGain')).toBeLessThan(0);
+        expect(ui._compareSlotViews(small, large, 'gold', 'goldGain')).toBeGreaterThan(0);
+    });
+
+    test('an xp panel with a zero baseline ranks by the size of the xp gain too', () => {
+        const small = { index: 0, metrics: ui._computeSlotMetrics(slotData(10, 0), null, 0, 0) };
+        const large = { index: 1, metrics: ui._computeSlotMetrics(slotData(5000, 0), null, 0, 0) };
+        expect(ui._compareSlotViews(large, small, 'xp', 'xpGain')).toBeLessThan(0);
+    });
+
+    test('modes that are not gain modes keep slot order as their tiebreak', () => {
+        const a = { index: 0, metrics: ui._computeSlotMetrics(slotData(0, 500), null, 0, 0) };
+        const b = { index: 1, metrics: ui._computeSlotMetrics(slotData(0, 900), null, 0, 0) };
+        // Both unpriceable, so 'cost' ties at Infinity; the bigger gain must NOT jump the queue
+        // in a mode that says nothing about gain.
+        expect(ui._compareSlotViews(a, b, 'gold', 'cost')).toBeLessThan(0);
+    });
 });

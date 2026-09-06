@@ -1295,14 +1295,24 @@ class SkillingSimulatorUI {
      * @param {{itemHrid: string, enhancementLevel: number}|null} loadoutEntry - Compare loadout item
      * @param {number} xpBaseline
      * @param {number} goldBaseline
-     * @returns {{entry: Object|null, cost: number|null, xpPct: number, goldPct: number, xpPerMillion: number|null, paybackHours: number|null}}
+     * @returns {{entry: Object|null, cost: number|null, xpPct: number, goldPct: number, xpDelta: number,
+     *   goldDelta: number, xpPerMillion: number|null, paybackHours: number|null}}
      */
     _computeSlotMetrics(slotData, loadoutEntry, xpBaseline, goldBaseline) {
         const entry = slotData.progression.find(
             (e) => e.itemHrid && (e.xpScore - xpBaseline > 0 || e.goldScore - goldBaseline > 0)
         );
         if (!entry) {
-            return { entry: null, cost: null, xpPct: 0, goldPct: 0, xpPerMillion: null, paybackHours: null };
+            return {
+                entry: null,
+                cost: null,
+                xpPct: 0,
+                goldPct: 0,
+                xpDelta: 0,
+                goldDelta: 0,
+                xpPerMillion: null,
+                paybackHours: null,
+            };
         }
 
         const xpDelta = entry.xpScore - xpBaseline;
@@ -1324,6 +1334,10 @@ class SkillingSimulatorUI {
             cost,
             xpPct: xpDelta > 0 ? (xpBaseline > 0 ? (xpDelta / xpBaseline) * 100 : Infinity) : 0,
             goldPct: goldDelta > 0 ? (goldBaseline > 0 ? (goldDelta / goldBaseline) * 100 : Infinity) : 0,
+            // Kept alongside the percentages because the baseline is shared by every slot in the
+            // panel: when it is zero, every percentage is Infinity and only these still rank.
+            xpDelta,
+            goldDelta,
             xpPerMillion,
             paybackHours,
         };
@@ -1346,7 +1360,30 @@ class SkillingSimulatorUI {
      */
     _compareSlotViews(a, b, goal, sortMode) {
         const diff = this._sortValueFor(a.metrics, goal, sortMode) - this._sortValueFor(b.metrics, goal, sortMode);
-        return diff !== 0 && !Number.isNaN(diff) ? diff : a.index - b.index;
+        if (diff !== 0 && !Number.isNaN(diff)) return diff;
+
+        // The baseline belongs to the panel, not the slot, so a zero baseline makes every row's
+        // percentage Infinity at once: the primary key ties for the whole list and the gain modes
+        // would fall straight to slot order, which is not a ranking. The absolute gain is the only
+        // thing still telling those rows apart.
+        const byGain = this._gainTiebreakFor(a.metrics, sortMode) - this._gainTiebreakFor(b.metrics, sortMode);
+        if (byGain !== 0 && !Number.isNaN(byGain)) return byGain;
+
+        return a.index - b.index;
+    }
+
+    /**
+     * Ascending secondary key for the two gain modes — the absolute gain, negated so the largest
+     * sorts first. Zero for every other mode, whose ties are cost-derived and genuinely equal.
+     *
+     * @param {Object} metrics - Result of _computeSlotMetrics
+     * @param {string} sortMode - One of SORT_MODES' `value`s
+     * @returns {number}
+     */
+    _gainTiebreakFor(metrics, sortMode) {
+        if (sortMode === 'xpGain') return -(metrics.xpDelta ?? 0);
+        if (sortMode === 'goldGain') return -(metrics.goldDelta ?? 0);
+        return 0;
     }
 
     /**
