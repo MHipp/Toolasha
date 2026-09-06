@@ -32,6 +32,7 @@ import { registerRow } from '../../utils/overlay-rows.js';
 import { row, blank, shortDuration, ROW_COLORS } from '../../utils/overlay-format.js';
 import { calculateActionStats } from '../../utils/action-calculator.js';
 import { calculateEfficiencyMultiplier } from '../../utils/efficiency.js';
+import { runningAction } from '../../utils/combat-actions.js';
 
 /**
  * What is left of the current character's action queue.
@@ -57,6 +58,13 @@ export function queueTimeLeft() {
     let finite = 0;
     let queued = 0;
     let infinite = false;
+
+    // The queue array is insertion order, not execution order — a repeating action
+    // requeued to the front after completing a cycle keeps a *higher* ordinal, so the
+    // action actually running is the lowest-ordinal unfinished one, not actions[0] or the
+    // first non-done entry a `for…of` happens to reach. Needed here only to know which
+    // single finite action, if any, has already burned part of its current unit.
+    const current = runningAction(actions);
 
     for (const action of actions) {
         if (action?.isDone) continue;
@@ -86,7 +94,18 @@ export function queueTimeLeft() {
         // it here quietly undercounts every action whose efficiency does not
         // divide the remaining count evenly.
         const effectiveRate = calculateEfficiencyMultiplier(stats.totalEfficiency);
-        seconds += Math.ceil(remaining / effectiveRate) * stats.actionTime;
+        let actionSeconds = Math.ceil(remaining / effectiveRate) * stats.actionTime;
+
+        // The running action's current unit is already partway done; charging it in full
+        // overestimates the tile by up to one whole action's duration for as long as that
+        // unit is in progress. Scoped to (id, currentCount) so a queued action — which has
+        // no boundary recorded for it — is never affected.
+        if (action === current) {
+            const elapsed = dataManager.getElapsedSecondsInCurrentUnit(action.id, action.currentCount, stats.actionTime);
+            actionSeconds = Math.max(0, actionSeconds - elapsed);
+        }
+
+        seconds += actionSeconds;
         finite += 1;
     }
 

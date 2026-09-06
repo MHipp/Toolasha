@@ -20,6 +20,7 @@ const game = vi.hoisted(() => ({
     skills: [{ skillHrid: '/skills/milking', level: 50 }],
     clientData: { itemDetailMap: {} },
     stats: { actionTime: 10, totalEfficiency: 0 },
+    elapsedSecondsInCurrentUnit: () => 0,
 }));
 
 vi.mock('../../utils/overlay-rows.js', () => ({
@@ -35,6 +36,7 @@ vi.mock('../../core/data-manager.js', () => ({
         getInitClientData: () => game.clientData,
         getEquipment: () => new Map(),
         getActionDetails: (hrid) => (hrid ? { name: hrid, type: '/action_types/milking' } : null),
+        getElapsedSecondsInCurrentUnit: (...args) => game.elapsedSecondsInCurrentUnit(...args),
     },
 }));
 
@@ -54,13 +56,21 @@ const { queueTimeLeft } = await import('./queue-time-row.js');
  * @param {number} currentCount - How many are done
  * @returns {Object} A queued action
  */
-function counted(maxCount, currentCount = 0) {
-    return { actionHrid: '/actions/milking/cow', hasMaxCount: true, maxCount, currentCount, isDone: false };
+function counted(maxCount, currentCount = 0, ordinal = 0) {
+    return {
+        id: `action-${ordinal}`,
+        actionHrid: '/actions/milking/cow',
+        hasMaxCount: true,
+        maxCount,
+        currentCount,
+        isDone: false,
+        ordinal,
+    };
 }
 
 /** An action with no count on it. @returns {Object} */
-function unbounded() {
-    return { actionHrid: '/actions/milking/cow', hasMaxCount: false, isDone: false };
+function unbounded(ordinal = 0) {
+    return { id: `action-${ordinal}`, actionHrid: '/actions/milking/cow', hasMaxCount: false, isDone: false, ordinal };
 }
 
 /**
@@ -79,6 +89,7 @@ describe('the queue time tile', () => {
         game.skills = [{ skillHrid: '/skills/milking', level: 50 }];
         game.clientData = { itemDetailMap: {} };
         game.stats = { actionTime: 10, totalEfficiency: 0 };
+        game.elapsedSecondsInCurrentUnit = () => 0;
     });
 
     test('registers, off by default', () => {
@@ -157,5 +168,40 @@ describe('the queue time tile', () => {
         const container = draw();
         expect(container.textContent).toContain('10m');
         expect(container.title).toContain('no count is queued');
+    });
+
+    test('the running action subtracts time already spent on its current unit', () => {
+        // 100 remaining at 10s each is 1000s undiscounted; 4s already burned on the
+        // in-progress unit brings it to 996s. Charging the full 10s here is the tile
+        // reporting time that has already elapsed as still ahead of the player.
+        game.actions = [counted(100, 0, 0)];
+        game.elapsedSecondsInCurrentUnit = (actionId, currentCount) =>
+            actionId === 'action-0' && currentCount === 0 ? 4 : 0;
+
+        expect(queueTimeLeft().seconds).toBe(996);
+    });
+
+    test('only the running action is discounted — a requeued repeat at array position 0 is not it', () => {
+        // Execution order is ascending ordinal, not array position. A repeating action
+        // requeued after finishing a cycle sits at the *front* of the array but carries a
+        // *higher* ordinal, so it is actually queued behind the lower-ordinal entry later
+        // in the array — which is the one really running and the one that should be
+        // discounted for time already spent.
+        const requeuedRepeat = counted(100, 0, 1); // array position 0, ordinal 1 — not running
+        const actuallyRunning = counted(50, 0, 0); // array position 1, ordinal 0 — running
+        game.actions = [requeuedRepeat, actuallyRunning];
+        game.elapsedSecondsInCurrentUnit = (actionId, currentCount) =>
+            actionId === 'action-0' && currentCount === 0 ? 4 : 0;
+
+        // requeuedRepeat: 1000, untouched since it is not the running action.
+        // actuallyRunning: 500 - 4 = 496.
+        expect(queueTimeLeft().seconds).toBe(1496);
+    });
+
+    test('an elapsed reading past the action time never drives the total negative', () => {
+        game.actions = [counted(1, 0, 0)];
+        game.elapsedSecondsInCurrentUnit = () => 999; // implausible, but must still clamp at 0
+
+        expect(queueTimeLeft().seconds).toBe(0);
     });
 });
