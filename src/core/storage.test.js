@@ -658,10 +658,68 @@ describe('Storage.budgetReport', () => {
         const rows = await storage.budgetReport();
 
         // Over-budget first, so a report that is skimmed still says the thing
-        expect(rows[0]).toEqual({ storeName: 'lootLogHistory', keys: budget + 1, budget, over: true });
+        expect(rows[0]).toEqual({
+            storeName: 'lootLogHistory',
+            keys: budget + 1,
+            perCharacter: false,
+            budget,
+            over: true,
+        });
         const unbudgeted = rows.find((row) => row.storeName === 'somethingUnbudgeted');
-        expect(unbudgeted).toEqual({ storeName: 'somethingUnbudgeted', keys: 1, budget: null, over: false });
+        expect(unbudgeted).toEqual({
+            storeName: 'somethingUnbudgeted',
+            keys: 1,
+            perCharacter: false,
+            budget: null,
+            over: false,
+        });
         expect(rows.every((row) => row.storeName === 'lootLogHistory' || !row.over)).toBe(true);
+
+        storage.getAllKeys.mockRestore();
+    });
+
+    // A store budgeted "per character" (see the comment on STORE_KEY_BUDGETS)
+    // chunks many keys per character; a flat store-wide count adds every
+    // character's chunks together and trips the budget for a healthy
+    // multi-character account. `perCharacterCount` lets a caller that knows the
+    // key format (chunked-history.js's `maxRecordsPerCharacter`) supply the
+    // busiest character's count instead.
+    test('a supplied per-character count replaces the flat total for that store', async () => {
+        const budget = STORE_KEY_BUDGETS.lootLogHistory;
+        // Two characters, each safely under budget alone, whose combined total
+        // would trip a flat comparison.
+        const keysByStore = { lootLogHistory: Array.from({ length: budget + 100 }, (_, i) => `k${i}`) };
+        storage.db = { objectStoreNames: Object.keys(keysByStore) };
+        vi.spyOn(storage, 'getAllKeys').mockImplementation(async (name) => keysByStore[name] || []);
+
+        const perCharacterCount = (storeName) => (storeName === 'lootLogHistory' ? budget - 1 : null);
+        const rows = await storage.budgetReport(['lootLogHistory'], perCharacterCount);
+
+        expect(rows[0]).toEqual({
+            storeName: 'lootLogHistory',
+            keys: budget - 1,
+            perCharacter: true,
+            budget,
+            over: false,
+        });
+
+        storage.getAllKeys.mockRestore();
+    });
+
+    test('a per-character counter that declines (returns null) falls back to the flat count', async () => {
+        const keysByStore = { settings: ['a', 'b', 'c'] };
+        storage.db = { objectStoreNames: Object.keys(keysByStore) };
+        vi.spyOn(storage, 'getAllKeys').mockImplementation(async (name) => keysByStore[name] || []);
+
+        const rows = await storage.budgetReport(['settings'], () => null);
+
+        expect(rows[0]).toEqual({
+            storeName: 'settings',
+            keys: 3,
+            perCharacter: false,
+            budget: STORE_KEY_BUDGETS.settings,
+            over: false,
+        });
 
         storage.getAllKeys.mockRestore();
     });

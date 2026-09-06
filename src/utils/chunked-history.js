@@ -118,6 +118,66 @@ export function recordKeysFor(keys, prefix, charId) {
 }
 
 /**
+ * Record prefixes registered per store, for a per-character budget check.
+ *
+ * A chunked history writes many keys for one character — one per time bucket —
+ * so a flat count of a store's keys adds every character's buckets together.
+ * `STORE_KEY_BUDGETS` in `core/storage.js` is sized per character for exactly
+ * the stores this file backs (its comments say so), so a flat total trips the
+ * budget for any account with more than a handful of characters even when no
+ * single one of them is anywhere near it. Recorded here as each
+ * `ChunkedHistory` is built — module-scope singletons, constructed once, well
+ * before any budget report runs — so `core/storage.js` can ask what the
+ * busiest single character is doing instead, without importing this file:
+ * that import already runs the other way, since this file needs `storage`.
+ * @type {Map<string, Set<string>>} storeName -> prefixes
+ */
+const chunkedStorePrefixes = new Map();
+
+/**
+ * Note that a store now has a chunked recorder under this prefix.
+ * @param {string} storeName - Object store the records live in
+ * @param {string} prefix - Record key prefix, without its trailing underscore
+ */
+function registerChunkedStore(storeName, prefix) {
+    if (!storeName || !prefix) return;
+    if (!chunkedStorePrefixes.has(storeName)) chunkedStorePrefixes.set(storeName, new Set());
+    chunkedStorePrefixes.get(storeName).add(prefix);
+}
+
+/**
+ * The most chunk-history records any single character has in a store.
+ *
+ * Sums every registered prefix's contribution per character first — a store
+ * such as `xpHistory` chunks two independent series (skills, abilities) under
+ * different prefixes, and a character's real footprint is both together — then
+ * reports the busiest character rather than the account total, which is the
+ * number `STORE_KEY_BUDGETS`'s per-character comments are actually about.
+ *
+ * @param {string} storeName - The store to check
+ * @param {Array<string>} keys - Every key currently in the store
+ * @returns {number|null} The busiest character's key count, or null when
+ *   nothing chunked in this file writes to that store — a flat count is then
+ *   the right answer, and the caller should fall back to it
+ */
+export function maxRecordsPerCharacter(storeName, keys) {
+    const prefixes = chunkedStorePrefixes.get(storeName);
+    if (!prefixes || prefixes.size === 0) return null;
+
+    const perCharacter = new Map();
+    for (const prefix of prefixes) {
+        for (const id of idsFromRecordKeys(keys, `${prefix}_`)) {
+            const count = recordKeysFor(keys, prefix, id).length;
+            perCharacter.set(id, (perCharacter.get(id) || 0) + count);
+        }
+    }
+
+    let max = 0;
+    for (const count of perCharacter.values()) max = Math.max(max, count);
+    return max;
+}
+
+/**
  * A history kept as one record per time bucket.
  *
  * @param {Object} options - Wiring
@@ -192,6 +252,7 @@ class ChunkedHistory {
         /** Which read is current, so one abandoned by `forget()` does not commit */
         this._loadToken = 0;
 
+        registerChunkedStore(storeName, prefix);
         this._registerSyncMerge();
     }
 

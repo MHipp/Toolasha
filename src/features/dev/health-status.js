@@ -14,6 +14,7 @@
 
 import config from '../../core/config.js';
 import storage from '../../core/storage.js';
+import { maxRecordsPerCharacter } from '../../utils/chunked-history.js';
 import { registerFloatingPanel, unregisterFloatingPanel, bringPanelToFront } from '../../utils/panel-z-index.js';
 import { formatReport, reportData } from '../../utils/performance-report.js';
 import { showToast } from '../../utils/toast.js';
@@ -72,7 +73,12 @@ function formatBytes(bytes) {
 export async function refreshStorageFacts() {
     try {
         await storage.estimate();
-        lastBudgetRows = await storage.budgetReport();
+        // Stores budgeted per character (see `STORE_KEY_BUDGETS` in
+        // `core/storage.js`) are checked against their busiest single
+        // character, not the account total — a flat count would add every
+        // character's chunked records together and flag a healthy
+        // multi-character account.
+        lastBudgetRows = await storage.budgetReport(undefined, maxRecordsPerCharacter);
     } catch (error) {
         console.error('[HealthStatus] Reading storage facts failed:', error);
     }
@@ -119,7 +125,10 @@ function storageLines() {
         const over = lastBudgetRows.filter((row) => row.over);
         if (over.length) {
             lines.push(`stores over their soft budget (${over.length}):`);
-            for (const row of over) lines.push(`- ${row.storeName}: ${row.keys} keys (budget ${row.budget})`);
+            for (const row of over) {
+                const per = row.perCharacter ? ', busiest character' : '';
+                lines.push(`- ${row.storeName}: ${row.keys} keys (budget ${row.budget}${per})`);
+            }
         } else {
             lines.push('stores over their soft budget: none');
         }

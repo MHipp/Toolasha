@@ -19,6 +19,13 @@
  * event went down by two or three orders of magnitude, which is the trade the
  * budget is here to permit rather than to flag — a store of many small records
  * is not the leak this number looks for.
+ *
+ * The budgets marked "Per character" below are sized for one character's worst
+ * case, not the account's. `budgetReport()` compares them against a
+ * per-character count for exactly those stores (see its `perCharacterCount`
+ * parameter) — a flat count of every key in the store would add every
+ * character's chunks together, tripping the budget for any multi-character
+ * account well before any one of them is actually over it.
  */
 const STORE_KEY_BUDGETS = {
     settings: 500,
@@ -743,22 +750,34 @@ class Storage {
      * Counting keys is one `getAllKeys()` per store and never touches a value,
      * which is why this is affordable at all — a byte-accurate size would mean
      * reading and serializing the entire database.
+     *
      * @param {Array<string>} [storeNames] - Restrict to these stores; defaults to all
-     * @returns {Promise<Array<{storeName: string, keys: number, budget: number|null, over: boolean}>>}
-     *   One row per store, over-budget rows first
+     * @param {(storeName: string, keys: Array<string>) => number|null} [perCharacterCount] -
+     *   For a store whose budget is meant per character (see the comment on
+     *   `STORE_KEY_BUDGETS`), returns the busiest character's key count instead
+     *   of the store's total; `null` (or omitting the parameter) falls back to
+     *   the flat count. This module has no way to tell a per-character key
+     *   apart from any other on its own — that knowledge lives with the
+     *   recorders that build the keys — so the caller supplies it; see
+     *   `utils/chunked-history.js`'s `maxRecordsPerCharacter`.
+     * @returns {Promise<Array<{storeName: string, keys: number, perCharacter: boolean,
+     *   budget: number|null, over: boolean}>>} One row per store, over-budget rows first
      */
-    async budgetReport(storeNames) {
+    async budgetReport(storeNames, perCharacterCount) {
         const names = storeNames ?? (await this.listStores());
         const rows = [];
 
         for (const storeName of names) {
             const keys = await this.getAllKeys(storeName);
             const budget = STORE_KEY_BUDGETS[storeName] ?? null;
+            const perCharacter = typeof perCharacterCount === 'function' ? perCharacterCount(storeName, keys) : null;
+            const count = perCharacter !== null && perCharacter !== undefined ? perCharacter : keys.length;
             rows.push({
                 storeName,
-                keys: keys.length,
+                keys: count,
+                perCharacter: perCharacter !== null && perCharacter !== undefined,
                 budget,
-                over: budget !== null && keys.length > budget,
+                over: budget !== null && count > budget,
             });
         }
 

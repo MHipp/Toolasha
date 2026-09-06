@@ -46,7 +46,8 @@ const storageMock = vi.hoisted(() => {
 
 vi.mock('../core/storage.js', () => ({ default: storageMock }));
 
-const { createChunkedHistory, timeChunkId, idsFromRecordKeys, recordKeysFor } = await import('./chunked-history.js');
+const { createChunkedHistory, timeChunkId, idsFromRecordKeys, recordKeysFor, maxRecordsPerCharacter } =
+    await import('./chunked-history.js');
 
 /** A history keyed by the month each point falls in */
 const build = () =>
@@ -741,6 +742,65 @@ describe('a listing that could not be made is not an empty history', () => {
         expect(store._loaded).toBe(true);
         expect(await store.save('c1', [at(2026, 6)])).toBe(true);
         expect(storageMock.store.get('rec_c1_2026-06')).toHaveLength(1);
+    });
+});
+
+describe('maxRecordsPerCharacter', () => {
+    // `STORE_KEY_BUDGETS` (core/storage.js) budgets some stores per character.
+    // A flat count of every key in the store adds every character's chunked
+    // records together — this is what a per-character-aware budget check
+    // compares against the budget instead.
+    test('the busiest character, not the store total', () => {
+        createChunkedHistory({
+            storeName: 'budgetStore',
+            prefix: 'budgetRec',
+            legacyKey: (id) => `legacy_${id}`,
+            groupOf: () => '2026-01',
+            compare: () => 0,
+            label: 'BudgetTest',
+        });
+
+        const keys = [
+            'budgetRec_alice_2026-01',
+            'budgetRec_alice_2026-02',
+            'budgetRec_bob_2026-01',
+            'somethingUnrelated',
+        ];
+
+        // Alice has two chunks, bob has one — a flat count of the store (3)
+        // would already be treating a second, lighter character as part of
+        // one leak, and a budget sized for one character would compare it
+        // against the wrong number too.
+        expect(maxRecordsPerCharacter('budgetStore', keys)).toBe(2);
+    });
+
+    // xpHistory chunks two independent series (skills, abilities) under
+    // different prefixes; a character's real footprint is both together.
+    test('sums every prefix registered for the store, per character', () => {
+        createChunkedHistory({
+            storeName: 'multiPrefixStore',
+            prefix: 'seriesA',
+            legacyKey: (id) => `legacyA_${id}`,
+            groupOf: () => '2026-01',
+            compare: () => 0,
+            label: 'SeriesA',
+        });
+        createChunkedHistory({
+            storeName: 'multiPrefixStore',
+            prefix: 'seriesB',
+            legacyKey: (id) => `legacyB_${id}`,
+            groupOf: () => '2026-01',
+            compare: () => 0,
+            label: 'SeriesB',
+        });
+
+        const keys = ['seriesA_alice_2026-01', 'seriesA_alice_2026-02', 'seriesB_alice_2026-01'];
+
+        expect(maxRecordsPerCharacter('multiPrefixStore', keys)).toBe(3);
+    });
+
+    test('a store nothing here chunks defers to the flat count', () => {
+        expect(maxRecordsPerCharacter('neverChunkedStore', ['a', 'b'])).toBeNull();
     });
 });
 
