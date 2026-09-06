@@ -30,12 +30,16 @@ vi.mock('../../core/websocket.js', () => ({
         off: (type) => delete game.wsHandlers[type],
     },
 }));
+// Reassigned per-test (see "a delivery that reaches no channel...") so a test
+// can simulate `notify()` failing to deliver without a second mock module.
+let notifyImpl = (eventKey, message, options) => {
+    game.sent.push({ eventKey, message, options });
+    return { fired: true, channels: ['toast'] };
+};
+
 vi.mock('./notification-service.js', () => ({
     default: {
-        notify: (eventKey, message, options) => {
-            game.sent.push({ eventKey, message, options });
-            return { fired: true, channels: ['toast'] };
-        },
+        notify: (...args) => notifyImpl(...args),
     },
 }));
 
@@ -57,6 +61,10 @@ beforeEach(() => {
     game.values = {};
     game.sent = [];
     game.wsHandlers = {};
+    notifyImpl = (eventKey, message, options) => {
+        game.sent.push({ eventKey, message, options });
+        return { fired: true, channels: ['toast'] };
+    };
     guildTrialAlerts.initialized = false;
     guildTrialAlerts.reset();
     guildTrialAlerts.initialize();
@@ -151,6 +159,37 @@ describe('a trial about to start', () => {
         guildTrialAlerts.noteTrialStatus({ phase: 'live', at: now });
         guildTrialAlerts.noteTrialStatus({ phase: 'live', at: now + 5000 });
         expect(game.sent).toEqual([]);
+    });
+
+    test('a delivery that reaches no channel is retried on the next reading', () => {
+        // Delivery failed once — no browser permission, tab not visible, no
+        // toast surface — and notify() said so. The flag guarding "announce
+        // once" must not be set from that failed attempt, or the cycle goes
+        // silent for good even though the player was never actually told.
+        notifyImpl = () => ({ fired: false, channels: [], reason: 'no channel available' });
+
+        guildTrialAlerts.noteTrialStatus({
+            phase: 'scheduled',
+            startsInMs: 5 * 60_000,
+            trials: ['Milking'],
+            at: now,
+        });
+        expect(game.sent).toEqual([]);
+
+        notifyImpl = (eventKey, message, options) => {
+            game.sent.push({ eventKey, message, options });
+            return { fired: true, channels: ['toast'] };
+        };
+
+        guildTrialAlerts.noteTrialStatus({
+            phase: 'scheduled',
+            startsInMs: 5 * 60_000 - 1000,
+            trials: ['Milking'],
+            at: now + 1000,
+        });
+
+        expect(game.sent).toHaveLength(1);
+        expect(game.sent[0].message).toContain('Guild trial starts in');
     });
 
     test('switched off, nothing is announced', () => {

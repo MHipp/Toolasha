@@ -295,16 +295,24 @@ class GuildTrialAlerts {
         // same key rather than a second alert
         const key = `${START_KEY}:${Math.round(startAt / 60_000)}`;
         if (this.announcedStartFor === key) return null;
-        this.announcedStartFor = key;
 
         // Seconds, not milliseconds: `timeReadable` takes seconds, and handing
         // it a millisecond count turned a ten-minute warning into "6 days 22
         // hours" — the one number in the message the player would act on
         const named = this.trials.length ? ` (${this.trials.join(', ')})` : '';
         const remaining = timeReadable(Math.round(remainingMs / 1000));
-        return notificationService.notify(key, `Guild trial starts in ${remaining}${named}.`, {
+        const result = notificationService.notify(key, `Guild trial starts in ${remaining}${named}.`, {
             title: 'Guild trial starting',
         });
+
+        // Marked announced only once it actually reached the player. Setting
+        // this before `notify()` ran meant a notice that hit no channel — no
+        // browser permission, page not visible, no toast surface yet — was
+        // marked told and never retried: the flag said "announced", the player
+        // never saw it, and the next reading of the same cycle stayed silent
+        // because the key already matched.
+        if (result?.fired) this.announcedStartFor = key;
+        return result;
     }
 
     /**
