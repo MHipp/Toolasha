@@ -280,20 +280,18 @@ export const RECOVERY_FALLBACK_MAX_MS = 45 * 60 * 1000;
 export const RECOVERY_WAVE_TOLERANCE = 2;
 
 /**
- * Whether a stored run may set the recovery bound.
+ * Whether a stored run's duration is circular evidence for this bound.
  *
  * A recovered run's own duration was measured from the anchor this bound let
  * through, so feeding it back in is a ratchet: one over-long recovery raises the
  * ceiling, the raised ceiling admits a longer one, and the bound only ever
- * widens. An unvalidated run is the client's own wall clock rather than the
- * server's timestamps, which is the clock this check exists to doubt. Neither
- * may vote on how long a run of this dungeon can be.
+ * widens. Such a run may never vote on how long a run of this dungeon can be.
  *
  * @param {Object} run - A stored run
  * @returns {boolean}
  */
-function boundsRecovery(run) {
-    return run.startRecovered !== true && run.validated !== false;
+function isRecoveredRun(run) {
+    return run.startRecovered === true;
 }
 
 /**
@@ -304,6 +302,14 @@ function boundsRecovery(run) {
  * by any of the mishaps this file already heals — sets the ceiling for every
  * recovery after it. The median moves only when most of your runs do.
  *
+ * Server-timestamped runs are the sample where there are any. A wall-clocked
+ * (`validated: false`) run is a worse witness, but it is only fallen back to
+ * when there is no better one, and the alternative is not a stricter bound — it
+ * is no bound at all and the caller's 45-minute `RECOVERY_FALLBACK_MAX_MS`,
+ * which is looser than anything this history supports. The same runs' wave times
+ * already stand behind the per-wave check in `assessRecoveredStart`, which does
+ * not ask whether they were validated either.
+ *
  * @param {Array<Object>} runs - Stored runs, already narrowed to the character
  * @param {Object} current - The live run's identity
  * @param {string|null} current.dungeonName - Which dungeon
@@ -313,24 +319,26 @@ function boundsRecovery(run) {
 export function plausibleMaxRunMs(runs, { dungeonName, tier } = {}) {
     if (!dungeonName || dungeonName === 'Unknown') return null;
 
-    const durations = [];
+    const serverTimed = [];
+    const wallClocked = [];
     for (const run of runs || []) {
         if (!run || run.dungeonName !== dungeonName) continue;
         if (tier !== null && tier !== undefined && run.tier !== null && run.tier !== undefined && run.tier !== tier) {
             continue;
         }
-        if (!boundsRecovery(run)) continue;
+        if (isRecoveredRun(run)) continue;
         const duration = Number(run.duration ?? run.totalTime);
         if (!Number.isFinite(duration) || duration <= 0) continue;
-        durations.push(duration);
+        (run.validated === false ? wallClocked : serverTimed).push(duration);
     }
 
+    const durations = serverTimed.length ? serverTimed : wallClocked;
     if (!durations.length) return null;
 
     durations.sort((a, b) => a - b);
     if (durations.length < RECOVERY_MIN_MEDIAN_SAMPLE) {
-        // Too few to call a median; the old max-based bound stands in, over the
-        // clean runs only — no bound at all would hand the caller its 45-minute
+        // Too few to call a median; the old max-based bound stands in, over this
+        // sample only — no bound at all would hand the caller its 45-minute
         // fallback, which is looser than anything this history supports.
         return durations[durations.length - 1] * RECOVERY_DURATION_SLACK;
     }

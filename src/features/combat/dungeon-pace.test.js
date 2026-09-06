@@ -257,6 +257,39 @@ describe('the recovery plausibility bound', () => {
         expect(plausibleMaxRunMs(runs, { dungeonName: 'D', tier: null })).toBe(12 * MINUTE * RECOVERY_DURATION_SLACK);
     });
 
+    test('a solo history still bounds the first party recovery of that dungeon', () => {
+        // Every run of a dungeon you have only ever soloed is `validated: false`.
+        // Refusing the whole sample leaves no bound at all, and no bound is not a
+        // stricter one: the caller then reaches for its 45-minute ceiling, which
+        // admits an anchor four runs early. A wall clock is a poor witness to how
+        // long a run took; it is a far better one than nothing.
+        const runs = Array.from({ length: RECOVERY_MIN_MEDIAN_SAMPLE }, () => ({
+            ...chatRun('D', 10 * MINUTE),
+            validated: false,
+        }));
+
+        expect(plausibleMaxRunMs(runs, { dungeonName: 'D', tier: null })).toBe(10 * MINUTE * RECOVERY_MEDIAN_SLACK);
+        expect(
+            assessRecoveredStart({
+                impliedElapsedMs: 30 * MINUTE,
+                currentWave: 10,
+                maxWaves: MAX_WAVES,
+                runs,
+                dungeonName: 'D',
+                tier: null,
+            }).credible
+        ).toBe(false);
+    });
+
+    test('a recovered run is refused even when it is all the history there is', () => {
+        // The wall-clock fallback above must not become a door the ratchet walks
+        // back through: a recovered run is `validated: false` only when it was
+        // never a party run at all, but it is `startRecovered` always.
+        const runs = [{ ...chatRun('D', 30 * MINUTE), validated: false, startRecovered: true }];
+
+        expect(plausibleMaxRunMs(runs, { dungeonName: 'D', tier: null })).toBeNull();
+    });
+
     test('nothing clean to derive one from leaves the caller its own ceiling', () => {
         const runs = [{ ...chatRun('D', 30 * MINUTE), startRecovered: true }];
 
