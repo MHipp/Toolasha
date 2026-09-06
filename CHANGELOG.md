@@ -6,6 +6,17 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Upstream sweep: live buffs, a duplicated core module, and the bundle limit
+
+A comparison against upstream turned up three real bugs here and two of our own. Every buff map was read once at login and never again, so a house upgrade, tea swap, re-equip or guild buff purchase left the enhancement, action timing and clear-rate readouts working from stale figures for the rest of the session; they now follow the game's live updates. A profit calculation still running when you switched character could paint the departing character's figure into the arriving one's action bar. And a queue shorter than one action cycle could report a finish time below a single cycle.
+
+Two more came out of checking upstream's bundling work, which does not apply here — this fork split its bundles differently and its largest is well under the limit. But the duplication check only ever policed shared utilities, never core, and extending it found the connection state duplicated into two bundles: two copies of a supposed singleton, each with its own socket listeners and its own idea of whether the connection was up. Separately the bundle size ceiling had drifted from 2 MB to 3.5 MB on the reading that it was a duplication proxy; it is a hard delivery limit, and is now enforced as one.
+
+In the combat simulator: a unit that died and was revived kept its buffs for the rest of the fight, because dying swept away the timers that would have expired them. A Szerra import ignored the guild shrine levels its own export format carries, so imported characters simulated with every shrine switched off. And a dungeon's entry and chest keys were charged only in the results detail view, so zone rankings, upgrade advice and task profit all read dungeon income with the keys unpaid.
+
+Also fixed: negative labyrinth skip thresholds were clamped to zero when read back, so a saved negative threshold lost its badge and mis-compared against recommendations; and Iron Cow mode no longer strips the date and time format preferences, which are not market data.
+
+
 ### Step between marketplace items without going back to the grid
 
 Checking live prices across a set of items meant opening one, clicking "View All Items" at the far left, opening the next, and repeating. The marketplace now remembers the list you were looking at, so `[` and `]` move straight to the previous or next item's order book, and Escape returns to the grid. There are matching arrows beside the game's own Refresh button, with the position in the list, so the keys are discoverable and the ends of the list are visible before you hit them. It follows whatever filter is applied, so a sweep covers the handful you filtered to rather than the whole catalogue. Off by default; the keys are named in its setting.
