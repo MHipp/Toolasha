@@ -559,8 +559,9 @@ export const settingsGroups = {
                 options: [
                     { value: 'expected', label: 'Expected value (average)' },
                     { value: 'worst-case', label: 'Worst-case per action (ceil per craft)' },
+                    { value: 'hybrid', label: 'Hybrid (ceil below 100 actions, average at 100+)' },
                 ],
-                help: 'Choose how missing materials accounts for Artisan Tea reductions when suggesting what to buy.',
+                help: 'How missing materials accounts for Artisan Tea reductions when suggesting what to buy. Expected value averages the fractional saving across the whole queue — right for long queues, but it can under-buy on a short one, since a single craft still consumes whole units. Worst-case ceils every craft — right for a handful of actions, but on a long queue it over-buys by up to one unit per craft. Hybrid uses worst-case below 100 actions and expected value at 100 or more, which is the right end of that trade in each case.',
             },
         },
     },

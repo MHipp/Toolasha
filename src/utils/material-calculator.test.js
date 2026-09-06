@@ -180,6 +180,48 @@ describe('calculateMaterialRequirements', () => {
         expect(plank.required).toBe(20);
     });
 
+    describe('hybrid artisan mode', () => {
+        // 4 planks/action with a 0.1 artisan bonus = 3.6/action: expected ceils the product,
+        // worst-case ceils each craft to 4. Hybrid must agree with whichever mode is right at
+        // each end of the range, so these assertions pin it against both.
+        beforeEach(() => {
+            state.settings['actions_artisanMaterialMode'] = ARTISAN_MATERIAL_MODE.HYBRID;
+            state.drinks = [{ itemHrid: '/items/artisan_tea' }];
+            state.gameData.itemDetailMap['/items/artisan_tea'] = {
+                consumableDetail: { buffs: [{ typeHrid: '/buff_types/artisan', flatBoost: 0.1 }] },
+            };
+        });
+
+        const planksFor = (numActions) =>
+            calculateMaterialRequirements('/actions/crafting/table', numActions).find(
+                (m) => m.itemHrid === '/items/plank'
+            ).required;
+
+        test('matches worst-case below the 100-action threshold', () => {
+            expect(planksFor(5)).toBe(20); // ceil(3.6) * 5
+            expect(planksFor(99)).toBe(396); // ceil(3.6) * 99
+        });
+
+        test('matches expected value at exactly the threshold and above', () => {
+            expect(planksFor(100)).toBe(360); // ceil(3.6 * 100)
+            expect(planksFor(250)).toBe(900); // ceil(3.6 * 250)
+        });
+
+        test('an unbounded queue takes expected-value rounding', () => {
+            expect(planksFor(Infinity)).toBe(Infinity);
+        });
+    });
+
+    test('an unrecognized mode value falls back to expected value', () => {
+        state.settings['actions_artisanMaterialMode'] = 'not-a-real-mode';
+        state.drinks = [{ itemHrid: '/items/artisan_tea' }];
+        state.gameData.itemDetailMap['/items/artisan_tea'] = {
+            consumableDetail: { buffs: [{ typeHrid: '/buff_types/artisan', flatBoost: 0.1 }] },
+        };
+        const result = calculateMaterialRequirements('/actions/crafting/table', 5);
+        expect(result.find((m) => m.itemHrid === '/items/plank').required).toBe(18);
+    });
+
     test('includes the upgrade item at 1-per-action with no artisan reduction', () => {
         state.gameData.actionDetailMap['/actions/crafting/table'].upgradeItemHrid = '/items/table';
         const result = calculateMaterialRequirements('/actions/crafting/table', 5);
