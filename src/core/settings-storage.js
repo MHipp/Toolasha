@@ -318,13 +318,55 @@ class SettingsStorage {
     }
 
     /**
-     * Save all settings to storage
+     * Save all settings to storage, keeping entries this build does not know.
+     *
+     * `loadSettings()` builds its map from the schema and merges saved values
+     * onto it, so a stored id the current schema has no entry for never reaches
+     * the map — and this write is whole, so the next save erased it. That is
+     * fine for a setting genuinely retired, and wrong for the case that
+     * actually happens: a device on an older build pulls settings written by a
+     * newer one (`sync-payload.js` folds the incoming map onto the local one,
+     * so the newer ids DO land on disk), and the first toggle on the old build
+     * strips every one of them. Upgrading that device later then finds those
+     * settings back at their shipped defaults, with no sign they were ever
+     * chosen. The same applies to the upstream fork, which writes its own ids
+     * to these very keys.
+     *
+     * So an id the caller's map does not mention is carried over from what is
+     * stored rather than dropped. `loadSettings()` emits every id in the
+     * schema, so the only ids that can be carried are ones this build does not
+     * have — nothing the user can turn off is kept alive by this.
+     *
+     * A store that cannot be read still gets the write: losing the change the
+     * player just made is a worse answer than losing ids this build cannot show
+     * them anyway.
+     *
      * @param {Object} settings - Settings map
      * @returns {Promise<void>}
      */
     async saveSettings(settings) {
         const characterKey = this.getCharacterStorageKey();
-        await storage.setJSON(characterKey, settings, this.storageArea, true);
+        const probed = await storage.tryGet(characterKey, this.storageArea);
+
+        let stored = probed?.found ? probed.value : null;
+        if (typeof stored === 'string') {
+            try {
+                stored = JSON.parse(stored);
+            } catch {
+                stored = null;
+            }
+        }
+
+        let toWrite = settings;
+        if (stored && typeof stored === 'object') {
+            const foreign = Object.keys(stored).filter((id) => !(id in (settings || {})));
+            if (foreign.length > 0) {
+                toWrite = { ...settings };
+                for (const id of foreign) toWrite[id] = stored[id];
+            }
+        }
+
+        await storage.setJSON(characterKey, toWrite, this.storageArea, true);
     }
 
     /**

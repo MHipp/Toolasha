@@ -400,3 +400,53 @@ describe('the known-characters roster holds one entry per character', () => {
         expect(await settingsStorage.getKnownCharacters()).toEqual([{ id: '99999', name: 'NewAlt' }]);
     });
 });
+
+describe('a save keeps setting ids this build does not know about', () => {
+    beforeEach(() => {
+        stored.clear();
+        outage.on = false;
+        settingsStorage.currentCharacterId = 'alice';
+        settingsStorage.currentCharacterName = 'Alice';
+    });
+
+    test('an id absent from the schema survives a whole-map write', async () => {
+        // What a sync pull leaves behind: the newer build's id is on disk, and
+        // this build's `loadSettings()` has no entry for it, so it is simply
+        // not in the map handed to `saveSettings`
+        stored.set('json:script_settingsMap_alice', {
+            chatCommands: { isTrue: true },
+            futureFeature_enabled: { isTrue: false },
+        });
+
+        await settingsStorage.saveSettings({ chatCommands: { isTrue: false } });
+
+        const written = stored.get('json:script_settingsMap_alice');
+        expect(written.chatCommands).toEqual({ isTrue: false });
+        // Dropping this is how an old build strips settings the player chose on
+        // a newer one, and they come back as defaults on the next upgrade
+        expect(written.futureFeature_enabled).toEqual({ isTrue: false });
+    });
+
+    test('the caller wins for every id it does mention', async () => {
+        stored.set('json:script_settingsMap_alice', { chatCommands: { isTrue: true } });
+
+        await settingsStorage.saveSettings({ chatCommands: { isTrue: false } });
+
+        expect(stored.get('json:script_settingsMap_alice').chatCommands).toEqual({ isTrue: false });
+    });
+
+    test('a store that cannot be read still takes the write', async () => {
+        // Refusing here would lose the change the player just made, which is
+        // worse than losing ids this build cannot show them anyway
+        outage.on = true;
+        await settingsStorage.saveSettings({ chatCommands: { isTrue: false } });
+        outage.on = false;
+
+        expect(storage.setJSON).toHaveBeenCalledWith(
+            'script_settingsMap_alice',
+            { chatCommands: { isTrue: false } },
+            expect.anything(),
+            true
+        );
+    });
+});
