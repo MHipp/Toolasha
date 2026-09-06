@@ -16,13 +16,11 @@ Three of yesterday's own fixes had introduced new faults, all caught here. Mirro
 
 Elsewhere: the key craft cost was remembered across a character switch, so an alt could be valued with your main's cheaper keys, and a price that could not be read was remembered as free, which inflated net worth; the dungeon readiness card could not tell you from the rest of the party for the whole of a battle, listing your own gear as someone else's; the Optimizer's top-ranked upgrade could show no cost at all when it was free; and the loot pivot re-summed the entire history on every keystroke.
 
-
 ### What your actions actually earned, not what they were predicted to earn
 
 Every rate in the script until now was a prediction from game data. The new Loot & XP pivot reads the loot log instead and reports what each action really paid: time spent, gold per hour at ask and bid, and experience per hour for each skill it trained, with a combined line for actions that train several. Both money columns are kept rather than picking one, because the gap between them is itself the finding — an action thin at bid and fat at ask is one whose income depends on patience. Off by default.
 
 The loot log now keeps 2,000 sessions rather than 500, which is what makes a pivot worth reading. That raise also exposed a cost worth fixing: merging the log re-parsed every timestamp inside a sort comparator on every update, thousands of times per message.
-
 
 ### The Skilling Optimizer can tell you what an upgrade costs and when it pays back
 
@@ -32,11 +30,9 @@ Equipment Progression showed how much more XP or gold each upgrade would earn an
 
 The queued actions popup jumped between roughly 164 and 338 pixels wide as our own injected rows gained and lost their "complete at" text; it now holds one width. Missing materials gain a hybrid rounding mode that takes the worst case on short queues and the expected value on long ones, since each existing mode is wrong at one end. And the in-battle Consumables grid can show how long each food and drink lasts, read from the same forecast the consumables panel uses so the two cannot disagree, reddening at the same threshold that triggers the low-consumable alert. Both new options are off by default.
 
-
 ### Ability tooltips can show the cooldown you actually get
 
 The game's ability tooltip only ever shows base cooldown and cast time, so the numbers are wrong for anyone with haste or cast speed. Hovering an ability can now append the effective figure, worked out from the same reconstruction the combat simulator uses, so the tooltip and the simulator agree. Where a modifier cannot be read it leaves the game's own line alone rather than showing a guess. Off by default.
-
 
 ### Upstream sweep: live buffs, a duplicated core module, and the bundle limit
 
@@ -48,11 +44,9 @@ In the combat simulator: a unit that died and was revived kept its buffs for the
 
 Also fixed: negative labyrinth skip thresholds were clamped to zero when read back, so a saved negative threshold lost its badge and mis-compared against recommendations; and Iron Cow mode no longer strips the date and time format preferences, which are not market data.
 
-
 ### Step between marketplace items without going back to the grid
 
 Checking live prices across a set of items meant opening one, clicking "View All Items" at the far left, opening the next, and repeating. The marketplace now remembers the list you were looking at, so `[` and `]` move straight to the previous or next item's order book, and Escape returns to the grid. There are matching arrows beside the game's own Refresh button, with the position in the list, so the keys are discoverable and the ends of the list are visible before you hit them. It follows whatever filter is applied, so a sweep covers the handful you filtered to rather than the whole catalogue. Off by default; the keys are named in its setting.
-
 
 ### The task zone number updates when you reroll
 
