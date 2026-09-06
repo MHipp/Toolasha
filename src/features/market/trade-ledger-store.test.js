@@ -677,3 +677,30 @@ describe('a character switch landing inside a load or a save', () => {
         expect(LEDGER().has(`tradeLedgerState_${IRON}`)).toBe(false);
     });
 });
+
+/**
+ * The day records share `marketListings` with account-wide market caches, so
+ * the store's flat 2,000-key budget is not theirs: a four-character account
+ * would trip it while no single character was near its own. Registering the
+ * prefix is what lets the health panel count them per character and check them
+ * against `CHARACTER_FAMILY_BUDGETS`.
+ */
+describe('the day records are counted per character', () => {
+    test('the record prefix is registered as character-scoped', async () => {
+        const { maxRecordsPerCharacter } = await import('../../utils/chunked-history.js');
+
+        const keys = [
+            'tradeLedgerRec_char-1_2026-09-01',
+            'tradeLedgerRec_char-1_2026-09-02',
+            'tradeLedgerRec_char-1_2026-09-03',
+            'tradeLedgerRec_char-2_2026-09-01',
+            // Not a day record: the pre-split single key and the split marker
+            'tradeLedgerRecords_char-1',
+            'tradeLedgerRecordsSplit_char-1',
+            // Account-wide, and no character's to carry
+            'orderBooksCache',
+        ];
+
+        expect(maxRecordsPerCharacter('marketListings', keys)).toBe(3);
+    });
+});

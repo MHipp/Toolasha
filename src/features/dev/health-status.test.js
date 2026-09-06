@@ -200,6 +200,36 @@ describe('what the report says about storage', () => {
         expect(report).toContain('stores over their soft budget: none');
     });
 
+    // `marketListings` reports twice — the store's account-wide caches and the
+    // trade ledger's per-character day records — and two rows under one name
+    // could not be told apart.
+    test('a per-character key family is named apart from the store it lives in', async () => {
+        storageMock.budgets = [
+            {
+                storeName: 'marketListings',
+                family: 'tradeLedgerRec',
+                keys: 1300,
+                unknown: false,
+                perCharacter: true,
+                budget: 1200,
+                over: true,
+            },
+            {
+                storeName: 'marketListings',
+                keys: 40,
+                unknown: false,
+                perCharacter: false,
+                budget: 2000,
+                over: false,
+            },
+        ];
+        await refreshStorageFacts();
+
+        const report = buildDiagnosticReport([]);
+        expect(report).toContain('- marketListings/tradeLedgerRec: 1300 keys (budget 1200, busiest character)');
+        expect(report).toContain('marketListings/tradeLedgerRec=1300, marketListings=40');
+    });
+
     test('nothing unlistable adds no line about it', async () => {
         await refreshStorageFacts();
 

@@ -53,7 +53,44 @@ const STORE_KEY_BUDGETS = {
     teamRuns: 600,
     combatStats: 200,
     queueSnapshots: 80,
+    // Account-wide, not per character: the order-book cache and the price
+    // store. The trade ledger's per-character day records live here too and
+    // are budgeted separately — see `CHARACTER_FAMILY_BUDGETS`.
     marketListings: 2000,
+};
+
+/**
+ * Per-character budgets for one key family inside a store whose other keys are
+ * account-wide.
+ *
+ * The four chunked-history stores above are per-character through and through,
+ * so their `STORE_KEY_BUDGETS` entry *is* the per-character number and
+ * `budgetReport` swaps the busiest character's count in for the store total.
+ * `marketListings` is mixed: the trade ledger writes one
+ * `tradeLedgerRec_<charId>_<YYYY-MM-DD>` record per character per trading day,
+ * beside account-wide market caches that have nothing to do with a character.
+ * Counting both against one flat number is the bug 882023aec fixed for the
+ * chunked stores, latent here — a four-character account with a shared 2,000
+ * trips the store budget while no single character is near its own — and
+ * swapping the whole row to a per-character count would stop the account-wide
+ * caches being watched at all. So the store keeps its flat row and gains a
+ * second one for the family.
+ *
+ * `family` is the key prefix, and the count comes from the caller's
+ * `perCharacterCount` — which is the maximum over every character-scoped
+ * prefix registered for the store, so this is only exact while a store has one
+ * such family. `marketListings` does.
+ */
+const CHARACTER_FAMILY_BUDGETS = {
+    /*
+     * A day record exists for each UTC day a character had at least one fill,
+     * so the count is that character's trading days, not its fills. 1,200 is
+     * about three and a half years of trading *every single day* — well past
+     * any real history, and far short of the 20,000-fill cap
+     * (`LEDGER_RECORD_CAP`) that is the only thing above it. Trading days are
+     * what this must be sized in: a busy day is still one key.
+     */
+    marketListings: { family: 'tradeLedgerRec', budget: 1200 },
 };
 
 /**
@@ -768,9 +805,13 @@ class Storage {
      *   apart from any other on its own — that knowledge lives with the
      *   recorders that build the keys — so the caller supplies it; see
      *   `utils/chunked-history.js`'s `maxRecordsPerCharacter`.
-     * @returns {Promise<Array<{storeName: string, keys: number|null, unknown: boolean,
-     *   perCharacter: boolean, budget: number|null, over: boolean}>>} One row per store,
-     *   over-budget rows first, then the ones that could not be listed
+     * A store listed in `CHARACTER_FAMILY_BUDGETS` yields two rows: its flat
+     * store-wide one, and a second carrying `family` for the per-character key
+     * family inside it.
+     * @returns {Promise<Array<{storeName: string, family?: string, keys: number|null,
+     *   unknown: boolean, perCharacter: boolean, budget: number|null, over: boolean}>>}
+     *   One row per store (two for a store with a per-character family), over-budget
+     *   rows first, then the ones that could not be listed
      */
     async budgetReport(storeNames, perCharacterCount) {
         const names = storeNames ?? (await this.listStores());
@@ -784,15 +825,33 @@ class Storage {
                 continue;
             }
             const perCharacter = typeof perCharacterCount === 'function' ? perCharacterCount(storeName, keys) : null;
-            const count = perCharacter !== null && perCharacter !== undefined ? perCharacter : keys.length;
+            const counted = perCharacter !== null && perCharacter !== undefined;
+            const family = CHARACTER_FAMILY_BUDGETS[storeName];
+
+            // A store with a per-character *family* keeps its flat row — the
+            // account-wide keys beside the family are what that budget is
+            // about — and the family gets a row of its own below.
+            const count = counted && !family ? perCharacter : keys.length;
             rows.push({
                 storeName,
                 keys: count,
                 unknown: false,
-                perCharacter: perCharacter !== null && perCharacter !== undefined,
+                perCharacter: counted && !family,
                 budget,
                 over: budget !== null && count > budget,
             });
+
+            if (family && counted) {
+                rows.push({
+                    storeName,
+                    family: family.family,
+                    keys: perCharacter,
+                    unknown: false,
+                    perCharacter: true,
+                    budget: family.budget,
+                    over: perCharacter > family.budget,
+                });
+            }
         }
 
         // A store that could not be listed sorts with the problems, not with
@@ -1751,5 +1810,5 @@ class Storage {
 
 const storage = new Storage();
 
-export { STORE_KEY_BUDGETS };
+export { STORE_KEY_BUDGETS, CHARACTER_FAMILY_BUDGETS };
 export default storage;

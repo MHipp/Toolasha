@@ -85,6 +85,19 @@ export async function refreshStorageFacts() {
 }
 
 /**
+ * What a budget row is about: a whole store, or one key family inside it.
+ *
+ * A store with a per-character family (`marketListings`, whose trade-ledger day
+ * records are budgeted per character while the market caches beside them are
+ * not) contributes two rows, and two rows under the same name are unreadable.
+ * @param {{storeName: string, family?: string}} row - A budget row
+ * @returns {string} The name to print
+ */
+function rowName(row) {
+    return row.family ? `${row.storeName}/${row.family}` : row.storeName;
+}
+
+/**
  * One `store=count` term, where the count may be that nobody could count it.
  *
  * `budgetReport` reports a store it could not list as `keys: null` rather than
@@ -94,7 +107,7 @@ export async function refreshStorageFacts() {
  * @returns {string} The term
  */
 function storeCount(row) {
-    return `${row.storeName}=${row.unknown ? 'unreadable' : row.keys}`;
+    return `${rowName(row)}=${row.unknown ? 'unreadable' : row.keys}`;
 }
 
 /**
@@ -140,7 +153,7 @@ function storageLines() {
             lines.push(`stores over their soft budget (${over.length}):`);
             for (const row of over) {
                 const per = row.perCharacter ? ', busiest character' : '';
-                lines.push(`- ${row.storeName}: ${row.keys} keys (budget ${row.budget}${per})`);
+                lines.push(`- ${rowName(row)}: ${row.keys} keys (budget ${row.budget}${per})`);
             }
         } else {
             lines.push('stores over their soft budget: none');
@@ -312,7 +325,7 @@ class HealthStatusPanel {
         const over = (lastBudgetRows || []).filter((row) => row.over);
         if (over.length) {
             const line = document.createElement('div');
-            line.textContent = `Over soft budget: ${over.map((row) => `${row.storeName} (${row.keys})`).join(', ')}`;
+            line.textContent = `Over soft budget: ${over.map((row) => `${rowName(row)} (${row.keys})`).join(', ')}`;
             Object.assign(line.style, { color: COLORS.textDim, fontSize: '12px', marginTop: '4px' });
             block.appendChild(line);
         }

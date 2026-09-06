@@ -37,7 +37,7 @@ import config from '../../core/config.js';
 import storage from '../../core/storage.js';
 import { registerSyncMerge } from '../../utils/sync-merge-registry.js';
 import { readScoped } from '../../utils/character-key.js';
-import { timeChunkId, recordKeysFor } from '../../utils/chunked-history.js';
+import { timeChunkId, recordKeysFor, registerCharacterScopedPrefix } from '../../utils/chunked-history.js';
 import { detectFills, trimLedger, LEDGER_RECORD_CAP } from '../../utils/trade-ledger.js';
 
 /** Same store the other market trackers live in. */
@@ -48,6 +48,17 @@ const RECORDS_BASE = 'tradeLedgerRecords';
 
 /** Per-character, per-day fill records: `tradeLedgerRec_<charId>_<YYYY-MM-DD>`. */
 const RECORD_PREFIX = 'tradeLedgerRec';
+
+/*
+ * Registered as character-scoped so the health panel counts these day records
+ * per character rather than adding every character's together. They share
+ * `marketListings` with account-wide market caches, whose flat 2,000-key budget
+ * they are not part of: without this, a four-character account trips that
+ * budget while no single character is near its own. `CHARACTER_FAMILY_BUDGETS`
+ * in `core/storage.js` carries the per-character number and says how it was
+ * chosen. Registration runs at import, long before any budget report.
+ */
+registerCharacterScopedPrefix(LEDGER_STORE, RECORD_PREFIX);
 
 /**
  * Per-character marker written once the single key has been split into day

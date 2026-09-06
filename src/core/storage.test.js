@@ -7,7 +7,7 @@
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
-const { default: storage, STORE_KEY_BUDGETS } = await import('./storage.js');
+const { default: storage, STORE_KEY_BUDGETS, CHARACTER_FAMILY_BUDGETS } = await import('./storage.js');
 
 /**
  * Build a minimal fake IDBDatabase supporting only what Storage's
@@ -755,6 +755,59 @@ describe('Storage.budgetReport', () => {
             over: false,
         });
         expect(unlistable.keys).not.toBe(0);
+
+        storage.tryGetAllKeys.mockRestore();
+    });
+
+    /*
+     * `marketListings` holds the trade ledger's per-character day records
+     * (`tradeLedgerRec_<charId>_<day>`, one per character per trading day)
+     * beside account-wide market caches. Against one flat budget, a
+     * multi-character account trips the store while no single character is
+     * near its own — the mismatch 882023aec fixed for the chunked stores.
+     * Swapping the whole row to a per-character count instead would stop the
+     * account-wide caches being watched, so the store gets both rows.
+     */
+    test('a store with a per-character family reports the family and the store separately', async () => {
+        const { family, budget: familyBudget } = CHARACTER_FAMILY_BUDGETS.marketListings;
+        storage.db = { objectStoreNames: ['marketListings'] };
+        const keys = Array.from({ length: STORE_KEY_BUDGETS.marketListings + 1 }, (_, i) => `k${i}`);
+        vi.spyOn(storage, 'tryGetAllKeys').mockResolvedValue(keys);
+
+        const rows = await storage.budgetReport(['marketListings'], () => 7);
+
+        expect(rows).toContainEqual({
+            storeName: 'marketListings',
+            keys: keys.length,
+            unknown: false,
+            perCharacter: false,
+            budget: STORE_KEY_BUDGETS.marketListings,
+            over: true,
+        });
+        expect(rows).toContainEqual({
+            storeName: 'marketListings',
+            family,
+            keys: 7,
+            unknown: false,
+            perCharacter: true,
+            budget: familyBudget,
+            over: false,
+        });
+
+        storage.tryGetAllKeys.mockRestore();
+    });
+
+    test('the per-character family is over budget on its own count, not the store total', async () => {
+        const { budget: familyBudget } = CHARACTER_FAMILY_BUDGETS.marketListings;
+        storage.db = { objectStoreNames: ['marketListings'] };
+        vi.spyOn(storage, 'tryGetAllKeys').mockResolvedValue(['a', 'b']);
+
+        const rows = await storage.budgetReport(['marketListings'], () => familyBudget + 1);
+
+        // The store itself is tiny; only the family is over
+        expect(rows[0]).toMatchObject({ family: 'tradeLedgerRec', keys: familyBudget + 1, over: true });
+        expect(rows[1]).toMatchObject({ storeName: 'marketListings', keys: 2, over: false });
+        expect(rows[1].family).toBeUndefined();
 
         storage.tryGetAllKeys.mockRestore();
     });
