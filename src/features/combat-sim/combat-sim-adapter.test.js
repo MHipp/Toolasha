@@ -503,6 +503,49 @@ describe('the equipment a Shykai import carries', () => {
     });
 });
 
+/**
+ * Guild shrines an import brings with it.
+ *
+ * Szerra's fork of the export carries `guildCombatBuffLevels`, keyed by the tail
+ * of the shrine hrid; everything on this side is keyed by guild-buff hrid. The
+ * field was read by nobody, so an imported character fought with every shrine
+ * switched off no matter what their guild had bought.
+ */
+describe('the guild shrines a Shykai import carries', () => {
+    beforeEach(() => {
+        mocks.clientData = {
+            itemDetailMap: {},
+            abilityDetailMap: {},
+            guildBuffDetailMap: {
+                '/guild_buffs/force_combat': FORCE,
+                '/guild_buffs/scholar_skilling': SCHOLAR_SKILLING,
+            },
+        };
+    });
+
+    test('become levels and synthesized combat buffs', () => {
+        const payload = JSON.stringify({
+            player: { attackLevel: 50, equipment: [] },
+            guildCombatBuffLevels: { force: 2, tempo: 0 },
+        });
+
+        const dto = parseShykaiImport(payload).players[0];
+        expect(dto.guildShrineLevels).toEqual({ '/guild_buffs/force_combat': 2 });
+        expect(dto.guildCombatBuffs).toHaveLength(1);
+        expect(dto.guildCombatBuffs[0].typeHrid).toBe('/buff_types/damage');
+        expect(dto.guildCombatBuffs[0].ratioBoost).toBeCloseTo(0.006);
+    });
+
+    test('an export without the field leaves no level map at all', () => {
+        const payload = JSON.stringify({ player: { attackLevel: 50, equipment: [] } });
+
+        const dto = parseShykaiImport(payload).players[0];
+        // Not `{}`: the upgrade advisor reads a missing map as an unknown guild
+        // and an empty one as a guildless character
+        expect(dto.guildShrineLevels).toBeUndefined();
+    });
+});
+
 describe('getCurrentCombatZone picks the running action, not the first in the array', () => {
     test('a requeued repeat in front does not mask the lower-ordinal running dungeon', () => {
         // The queue that mis-stamped a dungeon recording as Sorcerer's Tower:

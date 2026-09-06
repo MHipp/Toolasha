@@ -600,6 +600,28 @@ export function parseShykaiImport(jsonString) {
             dto.houseRooms = { ...slotData.houseRooms };
         }
 
+        // Guild shrines. Szerra's fork of the export carries them as
+        // `guildCombatBuffLevels: { force, tempo, ... }` — keyed by the tail of the
+        // shrine hrid, where everything on this side is keyed by guild-buff hrid,
+        // so each one is resolved through the detail map on the way in. Shykai's
+        // own exports have no such field, and an import that carries nothing is
+        // left with no level map at all rather than an empty one: the upgrade
+        // advisor reads a missing map as "we know nothing about this player's
+        // guild" and an empty one as "guildless", and inventing the second from
+        // the first would offer them every shrine from level 0.
+        if (slotData.guildCombatBuffLevels) {
+            const detailMap = getGuildBuffDetailMap();
+            const levelMap = {};
+            for (const [buffHrid, detail] of Object.entries(detailMap)) {
+                if (!detail?.isCombat || !detail.shrineHrid) continue;
+                const level = slotData.guildCombatBuffLevels[detail.shrineHrid.split('/').pop()];
+                if (Number.isFinite(level) && level > 0) levelMap[buffHrid] = level;
+            }
+            const { guildShrineLevels, guildCombatBuffs } = buildGuildBuffsFromLevels(levelMap);
+            dto.guildShrineLevels = guildShrineLevels;
+            dto.guildCombatBuffs = guildCombatBuffs;
+        }
+
         players.push(dto);
         names.push(slotData.name || p.name || `Player ${slot}`);
     }
