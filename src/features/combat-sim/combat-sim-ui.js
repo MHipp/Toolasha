@@ -762,8 +762,14 @@ export function buildAllZonesSnapshot(zoneResults, options = {}) {
                       failed: sim.dungeonsFailed || 0,
                       simHours,
                       partySize: sim.numberOfPlayers || 1,
+                      // Consumables only, which is what the name promises and what the
+                      // Dungeon ROI board's measured branch counts. `costPerHour` also
+                      // carries the entry and chest keys for a dungeon, and that board
+                      // subtracts keys itself (`keyCostPerRun`) — handed the combined
+                      // figure it charged for them twice, and the sim and measured
+                      // readings of the same column stopped meaning the same thing.
                       consumableCostPerHour: Number.isFinite(result.revenue?.costPerHour)
-                          ? result.revenue.costPerHour
+                          ? result.revenue.costPerHour - (Number(result.revenue.keyCostPerHour) || 0)
                           : null,
                       deathsPerHour: (sim.deaths?.[playerHrid] || 0) / simHours,
                   }

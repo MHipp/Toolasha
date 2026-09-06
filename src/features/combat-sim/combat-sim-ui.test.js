@@ -1309,6 +1309,24 @@ describe('all-zones snapshot', () => {
         expect(snapshot).toMatchObject({ version: 1, hours: 4, fingerprint: null });
     });
 
+    /**
+     * The Dungeon ROI board subtracts a run's keys itself (`keyCostPerRun`) and its
+     * measured branch counts consumables only, so the snapshot's dungeon field has to
+     * mean consumables only too. `calculateSimRevenue`'s `costPerHour` carries the keys
+     * as well, and passing it through charged for them twice.
+     */
+    test('a dungeon’s consumable cost leaves out the keys the ROI board charges itself', () => {
+        const den = zoneResult('Den');
+        den.simResult.isDungeon = true;
+        den.simResult.dungeonsCompleted = 10;
+        den.revenue.costPerHour = 5_000;
+        den.revenue.keyCostPerHour = 3_000;
+
+        const snapshot = buildAllZonesSnapshot([den], { hours: 2 });
+
+        expect(snapshot.zones[0].dungeon.consumableCostPerHour).toBe(2_000);
+    });
+
     test('stores the sim’s raw profit claim plus what was sold — the cap is applied by readers, not here', () => {
         // The calibration loop compares the sim's claim against measured runs,
         // so a market-volume cap baked in here would corrupt the comparison.
