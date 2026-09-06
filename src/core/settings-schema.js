@@ -647,6 +647,13 @@ export const settingsGroups = {
                 default: true,
                 help: 'Saves loot log entries and displays older entries below current ones in the loot log panel',
             },
+            lootLogPivot: {
+                id: 'lootLogPivot',
+                label: 'Loot Log: Analytics pivot table (📊 button beside Refresh)',
+                type: 'checkbox',
+                default: false,
+                help: 'Every other XP/hr and gold/hr figure in this script is predicted from game data; this is the one built from what your runs actually paid. A sortable table over the current session plus stored history — one row per action and per difficulty tier, with time spent, drop value at ask and bid, and XP/hr per skill (plus a combined line for actions that train several). Off by default because it adds a button to the game’s own panel',
+            },
             lootLogDropLuck: {
                 id: 'lootLogDropLuck',
                 label: 'Loot Log: Drop luck percentile for gathering runs',

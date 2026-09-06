@@ -1058,6 +1058,13 @@ function registerFeatures() {
             async: true,
         },
         {
+            key: 'lootLogPivot',
+            name: 'Loot Log Analytics',
+            category: 'Actions',
+            module: UI.lootLogPivot,
+            async: true,
+        },
+        {
             key: 'inventoryCountDisplay',
             name: 'Inventory Count Display',
             category: 'Actions',

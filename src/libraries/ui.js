@@ -74,6 +74,7 @@ import '../features/skills/skill-level-row.js';
 
 // Action features
 import lootLogStats from '../features/actions/loot-log-stats.js';
+import lootLogPivot from '../features/actions/loot-log-pivot-panel.js';
 
 // House
 import housePanelObserver from '../features/house/house-panel-observer.js';
@@ -218,6 +219,7 @@ toolashaRoot.UI = {
     xpTracker,
     skillCheckpoints,
     lootLogStats,
+    lootLogPivot,
     housePanelObserver,
     settingsUI,
     whatsNew,
