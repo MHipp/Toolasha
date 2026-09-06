@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The leftovers: a panel that could not tell "empty" from "could not look"
+
+Storage diagnostics no longer report a store the browser could not list as holding zero records — it says the size is unreadable, which is the truth. Clearing a history that cannot be listed now refuses outright rather than deleting nothing, forgetting everything, and letting the next read bring it all back; the alchemy history viewers say the clear did not happen instead of announcing success over data that is still there. And the trade ledger's day records, one per character per trading day, are budgeted per character rather than against a store-wide limit they share with account-wide caches, so a multi-character account no longer trips a warning no single character is near.
+
+In the Skilling Optimizer, a skill whose unequipped actions are all unpriced has a baseline of zero, and a gain over zero was being shown as no gain at all — the best upgrade on the board rendered a blank where its gain should be and sorted as though it did nothing. Those gains now show as new rather than as a percentage of nothing, and the list ranks them by the size of the gain.
+
 ### Audit round: a late read could erase the guard that stops history being overwritten
 
 The worst of these is a data-loss race, and it is the same shape as the fix it defeated. When a read of your history cannot list the store, it raises a flag, and that flag is the only thing stopping the next save from writing over records it never read. But a read abandoned by a character switch — about a character who has already left — cleared that flag on its way out, so a save that was about to decline went ahead and wrote its in-memory list, which for a recorder that appends is a single entry, over a month of data.
