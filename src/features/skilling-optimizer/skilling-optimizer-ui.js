@@ -1286,7 +1286,10 @@ class SkillingSimulatorUI {
      * the upgrade shown rather than a separately-derived aggregate.
      *
      * A null cost (unpriceable) leaves both gold-denominated ratios null rather than treating the
-     * upgrade as free; _sortValueFor sorts those last.
+     * upgrade as free; _sortValueFor sorts those last. A zero baseline with a real gain (no
+     * unequipped action prices at all, so the empty-slot rate is 0) scores that axis's percentage
+     * Infinity rather than 0 — a ratio against zero is undefined, and treating it as "no gain"
+     * would bury the best upgrade on the board under every row that made no improvement at all.
      *
      * @param {Object} slotData - One entry of optimizeSkill()'s `slots`
      * @param {{itemHrid: string, enhancementLevel: number}|null} loadoutEntry - Compare loadout item
@@ -1311,11 +1314,16 @@ class SkillingSimulatorUI {
         const xpPerMillion = cost === null || xpDelta <= 0 ? null : cost > 0 ? (xpDelta / cost) * 1_000_000 : Infinity;
         const paybackHours = cost === null || goldDelta <= 0 ? null : cost > 0 ? cost / goldDelta : 0;
 
+        // A zero baseline with a real gain (e.g. every unequipped gathering action scores 0
+        // gold/hr because its output is unpriced) has no rate to take a ratio against — that is
+        // an undefined percentage, not a 0% one, and it must not sort as "no gain". Score it
+        // Infinity, the same "best possible" value _sortValueFor already gives a net-zero-cost
+        // upgrade elsewhere in this file.
         return {
             entry,
             cost,
-            xpPct: xpBaseline > 0 && xpDelta > 0 ? (xpDelta / xpBaseline) * 100 : 0,
-            goldPct: goldBaseline > 0 && goldDelta > 0 ? (goldDelta / goldBaseline) * 100 : 0,
+            xpPct: xpDelta > 0 ? (xpBaseline > 0 ? (xpDelta / xpBaseline) * 100 : Infinity) : 0,
+            goldPct: goldDelta > 0 ? (goldBaseline > 0 ? (goldDelta / goldBaseline) * 100 : Infinity) : 0,
             xpPerMillion,
             paybackHours,
         };
@@ -1528,17 +1536,19 @@ class SkillingSimulatorUI {
     _makeGainEl(xpScore, xpBaseline, goldScore, goldBaseline, spriteUrl) {
         const gainParts = [];
 
-        if (xpBaseline > 0 && xpScore > xpBaseline) {
+        if (xpScore > xpBaseline) {
             const delta = xpScore - xpBaseline;
-            const pct = ((delta / xpBaseline) * 100).toFixed(1);
+            // A zero baseline (e.g. every unequipped action scores 0 XP/hr) has no rate to take
+            // a ratio against — the gain is real but "% of zero" is undefined, not 0.
+            const pctText = xpBaseline > 0 ? ` (+${((delta / xpBaseline) * 100).toFixed(1)}%)` : ' (new)';
             const span = document.createElement('span');
-            span.textContent = `+${formatKMB(delta)} XP (+${pct}%)`;
+            span.textContent = `+${formatKMB(delta)} XP${pctText}`;
             gainParts.push(span);
         }
 
-        if (goldBaseline > 0 && goldScore > goldBaseline) {
+        if (goldScore > goldBaseline) {
             const delta = goldScore - goldBaseline;
-            const pct = ((delta / goldBaseline) * 100).toFixed(1);
+            const pctText = goldBaseline > 0 ? ` (+${((delta / goldBaseline) * 100).toFixed(1)}%)` : ' (new)';
             const span = document.createElement('span');
             span.style.cssText = 'display: inline-flex; align-items: center; gap: 2px;';
             span.appendChild(document.createTextNode(`+${formatKMB(delta)}`));
@@ -1554,7 +1564,7 @@ class SkillingSimulatorUI {
             } else {
                 span.appendChild(document.createTextNode(' G'));
             }
-            span.appendChild(document.createTextNode(` (+${pct}%)`));
+            span.appendChild(document.createTextNode(pctText));
             gainParts.push(span);
         }
 
