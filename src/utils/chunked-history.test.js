@@ -440,6 +440,27 @@ describe('clearing', () => {
         expect(await history.load('c1')).toEqual([at(2026, 5), at(2026, 6)]);
     });
 
+    /*
+     * `storage.delete` resolves `false` for a delete that did not happen and
+     * never rejects, so a listing that succeeded followed by deletes that all
+     * failed — an aborted transaction, a restore in progress refusing writes —
+     * looked exactly like a clear that worked. Fails before the outcome check:
+     * `clear` returned true and the records were still there for the next
+     * `load()`.
+     */
+    test('deletes that resolve false are a refused clear, not a done one', async () => {
+        storageMock.store.set('legacy_c1', [at(2026, 5)]);
+        storageMock.store.set('rec_c1_2026-06', [at(2026, 6)]);
+        storageMock.delete.mockImplementation(async () => false);
+
+        const history = build();
+        const cleared = await history.clear('c1');
+
+        expect(cleared).toBe(false);
+        expect(storageMock.store.has('rec_c1_2026-06')).toBe(true);
+        expect(await history.load('c1')).toEqual([at(2026, 5), at(2026, 6)]);
+    });
+
     test('a failed delete is reported as a failure, not as a clear', async () => {
         storageMock.store.set('rec_c1_2026-06', [at(2026, 6)]);
         storageMock.delete.mockRejectedValueOnce(new Error('nope'));

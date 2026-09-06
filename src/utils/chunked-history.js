@@ -692,7 +692,20 @@ class ChunkedHistory {
                 storage.delete(key, this.storeName)
             );
             deletions.push(storage.delete(this.legacyKey(charId), this.storeName));
-            await Promise.all(deletions);
+            // `storage.delete` resolves `false` for a delete that did not
+            // happen — an aborted transaction, a lost connection, a restore in
+            // progress refusing every write — and never rejects, so a listing
+            // that succeeded followed by deletes that all failed would
+            // otherwise report the same `true` as a clear that worked, and the
+            // records would be back on the next `load()`.
+            const outcomes = await Promise.all(deletions);
+            if (outcomes.some((deleted) => deleted === false)) {
+                console.warn(`[${this.label}] History not fully cleared: some records could not be deleted`);
+                // Whatever did land makes the memory copy stale, the same way
+                // a throw part-way through does.
+                this.forget();
+                return false;
+            }
         } catch (error) {
             // Deletes may have landed before the throw, so the memory copy is
             // no longer trustworthy and is dropped — but the clear is still a
