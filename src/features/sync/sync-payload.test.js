@@ -317,7 +317,27 @@ describe('applyPayload merges additive records', () => {
         off();
     });
 
-    test('a local value that cannot be read is not guessed at', async () => {
+    test('a local value that cannot be read holds the download back instead of overwriting it', async () => {
+        const off = registerSyncMerge({
+            store: 'dungeonRuns',
+            base: 'run',
+            merge: () => ['should not run'],
+            label: 'fake',
+        });
+        // `tryGet` answers null: the read failed, which says nothing about
+        // whether this device holds entries under that key. Writing the
+        // download over an unreadable base destroys exactly the entries the
+        // failure hid, so the key must not reach the import at all.
+        storeState.unreadable = true;
+
+        const result = await applyPayload(payloadWith('dungeonRuns', 'run_char', ['remote']));
+
+        expect(importedPayloads[0].stores.dungeonRuns).not.toHaveProperty('run_char');
+        expect(result.merged).toEqual([]);
+        off();
+    });
+
+    test('a held-back record is reported, because the download did not land for it', async () => {
         const off = registerSyncMerge({
             store: 'dungeonRuns',
             base: 'run',
@@ -328,8 +348,31 @@ describe('applyPayload merges additive records', () => {
 
         const result = await applyPayload(payloadWith('dungeonRuns', 'run_char', ['remote']));
 
-        expect(importedPayloads[0].stores.dungeonRuns.run_char).toEqual(['remote']);
-        expect(result.merged).toEqual([]);
+        // Silence here is the whole bug: a pull that says nothing reads as
+        // "combined", and the player never learns the record is still waiting
+        expect(result.mergeHeld).toEqual([{ store: 'dungeonRuns', key: 'run_char', label: 'fake' }]);
+        expect(result.mergeFailed).toEqual([]);
+        off();
+    });
+
+    test('a held-back record makes the applied text describe what was written', async () => {
+        const off = registerSyncMerge({
+            store: 'dungeonRuns',
+            base: 'run',
+            merge: () => ['should not run'],
+            label: 'fake',
+        });
+        storeState.unreadable = true;
+
+        const json = payloadWith('dungeonRuns', 'run_char', ['remote']);
+        const result = await applyPayload(json);
+
+        // The stamp remembered after a pull is a hash of `applied`. Handing
+        // back the raw download, which still carries a key that was never
+        // written, makes every later rebuild compare unequal — the permanent
+        // conflict `contentHash` exists to avoid
+        expect(result.applied).not.toBe(json);
+        expect(JSON.parse(result.applied).stores.dungeonRuns).not.toHaveProperty('run_char');
         off();
     });
 

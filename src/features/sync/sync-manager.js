@@ -462,7 +462,7 @@ class SyncManager {
         // "wedged" shape as the dialog above, just without a dialog to point at.
         if (!this._stillOwns(opToken)) return this._supersededResult(silent, 'pull');
 
-        const { merged, mergeFailed, complete, failed, applied } = await applyPayload(payload);
+        const { merged, mergeFailed, mergeHeld, complete, failed, applied } = await applyPayload(payload);
 
         // A pull that wrote nothing must not move the stamp. Remembering the
         // remote's `exportedAt` after a failed apply makes every later pull
@@ -505,14 +505,24 @@ class SyncManager {
             ? ` ${mergeFailed.length} could not be combined and took the downloaded copy ` +
               `(${mergeFailed.map((entry) => entry.label).join(', ')}).`
             : '';
+        // A record whose local copy could not be READ kept that copy and did
+        // not take the download at all — the opposite outcome to the line
+        // above, and one the player has to be able to tell apart, because the
+        // fix is different: this one says the database is unhealthy and the
+        // downloaded entries are still waiting on the next pull.
+        const heldBack = mergeHeld?.length
+            ? ` ${mergeHeld.length} could not be read here and kept this device's copy ` +
+              `(${mergeHeld.map((entry) => entry.label).join(', ')}); pull again once storage is healthy.`
+            : '';
         // Not politeness: the stores this pull replaced stop accepting writes
         // until the reload (see `storage.finishRestore`), because anything this
         // session still holds in memory is the pre-pull copy and writing it
         // back would undo the pull. Saying so is the difference between a
         // reload the player chooses and changes they lose without being told.
         showToast(
-            `Synced from GitHub.${combined}${notCombined} Reload now — changes made before reloading will not be kept.`,
-            { duration: 0, kind: notCombined ? 'warn' : 'info' }
+            `Synced from GitHub.${combined}${notCombined}${heldBack} Reload now — changes made before ` +
+                'reloading will not be kept.',
+            { duration: 0, kind: notCombined || heldBack ? 'warn' : 'info' }
         );
 
         // The union only exists on this device until it is sent up. Pushing it

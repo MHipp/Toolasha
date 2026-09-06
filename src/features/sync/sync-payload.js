@@ -142,9 +142,16 @@ export async function buildPayloadJSON(scope = 'settings') {
  * still exactly one writer.
  *
  * A key with no registration, or one this device has never stored, is left as
- * it came down — nothing to combine, so the whole-key write is correct. A key
- * whose local value cannot be read is left alone too: guessing at a merge base
- * we could not read is the blind overwrite this is meant to avoid.
+ * it came down — nothing to combine, so the whole-key write is correct.
+ *
+ * A key whose local value cannot be *read* is a different case, and the one
+ * that has to be got right: `storage.tryGet` answers `null` for a read that
+ * failed and `{found: false}` for a key that is simply not here, and treating
+ * them alike meant an aborted read handed the record straight to the whole-key
+ * write — this device's entries destroyed by the exact failure that made them
+ * invisible, with nothing said about it. So the key is *dropped from the
+ * payload* instead: whatever is on disk stays, and the caller is told, because
+ * the record it names did not get the downloaded copy.
  *
  * The caller must have quiesced writers first. `storage.tryGet` reads
  * IndexedDB, and `storage.set` debounces for three seconds — so a base read
@@ -162,22 +169,36 @@ export async function buildPayloadJSON(scope = 'settings') {
  *
  * @param {Object} payload - Parsed payload; its store values are mutated in place
  * @returns {Promise<{merged: Array<{store: string, key: string, label: string}>,
- *   failed: Array<{store: string, key: string, label: string}>}>} What was combined, and what could not be
+ *   failed: Array<{store: string, key: string, label: string}>,
+ *   held: Array<{store: string, key: string, label: string}>}>} What was combined, what took
+ *   the remote copy anyway, and what was held back because the local copy could not be read
  */
 async function mergeLocalHistories(payload) {
     const merged = [];
     const failed = [];
+    const held = [];
 
     for (const [storeName, entries] of Object.entries(payload?.stores || {})) {
         if (!entries || typeof entries !== 'object') continue;
 
+        // Keys captured up front: an unreadable base deletes its own key below
         for (const key of Object.keys(entries)) {
             const registration = mergeForKey(storeName, key);
             if (!registration) continue;
 
             try {
                 const probed = await storage.tryGet(key, storeName);
-                if (!probed || !probed.found || probed.value == null) continue;
+                if (probed === null) {
+                    // Read failed — not "nothing stored". This device may hold
+                    // entries the union would have kept, and they are exactly
+                    // what a whole-key write would destroy. Hold the download
+                    // back rather than overwrite a base we could not see.
+                    console.error(`[Sync] ${storeName}/${key} could not be read; keeping this device's copy.`);
+                    delete entries[key];
+                    held.push({ store: storeName, key, label: registration.label });
+                    continue;
+                }
+                if (!probed.found || probed.value == null) continue;
                 entries[key] = registration.merge(probed.value, entries[key]);
                 merged.push({ store: storeName, key, label: registration.label });
             } catch (error) {
@@ -187,7 +208,7 @@ async function mergeLocalHistories(payload) {
         }
     }
 
-    return { merged, failed };
+    return { merged, failed, held };
 }
 
 /**
@@ -208,9 +229,11 @@ async function mergeLocalHistories(payload) {
  *
  * @param {string} json - Payload text as produced by `buildPayloadJSON()`
  * @returns {Promise<{restored: Record<string, number>, failed: Array<Object>, complete: boolean,
- *   merged: Array<Object>, mergeFailed: Array<Object>, exportedAt: string|null, applied: string}>}
- *   What landed, whether all of it did, which records could not be combined, and
- *   the payload text as actually applied
+ *   merged: Array<Object>, mergeFailed: Array<Object>, mergeHeld: Array<Object>,
+ *   exportedAt: string|null, applied: string}>}
+ *   What landed, whether all of it did, which records could not be combined,
+ *   which were held back because this device's copy could not be read, and the
+ *   payload text as actually applied
  */
 export async function applyPayload(json) {
     const payload = JSON.parse(json);
@@ -241,7 +264,7 @@ export async function applyPayload(json) {
     await storage.beginRestore?.();
 
     try {
-        const { merged, failed: mergeFailed } = await mergeLocalHistories(payload);
+        const { merged, failed: mergeFailed, held: mergeHeld } = await mergeLocalHistories(payload);
 
         // What is remembered as "the state of this device" has to be what was
         // actually written. `mergeLocalHistories` (and the settings fix-ups
@@ -251,11 +274,20 @@ export async function applyPayload(json) {
         // every silent pull until an auto-push happened to reset it.
         // Re-serialising only when something was rewritten keeps the common
         // no-op pull free.
-        const rewrote = merged.length > 0 || Boolean(settingsStore);
+        const rewrote = merged.length > 0 || mergeHeld.length > 0 || Boolean(settingsStore);
         const applied = rewrote ? JSON.stringify(payload) : json;
 
         const { restored, failed, complete } = await importEverything(payload);
-        return { restored, failed, complete, merged, mergeFailed, exportedAt: payload?.exportedAt ?? null, applied };
+        return {
+            restored,
+            failed,
+            complete,
+            merged,
+            mergeFailed,
+            mergeHeld,
+            exportedAt: payload?.exportedAt ?? null,
+            applied,
+        };
     } finally {
         // `importEverything` ends the hold itself on its way out; this covers
         // a throw between the flush above and reaching it, which would
