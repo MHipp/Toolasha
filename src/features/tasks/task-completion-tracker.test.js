@@ -416,6 +416,28 @@ describe('where the completions are kept', () => {
         expect(await tracker.getCompletions()).toEqual([]);
     });
 
+    test('clearing drops the completions and says it did', async () => {
+        tracker.ingest([claimed({ id: 1 })]);
+        await tracker.flush();
+
+        expect(await tracker.clear()).toBe(true);
+        expect(await tracker.getCompletions()).toEqual([]);
+    });
+
+    // The stored records survive a listing that could not be made, so dropping
+    // the in-memory copy would only have the next read bring them back — and
+    // the caller has to be able to tell a refusal from a clear.
+    test('a clear that could not be made keeps the completions, on disk and in memory', async () => {
+        tracker.ingest([claimed({ id: 1 })]);
+        await tracker.flush();
+        storageMock.delete.mockClear();
+        storageMock.tryGetAllKeys.mockResolvedValueOnce(null);
+
+        expect(await tracker.clear()).toBe(false);
+        expect(storageMock.delete).not.toHaveBeenCalled();
+        expect(await tracker.getCompletions()).toHaveLength(1);
+    });
+
     test('pruning keeps the window and sorts what is left', () => {
         const now = Date.UTC(2026, 5, 1);
         const kept = pruneEntries([entry(now - 3 * DAY), entry(now - 400 * DAY), entry(now - DAY)], now);

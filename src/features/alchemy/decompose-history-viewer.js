@@ -1580,7 +1580,13 @@ class DecomposeHistoryViewer {
         if (!confirmed) return;
 
         try {
-            await decomposeHistoryTracker.clearHistory();
+            // A clear that could not list the store deleted nothing, and the
+            // sessions are still on disk — emptying the table and saying
+            // "cleared" would be a lie the next reload exposes.
+            if (!(await decomposeHistoryTracker.clearHistory())) {
+                alert('Decompose history could NOT be cleared — storage could not be read. Nothing was deleted.');
+                return;
+            }
             this.sessions = [];
             this.filteredSessions = [];
             alert('Decompose history cleared.');

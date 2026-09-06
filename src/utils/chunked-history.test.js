@@ -407,6 +407,49 @@ describe('clearing', () => {
         expect(storageMock.store.has('rec_c2_2026-06')).toBe(true);
         expect(await history.load('c1')).toEqual([]);
     });
+
+    test('a clear that worked says so', async () => {
+        storageMock.store.set('rec_c1_2026-06', [at(2026, 6)]);
+        expect(await build().clear('c1')).toBe(true);
+    });
+
+    /*
+     * `clear()` found the record keys through `getAllKeys`, which answers a
+     * listing it could not make with an empty array. Nothing was deleted, the
+     * in-memory copy was dropped anyway, and the next `load()` read the records
+     * still on disk straight back — the history the user had just been told was
+     * deleted. Fails before the switch to `tryGetAllKeys`: `clear` returned
+     * undefined and the records came back.
+     */
+    test('a store that could not be listed refuses the clear rather than half-doing it', async () => {
+        storageMock.store.set('legacy_c1', [at(2026, 5)]);
+        storageMock.store.set('rec_c1_2026-06', [at(2026, 6)]);
+        const history = build();
+        await history.load('c1');
+        // The load folds the legacy key into the records, deletes included
+        storageMock.delete.mockClear();
+
+        // The clear's own listing is the one that cannot be made
+        storageMock.tryGetAllKeys.mockResolvedValueOnce(null);
+        const cleared = await history.clear('c1');
+
+        expect(cleared).toBe(false);
+        // Nothing deleted, so nothing resurrects on the next read
+        expect(storageMock.delete).not.toHaveBeenCalled();
+        expect(storageMock.store.has('rec_c1_2026-06')).toBe(true);
+        expect(await history.load('c1')).toEqual([at(2026, 5), at(2026, 6)]);
+    });
+
+    test('a failed delete is reported as a failure, not as a clear', async () => {
+        storageMock.store.set('rec_c1_2026-06', [at(2026, 6)]);
+        storageMock.delete.mockRejectedValueOnce(new Error('nope'));
+
+        expect(await build().clear('c1')).toBe(false);
+    });
+
+    test('no character is nothing cleared', async () => {
+        expect(await build().clear('')).toBe(false);
+    });
 });
 
 describe('the changed-chunk hint', () => {

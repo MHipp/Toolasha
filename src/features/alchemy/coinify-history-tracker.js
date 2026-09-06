@@ -352,14 +352,17 @@ class CoinifyHistoryTracker {
     }
 
     /**
-     * Clear all history from storage
+     * Clear all history from storage.
+     * @returns {Promise<boolean>} Whether the sessions are gone; false when the
+     *   store could not be listed and they are therefore still on disk
      */
     async clearHistory() {
         try {
             this.activeSession = null;
-            await sessionStore.clear(this.getCharacterScope());
+            return await sessionStore.clear(this.getCharacterScope());
         } catch (error) {
             console.error('[CoinifyHistoryTracker] Failed to clear history:', error);
+            return false;
         }
     }
 

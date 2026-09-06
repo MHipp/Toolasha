@@ -162,6 +162,18 @@ describe('merging while a write is still pending', () => {
         expect(storageMock.delete).toHaveBeenCalledWith('lootLog_char-1', 'lootLogHistory');
         expect(await lootLogHistory.getHistoricalEntries(new Set())).toEqual([]);
     });
+
+    // A clear that could not list the store deletes nothing; the caller has to
+    // be able to tell, or it announces a delete that did not happen.
+    test('a clear that could not be made is reported as not made', async () => {
+        await lootLogHistory.mergeAndSave([entry(1, '2026-08-01T00:00:00Z')]);
+        storageMock.delete.mockClear();
+        storageMock.tryGetAllKeys.mockResolvedValueOnce(null);
+
+        expect(await lootLogHistory.clearHistory()).toBe(false);
+        expect(storageMock.delete).not.toHaveBeenCalled();
+        expect(await lootLogHistory.getHistoricalEntries(new Set())).toHaveLength(1);
+    });
 });
 
 describe('the one-time split of the legacy array', () => {

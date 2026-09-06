@@ -671,12 +671,19 @@ class TaskCompletionTracker {
 
     /**
      * Forget this character's completions, on disk as well as in memory.
-     * @returns {Promise<void>}
+     *
+     * The in-memory copy is only dropped once the stored one is gone: a store
+     * that could not be listed still holds the records, and forgetting them
+     * here would just have the next read bring them back.
+     * @returns {Promise<boolean>} Whether the completions are gone; false when
+     *   nothing was deleted, which a caller must not report as a clear
      */
     async clear() {
         const charId = this._charId();
-        if (charId) await this._store.clear(charId);
-        this.forget();
+        if (!charId) return false;
+        const cleared = await this._store.clear(charId);
+        if (cleared) this.forget();
+        return cleared;
     }
 }
 

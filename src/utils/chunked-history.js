@@ -662,14 +662,29 @@ class ChunkedHistory {
 
     /**
      * Forget one character's history entirely, records and legacy key alike.
+     *
+     * Refuses rather than half-deleting. The record keys are found through the
+     * store's key listing, and `getAllKeys` answers a listing it could not make
+     * with an empty array — so a store the browser could not list deleted
+     * nothing, dropped the in-memory copy anyway, and handed the next `load()`
+     * the records still sitting on disk: the history the user had just asked to
+     * delete, back again, after being told it was gone. A listing that could
+     * not be made now leaves disk and memory alone and says so.
+     *
+     * Callers must not report success on a `false`. A "cleared!" over data that
+     * is still there is the worst of the outcomes here.
      * @param {string} charId - Whose history
-     * @returns {Promise<void>}
+     * @returns {Promise<boolean>} Whether the history is gone
      */
     async clear(charId) {
-        if (!charId) return;
+        if (!charId) return false;
 
         try {
-            const keys = await storage.getAllKeys(this.storeName);
+            const keys = await storage.tryGetAllKeys(this.storeName);
+            if (keys === null) {
+                console.warn(`[${this.label}] History not cleared: the store's keys could not be listed`);
+                return false;
+            }
             // Issued together rather than awaited one at a time: a year of
             // hourly records is hundreds of keys, and each serial await is a
             // full transaction round trip.
@@ -679,10 +694,16 @@ class ChunkedHistory {
             deletions.push(storage.delete(this.legacyKey(charId), this.storeName));
             await Promise.all(deletions);
         } catch (error) {
+            // Deletes may have landed before the throw, so the memory copy is
+            // no longer trustworthy and is dropped — but the clear is still a
+            // failure, and is reported as one.
             console.error(`[${this.label}] Clearing the history failed:`, error);
+            this.forget();
+            return false;
         }
 
         this.forget();
+        return true;
     }
 
     /**

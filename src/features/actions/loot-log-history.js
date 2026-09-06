@@ -277,10 +277,16 @@ class LootLogHistory {
         return all.filter((e) => !currentIds.has(e.characterActionId));
     }
 
+    /**
+     * Delete this character's stored loot log.
+     * @returns {Promise<boolean>} Whether the history is gone; false when the
+     *   store could not be listed and the records are therefore still on disk,
+     *   which a caller must not report as a successful clear
+     */
     async clearHistory() {
         const charId = this._charId();
-        if (!charId) return;
-        await this._store.clear(charId);
+        if (!charId) return false;
+        return this._store.clear(charId);
     }
 }
 
