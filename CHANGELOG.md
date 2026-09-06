@@ -6,6 +6,17 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Audit round: a history that could not be read was being written back empty
+
+The worst of these could lose months of records. When the browser cannot list a store — a dropped database connection, a tab under memory pressure — it answers with an empty list, which is indistinguishable from a store that really is empty. The chunked history believed it, and the next save wrote that emptiness over the real data: one hourly networth snapshot could replace a month's series with a single point, and the same shape applied to alchemy sessions, the loot log and task completions. An unreadable listing is now told apart from an empty one, and a save that cannot see what it is replacing declines to run.
+
+Two records were also missing from the sync merge registry, so a pull overwrote them instead of combining: your task reroll history, in a feature whose whole job is counting what rerolls cost you, and your labyrinth fight outcomes along with every clear-rate verdict resting on them.
+
+Three of yesterday's own fixes had introduced new faults, all caught here. Mirroring live buffs into the game data also wiped every house room the update did not mention, so a sim export taken after a house upgrade lost the rest of the house. Charging dungeon keys against profit charged them twice on the ROI board, where a column quietly meant two different things depending on which data it drew from. And admitting negative labyrinth skip thresholds lost the value that means "never set", so every skill and monster row grew a clear-rate badge, and queued a simulation, for a skip nobody had configured.
+
+Elsewhere: the key craft cost was remembered across a character switch, so an alt could be valued with your main's cheaper keys, and a price that could not be read was remembered as free, which inflated net worth; the dungeon readiness card could not tell you from the rest of the party for the whole of a battle, listing your own gear as someone else's; the Optimizer's top-ranked upgrade could show no cost at all when it was free; and the loot pivot re-summed the entire history on every keystroke.
+
+
 ### What your actions actually earned, not what they were predicted to earn
 
 Every rate in the script until now was a prediction from game data. The new Loot & XP pivot reads the loot log instead and reports what each action really paid: time spent, gold per hour at ask and bid, and experience per hour for each skill it trained, with a combined line for actions that train several. Both money columns are kept rather than picking one, because the gap between them is itself the finding — an action thin at bid and fat at ask is one whose income depends on patience. Off by default.
