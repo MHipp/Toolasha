@@ -41,6 +41,18 @@ const UNPRICED_WARNING_TITLE = 'Leans on an unpriced material — gold figures t
 // every value ratio), so those rows say so and carry no cost, ratio, or payback at all.
 const UNPRICED_COST_WARNING = 'Some upgrades have no market price — those rows show no cost or payback';
 
+// Equipment Progression sort control. 'value' follows the skill's own optimization goal — XP/hr
+// bought per gold for XP-goal skills, payback time for Gold-goal gathering skills — so the
+// default view leads with the metric the panel is already optimizing for.
+const SORT_MODES = [
+    { value: 'value', label: 'Best Value' },
+    { value: 'payback', label: 'Payback (fastest)' },
+    { value: 'cost', label: 'Cost (cheapest)' },
+    { value: 'xpGain', label: 'XP Gain %' },
+    { value: 'goldGain', label: 'Gold Gain %' },
+    { value: 'slot', label: 'Slot Order' },
+];
+
 /**
  * Check whether any mutation added nodes that are, contain, or sit under a tablist.
  * Keeps the body-wide watcher from re-scanning every tablist on unrelated DOM churn.
@@ -78,6 +90,7 @@ class SkillingSimulatorUI {
         this.currentMode = 'simulator'; // 'simulator' | 'optimizer'
         this.lastOptimizerResult = null;
         this.optimizerLoadout = null;
+        this.optimizerSortMode = 'value';
 
         // Simulator state
         this.currentSkill = 'Woodcutting';
@@ -1101,6 +1114,7 @@ class SkillingSimulatorUI {
         }
 
         container.appendChild(this._makeSectionHeader('Equipment Progression'));
+        container.appendChild(this._makeSortControl(container, result, achievableStats, loadoutItemMap));
         if (result.goal === 'gold' && result.goldHasMissingPrices) {
             const warning = document.createElement('div');
             warning.style.cssText = 'font-size: 11px; color: #eab308; margin-bottom: 8px;';
@@ -1108,23 +1122,49 @@ class SkillingSimulatorUI {
             warning.textContent = '⚠ This ranking leans on an unpriced material — gold figures treat it as free';
             container.appendChild(warning);
         }
-        const rowsWrap = document.createElement('div');
-        let anyUnpricedCost = false;
-        for (const [locationHrid, slotData] of slotEntries) {
+        // Baselines and metrics are computed once per slot up front: the sort needs every slot's
+        // metrics before the first row is rendered, and scoreEquipmentSetup is far too expensive
+        // to call again per row.
+        const slotViews = slotEntries.map(([locationHrid, slotData], index) => {
             const loadoutEntry = loadoutItemMap?.get(locationHrid) ?? null;
 
             // Use the loadout item's score as the baseline when a compare is selected,
             // so percentages show improvement over what the user currently has.
             // Fall back to global empty baseline when no compare is set.
-            let slotXpBaseline = result.xpBaseline;
-            let slotGoldBaseline = result.goldBaseline;
+            let xpBaseline = result.xpBaseline;
+            let goldBaseline = result.goldBaseline;
             if (loadoutEntry) {
                 const equipment = new Map([[locationHrid, loadoutEntry]]);
-                slotXpBaseline = scoreEquipmentSetup(result.skill, 'xp', equipment, result.playerLevel);
-                slotGoldBaseline = scoreEquipmentSetup(result.skill, 'gold', equipment, result.playerLevel);
+                xpBaseline = scoreEquipmentSetup(result.skill, 'xp', equipment, result.playerLevel);
+                goldBaseline = scoreEquipmentSetup(result.skill, 'gold', equipment, result.playerLevel);
             }
 
-            if (this._renderSlotRow(rowsWrap, slotData, loadoutEntry, slotXpBaseline, slotGoldBaseline)) {
+            return {
+                index,
+                slotData,
+                loadoutEntry,
+                xpBaseline,
+                goldBaseline,
+                metrics: this._computeSlotMetrics(slotData, loadoutEntry, xpBaseline, goldBaseline),
+            };
+        });
+
+        const ordered =
+            this.optimizerSortMode === 'slot'
+                ? slotViews
+                : [...slotViews].sort((a, b) => {
+                      const diff =
+                          this._sortValueFor(a.metrics, result.goal, this.optimizerSortMode) -
+                          this._sortValueFor(b.metrics, result.goal, this.optimizerSortMode);
+                      // Slot order is the tiebreak, so an unrankable pair keeps a stable, familiar
+                      // layout instead of shuffling between renders.
+                      return diff !== 0 ? diff : a.index - b.index;
+                  });
+
+        const rowsWrap = document.createElement('div');
+        let anyUnpricedCost = false;
+        for (const view of ordered) {
+            if (this._renderSlotRow(rowsWrap, view.slotData, view.loadoutEntry, view.xpBaseline, view.goldBaseline)) {
                 anyUnpricedCost = true;
             }
         }
@@ -1177,6 +1217,114 @@ class SkillingSimulatorUI {
             ? '% shows gain over your compared loadout item for each slot.'
             : '% shows gain over an empty slot. Select a loadout in Compare to see gains over your current gear.';
         container.appendChild(note);
+    }
+
+    /**
+     * Sort control for the Equipment Progression list. Changing it re-renders the whole results
+     * container: every per-slot baseline and metric is recomputed, but only on an explicit user
+     * action.
+     * @param {HTMLElement} container - Results container, re-rendered on change
+     * @param {Object} result - optimizeSkill() result
+     * @param {Object|null} achievableStats - Tea results, passed straight back through
+     * @param {Map|null} loadoutItemMap - Compare loadout, passed straight back through
+     * @returns {HTMLElement}
+     */
+    _makeSortControl(container, result, achievableStats, loadoutItemMap) {
+        const sortRow = document.createElement('div');
+        sortRow.style.cssText = 'display: flex; align-items: center; gap: 8px; margin-bottom: 10px;';
+
+        const label = document.createElement('span');
+        label.textContent = 'Sort:';
+        label.style.cssText = 'color: rgba(255,255,255,0.5); font-size: 12px; width: 56px; flex-shrink: 0;';
+        sortRow.appendChild(label);
+
+        const select = document.createElement('select');
+        select.style.cssText =
+            'background: #2a2a2a; color: #fff; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; padding: 4px 8px; font-size: 12px; flex: 1; cursor: pointer;';
+        for (const mode of SORT_MODES) {
+            const opt = document.createElement('option');
+            opt.value = mode.value;
+            opt.textContent = mode.label;
+            select.appendChild(opt);
+        }
+        // Set after the options exist — marking an option selected before it is appended does
+        // not survive insertion.
+        select.value = this.optimizerSortMode;
+        select.addEventListener('change', () => {
+            this.optimizerSortMode = select.value;
+            container.innerHTML = '';
+            this._renderOptimizerResults(container, result, achievableStats, loadoutItemMap);
+        });
+        sortRow.appendChild(select);
+
+        return sortRow;
+    }
+
+    /**
+     * Metrics for one slot's sort key, derived from the first breakpoint that beats the slot's
+     * baseline — the same upgrade the Compare-mode row itself displays, so every sort mode ranks
+     * the upgrade shown rather than a separately-derived aggregate.
+     *
+     * A null cost (unpriceable) leaves both gold-denominated ratios null rather than treating the
+     * upgrade as free; _sortValueFor sorts those last.
+     *
+     * @param {Object} slotData - One entry of optimizeSkill()'s `slots`
+     * @param {{itemHrid: string, enhancementLevel: number}|null} loadoutEntry - Compare loadout item
+     * @param {number} xpBaseline
+     * @param {number} goldBaseline
+     * @returns {{entry: Object|null, cost: number|null, xpPct: number, goldPct: number, xpPerMillion: number|null, paybackHours: number|null}}
+     */
+    _computeSlotMetrics(slotData, loadoutEntry, xpBaseline, goldBaseline) {
+        const entry = slotData.progression.find(
+            (e) => e.itemHrid && (e.xpScore - xpBaseline > 0 || e.goldScore - goldBaseline > 0)
+        );
+        if (!entry) {
+            return { entry: null, cost: null, xpPct: 0, goldPct: 0, xpPerMillion: null, paybackHours: null };
+        }
+
+        const xpDelta = entry.xpScore - xpBaseline;
+        const goldDelta = entry.goldScore - goldBaseline;
+        const cost = calculateSlotUpgradeCost(entry.itemHrid, entry.enhancementLevel ?? entry.breakpoint, loadoutEntry);
+
+        // A zero net cost with a real gain is the best possible ratio (free XP, instant payback),
+        // not an absent one — only an unpriceable or gainless row has no ratio at all.
+        const xpPerMillion = cost === null || xpDelta <= 0 ? null : cost > 0 ? (xpDelta / cost) * 1_000_000 : Infinity;
+        const paybackHours = cost === null || goldDelta <= 0 ? null : cost > 0 ? cost / goldDelta : 0;
+
+        return {
+            entry,
+            cost,
+            xpPct: xpBaseline > 0 && xpDelta > 0 ? (xpDelta / xpBaseline) * 100 : 0,
+            goldPct: goldBaseline > 0 && goldDelta > 0 ? (goldDelta / goldBaseline) * 100 : 0,
+            xpPerMillion,
+            paybackHours,
+        };
+    }
+
+    /**
+     * Ascending sort key for one slot — lower sorts first. A slot with nothing actionable, or
+     * with no figure for the requested mode (an unpriceable cost, or a gain the mode measures
+     * that this row does not have), sorts last whatever the mode.
+     * @param {Object} metrics - Result of _computeSlotMetrics
+     * @param {string} goal - 'xp' | 'gold', the skill's own optimization goal
+     * @param {string} sortMode - One of SORT_MODES' `value`s
+     * @returns {number}
+     */
+    _sortValueFor(metrics, goal, sortMode) {
+        if (!metrics.entry) return Infinity;
+        switch (sortMode) {
+            case 'payback':
+                return metrics.paybackHours ?? Infinity;
+            case 'cost':
+                return metrics.cost ?? Infinity;
+            case 'xpGain':
+                return -metrics.xpPct;
+            case 'goldGain':
+                return -metrics.goldPct;
+            case 'value':
+            default:
+                return goal === 'gold' ? (metrics.paybackHours ?? Infinity) : -(metrics.xpPerMillion ?? -Infinity);
+        }
     }
 
     /**
