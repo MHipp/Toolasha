@@ -44,6 +44,7 @@ await import('../features/market/estimated-listing-age.js');
 await import('../features/combat-stats/combat-session-history.js');
 await import('../features/combat/labyrinth-fight-recorder.js');
 await import('../features/combat/labyrinth-room-logs.js');
+await import('../features/combat/labyrinth-outcomes.js');
 await import('../features/combat/labyrinth-run-ledger.js');
 await import('../features/combat/labyrinth-tracker.js');
 await import('../features/guild/guild-xp-tracker.js');
@@ -66,6 +67,7 @@ await import('../features/networth/networth-history.js');
 await import('../features/networth/chest-opening-recorder.js');
 await import('../features/networth/production-income-recorder.js');
 await import('../features/tasks/task-completion-tracker.js');
+await import('../features/tasks/task-reroll-tracker.js');
 await import('../features/alchemy/transmute-history-tracker.js');
 await import('../features/alchemy/decompose-history-tracker.js');
 await import('../features/alchemy/coinify-history-tracker.js');
@@ -163,6 +165,11 @@ const corpus = [
     { store: 'settings', key: 'labyrinthRoomLogs', label: 'Labyrinth room logs' },
     { store: 'settings', key: `labyrinthRoomLogs_${CHAR}`, label: 'Labyrinth room logs' },
 
+    // combat/labyrinth-outcomes.js (lives in the settings store) — the sim
+    // cache alongside it shares the `labyrinth` stem and must stay unclaimed
+    { store: 'settings', key: 'labyrinthFightOutcomes', label: 'Labyrinth fight outcomes' },
+    { store: 'settings', key: `labyrinthFightOutcomes_${CHAR}`, label: 'Labyrinth fight outcomes' },
+
     // combat/labyrinth-run-ledger.js
     { store: 'labyrinth', key: 'labyrinthRunLedger', label: 'Labyrinth run ledger' },
     { store: 'labyrinth', key: `labyrinthRunLedger_${CHAR}`, label: 'Labyrinth run ledger' },
@@ -225,6 +232,12 @@ const corpus = [
     // tasks/task-completion-tracker.js — chunked, weekly buckets
     { store: 'rerollSpending', key: `taskCompletionRec_${CHAR}_2026-W03`, label: 'TaskCompletionTracker records' },
     { store: 'rerollSpending', key: `taskCompletions_${CHAR}`, label: 'TaskCompletionTracker legacy key' },
+
+    // tasks/task-reroll-tracker.js — the retired-task history only. The live
+    // map (`taskRerollData_<id>`) is curated and must stay unclaimed
+    { store: 'rerollSpending', key: 'taskRerollHistory', label: 'Task reroll history' },
+    { store: 'rerollSpending', key: `taskRerollHistory_${CHAR}`, label: 'Task reroll history' },
+    { store: 'rerollSpending', key: `taskRerollData_${CHAR}`, label: null },
 
     // alchemy/transmute-history-tracker.js — chunked, daily buckets
     {

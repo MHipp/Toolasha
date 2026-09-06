@@ -25,6 +25,7 @@ import {
     foldRoomResult,
 } from './labyrinth-outcome-log.js';
 import { createPersistedRecord } from '../../utils/persisted-record.js';
+import { registerSyncMerge } from '../../utils/sync-merge-registry.js';
 
 /**
  * Deciding a side needs far fewer fights than measuring a rate
@@ -100,6 +101,25 @@ const outcomeRecord = createPersistedRecord({
     merge: mergeOutcomeDocuments,
     migrate: 'discard',
     label: 'LabyrinthClearRate',
+});
+
+/*
+ * Registered so a cross-device sync PULL combines this record instead of
+ * overwriting it. The totals only ever grow, so a whole-key write — which is
+ * what `importEverything` does to every key it is not told about — throws away
+ * every fight the receiving device recorded and the sending one never saw, and
+ * a clear rate is only as good as the fights behind it. The fold is the same
+ * pure `(base, fresh)` function two tabs on one machine already share.
+ *
+ * Registration runs at import time, which is long before the earliest pull (the
+ * staggered startup pull, 20s+ after load), so the registry is complete by the
+ * time sync consults it. See utils/sync-merge-registry.js.
+ */
+registerSyncMerge({
+    store: 'settings',
+    base: OUTCOME_STORAGE_KEY,
+    merge: mergeOutcomeDocuments,
+    label: 'Labyrinth fight outcomes',
 });
 
 /** Prototype methods mixed into LabyrinthClearRate */

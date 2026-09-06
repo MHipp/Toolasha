@@ -4267,3 +4267,49 @@ describe('a teardown mid-sim', () => {
         extract.mockRestore();
     });
 });
+
+describe('a cross-device sync pull combines the fight outcomes', () => {
+    test('the registered merge keeps the fuller bucket per room, not the downloaded copy', async () => {
+        const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
+
+        const registration = mergeForKey('settings', 'labyrinthFightOutcomes_me');
+        expect(registration, 'settings/labyrinthFightOutcomes_me has no sync merge').toBeTruthy();
+
+        // This device has fought the imp forty times; the phone has never seen
+        // it and has its own count against the wolf. A whole-key write would
+        // leave the pull with the phone's document and the imp's forty fights
+        // would be gone, taking the clear rate built on them with it.
+        const local = {
+            version: 2,
+            totals: { imp: { attempts: 40, clears: 30 } },
+            seen: {},
+            baseline: null,
+        };
+        const incoming = {
+            version: 2,
+            totals: { wolf: { attempts: 5, clears: 1 } },
+            seen: {},
+            baseline: null,
+        };
+
+        const merged = registration.merge(local, incoming);
+        expect(merged.totals).toEqual({
+            imp: { attempts: 40, clears: 30 },
+            wolf: { attempts: 5, clears: 1 },
+        });
+    });
+
+    test('a room both devices fought keeps the bucket that counted more', async () => {
+        const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
+        const { merge } = mergeForKey('settings', 'labyrinthFightOutcomes_me');
+
+        // Never a field-by-field max: that would stitch clears from one count
+        // onto attempts from another and invent a rate neither device measured
+        const merged = merge(
+            { version: 2, totals: { imp: { attempts: 40, clears: 30 } }, seen: {}, baseline: null },
+            { version: 2, totals: { imp: { attempts: 4, clears: 4 } }, seen: {}, baseline: null }
+        );
+
+        expect(merged.totals.imp).toEqual({ attempts: 40, clears: 30 });
+    });
+});

@@ -326,3 +326,32 @@ describe('the stored records survive a read that cannot be made', () => {
         expect(saved[0].taskId).toBe(2);
     });
 });
+
+describe('a cross-device sync pull combines the retired-task history', () => {
+    test('the registered merge is the union by task, not the downloaded copy', async () => {
+        const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
+
+        // Both key shapes the record can be stored under: the scoped one every
+        // account writes today, and the bare pre-scoping key still sitting on
+        // accounts that never triggered the adoption
+        for (const key of ['taskRerollHistory', 'taskRerollHistory_market123']) {
+            const registration = mergeForKey('rerollSpending', key);
+            expect(registration, `rerollSpending/${key} has no sync merge`).toBeTruthy();
+
+            // This device retired task 1; the phone retired task 2. A whole-key
+            // write would leave the pull with only the phone's row, and the
+            // gold spent on task 1 would simply stop having been spent
+            const local = [{ taskId: 1, retiredAt: 10, goldSpent: 10000 }];
+            const incoming = [{ taskId: 2, retiredAt: 20, goldSpent: 20000 }];
+
+            expect(registration.merge(local, incoming).map((entry) => entry.taskId)).toEqual([1, 2]);
+        }
+    });
+
+    test('the live reroll map is deliberately not merged', async () => {
+        const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
+        // Curated: a task is dropped from it on purpose when it retires, so a
+        // union would resurrect rows the tracker has finished with
+        expect(mergeForKey('rerollSpending', 'taskRerollData_market123')).toBeNull();
+    });
+});

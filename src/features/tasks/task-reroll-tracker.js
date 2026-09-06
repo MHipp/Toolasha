@@ -16,6 +16,7 @@ import {
 } from './task-card-state.js';
 import { GAME, TOOLASHA } from '../../utils/selectors.js';
 import { createCuratedRecord, createPersistedRecord, mergeById } from '../../utils/persisted-record.js';
+import { registerSyncMerge } from '../../utils/sync-merge-registry.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { addStyles } from '../../utils/dom.js';
 
@@ -107,6 +108,26 @@ function mergeHistory(stored, memory) {
     )(stored, memory);
     return merged.length > HISTORY_CAP ? merged.slice(merged.length - HISTORY_CAP) : merged;
 }
+
+/*
+ * Registered so a cross-device sync PULL combines the retired-task history
+ * instead of overwriting it. The history only ever gains rows — a task retires
+ * once — so the whole-key write `importEverything` would otherwise do throws
+ * away every reroll the receiving device paid for and the sending one never
+ * saw, which is the entire point of a spend tracker. The live map above is
+ * curated (tasks are dropped from it deliberately when they retire) and stays
+ * a whole-key write.
+ *
+ * Registration runs at import time, which is long before the earliest pull (the
+ * staggered startup pull, 20s+ after load), so the registry is complete by the
+ * time sync consults it. See utils/sync-merge-registry.js.
+ */
+registerSyncMerge({
+    store: STORE_NAME,
+    base: HISTORY_KEY,
+    merge: mergeHistory,
+    label: 'Task reroll history',
+});
 
 class TaskRerollTracker {
     constructor() {
