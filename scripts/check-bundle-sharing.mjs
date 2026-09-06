@@ -10,10 +10,16 @@
  * casualties (duplicated watch timers, stale geometry caches, a second toast
  * stack) — and nothing used to notice until a panel misbehaved.
  *
+ * The same hazard exists for `src/core/**`, whose modules are constructed
+ * singletons meant to be reached through `Toolasha.Core.*` — a second copy
+ * there registers a second set of WebSocket/DOM observers and runs a second
+ * state machine.
+ *
  * This script makes the rule executable: it walks the static import graph from
  * every production bundle entry, using the same `external` predicates the
- * build itself uses, and fails loudly on any `src/utils/**` module that ends
- * up bundled inline into two or more bundles without being allowlisted.
+ * build itself uses, and fails loudly on any module under a policed prefix
+ * (see POLICED_PREFIXES) that ends up bundled inline into two or more bundles
+ * without being allowlisted.
  *
  * What "inline" means here: a module an `external` predicate exempts is not
  * traversed for that bundle — it arrives at runtime through the shared
@@ -178,6 +184,21 @@ const ALLOWLIST = new Map([
     ],
 ]);
 
+/**
+ * Directory prefixes the sweep polices.
+ *
+ * `src/utils` is the historical scope. `src/core` joined it because the same
+ * failure lives there and is worse: every module under it is a constructed
+ * singleton exported as a default instance, so a second copy is a second
+ * observer registration and a second state machine — not merely extra weight.
+ * The core bundle loads first and every later bundle is meant to reach these
+ * through `Toolasha.Core.*` (coreExternalGlobals in rollup.config.js), so the
+ * fix for a violation here is always the externals map, never the allowlist.
+ *
+ * Paths use forward slashes.
+ */
+const POLICED_PREFIXES = ['src/utils/', 'src/core/'];
+
 /** Import suffixes handled by custom rollup plugins; their targets are not part of the shared JS graph */
 const PLUGIN_SUFFIXES = ['?raw', '?worker'];
 
@@ -260,7 +281,8 @@ async function main() {
         const isExternal = typeof config.external === 'function' ? config.external : () => false;
         for (const modulePath of walkBundle(entry, isExternal)) {
             const relPath = relative(projectRoot, modulePath).split('\\').join('/');
-            if (!relPath.startsWith('src/utils/') && !SINGLE_COPY_FEATURES.has(relPath)) continue;
+            if (!POLICED_PREFIXES.some((prefix) => relPath.startsWith(prefix)) && !SINGLE_COPY_FEATURES.has(relPath))
+                continue;
             if (!inlineIn.has(relPath)) inlineIn.set(relPath, new Set());
             inlineIn.get(relPath).add(bundleName);
         }
@@ -278,7 +300,7 @@ async function main() {
 
     if (violations.length > 0) {
         console.error('');
-        console.error('[check-bundle-sharing] FAILED: utils modules duplicated across production bundles.');
+        console.error('[check-bundle-sharing] FAILED: shared modules duplicated across production bundles.');
         console.error('');
         for (const { modulePath, bundles } of violations) {
             console.error(`  ${modulePath}`);
@@ -289,6 +311,7 @@ async function main() {
         console.error('Fix by sharing one copy (the liquidity-cap entry is the precedent):');
         console.error('  1. add the module to utilsExternalGlobals in rollup.config.js, and');
         console.error('  2. import + export it in src/libraries/utils.js so the global exists.');
+        console.error('A src/core module uses coreExternalGlobals and src/libraries/core.js instead.');
         console.error('When the second bundle loads BEFORE the owning one, it cannot reference the');
         console.error('global at all — cut the import instead and read the owner through');
         console.error('src/utils/bundle-bridge.js at call time.');
@@ -298,7 +321,7 @@ async function main() {
         process.exit(1);
     }
 
-    console.log(`[check-bundle-sharing] OK: no unshared cross-bundle src/utils modules (${inlineIn.size} checked).`);
+    console.log(`[check-bundle-sharing] OK: no unshared cross-bundle src/utils or src/core modules (${inlineIn.size} checked).`);
 }
 
 await main();

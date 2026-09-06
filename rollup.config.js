@@ -29,6 +29,11 @@ const coreExternalGlobals = new Map([
     [normalize(join(__dirname, 'src/core/dom-observer.js')), 'Toolasha.Core.domObserver'],
     [normalize(join(__dirname, 'src/core/tooltip-observer.js')), 'Toolasha.Core.tooltipObserver'],
     [normalize(join(__dirname, 'src/core/data-manager.js')), 'Toolasha.Core.dataManager'],
+    // One connection state machine: it registers its own socket open/close/error
+    // listeners at construction, so a second copy is a second set of listeners
+    // and a second `state` — and marketAPI (core) gating fetches on
+    // isConnected() must agree with what Net Worth's pause logic (market) sees.
+    [normalize(join(__dirname, 'src/core/connection-state.js')), 'Toolasha.Core.connectionState'],
     [normalize(join(__dirname, 'src/core/feature-registry.js')), 'Toolasha.Core.featureRegistry'],
     // One ring buffer: the core bundle installs the hooks, the ui bundle's
     // Diagnostics section reads what they caught

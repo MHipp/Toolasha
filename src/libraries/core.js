@@ -11,6 +11,7 @@ import config from '../core/config.js';
 import webSocketHook from '../core/websocket.js';
 import domObserver from '../core/dom-observer.js';
 import dataManager from '../core/data-manager.js';
+import connectionState from '../core/connection-state.js';
 import featureRegistry from '../core/feature-registry.js';
 // The error ring buffer the Diagnostics section reads. Namespace-imported so
 // its functions arrive as one object other bundles reach through Core.
@@ -42,6 +43,7 @@ toolashaRoot.Core = {
     webSocketHook,
     domObserver,
     dataManager,
+    connectionState,
     featureRegistry,
     errorLog,
     settingsStorage,
