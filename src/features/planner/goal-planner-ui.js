@@ -516,13 +516,20 @@ class GoalPlannerPanel {
      * @returns {Promise<void>}
      */
     async removeGoal(goalId) {
+        // Fixed before the store round trip, same as `replan()`: a character
+        // switch during that read must not have the write below land under
+        // whoever is current when it finishes rather than whoever removed the
+        // goal — `saveSnapshot` writes to `characterKey()` resolved at call
+        // time, so an unpinned call is a silent handoff of one character's
+        // plans to another's snapshot.
+        const owner = dataManager.getCurrentCharacterId() || null;
         this.goals = await removeGoal(goalId);
         this.plans = this.plans.filter((plan) => plan.goalId !== goalId);
 
         if (!this.context) {
             // Nothing has been priced this session, so there is nothing to
             // reallocate against; saying so beats a silent full market fetch
-            await saveSnapshot(this.plans);
+            await saveSnapshot(this.plans, owner);
             this._render();
             this._status('Removed — press Refresh to price the rest.');
             return;

@@ -13,6 +13,9 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const store = vi.hoisted(() => ({ data: {} }));
+// Mutable so a test can simulate a character switch mid-await; every other
+// test leaves it at the default and never notices it exists.
+const character = vi.hoisted(() => ({ id: 'char1' }));
 
 vi.mock('../../core/config.js', () => ({
     default: { Z_FLOATING_PANEL: 1100, getSetting: () => true, getSettingValue: (_key, fallback) => fallback },
@@ -40,7 +43,7 @@ vi.mock('../../core/storage.js', () => ({
 }));
 vi.mock('../../core/data-manager.js', () => ({
     default: {
-        getCurrentCharacterId: () => 'char1',
+        getCurrentCharacterId: () => character.id,
         getCurrentCharacterGameMode: () => 'standard',
         getInitClientData: () => ({
             itemDetailMap: {
@@ -173,6 +176,7 @@ function fixtureContext() {
 }
 
 beforeEach(() => {
+    character.id = 'char1';
     shopping.calls = [];
     navigation.calls = [];
     navigation.answer = true;
@@ -290,6 +294,27 @@ describe('the character-switch boundary', () => {
 
         // Without a context in hand, replan() has to reprice rather than reuse
         expect(plannerContext.builds).toBe(2);
+    });
+
+    test('removing a goal before anything is priced does not write under whoever switches in mid-removal', async () => {
+        // No refresh yet: `this.context` is null, so removeGoal() takes the
+        // early-return branch that saves the snapshot itself instead of
+        // handing off to replan(). char2 has never had a snapshot of its own.
+        goalPlannerPanel.show();
+        await goalPlannerPanel.load();
+        expect(goalPlannerPanel.context).toBeNull();
+
+        const removal = goalPlannerPanel.removeGoal('g-gold');
+        // The switch lands after removeGoal() has read `getCurrentCharacterId()`
+        // for its own owner check but before the store round trip resolves —
+        // the same window `replan()` guards with its own captured `owner`.
+        character.id = 'char2';
+        await removal;
+
+        expect(store.data.goalPlannerSnapshot_char2).toBeUndefined();
+        // char1's own list is untouched too: the store-level guard already
+        // aborted the removal itself once it saw the switch
+        expect(store.data.goalPlannerGoals_char1).toHaveLength(4);
     });
 });
 
