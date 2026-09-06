@@ -1639,11 +1639,17 @@ class LabyrinthClearRate {
      * The clamp belongs here, on the derived level, not on the threshold.
      *
      * @param {string} skillHrid
-     * @returns {number} Room level, 0 when the threshold puts it below room 1
+     * @returns {number} Room level, 0 when unset or when the threshold puts it below room 1
      */
     getTargetRoomLevel(skillHrid) {
-        const effectiveLevel = this.getEffectiveLevel(skillHrid);
         const skipThreshold = this.getSkipThreshold(skillHrid);
+        // Zero is the unset sentinel, not a threshold of zero: `getSkipThreshold` returns it
+        // for a setting that was never saved, and the automation panel reads a room level of
+        // 0 as "no skip configured, draw no badge". Without this a skill with no threshold
+        // reported effectiveLevel - 1 and every row grew a badge (and queued a sim) for a
+        // skip the player never set.
+        if (skipThreshold === 0) return 0;
+        const effectiveLevel = this.getEffectiveLevel(skillHrid);
         return Math.max(0, Math.floor(effectiveLevel + skipThreshold - 1));
     }
 
@@ -1673,6 +1679,8 @@ class LabyrinthClearRate {
      */
     getCombatSkipRoomLevel(monsterHrid) {
         const skipThreshold = this.getCombatSkipThreshold(monsterHrid);
+        // Zero means unset — see getTargetRoomLevel
+        if (skipThreshold === 0) return 0;
         const effectiveCombatLevel = this.getPlayerEffectiveCombatLevel();
         if (!(effectiveCombatLevel > 0)) return 0;
         return Math.max(0, Math.floor(effectiveCombatLevel + skipThreshold - 1));

@@ -3750,6 +3750,24 @@ describe('formulas across the widened ±1000 threshold range', () => {
             expect(labyrinthClearRate.getCombatSkipRoomLevel('/monsters/imp')).toBe(119);
         });
 
+        /**
+         * Zero is what the reader returns for a setting that was never saved, and the
+         * automation panel reads a room level of 0 as "no skip configured, draw no
+         * badge". Deriving a level from it put a badge (and a queued sim) on every row.
+         */
+        test('an unset threshold still names no room at all', () => {
+            dataManagerMock.characterData = { characterSetting: {} };
+            dataManagerMock.getSkills.mockImplementation(() => [{ skillHrid: '/skills/milking', level: 100 }]);
+            expect(labyrinthClearRate.getSkipThreshold('/skills/milking')).toBe(0);
+            expect(labyrinthClearRate.getTargetRoomLevel('/skills/milking')).toBe(0);
+        });
+
+        test('an unset combat threshold names no room either', () => {
+            vi.spyOn(labyrinthClearRate, 'getCombatSkipThreshold').mockReturnValue(0);
+            vi.spyOn(labyrinthClearRate, 'getPlayerEffectiveCombatLevel').mockReturnValue(150);
+            expect(labyrinthClearRate.getCombatSkipRoomLevel('/monsters/imp')).toBe(0);
+        });
+
         test('only the derived room level is clamped, never the threshold', () => {
             dataManagerMock.characterData = { characterSetting: { labyrinthSkipMilking: -400 } };
             dataManagerMock.getSkills.mockImplementation(() => [{ skillHrid: '/skills/milking', level: 100 }]);
