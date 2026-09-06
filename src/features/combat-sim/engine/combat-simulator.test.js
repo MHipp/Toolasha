@@ -722,6 +722,59 @@ describe('revive takes the death back', () => {
         expect(entry.count).toBe(1);
     });
 
+    /**
+     * Dying clears every event that names the unit, expiry checks included, and
+     * nothing else prunes a buff. A revived unit whose checks were not re-armed
+     * kept a timed buff for the rest of the encounter.
+     */
+    test('a revived unit keeps its buffs only for what is left of their duration', () => {
+        installGameData();
+        seedSimRng(3);
+        const zone = new Zone(ZONE_HRID, 0);
+        const players = ['player1', 'player2'].map((hrid) => {
+            const p = fixturePlayer();
+            p.hrid = hrid;
+            p.zoneBuffs = zone.buffs;
+            p.extraBuffs = [];
+            return p;
+        });
+        const sim = new CombatSimulator(players, zone);
+        sim.reset();
+        sim.simulationTime = ONE_SECOND;
+        players.forEach((p) => p.reset(sim.simulationTime));
+
+        const victim = players[1];
+        victim.addBuff(
+            {
+                uniqueHrid: '/buff_uniques/test_aura',
+                typeHrid: '/buff_types/damage',
+                flatBoost: 0,
+                ratioBoost: 0.3,
+                duration: 10 * ONE_SECOND,
+            },
+            sim.simulationTime
+        );
+        const expiry = sim.simulationTime + 10 * ONE_SECOND;
+
+        // Down, which is what sweeps the buff's own expiry check off the queue
+        victim.combatDetails.currentHitpoints = 0;
+        sim.simResult.addDeath(victim);
+        sim.eventQueue.clearEventsForUnit(victim);
+
+        sim.simulationTime += ONE_SECOND;
+        sim.processAbilityReviveEffect(players[0], { hrid: '/abilities/revive' }, REVIVE_EFFECT);
+
+        const checks = sim.eventQueue.minHeap.data.filter(
+            (event) => event.type === 'checkBuffExpiration' && event.source === victim
+        );
+        expect(checks.map((event) => event.time)).toContain(expiry);
+
+        // And the buff really goes when that check fires
+        sim.simulationTime = expiry;
+        victim.removeExpiredBuffs(sim.simulationTime);
+        expect(victim.combatBuffs['/buff_uniques/test_aura']).toBeUndefined();
+    });
+
     test('but a revived player still shows every time they went down', () => {
         installGameData();
         seedSimRng(3);

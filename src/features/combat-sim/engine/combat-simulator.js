@@ -2056,6 +2056,40 @@ class CombatSimulator {
         this.simResult.addHitpointsGained(source, ability.hrid, amountHealed);
     }
 
+    /**
+     * Re-arm the buff expiry checks a death threw away.
+     *
+     * Dying clears every event naming the unit (`clearEventsForUnit`), and that
+     * sweep takes the `CheckBuffExpirationEvent`s standing for buffs which were
+     * still legitimately running. Nothing else prunes a buff — `removeExpiredBuffs`
+     * only ever runs off one of those events — so a revived unit kept whatever it
+     * was carrying until the next encounter reset, long past the buff's own
+     * duration. Every still-future expiry is re-queued at its own original
+     * instant, so a buff neither outlives nor loses its remaining time.
+     *
+     * Weaker sources are queued too, not just the effective buff: when the
+     * strongest source expires first, `removeExpiredBuffs` promotes the next one,
+     * and that promotion also needs an event of its own to be checked.
+     *
+     * @param {Object} unit - The revived unit
+     */
+    _rescheduleBuffExpirations(unit) {
+        const expiries = new Set();
+        for (const sources of unit.buffSources.values()) {
+            for (const buff of sources) expiries.add(buff.startTime + buff.duration);
+        }
+        for (const buff of Object.values(unit.combatBuffs)) {
+            expiries.add(buff.startTime + buff.duration);
+        }
+        for (const time of expiries) {
+            // A permanent buff carries a string start time and no duration, which
+            // is how it falls out here rather than being scheduled to expire
+            if (Number.isFinite(time) && time > this.simulationTime) {
+                this.eventQueue.addEvent(new CheckBuffExpirationEvent(time, unit));
+            }
+        }
+    }
+
     processAbilityReviveEffect(source, ability, abilityEffect) {
         if (abilityEffect.targetType !== 'deadAlly') {
             recordUnknown('revive ability target type', abilityEffect.targetType, ability.hrid);
@@ -2077,6 +2111,7 @@ class CombatSimulator {
             this.eventQueue.clearByTypeAndHrid(PlayerRespawnEvent.type, reviveTarget.hrid);
 
             reviveTarget.removeExpiredBuffs(this.simulationTime);
+            this._rescheduleBuffExpirations(reviveTarget);
 
             const amountHealed = CombatUtilities.processRevive(source, abilityEffect, reviveTarget);
             this.simResult.addHitpointsGained(reviveTarget, ability.hrid, amountHealed);
