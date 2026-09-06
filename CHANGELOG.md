@@ -6,6 +6,22 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### What your actions actually earned, not what they were predicted to earn
+
+Every rate in the script until now was a prediction from game data. The new Loot & XP pivot reads the loot log instead and reports what each action really paid: time spent, gold per hour at ask and bid, and experience per hour for each skill it trained, with a combined line for actions that train several. Both money columns are kept rather than picking one, because the gap between them is itself the finding — an action thin at bid and fat at ask is one whose income depends on patience. Off by default.
+
+The loot log now keeps 2,000 sessions rather than 500, which is what makes a pivot worth reading. That raise also exposed a cost worth fixing: merging the log re-parsed every timestamp inside a sort comparator on every update, thousands of times per message.
+
+
+### The Skilling Optimizer can tell you what an upgrade costs and when it pays back
+
+Equipment Progression showed how much more XP or gold each upgrade would earn and never what it cost, so the one question it could not answer was whether to buy it. Rows now carry the upgrade's price and, where it earns more gold, how long it takes to repay itself, and the list can be sorted by best value, payback, cost, or either gain. Both legs of the price follow your own pricing mode. An upgrade that cannot be priced says so and sorts last, rather than looking free and therefore infinitely good. Skilling action lists are also in the game's own order now instead of by level and name, and the action picker gained a search box.
+
+### A steadier queue popup, a third Artisan rounding mode, and runway on the battle grid
+
+The queued actions popup jumped between roughly 164 and 338 pixels wide as our own injected rows gained and lost their "complete at" text; it now holds one width. Missing materials gain a hybrid rounding mode that takes the worst case on short queues and the expected value on long ones, since each existing mode is wrong at one end. And the in-battle Consumables grid can show how long each food and drink lasts, read from the same forecast the consumables panel uses so the two cannot disagree, reddening at the same threshold that triggers the low-consumable alert. Both new options are off by default.
+
+
 ### Ability tooltips can show the cooldown you actually get
 
 The game's ability tooltip only ever shows base cooldown and cast time, so the numbers are wrong for anyone with haste or cast speed. Hovering an ability can now append the effective figure, worked out from the same reconstruction the combat simulator uses, so the tooltip and the simulator agree. Where a modifier cannot be read it leaves the game's own line alone rather than showing a guess. Off by default.
