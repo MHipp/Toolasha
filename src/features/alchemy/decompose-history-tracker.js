@@ -391,13 +391,18 @@ class DecomposeHistoryTracker {
 
     /**
      * Clear all history from storage.
+     * The in-progress session is only dropped once the stored ones are gone: a
+     * refused clear deleted nothing, so discarding it would lose the attempts
+     * recorded since it started while leaving on disk exactly the history the
+     * user asked to delete.
      * @returns {Promise<boolean>} Whether the sessions are gone; false when the
      *   store could not be listed and they are therefore still on disk
      */
     async clearHistory() {
         try {
-            this.activeSession = null;
-            return await sessionStore.clear(this.getCharacterScope());
+            const cleared = await sessionStore.clear(this.getCharacterScope());
+            if (cleared) this.activeSession = null;
+            return cleared;
         } catch (error) {
             console.error('[DecomposeHistoryTracker] Failed to clear history:', error);
             return false;
