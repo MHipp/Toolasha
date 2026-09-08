@@ -553,10 +553,15 @@ async function openPlanInMarketplace(picks) {
  * The room-level cells one result row contributes, or null when the pass was
  * not run.
  *
- * `+0` rather than a blank or a dash wherever the pass ran: "this changes
- * nothing" is the answer for most upgrades and is the one thing a ranking in
- * room levels must not hide. A row the shortlist did not reach says so in its
- * tooltip rather than dressing an unmeasured zero as a measured one.
+ * A measured row reads `+0` rather than a blank or a dash: "we looked and it
+ * does nothing" is the answer for most upgrades and is the one thing a ranking
+ * in room levels must not hide.
+ *
+ * "We did not look" is a different answer, and only the shortlist is looked at
+ * — so an unmeasured row reads as a muted dash instead, the same mark this
+ * table already uses for a cell with no number in it. Printing `+0` there made
+ * the two indistinguishable at a glance, which quietly turned "unranked" into
+ * "worthless". Both keep the tooltip that spells out which they are.
  *
  * @param {Object} result - One result row, annotated by `measureRoomLevelGains`
  * @param {Object} roomLevels - The analysis's `roomLevels` summary
@@ -572,7 +577,9 @@ function roomLevelCells(result, roomLevels) {
     const level = measured ? result.maxRoomLevel : roomLevels?.baselineLevel || 0;
     return {
         delta,
-        deltaStr: (delta >= 0 ? '+' : '') + delta,
+        // `delta` above is still 0 for an unmeasured row, so the ranking is
+        // unchanged; only what the cell says about it is.
+        deltaStr: measured ? (delta >= 0 ? '+' : '') + delta : '—',
         deltaColor: !measured ? '#666' : delta > 0 ? '#4caf50' : delta < 0 ? '#f44336' : '#888',
         floor,
         floorStr: floor > 0 ? `F${floor}` : '\u2014',
@@ -580,8 +587,8 @@ function roomLevelCells(result, roomLevels) {
         title: measured
             ? `Clears room level ${level}, which finishes floor ${floor} (its exit room is level ` +
               `${labyrinthFloorClearLevel(floor)}).`
-            : 'Not searched — this upgrade did not rank inside the measured shortlist, so it is reported ' +
-              'as +0 rather than measured.',
+            : 'Not searched — this upgrade did not rank inside the measured shortlist, so it has no ' +
+              'level figure at all. A dash here is not a measured zero.',
     };
 }
 

@@ -3138,6 +3138,82 @@ describe('ranking upgrades by room levels', () => {
         expect(html.indexOf('Deep Upgrade')).toBeLessThan(html.indexOf('Flat Upgrade'));
     });
 
+    test('a row nobody searched does not read as a measured zero', () => {
+        const container = ui.panel.querySelector('#mwi-labsim-upgrade-results');
+        ui._renderUpgradeResults(
+            {
+                baseline: { winRate: 0.5, encounters: 50, attempts: 100 },
+                roomLevels: {
+                    baselineLevel: 120,
+                    baselineFloor: 5,
+                    baselineCleared: true,
+                    measured: 1,
+                    aborted: false,
+                    shortlistSize: 6,
+                    threshold: 0.7,
+                    targetFloor: 6,
+                },
+                results: [
+                    {
+                        candidate: { description: 'Measured Zero' },
+                        costType: 'gold',
+                        cost: 5e5,
+                        winRate: 0.51,
+                        winRateDelta: 0.01,
+                        metricType: 'winRate',
+                        roomLevelDelta: 0,
+                        maxRoomLevel: 120,
+                        floorReached: 5,
+                        roomLevelMeasured: true,
+                    },
+                    {
+                        candidate: { description: 'Never Searched' },
+                        costType: 'gold',
+                        cost: 4e5,
+                        winRate: 0.505,
+                        winRateDelta: 0.005,
+                        metricType: 'winRate',
+                        roomLevelDelta: 0,
+                        maxRoomLevel: null,
+                        floorReached: null,
+                        roomLevelMeasured: false,
+                    },
+                ],
+            },
+            container
+        );
+
+        /**
+         * The Levels cell of the row a description names.
+         * @param {string} description - The candidate's description
+         * @returns {Element} The cell
+         */
+        const levelsCell = (description) => {
+            const row = [...container.querySelectorAll('tr')].find((tr) => tr.textContent.includes(description));
+            expect(row).toBeTruthy();
+            // By header rather than by a hard-coded index, so a column added to
+            // the table does not silently move this assertion onto another cell
+            const headers = [...row.closest('table').querySelectorAll('th')].map((th) => th.textContent);
+            const column = headers.findIndex((text) => text.startsWith('Levels'));
+            expect(column).toBeGreaterThan(-1);
+            return row.querySelectorAll('td')[column];
+        };
+
+        const measured = levelsCell('Measured Zero');
+        const unmeasured = levelsCell('Never Searched');
+
+        // A measured zero stays a confident, real zero
+        expect(measured.textContent.trim()).toBe('+0');
+        // "we looked and it does nothing" and "we did not look" are different
+        // answers, and the cell itself has to say which
+        expect(unmeasured.textContent.trim()).not.toBe('+0');
+        expect(unmeasured.textContent.trim()).not.toBe('');
+
+        // Both keep their hover text, and it still says which is which
+        expect(measured.getAttribute('title')).toContain('Clears room level 120');
+        expect(unmeasured.getAttribute('title')).toContain('Not searched');
+    });
+
     test('the table is untouched when the pass was not run', () => {
         const container = ui.panel.querySelector('#mwi-labsim-upgrade-results');
         ui._renderUpgradeResults(

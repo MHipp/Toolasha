@@ -52,10 +52,11 @@ export function shortlistForRoomLevels(results, size = ROOM_LEVEL_SHORTLIST_SIZE
  * rows in place.
  *
  * Every row comes back with a `roomLevelDelta`, including the ones that were
- * never searched: "this changes nothing" is the honest answer for most upgrades
- * and has to be legible as `+0` rather than as a blank. `roomLevelMeasured`
- * separates a measured zero from an unsearched one, so a caller can say which
- * is which without either of them going missing.
+ * never searched, so the ranking has a number to sort every row by. That zero
+ * is not a measurement on an unsearched row, though, and `roomLevelMeasured`
+ * is what says so: a caller must not present the two alike, because "we looked
+ * and it does nothing" and "we did not look" are different answers. The lab
+ * sim's table prints `+0` for the first and a dash for the second.
  *
  * @param {Array<Object>} results - Rows from `runLabyrinthUpgradeAnalysis`,
  *   mutated in place and re-sorted by levels gained
