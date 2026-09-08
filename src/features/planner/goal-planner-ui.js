@@ -489,7 +489,7 @@ class GoalPlannerPanel {
             this.rateNotes = this.context.rateNotes || [];
             this.combatStatus = this.context.combatStatus || null;
             await saveSnapshot(this.plans, owner);
-            if (!gone()) await this._recordReservations();
+            await this._recordReservations(gone);
         } catch (error) {
             console.error('[GoalPlanner] Planning failed:', error);
             // On `notice` rather than straight to the status line: the redraw in
@@ -511,14 +511,22 @@ class GoalPlannerPanel {
      * something that has to time out: any `goal:` owner not on this list is a
      * goal the player removed.
      *
+     * The ledger is scoped to whoever is logged in at the moment of each write,
+     * and every one of these is an await — so the switch is re-checked before
+     * each of them rather than once at the top. Half a restatement written into
+     * the arriving character's ledger holds their bag back for goals that are
+     * not theirs.
+     *
+     * @param {() => boolean} gone - Whether the character has changed since the replan began
      * @returns {Promise<void>}
      */
-    async _recordReservations() {
-        if (!reservationsEnabled()) return;
+    async _recordReservations(gone) {
+        if (!reservationsEnabled() || gone()) return;
         try {
             const live = this.plans.map((plan) => `${RESERVATION_OWNER_PREFIX}${plan.goalId}`);
             await releaseMissing(RESERVATION_OWNER_PREFIX, live);
             for (const plan of this.plans) {
+                if (gone()) return;
                 await reserve(`${RESERVATION_OWNER_PREFIX}${plan.goalId}`, reservationLines(plan), {
                     label: `Goal: ${plan.title}`,
                 });

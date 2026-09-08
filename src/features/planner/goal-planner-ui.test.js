@@ -16,6 +16,26 @@ const store = vi.hoisted(() => ({ data: {} }));
 // Mutable so a test can simulate a character switch mid-await; every other
 // test leaves it at the default and never notices it exists.
 const character = vi.hoisted(() => ({ id: 'char1' }));
+/**
+ * The reservation ledger, doubled at the seam. Its arithmetic belongs to
+ * `utils/inventory-reservations.test.js`; what matters here is which character
+ * a claim is written under.
+ */
+const ledger = vi.hoisted(() => ({ enabled: false, reserved: [], swept: [], onSweep: null }));
+vi.mock('../../utils/inventory-reservations.js', () => ({
+    reservationsEnabled: () => ledger.enabled,
+    effectiveInventory: (_hrid, _level, { held = 0 } = {}) => held,
+    shortfallNote: () => '',
+    releaseMissing: async (prefix, live) => {
+        ledger.swept.push({ prefix, live: [...live] });
+        await ledger.onSweep?.();
+        return 0;
+    },
+    reserve: async (ownerId) => {
+        ledger.reserved.push({ ownerId, character: character.id });
+        return true;
+    },
+}));
 
 vi.mock('../../core/config.js', () => ({
     default: { Z_FLOATING_PANEL: 1100, getSetting: () => true, getSettingValue: (_key, fallback) => fallback },
@@ -177,6 +197,10 @@ function fixtureContext() {
 
 beforeEach(() => {
     character.id = 'char1';
+    ledger.enabled = false;
+    ledger.reserved = [];
+    ledger.swept = [];
+    ledger.onSweep = null;
     shopping.calls = [];
     navigation.calls = [];
     navigation.answer = true;
@@ -294,6 +318,22 @@ describe('the character-switch boundary', () => {
 
         // Without a context in hand, replan() has to reprice rather than reuse
         expect(plannerContext.builds).toBe(2);
+    });
+
+    test('a switch during the reservation write leaves no claim under the arriving character', async () => {
+        ledger.enabled = true;
+        // The switch lands inside the orphan sweep — after replan() checked
+        // `gone()` for the snapshot, before a single claim has been written
+        ledger.onSweep = () => {
+            character.id = 'char2';
+        };
+
+        goalPlannerPanel.show();
+        await goalPlannerPanel.load();
+        await goalPlannerPanel.refresh();
+
+        expect(ledger.swept).toHaveLength(1);
+        expect(ledger.reserved).toEqual([]);
     });
 
     test('removing a goal before anything is priced does not write under whoever switches in mid-removal', async () => {
