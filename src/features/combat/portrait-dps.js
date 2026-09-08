@@ -29,6 +29,18 @@
  * is the most fragile feature in the script for that reason: it reaches into the
  * game's own DOM rather than into the payload. It fails by drawing nothing.
  *
+ * ## The guild trial's fight view draws nothing
+ *
+ * A spectated trial renders the *same* players/monsters areas and unit tiles
+ * inside the Guild panel, with this fight's own tally nowhere in them — the
+ * watcher's own name still joins onto the trial tile, and the monsters are
+ * worse: joined by slot, so the trial's boss would wear whatever slot 0 of the
+ * live fight was carrying. `_ownArea` skips a players or monsters area inside
+ * the guild panel and removes any meter already in it, the same fence
+ * `combat-unit-buff-bars.js`'s `isTrialArea` uses and for the same reason: it
+ * is structural rather than a stream flag, so it needs no timeout coming back
+ * out either.
+ *
  * The idea is DPs', from MWI Combat Suite by Frotty (MIT) — see
  * `third-party/mwi-combat-suite/` and `docs/THIRD-PARTY-LICENSES.md`. The code is
  * Toolasha's own.
@@ -36,6 +48,7 @@
 
 import config from '../../core/config.js';
 import domObserver from '../../core/dom-observer.js';
+import { isTrialArea } from './combat-unit-buff-bars.js';
 import { damageBreakdown, battleBreakdown, manaSamples } from './damage-tracker.js';
 import { takenBreakdown, battleTakenBreakdown } from './damage-taken-tracker.js';
 import {
@@ -361,7 +374,7 @@ class PortraitDps {
 
     /** Watch the battle panel that currently holds the portraits, if any */
     _attach() {
-        const area = document.querySelector(PLAYERS_AREA);
+        const area = this._ownArea(PLAYERS_AREA);
         if (!area) return;
         const panel = area.closest('[class*="BattlePanel_battlePanel"]') || area.parentElement || area;
         if (panel === this.panel && this.observer) return;
@@ -443,7 +456,7 @@ class PortraitDps {
      * @param {Object} settings - From `_settings`
      */
     _drawPlayers(run, fight, settings) {
-        const area = document.querySelector(PLAYERS_AREA);
+        const area = this._ownArea(PLAYERS_AREA);
         if (!area) return;
 
         const units = [...area.querySelectorAll(UNIT)];
@@ -486,7 +499,7 @@ class PortraitDps {
      * @param {Object} settings - From `_settings`
      */
     _drawEnemies(fight, settings) {
-        const area = document.querySelector(MONSTERS_AREA);
+        const area = this._ownArea(MONSTERS_AREA);
         if (!area) return;
 
         // Monsters are joined by slot rather than by name, which is the opposite
@@ -520,6 +533,33 @@ class PortraitDps {
         });
 
         this._prune(area, wanted);
+    }
+
+    /**
+     * This character's own area of a kind, and no trial's.
+     *
+     * A spectated guild trial draws the same `BattlePanel_playersArea` /
+     * `BattlePanel_monstersArea` into the guild panel, with this fight's own
+     * units nowhere in them — see `combat-unit-buff-bars.js`'s `isTrialArea` for
+     * why the guild panel is the fence and why it needs no timeout in either
+     * direction. A trial area is never drawn on, and any meter left in one from
+     * before the trial view opened is taken out here, so nothing is left to
+     * flash on the way in or out. The first area outside the guild panel is the
+     * party's own; there is only ever one, and taking the first keeps the old
+     * `querySelector` behaviour when no trial is on screen.
+     *
+     * @param {string} selector - `PLAYERS_AREA` or `MONSTERS_AREA`
+     * @returns {HTMLElement|null} The party's own area, or null when only a
+     *   trial's is on screen
+     */
+    _ownArea(selector) {
+        let own = null;
+        for (const area of document.querySelectorAll(selector)) {
+            if (isTrialArea(area)) {
+                for (const meter of area.querySelectorAll(`[${MARK}]`)) meter.remove();
+            } else if (!own) own = area;
+        }
+        return own;
     }
 
     /**

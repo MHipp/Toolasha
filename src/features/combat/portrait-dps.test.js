@@ -512,3 +512,121 @@ describe('observer-driven redraws', () => {
         spy.mockRestore();
     });
 });
+
+describe('a spectated guild trial draws nothing', () => {
+    // The trial's fight view renders the same `BattlePanel_playersArea` /
+    // `BattlePanel_monstersArea` and the same `CombatUnit` tiles, inside the
+    // Guild panel. Nothing here has ever read the trial's own stream, so the
+    // live fight's own figures were what got painted onto a tile that just
+    // happens to share the selector — see `combat-unit-buff-bars.js`'s
+    // `isTrialArea`, which the fix reuses.
+    const trialPanel = (playerName = 'Millennium44', monsterName = 'Trial Chameleon') => {
+        const guild = document.createElement('div');
+        guild.className = 'GuildPanel_guildPanel__9z8y7';
+        guild.innerHTML = `
+            <div class="BattlePanel_playersArea__3a4b5">
+                <div class="CombatUnit_combatUnit__1p2q3">
+                    <div class="CombatUnit_name__2r3s4">${playerName}</div>
+                </div>
+            </div>
+            <div class="BattlePanel_monstersArea__6c7d8">
+                <div class="CombatUnit_combatUnit__1p2q3">
+                    <div class="CombatUnit_name__2r3s4">${monsterName}</div>
+                </div>
+            </div>`;
+        document.body.appendChild(guild);
+        return guild;
+    };
+
+    const meterOn = (el) => el.querySelector('[data-toolasha-portrait-dps]');
+
+    beforeEach(() => {
+        document.body.innerHTML = '';
+    });
+
+    afterEach(() => portraitDps.cleanup());
+
+    test('the watcher’s own live meter does not land on their trial tile', () => {
+        opts.players = [{ name: 'Millennium44', damage: 20_100, dps: 316 }];
+        const guild = trialPanel();
+
+        portraitDps.initialize();
+
+        expect(meterOn(guild)).toBeNull();
+    });
+
+    test('the trial’s boss gets no monster meter either — slots join positionally', () => {
+        // Monsters are matched by slot, not name, so the live fight's slot 0
+        // would land on whatever the trial happens to draw first
+        opts.fight = { players: {}, enemies: { 0: { name: 'Veyes', damage: 987, dps: 493 } } };
+        const guild = trialPanel();
+
+        portraitDps.initialize();
+
+        expect(guild.querySelectorAll('[data-toolasha-portrait-dps]')).toHaveLength(0);
+    });
+
+    test('a meter already on a tile is removed when the trial view takes over', () => {
+        opts.players = [{ name: 'Millennium44', damage: 20_100, dps: 316 }];
+        const players = document.createElement('div');
+        players.className = 'BattlePanel_playersArea__9xk2j';
+        players.appendChild(portrait('Millennium44'));
+        document.body.appendChild(players);
+        portraitDps.initialize();
+        expect(meterOn(players)).not.toBeNull();
+
+        // Not "reset on trial start": the same node, now inside the guild panel —
+        // the discriminator is structural, so nothing has to be told the trial began
+        players.remove();
+        const guild = document.createElement('div');
+        guild.className = 'GuildPanel_guildPanel__9z8y7';
+        guild.appendChild(players);
+        document.body.appendChild(guild);
+
+        portraitDps.redraw();
+
+        expect(meterOn(players)).toBeNull();
+    });
+
+    test('ordinary combat is unchanged, and works again once the trial view goes', () => {
+        opts.players = [{ name: 'Millennium44', damage: 20_100, dps: 316 }];
+        const guild = trialPanel();
+        portraitDps.initialize();
+        expect(meterOn(guild)).toBeNull();
+
+        // The trial ends, or the Combat tab is returned to: the own panel comes
+        // back and needs no timeout or flag to draw on again
+        guild.remove();
+        const players = document.createElement('div');
+        players.className = 'BattlePanel_playersArea__9xk2j';
+        players.appendChild(portrait('Millennium44'));
+        document.body.appendChild(players);
+
+        portraitDps.redraw();
+
+        expect(meterOn(players)).not.toBeNull();
+    });
+
+    test('the party’s own panel is still drawn when a trial panel shares the page', () => {
+        opts.players = [{ name: 'Millennium44', damage: 20_100, dps: 316 }];
+        opts.fight = { players: {}, enemies: { 0: { name: 'Veyes', damage: 987, dps: 493 } } };
+
+        const players = document.createElement('div');
+        players.className = 'BattlePanel_playersArea__9xk2j';
+        players.appendChild(portrait('Millennium44'));
+        document.body.appendChild(players);
+
+        const monsters = document.createElement('div');
+        monsters.className = 'BattlePanel_monstersArea__7z1k';
+        monsters.appendChild(portrait('Veyes'));
+        document.body.appendChild(monsters);
+
+        const guild = trialPanel();
+
+        portraitDps.initialize();
+
+        expect(meterOn(players)).not.toBeNull();
+        expect(meterOn(monsters)).not.toBeNull();
+        expect(guild.querySelectorAll('[data-toolasha-portrait-dps]')).toHaveLength(0);
+    });
+});

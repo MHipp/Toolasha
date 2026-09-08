@@ -447,6 +447,81 @@ describe('lifecycle', () => {
     });
 });
 
+describe('a spectated guild trial and a background fight never cross wires', () => {
+    // The trial's own portraits live inside the Guild panel, which is where a
+    // `trial`-sourced badge belongs — but `badgeSource` can fall back to `run`
+    // (this client's own fight) while that trial view is still on the page, if
+    // the trial's split is momentarily empty or the watcher is also farming a
+    // zone in the background. `playersAreaFor` is the fence: a `run` badge
+    // must never land on the trial's tiles, and a `trial` badge must never be
+    // left on the character's own once the source that drew it is gone.
+    const guildPanel = (...tiles) => {
+        const guild = document.createElement('div');
+        guild.className = 'GuildPanel_guildPanel__9z8y7';
+        const area = document.createElement('div');
+        area.className = 'BattlePanel_playersArea__3a4b5';
+        for (const tile of tiles) area.appendChild(tile);
+        guild.appendChild(area);
+        document.body.appendChild(guild);
+        return { guild, area };
+    };
+
+    test('a run-sourced badge does not land on the trial’s tiles', () => {
+        opts.trial = null;
+        opts.run = { players: [{ name: 'Alice', damage: 750, dps: 75 }] };
+        const { area } = guildPanel(card('Alice'));
+
+        feature.initialize();
+
+        expect(badgeOf(area.children[0])).toBeNull();
+    });
+
+    test('a badge already on the trial’s tile is removed once the source stops being the trial', () => {
+        opts.trial = { players: [{ name: 'Alice', damage: 10, dps: 10, share: 100 }], partyDps: 10 };
+        const { area } = guildPanel(card('Alice'));
+        feature.initialize();
+        expect(badgeOf(area.children[0])).not.toBeNull();
+
+        // The trial's split goes empty — a member farming in the background,
+        // say — and the source falls back to the run
+        opts.trial = null;
+        opts.run = { players: [{ name: 'Alice', damage: 750, dps: 75 }] };
+        feature.redraw();
+
+        expect(badgeOf(area.children[0])).toBeNull();
+    });
+
+    test('ordinary combat is unchanged, and works again once the trial view goes', () => {
+        opts.trial = null;
+        opts.run = { players: [{ name: 'Alice', damage: 750, dps: 75 }] };
+        const { guild } = guildPanel(card('Alice'));
+        feature.initialize();
+
+        guild.remove();
+        const area = panel(card('Alice'));
+        feature.redraw();
+
+        expect(badgeOf(area.children[0])).not.toBeNull();
+    });
+
+    test('the character’s own panel is still badged when a trial panel shares the page', () => {
+        opts.trial = { players: [{ name: 'Alice', damage: 10, dps: 10, share: 100 }], partyDps: 10 };
+        opts.run = { players: [{ name: 'Bob', damage: 750, dps: 75 }] };
+
+        const ownArea = panel(card('Bob'));
+        const { area: trialArea } = guildPanel(card('Alice'));
+
+        feature.initialize();
+
+        // The trial wins as the source (see `badgeSource`), so it is the
+        // trial's own tile that gets badged — and the character's own tile,
+        // matched against a table that has nothing named Bob, correctly gets
+        // nothing rather than the trial's figures
+        expect(badgeOf(trialArea.children[0])).not.toBeNull();
+        expect(badgeOf(ownArea.children[0])).toBeNull();
+    });
+});
+
 describe('yielding the full cards to Portrait DPS', () => {
     const tiles = [
         { el: {}, name: 'A', fullCard: true },

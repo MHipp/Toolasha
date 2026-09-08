@@ -43,6 +43,19 @@
  * build hash (`CombatUnit_combatUnit__1p2q3`) that changes with every update.
  * This is the fragile end of the script and it fails by drawing nothing.
  *
+ * ## Two players areas, and never the wrong badge on either
+ *
+ * A trial's own portraits sit inside the Guild panel, which is exactly where a
+ * `trial`-sourced badge belongs — but a background fight can be running at the
+ * same time (see above), putting the character's own players area on the page
+ * too. `playersAreaFor` picks the one that matches the source a draw is
+ * actually using and clears any badge already sitting in the other one, so a
+ * `run` figure never lands on the trial's tiles and a stale `trial` figure
+ * never lingers on the character's own once the split that produced it stops.
+ * Structural rather than a flag on the trial's stream, so coming back needs no
+ * timeout either — see `combat-unit-buff-bars.js`'s `isTrialArea`, which this
+ * reads for the same reason.
+ *
  * ## Re-attaching, which is the whole lifecycle problem
  *
  * React rebuilds the battle panel whenever the fight changes and whenever the
@@ -69,6 +82,7 @@
 
 import config from '../../core/config.js';
 import domObserver from '../../core/dom-observer.js';
+import { isTrialArea } from './combat-unit-buff-bars.js';
 import { liveTrialSplit } from '../guild/guild-trial-damage.js';
 import { damageBreakdown } from './damage-tracker.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
@@ -318,6 +332,39 @@ export function tilesForSource(tiles, source, portraitDpsOn) {
 }
 
 /**
+ * The players area to draw a given source's badges into.
+ *
+ * Unlike `combat-unit-buff-bars.js`, a guild-panel area is not foreign here:
+ * the `trial` source's whole reason to exist is the spectated trial's own
+ * portraits, which live inside the Guild panel, so those badges *belong* on a
+ * `isTrialArea` match. What must never happen is the pairing crossing over —
+ * `run` data (this client's own fight) landing on the trial's tiles, or a
+ * leftover `trial` badge sitting on the character's own tile once the split
+ * that produced it is gone. That crossover is possible because
+ * {@link badgeSource} can return either source while a background fight and a
+ * spectated trial are both on the page at once (see the module comment), and
+ * until now nothing here read the DOM to tell one players area from the
+ * other. So a source is matched only to an area of its own kind; an area of
+ * the *other* kind is skipped and any badge already in it is taken out, and
+ * that skip needs no timeout to reverse: it re-evaluates on every draw.
+ *
+ * @param {'trial'|'run'} source - From {@link badgeSource}
+ * @returns {HTMLElement|null} The first players area belonging to that
+ *   source, or null when none is on the page
+ */
+function playersAreaFor(source) {
+    let own = null;
+    for (const area of document.querySelectorAll(PLAYERS_AREA)) {
+        if (isTrialArea(area) === (source === 'trial')) {
+            if (!own) own = area;
+        } else {
+            for (const badge of area.querySelectorAll(`[${BADGE_MARK}]`)) removeBadge(badge);
+        }
+    }
+    return own;
+}
+
+/**
  * Take a badge away, and the tile change it needed with it.
  *
  * A compact badge makes its tile a positioning context; leaving that behind on
@@ -399,10 +446,11 @@ class CombatUnitBadges {
     /** Put a badge on every party tile whose player is in the table */
     _draw() {
         try {
-            const area = typeof document === 'undefined' ? null : document.querySelector(PLAYERS_AREA);
+            if (typeof document === 'undefined') return;
+            const { players, source } = badgeSource();
+            const area = playersAreaFor(source);
             if (!area) return;
 
-            const { players, source } = badgeSource();
             const tiles = tilesForSource(partyTiles(area), source, config.getSetting('portraitDps') === true);
             const pairs = matchTiles(tiles, badgeRows(players));
 
