@@ -63,11 +63,13 @@ const {
     mergeRuns,
     mergeRunHistories,
     mergeClearEpochs,
+    mergeAverageBaselines,
     applyClearEpoch,
     PERSIST_COALESCE_MS,
     RUNS_STORE,
     RUNS_KEY,
     RUNS_CLEARED_KEY,
+    AVERAGE_BASELINE_KEY,
 } = await import('./dungeon-tracker-storage.js');
 
 const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
@@ -981,5 +983,123 @@ describe('clearing all run history survives a pull', () => {
 
         expect((await dungeonTrackerStorage.getAllRuns()).map((entry) => entry.id)).toEqual([2]);
         vi.useRealTimers();
+    });
+});
+
+/**
+ * The per-dungeon "average starts here" markers.
+ *
+ * A marker is not a clear — every run stays in the history and keeps its
+ * number — so it needs its own forward-only fold for exactly the reason the
+ * clear watermark needed one: a device that never saw the marker would
+ * otherwise push the stale average straight back.
+ */
+describe('average baselines', () => {
+    beforeEach(() => {
+        game.saved = {};
+        dungeonTrackerStorage._resetCache();
+    });
+
+    test('nothing marked reads as an empty map', async () => {
+        expect(await dungeonTrackerStorage.getAverageBaselines()).toEqual({});
+    });
+
+    test('a marker is written at once and read back', async () => {
+        expect(await dungeonTrackerStorage.setAverageBaseline('A,B::Chimerical Den', 1000)).toBe(true);
+
+        expect(game.writes).toEqual([['dungeonAverageBaselines', true]]);
+        expect(await dungeonTrackerStorage.getAverageBaselines()).toEqual({ 'A,B::Chimerical Den': 1000 });
+    });
+
+    test('marking one dungeon leaves the others alone', async () => {
+        await dungeonTrackerStorage.setAverageBaseline('A,B::Chimerical Den', 1000);
+        await dungeonTrackerStorage.setAverageBaseline('A,B::Sinister Circus', 2000);
+
+        expect(await dungeonTrackerStorage.getAverageBaselines()).toEqual({
+            'A,B::Chimerical Den': 1000,
+            'A,B::Sinister Circus': 2000,
+        });
+    });
+
+    test('a marker only ever moves forward', async () => {
+        await dungeonTrackerStorage.setAverageBaseline('A,B::Chimerical Den', 5000);
+        await dungeonTrackerStorage.setAverageBaseline('A,B::Chimerical Den', 1000);
+
+        expect((await dungeonTrackerStorage.getAverageBaselines())['A,B::Chimerical Den']).toBe(5000);
+    });
+
+    test('a write folds in what another tab stored meanwhile', async () => {
+        await dungeonTrackerStorage.setAverageBaseline('A,B::Chimerical Den', 1000);
+        game.saved.unifiedRuns.dungeonAverageBaselines = {
+            'A,B::Chimerical Den': 1000,
+            'A,B::Pirate Cove': 7000,
+        };
+
+        await dungeonTrackerStorage.setAverageBaseline('A,B::Sinister Circus', 2000);
+
+        expect(await dungeonTrackerStorage.getAverageBaselines()).toEqual({
+            'A,B::Chimerical Den': 1000,
+            'A,B::Pirate Cove': 7000,
+            'A,B::Sinister Circus': 2000,
+        });
+    });
+
+    test('a read that could not be made is not cached as "nothing marked"', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        game.unreadable = true;
+
+        expect(await dungeonTrackerStorage.getAverageBaselines()).toEqual({});
+        expect(warn).toHaveBeenCalled();
+
+        game.unreadable = false;
+        game.saved.unifiedRuns = { dungeonAverageBaselines: { 'A,B::Chimerical Den': 9 } };
+        expect(await dungeonTrackerStorage.getAverageBaselines()).toEqual({ 'A,B::Chimerical Den': 9 });
+        warn.mockRestore();
+    });
+
+    test('a marker is not written when the stored map could not be read first', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        game.unreadable = true;
+
+        expect(await dungeonTrackerStorage.setAverageBaseline('A,B::Chimerical Den', 1000)).toBe(false);
+        expect(game.writes).toEqual([]);
+        warn.mockRestore();
+    });
+
+    test('the newest stored run names the dungeon the button marks', async () => {
+        seedRuns([
+            { timestamp: '2026-01-03T00:00:00Z', teamKey: 'A,B', dungeonName: 'Sinister Circus', duration: 500 },
+            { timestamp: '2026-01-01T00:00:00Z', teamKey: 'A,B', dungeonName: 'Chimerical Den', duration: 500 },
+        ]);
+
+        expect(await dungeonTrackerStorage.latestStatsKey()).toBe('A,B::Sinister Circus');
+    });
+
+    test('no run carrying both a team and a dungeon is nothing to mark', async () => {
+        seedRuns([{ timestamp: '2026-01-03T00:00:00Z', teamKey: 'A,B', duration: 500 }]);
+        expect(await dungeonTrackerStorage.latestStatsKey()).toBeNull();
+    });
+
+    test('the baseline map resolves to a registered fold, and folds per dungeon by max', () => {
+        expect(mergeForKey(RUNS_STORE, AVERAGE_BASELINE_KEY)?.label).toBe('Dungeon average baselines');
+
+        // Device A marked Chimerical Den; device B never saw it and marked its
+        // own. Neither marker may be lost, and A's may not be walked back.
+        const deviceA = { 'A,B::Chimerical Den': 5000 };
+        const deviceB = { 'A,B::Chimerical Den': 1000, 'A,B::Pirate Cove': 3000 };
+        expect(mergeAverageBaselines(deviceA, deviceB)).toEqual({
+            'A,B::Chimerical Den': 5000,
+            'A,B::Pirate Cove': 3000,
+        });
+        // The same answer whichever device pulls
+        expect(mergeAverageBaselines(deviceB, deviceA)).toEqual({
+            'A,B::Chimerical Den': 5000,
+            'A,B::Pirate Cove': 3000,
+        });
+    });
+
+    test('a missing or unusable side is not an error', () => {
+        expect(mergeAverageBaselines(null, undefined)).toEqual({});
+        expect(mergeAverageBaselines({ x: 'nope' }, [1, 2])).toEqual({});
     });
 });

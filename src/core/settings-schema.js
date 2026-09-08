@@ -2128,6 +2128,15 @@ export const settingsGroups = {
                 default: true,
                 help: 'Adds colored timer annotations to "Key counts" messages (green if fast, red if slow)',
             },
+            dungeonTrackerAverageWindow: {
+                id: 'dungeonTrackerAverageWindow',
+                label: 'Party chat average covers only the last N runs (0 = all runs)',
+                type: 'number',
+                default: 0,
+                min: 0,
+                max: 500,
+                help: 'The average printed beside each run in party chat is a lifetime one by default, so a build or ability change takes hundreds of runs to show up in it. Set a window — 20 is a good starting point — and each line averages only the runs ending with it, labelled with how many it covered. The dungeon panel’s "Avg from here" button does the same job for one dungeon at a stroke.',
+            },
             labyrinthRunLedger: {
                 id: 'labyrinthRunLedger',
                 label: 'Labyrinth: record what each run leaves unspent',

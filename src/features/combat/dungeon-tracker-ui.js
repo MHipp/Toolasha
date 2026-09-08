@@ -311,6 +311,16 @@ class DungeonTrackerUI {
                                 border-radius: 3px;
                                 font-weight: bold;
                             " title="Scan party chat and import historical runs">⟳ Backfill</button>
+                            <button id="mwi-dt-avg-reset" style="
+                                background: none;
+                                border: 1px solid #deb887;
+                                color: #deb887;
+                                cursor: pointer;
+                                font-size: 11px;
+                                padding: 2px 8px;
+                                border-radius: 3px;
+                                font-weight: bold;
+                            " title="Start the party-chat average for this dungeon from here. Keeps every run and every run number — only the average changes.">⚑ Avg from here</button>
                             <button id="mwi-dt-clear-all" style="
                                 background: none;
                                 border: 1px solid #ff6b6b;

@@ -26,6 +26,8 @@ class DungeonTrackerChatAnnotations {
         this.lastSeenDungeonName = null; // Cache last known dungeon name
         this.cumulativeStatsByDungeon = {}; // Persistent cumulative stats for color thresholds and averages
         this.storedRunNumbers = {}; // timestamp (ms) → run number, per statsKey, from storage
+        this.storedRunDurations = {}; // timestamp (ms) → duration, per statsKey, from storage
+        this.averageBaselines = {}; // statsKey → epoch ms the average is asked to start after
         this.processedMessages = new Map(); // Track processed messages to prevent duplicate counting
         this.initComplete = false; // Flag to ensure storage loads before annotation
         this.timerRegistry = createTimerRegistry();
@@ -80,6 +82,10 @@ class DungeonTrackerChatAnnotations {
                 runs.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
                 this.storedRunNumbers[key] = {};
+                // Durations too, keyed the same way: a windowed average needs
+                // the individual runs, which the cumulative totals below have
+                // already added together and cannot give back
+                this.storedRunDurations[key] = {};
                 this.cumulativeStatsByDungeon[key] = {
                     runCount: runs.length,
                     totalTime: 0,
@@ -93,6 +99,7 @@ class DungeonTrackerChatAnnotations {
                     this.storedRunNumbers[key][ts] = i + 1; // 1-based
 
                     const duration = run.duration || run.totalTime;
+                    this.storedRunDurations[key][ts] = duration;
                     this.cumulativeStatsByDungeon[key].totalTime += duration;
                     if (duration < this.cumulativeStatsByDungeon[key].fastestTime) {
                         this.cumulativeStatsByDungeon[key].fastestTime = duration;
@@ -102,6 +109,10 @@ class DungeonTrackerChatAnnotations {
                     }
                 }
             }
+
+            // The manual "average starts here" markers, read once per load beside
+            // the runs they filter
+            this.averageBaselines = (await dungeonTrackerStorage.getAverageBaselines?.()) || {};
 
             this.initComplete = true;
         } catch (error) {
@@ -136,6 +147,7 @@ class DungeonTrackerChatAnnotations {
     resetAnnotationState() {
         this.cumulativeStatsByDungeon = {};
         this.storedRunNumbers = {};
+        this.storedRunDurations = {};
         this.processedMessages.clear();
         this._annotatedWithoutDungeonName = false;
 
@@ -300,6 +312,11 @@ class DungeonTrackerChatAnnotations {
         // unbackfilled runs get a number based on where they fall in time, not appended after
         // the last stored run.
         const chatRunsByStatsKey = {};
+        // statsKey → Map<chatTimestamp, duration>. The main loop computes each
+        // run's duration again for its own label; a windowed average needs them
+        // all up front, since the window at run N reaches back over runs the
+        // loop has already passed.
+        const chatRunDurations = {};
         for (let pi = 0; pi < events.length; pi++) {
             const pe = events[pi];
             if (pe.type !== 'key') continue;
@@ -319,13 +336,27 @@ class DungeonTrackerChatAnnotations {
             const pTeamKey = dungeonTrackerStorage.getTeamKey(pe.team);
             const pStatsKey = `${pTeamKey}::${pDungeonName}`;
             if (!chatRunsByStatsKey[pStatsKey]) chatRunsByStatsKey[pStatsKey] = [];
-            chatRunsByStatsKey[pStatsKey].push(pe.timestamp.getTime());
+            const pTs = pe.timestamp.getTime();
+            chatRunsByStatsKey[pStatsKey].push(pTs);
+
+            let pDuration = pnext.timestamp - pe.timestamp;
+            if (pDuration < 0) pDuration += 24 * 60 * 60 * 1000; // Midnight rollover
+            if (!chatRunDurations[pStatsKey]) chatRunDurations[pStatsKey] = new Map();
+            chatRunDurations[pStatsKey].set(pTs, pDuration);
         }
+
+        // How many runs the chat average is allowed to look back over. 0 — the
+        // shipped default — means "all of them", which is the lifetime average
+        // this feature has always printed.
+        const averageWindow = this.averageWindowSize();
 
         // Build a chronological run number map for each statsKey.
         // Stored-only runs (not visible in chat) occupy number slots so that visible runs
         // reflect their true position in the full run history.
         const precomputedRunNumbers = {}; // statsKey → Map<chatTimestamp, runNumber>
+        // statsKey → Map<chatTimestamp, {average, covered}>, empty unless a
+        // window or a marker is in force
+        const precomputedAverages = {};
         const chatRunsMatchedStorage = {}; // statsKey → Set<chatTimestamp> matched to a stored run
         for (const [pStatsKey, chatTsList] of Object.entries(chatRunsByStatsKey)) {
             const tsMap = this.storedRunNumbers[pStatsKey] || {};
@@ -347,10 +378,20 @@ class DungeonTrackerChatAnnotations {
             // Stored runs not visible in chat still count toward the running total
             const storedOnlyTsList = storedTsList.filter((st) => !matchedStoredSet.has(st));
 
-            // Merge and sort all runs chronologically
+            // Merge and sort all runs chronologically. A matched chat run is
+            // carried by its chat copy only, so no run's duration is counted
+            // twice into the windowed average either.
             const merged = [
-                ...storedOnlyTsList.map((ts) => ({ ts, isChatRun: false })),
-                ...chatTsList.map((ts) => ({ ts, isChatRun: true })),
+                ...storedOnlyTsList.map((ts) => ({
+                    ts,
+                    isChatRun: false,
+                    duration: this.storedRunDurations[pStatsKey]?.[ts] ?? 0,
+                })),
+                ...chatTsList.map((ts) => ({
+                    ts,
+                    isChatRun: true,
+                    duration: chatRunDurations[pStatsKey]?.get(ts) ?? 0,
+                })),
             ].sort((a, b) => a.ts - b.ts);
 
             // Assign 1-based sequential numbers; stored-only runs occupy slots but aren't mapped
@@ -362,6 +403,11 @@ class DungeonTrackerChatAnnotations {
             }
             precomputedRunNumbers[pStatsKey] = numMap;
             chatRunsMatchedStorage[pStatsKey] = matchedChatSet;
+            precomputedAverages[pStatsKey] = this.buildWindowedAverages(
+                merged,
+                averageWindow,
+                Number(this.averageBaselines?.[pStatsKey]) || 0
+            );
         }
 
         // Continue with visual annotations
@@ -511,16 +557,30 @@ class DungeonTrackerChatAnnotations {
 
                 this.insertAnnotation(label, color, e.msg, false);
 
-                // Add cumulative average if this is a successful run
+                // Add the average if this is a successful run
                 if (isSuccessfulRun) {
-                    const dungeonStats = this.cumulativeStatsByDungeon[statsKey];
+                    // A window or a marker replaces the lifetime figure with a
+                    // trailing one that says how many runs it covers. Neither
+                    // in force is the shipped default, and takes the original
+                    // path untouched so nobody's chat changes on upgrade.
+                    const windowed = precomputedAverages[statsKey]?.get(e.timestamp.getTime());
+                    if (windowed) {
+                        // A run at or before the marker is not in any window,
+                        // so it gets no average line rather than a wrong one
+                        if (windowed.covered > 0) {
+                            const avgLabel = `Avg last ${windowed.covered}: ${this.formatTime(windowed.average)}`;
+                            this.insertAnnotation(avgLabel, '#deb887', e.msg, true); // Tan color
+                        }
+                    } else {
+                        const dungeonStats = this.cumulativeStatsByDungeon[statsKey];
 
-                    // Calculate cumulative average (average of all runs up to this point)
-                    const cumulativeAvg = Math.floor(dungeonStats.totalTime / dungeonStats.runCount);
+                        // Calculate cumulative average (average of all runs up to this point)
+                        const cumulativeAvg = Math.floor(dungeonStats.totalTime / dungeonStats.runCount);
 
-                    // Show cumulative average
-                    const avgLabel = `Average: ${this.formatTime(cumulativeAvg)}`;
-                    this.insertAnnotation(avgLabel, '#deb887', e.msg, true); // Tan color
+                        // Show cumulative average
+                        const avgLabel = `Average: ${this.formatTime(cumulativeAvg)}`;
+                        this.insertAnnotation(avgLabel, '#deb887', e.msg, true); // Tan color
+                    }
                 }
             }
         }
@@ -986,6 +1046,67 @@ class DungeonTrackerChatAnnotations {
      * @param {number} ms - Time in milliseconds
      * @returns {string} Formatted time (e.g., "4m 32s")
      */
+    /**
+     * How many runs the chat average may look back over.
+     *
+     * 0 means every run there has ever been — the lifetime average this
+     * feature has always printed, and the setting's default, so the display
+     * only changes for someone who asks for it.
+     *
+     * @returns {number} A positive window, or 0 for "all runs"
+     */
+    averageWindowSize() {
+        const raw = Math.floor(Number(config.getSetting('dungeonTrackerAverageWindow')));
+        return Number.isFinite(raw) && raw > 0 ? raw : 0;
+    }
+
+    /**
+     * The trailing average to print beside each chat run of one dungeon.
+     *
+     * Two limits, and they compose: the window caps how far back the average
+     * may reach, the marker floors it. A run at or before the marker is in no
+     * window at all and is reported as covering nothing, so its line prints no
+     * average rather than one drawn from runs the user asked to leave behind.
+     *
+     * Run numbering is untouched by either — it is read off the same merged
+     * list, which still holds every run.
+     *
+     * @param {Array<{ts: number, isChatRun: boolean, duration: number}>} merged -
+     *   Every run of this dungeon, chat and stored alike, oldest first
+     * @param {number} windowSize - Runs to look back over, 0 for all of them
+     * @param {number} baselineAt - Epoch ms the average starts after, 0 for none
+     * @returns {Map<number, {average: number, covered: number}>|null} By chat
+     *   run timestamp, or null when neither limit is in force (the caller then
+     *   keeps the lifetime figure it has always printed)
+     */
+    buildWindowedAverages(merged, windowSize, baselineAt) {
+        if (windowSize <= 0 && !(baselineAt > 0)) return null;
+
+        // Prefix sums so each run's window costs two lookups rather than a scan
+        const sums = [0];
+        for (let i = 0; i < merged.length; i++) sums.push(sums[i] + (merged[i].duration || 0));
+
+        // The first run the marker lets through; every window starts at or after it
+        let floor = 0;
+        while (floor < merged.length && baselineAt > 0 && merged[floor].ts <= baselineAt) floor++;
+
+        const byTimestamp = new Map();
+        for (let i = 0; i < merged.length; i++) {
+            if (!merged[i].isChatRun) continue;
+            if (i < floor) {
+                byTimestamp.set(merged[i].ts, { average: 0, covered: 0 });
+                continue;
+            }
+            const start = windowSize > 0 ? Math.max(floor, i - windowSize + 1) : floor;
+            const covered = i - start + 1;
+            byTimestamp.set(merged[i].ts, {
+                average: Math.floor((sums[i + 1] - sums[start]) / covered),
+                covered,
+            });
+        }
+        return byTimestamp;
+    }
+
     formatTime(ms) {
         const totalSeconds = Math.floor(ms / 1000);
         const minutes = Math.floor(totalSeconds / 60);

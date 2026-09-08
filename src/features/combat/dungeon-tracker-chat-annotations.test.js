@@ -20,6 +20,7 @@ const game = vi.hoisted(() => ({
     allRuns: [],
     currentRun: null,
     pendingDungeon: null,
+    averageBaselines: {},
 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -61,6 +62,7 @@ vi.mock('./dungeon-tracker-storage.js', () => ({
         getAllRuns: async () => game.allRuns,
         getTeamKey: (names) => [...names].sort().join(','),
         saveTeamRun: vi.fn(async () => true),
+        getAverageBaselines: async () => game.averageBaselines,
     },
 }));
 
@@ -107,6 +109,10 @@ function labelOn(node) {
     return node.querySelector('.dungeon-timer-annotation')?.textContent.trim() ?? null;
 }
 
+function averageOn(node) {
+    return node.querySelector('.dungeon-timer-average')?.textContent.trim() ?? null;
+}
+
 /** What a hex colour looks like once a style declaration has had it. */
 function asCss(hex) {
     const probe = document.createElement('div');
@@ -126,8 +132,11 @@ beforeEach(() => {
     game.allRuns = [];
     game.currentRun = null;
     game.pendingDungeon = null;
+    game.averageBaselines = {};
 
     annotations.cumulativeStatsByDungeon = {};
+    annotations.storedRunDurations = {};
+    annotations.averageBaselines = {};
     annotations.storedRunNumbers = {};
     annotations.processedMessages.clear();
     annotations.lastSeenDungeonName = null;
@@ -890,5 +899,169 @@ describe('cleaning up on a character switch', () => {
         await annotations.annotateAllMessages();
 
         expect(labels()).toEqual(['[Run #1: 4m 32s]', '[Average: 4m 32s]']);
+    });
+});
+
+/**
+ * The average printed beside each run used to be a lifetime one, and that is
+ * exactly what made it useless after a build change: with 205 runs banked, a
+ * run a minute faster moves the figure by a fifth of a second. These are the
+ * two ways out — a trailing window, and a marker saying "start here" — and the
+ * pin that says neither of them changes anything until it is asked for.
+ */
+describe('how far back the average reaches', () => {
+    /** August 4, 12-hour with a meridiem, which is what the parser reads unambiguously. */
+    function stampAt(date) {
+        const pad = (value) => String(value).padStart(2, '0');
+        const hours = date.getHours();
+        const hour12 = hours % 12 === 0 ? 12 : hours % 12;
+        return `[08/04 ${pad(hour12)}:${pad(date.getMinutes())}:${pad(date.getSeconds())} ${hours < 12 ? 'AM' : 'PM'}]`;
+    }
+
+    /**
+     * Lay `durations` out as consecutive key-count lines starting at `start`.
+     * N durations need N+1 lines: a run is the gap between two of them.
+     * @param {Date} start - When the first key count landed
+     * @param {Array<number>} durations - Run lengths in ms
+     * @returns {{nodes: Array<HTMLElement>, times: Array<Date>}} The lines and their stamps
+     */
+    function chatRuns(start, durations) {
+        const times = [start];
+        for (const duration of durations) times.push(new Date(times[times.length - 1].getTime() + duration));
+        const nodes = times.map((at, index) => message(stampAt(at), `Key counts: [Alice - ${100 - index}]`));
+        return { nodes, times };
+    }
+
+    // The maintainer's own log: nine runs after an ability change that cut the
+    // real time from ~10m20s to ~9m15s.
+    const RECENT = [584, 557, 580, 556, 542, 556, 565, 533, 526].map((seconds) => seconds * 1000);
+    const OLD_DURATION = 620_000; // 10m 20s
+
+    /**
+     * 200 banked runs at 10m20s on the days before, then the nine recent ones
+     * both in storage and on screen — which is what a backfilled log looks like.
+     * @returns {{nodes: Array<HTMLElement>, times: Array<Date>}} The chat lines
+     */
+    function maintainersLog() {
+        message('[08/04 08:59:00 AM]', 'Battle started: Chimerical Den');
+        const laid = chatRuns(aug4(9, 0, 0), RECENT);
+
+        const old = [];
+        const firstOld = new Date(YEAR, 7, 2, 0, 0, 0).getTime();
+        for (let i = 0; i < 200; i++) {
+            old.push(
+                storedRun({
+                    timestamp: new Date(firstOld + i * 660_000).toISOString(),
+                    duration: OLD_DURATION,
+                })
+            );
+        }
+        game.allRuns = [
+            ...old,
+            ...RECENT.map((duration, i) => storedRun({ timestamp: laid.times[i].toISOString(), duration })),
+        ];
+        return laid;
+    }
+
+    test('a window of 20 answers the real case; the lifetime average does not', async () => {
+        game.settings.dungeonTrackerAverageWindow = 20;
+        const { nodes } = maintainersLog();
+
+        await annotations.loadRunCountsFromStorage();
+        await annotations.annotateAllMessages();
+
+        // The last annotated line is run 209 — the ninth recent run. Its window
+        // is the nine recent runs (4999s) plus the eleven 10m20s runs before
+        // them (6820s): 11819/20 = 590s. The lifetime figure is 617s, and that
+        // is the number that would not move.
+        expect(labelOn(nodes[8])).toBe('[Run #209: 8m 46s]');
+        expect(averageOn(nodes[8])).toBe('[Avg last 20: 9m 50s]');
+    });
+
+    test('with the setting at its default the label is exactly what it has always been', async () => {
+        const { nodes } = maintainersLog();
+
+        await annotations.loadRunCountsFromStorage();
+        await annotations.annotateAllMessages();
+
+        // 128999s over 209 runs. The point of pinning it is that upgrading
+        // changes nobody's chat until they ask for a window.
+        expect(averageOn(nodes[8])).toBe('[Average: 10m 17s]');
+        expect(averageOn(nodes[0])).toBe('[Average: 10m 17s]');
+    });
+
+    test('a marker excludes what came before it and keeps the run numbers', async () => {
+        const durations = [600_000, 600_000, 300_000, 240_000];
+        message('[08/04 09:59:00 AM]', 'Battle started: Chimerical Den');
+        const { nodes, times } = chatRuns(aug4(10, 0, 0), durations);
+        game.allRuns = durations.map((duration, i) => storedRun({ timestamp: times[i].toISOString(), duration }));
+        // Marked between run 2 and run 3
+        game.averageBaselines = { 'Alice::Chimerical Den': times[2].getTime() - 1 };
+
+        await annotations.loadRunCountsFromStorage();
+        await annotations.annotateAllMessages();
+
+        // Runs 1 and 2 are behind the marker: numbered and timed as always, but
+        // in no window, so no average line at all rather than a stale one
+        expect(labelOn(nodes[0])).toBe('[Run #1: 10m 0s]');
+        expect(averageOn(nodes[0])).toBeNull();
+        expect(averageOn(nodes[1])).toBeNull();
+        // The first run after the marker averages to itself
+        expect(labelOn(nodes[2])).toBe('[Run #3: 5m 0s]');
+        expect(averageOn(nodes[2])).toBe('[Avg last 1: 5m 0s]');
+        expect(labelOn(nodes[3])).toBe('[Run #4: 4m 0s]');
+        expect(averageOn(nodes[3])).toBe('[Avg last 2: 4m 30s]');
+    });
+
+    test('a marker floors a window that would otherwise reach past it', async () => {
+        game.settings.dungeonTrackerAverageWindow = 20;
+        const { nodes, times } = maintainersLog();
+        // Marked just before the first recent run, so only those nine count
+        game.averageBaselines = { 'Alice::Chimerical Den': times[0].getTime() - 1 };
+
+        await annotations.loadRunCountsFromStorage();
+        await annotations.annotateAllMessages();
+
+        // 4999s over nine runs, not twenty — the window is a cap, not a quota
+        expect(averageOn(nodes[8])).toBe('[Avg last 9: 9m 15s]');
+        expect(labelOn(nodes[8])).toBe('[Run #209: 8m 46s]');
+    });
+
+    test('a windowed average still does not count a storage-matched run twice', async () => {
+        // The invariant the running total has always had to keep: a chat run
+        // that is also in storage is one run, not two. A window reads the same
+        // merged list, so the check is that the figure is the plain mean.
+        game.settings.dungeonTrackerAverageWindow = 20;
+        message('[08/04 09:59:00 AM]', 'Battle started: Chimerical Den');
+        const { nodes, times } = chatRuns(aug4(10, 0, 0), [600_000, 300_000]);
+        game.allRuns = [
+            storedRun({ timestamp: times[0].toISOString(), duration: 600_000 }),
+            storedRun({ timestamp: times[1].toISOString(), duration: 300_000 }),
+        ];
+
+        await annotations.loadRunCountsFromStorage();
+        await annotations.annotateAllMessages();
+
+        expect(averageOn(nodes[0])).toBe('[Avg last 1: 10m 0s]');
+        expect(averageOn(nodes[1])).toBe('[Avg last 2: 7m 30s]');
+
+        // A second pass must not move it either
+        await annotations.annotateAllMessages();
+        expect(averageOn(nodes[1])).toBe('[Avg last 2: 7m 30s]');
+    });
+
+    test('a marker on one dungeon leaves another dungeon alone', async () => {
+        message('[08/04 09:59:00 AM]', 'Battle started: Sinister Circus');
+        const { nodes, times } = chatRuns(aug4(10, 0, 0), [600_000, 300_000]);
+        game.allRuns = [
+            storedRun({ timestamp: times[0].toISOString(), duration: 600_000, dungeonName: 'Sinister Circus' }),
+            storedRun({ timestamp: times[1].toISOString(), duration: 300_000, dungeonName: 'Sinister Circus' }),
+        ];
+        game.averageBaselines = { 'Alice::Chimerical Den': Date.now() };
+
+        await annotations.loadRunCountsFromStorage();
+        await annotations.annotateAllMessages();
+
+        expect(averageOn(nodes[1])).toBe('[Average: 7m 30s]');
     });
 });

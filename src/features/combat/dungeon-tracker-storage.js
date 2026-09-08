@@ -24,6 +24,22 @@ export const RUNS_KEY = 'allRuns';
 export const RUNS_CLEARED_KEY = 'allRunsClearedAt';
 
 /**
+ * Where each dungeon's chat average is asked to start from.
+ *
+ * A map of `teamKey::dungeonName` → epoch milliseconds: runs at or before the
+ * stamp are left out of the party-chat average, and nothing else. It is
+ * deliberately *not* a clear — every run stays in the history, keeps its run
+ * number and still shows in the panel — because the thing the marker fixes is
+ * a stale average, not unwanted data.
+ *
+ * Its own key rather than a field on {@link RUNS_KEY} for the same reason the
+ * clear watermark has one: that key is a bare array four other modules read
+ * directly. Its fold is a per-dungeon `Math.max`, so a marker set on one
+ * device is not undone by a pull from one that never saw it.
+ */
+export const AVERAGE_BASELINE_KEY = 'dungeonAverageBaselines';
+
+/**
  * Runs are stored once for the whole account, not once per character.
  *
  * A team run is the same run whichever of your characters was in the party, and
@@ -224,6 +240,33 @@ export function mergeClearEpochs(local, incoming) {
 }
 
 /**
+ * Fold two baseline maps: per dungeon, the later marker stands.
+ *
+ * The same forward-only argument {@link mergeClearEpochs} makes, one entry at
+ * a time — a device that has never seen a marker holds no entry (or an older
+ * one) for that dungeon, and a whole-key write from it would put the stale
+ * average straight back. Keys neither side shares are carried through, so two
+ * devices marking different dungeons keep both marks.
+ *
+ * @param {*} local - This device's map
+ * @param {*} incoming - The downloaded map
+ * @returns {Record<string, number>} The per-key maximum
+ */
+export function mergeAverageBaselines(local, incoming) {
+    const out = {};
+    for (const side of [local, incoming]) {
+        // An array is not a baseline map — its indices would fold in as
+        // dungeon names — so a value of the wrong shape is dropped, not read
+        if (!side || typeof side !== 'object' || Array.isArray(side)) continue;
+        for (const [key, at] of Object.entries(side)) {
+            const stamp = Number(at) || 0;
+            if (stamp > (out[key] || 0)) out[key] = stamp;
+        }
+    }
+    return out;
+}
+
+/**
  * The character the panel is currently speaking for.
  * @returns {{id: string|null, name: string|null}}
  */
@@ -270,6 +313,12 @@ class DungeonTrackerStorage {
          * forgot are exactly what a peer that never saw the clear sends back.
          */
         this._clearedAt = 0;
+        /**
+         * The average-baseline map as last read or written, or null until a
+         * read has succeeded. A failed read must not cache an empty map: that
+         * would read as "no dungeon has a marker" for the rest of the session.
+         */
+        this._averageBaselines = null;
 
         this._watchForTheEnd();
     }
@@ -483,6 +532,7 @@ class DungeonTrackerStorage {
         this._deleted = new Set();
         this._persistChain = null;
         this._clearedAt = 0;
+        this._averageBaselines = null;
     }
 
     /**
@@ -750,6 +800,71 @@ class DungeonTrackerStorage {
     }
 
     /**
+     * Where each dungeon's chat average is asked to start from.
+     *
+     * @returns {Promise<Record<string, number>>} `teamKey::dungeonName` → epoch
+     *   milliseconds. Empty when nothing is marked, and empty when the read
+     *   could not be made — but only the former is cached.
+     */
+    async getAverageBaselines() {
+        if (this._averageBaselines) return this._averageBaselines;
+        const probe = await storage.tryGet(AVERAGE_BASELINE_KEY, this.unifiedStoreName);
+        if (probe === null) {
+            console.warn('[DungeonTrackerStorage] Average baselines could not be read');
+            return {};
+        }
+        const stored = probe.value;
+        this._averageBaselines = stored && typeof stored === 'object' && !Array.isArray(stored) ? { ...stored } : {};
+        return this._averageBaselines;
+    }
+
+    /**
+     * Mark one dungeon's average as starting now.
+     *
+     * The stored map is re-read and folded first, for the same reason every
+     * other write here merges: a second tab (or a device that pulled since)
+     * may hold a marker this copy has never seen, and a whole-map write would
+     * drop it. The fold is {@link mergeAverageBaselines}, so a marker only
+     * ever moves forward.
+     *
+     * @param {string} statsKey - `teamKey::dungeonName`, as the annotations build it
+     * @param {number} [at] - Epoch milliseconds; defaults to now
+     * @returns {Promise<boolean>} Whether the write landed
+     */
+    async setAverageBaseline(statsKey, at = Date.now()) {
+        if (!statsKey) return false;
+        const stamp = Number(at) || 0;
+        if (!(stamp > 0)) return false;
+
+        const probe = await storage.tryGet(AVERAGE_BASELINE_KEY, this.unifiedStoreName);
+        if (probe === null) {
+            console.warn('[DungeonTrackerStorage] Average baseline not saved: the stored map could not be read first');
+            return false;
+        }
+        const merged = mergeAverageBaselines(this._averageBaselines, probe.value);
+        merged[statsKey] = Math.max(merged[statsKey] || 0, stamp);
+        this._averageBaselines = merged;
+        return storage.setJSON(AVERAGE_BASELINE_KEY, merged, this.unifiedStoreName, true);
+    }
+
+    /**
+     * The dungeon the panel's "average starts here" button should mark.
+     *
+     * The newest stored run's own team and dungeon: whatever was last run is
+     * what the user is looking at when they press it. Null when no stored run
+     * carries both, which is the case the button must refuse rather than guess.
+     *
+     * @returns {Promise<string|null>} `teamKey::dungeonName`, or null
+     */
+    async latestStatsKey() {
+        // getAllRuns answers newest-first, so the first complete run wins
+        for (const run of await this.getAllRuns()) {
+            if (run?.teamKey && run?.dungeonName) return `${run.teamKey}::${run.dungeonName}`;
+        }
+        return null;
+    }
+
+    /**
      * Every run, or only the ones this character recorded.
      *
      * @param {string} [filterCharacter] - 'mine' (default) or 'all'
@@ -908,6 +1023,19 @@ registerSyncMerge({
     key: RUNS_CLEARED_KEY,
     merge: mergeClearEpochs,
     label: 'Dungeon run history clear',
+});
+
+/*
+ * And the per-dungeon average baselines, folded one entry at a time. Without a
+ * fold a pull would write the whole map over, which is a marker set on this
+ * device coming undone — the resurrection shape the clear watermark above
+ * already had to be given a fold to avoid.
+ */
+registerSyncMerge({
+    store: RUNS_STORE,
+    key: AVERAGE_BASELINE_KEY,
+    merge: mergeAverageBaselines,
+    label: 'Dungeon average baselines',
 });
 
 export default dungeonTrackerStorage;

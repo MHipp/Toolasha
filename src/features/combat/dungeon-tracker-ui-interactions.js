@@ -40,6 +40,7 @@ class DungeonTrackerUIInteractions {
         this.setupGroupingControls();
         this.setupBackfillButton();
         this.setupClearAll();
+        this.setupAverageBaseline();
         this.setupChartToggle();
         this.setupChartPopout();
         this.setupRoiToggle();
@@ -157,6 +158,7 @@ class DungeonTrackerUIInteractions {
             // Don't toggle if clicking the clear or backfill buttons
             if (e.target.id === 'mwi-dt-clear-all' || e.target.closest('#mwi-dt-clear-all')) return;
             if (e.target.id === 'mwi-dt-backfill-btn' || e.target.closest('#mwi-dt-backfill-btn')) return;
+            if (e.target.id === 'mwi-dt-avg-reset' || e.target.closest('#mwi-dt-avg-reset')) return;
             this.toggleRunHistory();
         });
     }
@@ -304,6 +306,55 @@ class DungeonTrackerUIInteractions {
                     console.error('[Dungeon Tracker UI Interactions] Clear all history error:', error);
                     alert('Failed to clear run history. Check console for details.');
                 }
+            }
+        });
+    }
+
+    /**
+     * Setup the "average starts here" marker button.
+     *
+     * Not a clear: it stamps a baseline for one dungeon so the party-chat
+     * average stops reaching back past it, and every run stays in storage,
+     * in the panel and in the run-number sequence. That is the whole point —
+     * a build or ability change makes the old runs a bad comparison without
+     * making them worth deleting.
+     */
+    setupAverageBaseline() {
+        const resetBtn = this.container.querySelector('#mwi-dt-avg-reset');
+        if (!resetBtn) return;
+
+        resetBtn.addEventListener('click', async () => {
+            try {
+                // The newest stored run names the dungeon; with no runs at all
+                // there is nothing to mark and nothing to guess from
+                const statsKey = await dungeonTrackerStorage.latestStatsKey();
+                if (!statsKey) {
+                    alert('No runs recorded yet, so there is no average to restart.');
+                    return;
+                }
+                const dungeonName = statsKey.slice(statsKey.indexOf('::') + 2);
+
+                const confirmed = await askChoice({
+                    title: 'Start the average here',
+                    message:
+                        `Start the party chat average for ${dungeonName} from now on?
+
+` +
+                        'Earlier runs stop counting toward the average. Nothing is deleted — ' +
+                        'every run keeps its number and stays in the history.',
+                    choices: [
+                        { value: 'mark', label: 'Start here' },
+                        { value: null, label: 'Cancel' },
+                    ],
+                });
+                if (!confirmed) return;
+
+                await dungeonTrackerStorage.setAverageBaseline(statsKey, Date.now());
+                // Re-annotate so the chat lines already on screen recompute
+                await dungeonTrackerChatAnnotations.refreshRunCounts();
+            } catch (error) {
+                console.error('[Dungeon Tracker UI Interactions] Average baseline error:', error);
+                alert('Failed to set the average baseline. Check console for details.');
             }
         });
     }
