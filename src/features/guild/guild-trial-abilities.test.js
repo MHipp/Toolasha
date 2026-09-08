@@ -1043,3 +1043,51 @@ describe('merging two devices stored trial sessions', () => {
         expect(mergeStoredSessions(local, incoming).capturedTiers.sort()).toEqual([3, 4, 5]);
     });
 });
+
+describe('re-capture races across a merge', () => {
+    const player = (name, extra = {}) => ({
+        characterId: null,
+        name,
+        capturedAt: null,
+        capturedTier: null,
+        source: 'battle_unit_fetched',
+        classStats: null,
+        abilitiesAuthoritative: false,
+        abilities: null,
+        ...extra,
+    });
+
+    const session = (startedAt, players, extra = {}) => ({
+        startedAt,
+        lastActivityAt: startedAt,
+        guildName: 'Some Guild',
+        captureTier: null,
+        capturedTiers: [],
+        completedAt: null,
+        players,
+        roster: [],
+        ...extra,
+    });
+
+    test('two authoritative captures of the same player: the newer capturedAt wins regardless of merge order', () => {
+        const olderKit = [{ hrid: '/abilities/sweep', level: 5 }];
+        const newerKit = [{ hrid: '/abilities/fierce_aura', level: 200 }];
+        const staleSync = session(1000, {
+            'name:alice': player('Alice', { abilities: olderKit, abilitiesAuthoritative: true, capturedAt: 1000 }),
+        });
+        const correctedLocal = session(1000, {
+            'name:alice': player('Alice', { abilities: newerKit, abilitiesAuthoritative: true, capturedAt: 5000 }),
+        });
+
+        // Whichever side the more recent capture is passed as, it must win —
+        // a pull that lands after a local re-capture must not resurrect the
+        // kit that re-capture replaced
+        for (const merged of [
+            mergeStoredSessions(correctedLocal, staleSync),
+            mergeStoredSessions(staleSync, correctedLocal),
+        ]) {
+            expect(merged.players['name:alice'].abilities).toEqual(newerKit);
+            expect(merged.players['name:alice'].capturedAt).toBe(5000);
+        }
+    });
+});

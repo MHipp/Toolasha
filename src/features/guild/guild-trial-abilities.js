@@ -324,8 +324,15 @@ export function sanitizeStoredSession(stored) {
  * session onto its own key. Both copies are the same trial's whenever they
  * start within the trial hour of each other, and then neither may lose a
  * capture: the live entry wins per player, except that it may not demote an
- * authoritative stored kit to a stat-only sighting. Sessions further apart than
- * that are different trials and the later one stands alone.
+ * authoritative stored kit to a stat-only sighting, and it may not replace a
+ * *newer* authoritative kit with an older one. That last case is a re-capture
+ * race rather than a demotion — both sides are equally authoritative — and
+ * without a recency check whichever side happened to be passed as `live` won
+ * regardless of which was actually read more recently, so a device pulling a
+ * stale sync could silently revert a player's corrected kit back to the one
+ * it replaced. `capturedAt` is compared for that case only; everything else
+ * keeps the plain "live wins" rule. Sessions further apart than the trial
+ * hour are different trials and the later one stands alone.
  *
  * @param {Object|null} stored - From storage
  * @param {Object|null} live - Held in memory
@@ -342,6 +349,15 @@ export function mergeSessions(stored, live) {
     for (const [key, entry] of Object.entries(live.players || {})) {
         const held = players[key];
         const demotes = held?.abilitiesAuthoritative === true && entry?.abilitiesAuthoritative !== true;
+        const bothAuthoritative = held?.abilitiesAuthoritative === true && entry?.abilitiesAuthoritative === true;
+        if (bothAuthoritative) {
+            const heldAt = Number(held.capturedAt);
+            const entryAt = Number(entry.capturedAt);
+            if (Number.isFinite(heldAt) && Number.isFinite(entryAt) && heldAt > entryAt) {
+                players[key] = held;
+                continue;
+            }
+        }
         players[key] = demotes ? held : entry;
     }
     return {
