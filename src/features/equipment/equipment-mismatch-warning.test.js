@@ -173,6 +173,41 @@ describe('the expensive direction: the piece is in the bag', () => {
 
         expect(document.querySelector(PILL)).toBeNull();
     });
+
+    test('an enhanced copy of the piece is the same piece', () => {
+        game.actions = [{ actionHrid: '/actions/cooking/cheese', ordinal: 1 }];
+        game.equipment.set('/item_locations/head', {
+            itemHrid: '/items/red_culinary_hat',
+            enhancementLevel: 12,
+            count: 1,
+        });
+        stock('/items/red_culinary_hat');
+
+        warning.render();
+
+        expect(document.querySelector(PILL)).toBeNull();
+    });
+
+    test('item data that has not landed yet says nothing rather than throwing', () => {
+        game.actions = [{ actionHrid: '/actions/cooking/cheese', ordinal: 1 }];
+        stock('/items/red_culinary_hat');
+        // Early boot, or a reconnect that cleared the details
+        game.items = {};
+
+        expect(() => warning.render()).not.toThrow();
+        expect(document.querySelector(PILL)).toBeNull();
+    });
+
+    test('only the rule the action belongs to is consulted', () => {
+        // Milking with the cooking hat on: the hat's rule does not cover
+        // milking, and the boots' rule has no boots to miss
+        game.actions = [{ actionHrid: '/actions/milking/cow', ordinal: 1 }];
+        equip('/item_locations/head', '/items/red_culinary_hat');
+
+        warning.render();
+
+        expect(document.querySelector(PILL)).toBeNull();
+    });
 });
 
 describe('skilling gear worn into a fight', () => {

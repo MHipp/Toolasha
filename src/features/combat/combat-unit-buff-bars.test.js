@@ -215,6 +215,16 @@ describe('reading a buff map', () => {
         expect(effect.expiresAt).toBe(NOW + 20_000);
     });
 
+    test('nanoseconds are converted once, from the wire to the chip', () => {
+        // A double conversion shows a 30-second buff as 30 nanoseconds or 30
+        // billion seconds; a missed one shows it as 30 billion
+        send('new_battle', {
+            players: [],
+            monsters: [{ combatBuffMap: live('/buff_uniques/weaken', '/buff_types/damage_taken', 30) }],
+        });
+        expect(chipsOn('monsters', 0)[0].lastElementChild.textContent).toBe('30');
+    });
+
     test('durations are nanoseconds', () => {
         expect(liveDurationSeconds(15 * SECOND)).toBe(15);
         expect(liveDurationSeconds(0)).toBeNull();
@@ -304,6 +314,56 @@ describe('seeding and reconciling', () => {
         vi.setSystemTime(NOW + 16_000);
         feature.redraw();
         expect(chipsOn('monsters', 0)).toHaveLength(0);
+    });
+});
+
+describe('unit identity', () => {
+    test('a slot changing hands mid-battle lands nowhere rather than on the wrong player', () => {
+        send('new_battle', {
+            players: [{ name: 'Alice' }, { name: 'Bob' }],
+            monsters: [],
+        });
+
+        // Bob leaves and Carol takes his seat, with no `new_battle` to say so.
+        // The slot's effects are filed under the name the fight opened with,
+        // which matches no tile — rather than being drawn on whoever is sitting
+        // in slot 1 now.
+        panel(['Alice', 'Carol']);
+        send('battle_updated', {
+            pMap: { 1: { combatBuffMap: live('/buff_uniques/toughness', '/buff_types/armor', 20) } },
+        });
+
+        expect(chipsOn('players', 0)).toHaveLength(0);
+        expect(chipsOn('players', 1)).toHaveLength(0);
+    });
+
+    test('two of the same monster are told apart by slot, not by name', () => {
+        panel(['Alice'], 2);
+        document.querySelectorAll('[class*="BattlePanel_monstersArea"] [class*="CombatUnit_name"]').forEach((node) => {
+            node.textContent = 'Rat';
+        });
+
+        send('new_battle', {
+            players: [],
+            monsters: [
+                { combatBuffMap: {} },
+                { combatBuffMap: live('/buff_uniques/weaken', '/buff_types/damage_taken', 15) },
+            ],
+        });
+
+        expect(chipsOn('monsters', 0)).toHaveLength(0);
+        expect(chipsOn('monsters', 1)).toHaveLength(1);
+    });
+
+    test("a monster sharing a player's name gets the monster's effects", () => {
+        panel(['Rat 0'], 1);
+        send('new_battle', {
+            players: [{ name: 'Rat 0', combatBuffMap: live('/buff_uniques/toughness', '/buff_types/armor', 20) }],
+            monsters: [{ combatBuffMap: live('/buff_uniques/weaken', '/buff_types/damage_taken', 15) }],
+        });
+
+        expect(chipsOn('players', 0)[0].getAttribute(CHIP_MARK)).toBe('/buff_uniques/toughness');
+        expect(chipsOn('monsters', 0)[0].getAttribute(CHIP_MARK)).toBe('/buff_uniques/weaken');
     });
 });
 
