@@ -284,6 +284,23 @@ describe('equipment an import could not place', () => {
         expect(el.textContent).not.toContain('Not equipped from the import');
     });
 
+    /**
+     * An import appends its players to whoever is already loaded, so the players
+     * the first import brought in are still in the party after a second one. A
+     * second import that placed everything must not therefore clear the note
+     * about the first import's dropped gear — that is the hole back, silent
+     * again, with the affected character still being simmed.
+     */
+    test("a second import does not clear the first import's note", () => {
+        const el = document.createElement('div');
+        const editor = new SimEditor({ editorEl: el });
+        editor.importPlayers([emptyDTO('x')], ['Stranger A'], SKIPPED);
+
+        editor.importPlayers([emptyDTO('y')], ['Stranger B'], []);
+
+        expect(el.textContent).toContain('Unknown Blade');
+    });
+
     test('the note does not survive a reset to the live character', () => {
         const el = document.createElement('div');
         const editor = new SimEditor({ editorEl: el });

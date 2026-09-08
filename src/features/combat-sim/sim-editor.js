@@ -320,7 +320,13 @@ export class SimEditor {
         this._activeEditPlayer = this._editedPlayerInfo[this._editedPlayerInfo.length - 1]?.hrid;
         this._selfHrid = this._selfHrid || null;
         this._missingMembers = [];
-        this._importSkipped = Array.isArray(skipped) ? skipped : [];
+        // Added to, not replaced: an import *appends* its players to the ones
+        // already loaded (`nextSlot` above continues the numbering), so a second
+        // import that placed everything would otherwise clear the note about the
+        // first import's dropped gear while those players are still in the party
+        // — the hole silently back, which is the whole thing the note is for.
+        // The paths that genuinely replace the loaded players clear it outright.
+        this._importSkipped = [...(this._importSkipped || []), ...(Array.isArray(skipped) ? skipped : [])];
         this._editorInitialized = true;
         this._selectedLoadoutName = '';
 
