@@ -6,6 +6,20 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### A sync pull no longer overwrites your dungeon run history, or undoes what you deleted
+
+The dungeon tracker wrote every run to a store nothing had claimed for syncing, so a pull took whichever device's copy it found and discarded the other — not only when something was deleted, but on every pull, and the pace figures and chat averages are computed from what survived. It has a merge now: two devices that each watched different runs end with both. The check that is meant to catch an unclaimed store only knew how to inspect one kind of record, so a whole store could go unclaimed unseen; it now requires every store to be claimed or to name a reason.
+
+Deleting something and then syncing put it back, everywhere it could: a cleared loot log, alchemy history or net worth point; a deleted market listing; a treasure tally you had reset; the fights behind a labyrinth accuracy Reset or a replay check Forget. Each of those now records the deletion itself, so the pull carries the fact that you deleted rather than only the rows you deleted. Activity a second device recorded after your reset still survives it, and a deletion arriving from elsewhere that would empty a record you did not just clear is refused rather than applied.
+
+Five other records were looked at and deliberately left alone — a watchlist tick, a goal, an overlay layout and a room log all come back on the next pull by design, on the argument that losing an afternoon's work to a sync is worse than an unwanted row reappearing.
+
+### The dungeon average is back in party chat after a reload
+
+Reloading mid-run left the script unable to name the dungeon a run belonged to — the chat line that says so had scrolled away, and the run itself was not restored until the next battle. Every run then scored as unknown, so party chat got a bare time with no run number and no average, and the messages were marked done, so they never gained one. It now asks the tracker what dungeon you are provably in, and a history annotated while nothing could name it is redone once something can.
+
+Also: a key count whose timestamp could not be read left the run anchored to a value that was not a number, and a run in that state was never banked at all.
+
 ### Audit round: the buff strip showed your whole loadout, and a shopping trip claimed itself twice
 
 The combat buff strip drew a chip for every buff a unit carried — achievements, community buffs, house rooms and drinks included — and labelled each by the stat it moves, so five sources of wisdom read as the same buff five times. It shows fight state now: only what an ability applied, and one cast draws one chip however many effects it granted, with a count on the icon and the full list on hover. On a real party that is one chip a player where there were nineteen.
