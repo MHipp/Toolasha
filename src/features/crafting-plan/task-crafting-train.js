@@ -386,6 +386,12 @@ class TaskCraftingTrain {
     constructor() {
         this.isInitialized = false;
         this.unregisterObserver = null;
+        /**
+         * The hook this module last installed on the shared walk, so `disable()`
+         * can take it off again without stealing one the action panel's plan
+         * installed after it — the walk holds exactly one.
+         */
+        this.stepHook = null;
     }
 
     /** Put the button on the task panel header, and make sure the walk is listening. */
@@ -517,20 +523,27 @@ class TaskCraftingTrain {
         await claim();
 
         let previousStep = null;
-        craftingPlanWalk.onStepAboutToRun = (step) => {
+        this.stepHook = (step) => {
             if (previousStep?.kind === 'craft') {
                 claim().catch((error) => console.error('[TaskTrain] Re-reserving after a craft step failed:', error));
             }
             previousStep = step;
         };
+        craftingPlanWalk.onStepAboutToRun = this.stepHook;
 
         return craftingPlanWalk.start(group.steps);
     }
 
-    /** Take the button and any open chooser off the page. */
+    /** Take the button, any open chooser, and the walk hook back off. */
     disable() {
         this.unregisterObserver?.();
         this.unregisterObserver = null;
+        // The walk is shared and outlives this feature, so leaving the hook on
+        // it would go on re-reserving under a merged walk that is gone.
+        if (this.stepHook && craftingPlanWalk.onStepAboutToRun === this.stepHook) {
+            craftingPlanWalk.onStepAboutToRun = null;
+        }
+        this.stepHook = null;
         if (typeof document !== 'undefined') {
             document.getElementById(BUTTON_ID)?.remove();
             document.getElementById(PANEL_ID)?.remove();

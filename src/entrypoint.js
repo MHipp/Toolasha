@@ -1776,6 +1776,17 @@ function registerFeatures() {
             concurrent: true,
         },
         {
+            key: 'tasks_mergedCraftingWalk',
+            name: 'Merged Crafting Walk',
+            category: 'Tasks',
+            // From the actions bundle, where the crafting plan and the walk it
+            // drives already live; registered here because the task board is the
+            // surface it attaches to. Gated on its own setting inside, like the
+            // reroll walk above.
+            module: Actions.taskCraftingTrain,
+            async: false,
+        },
+        {
             key: 'skillRemainingXP',
             name: 'Remaining XP',
             category: 'Skills',

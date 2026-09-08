@@ -21,6 +21,12 @@ import budgetCalculator from '../features/actions/budget-calculator.js';
 import costSummary from '../features/actions/cost-summary.js';
 import actionPanelLayout from '../features/actions/action-panel-layout.js';
 import craftingPlan from '../features/crafting-plan/index.js';
+// The task board's merged crafting walk. Its own registry feature, but it rides
+// in this bundle rather than the ui one: it is built out of the crafting-plan
+// calculator and the walk singleton, and importing it from src/libraries/ui.js
+// would copy both into a second bundle — a second walk instance for the same
+// surface the action panel drives.
+import taskCraftingTrain from '../features/crafting-plan/task-crafting-train.js';
 import productionArbitrageBoard from '../features/actions/production-arbitrage-board.js';
 import * as craftingPlanCalculator from '../features/crafting-plan/crafting-plan-calculator.js';
 import * as craftArbitrage from '../features/crafting-plan/craft-arbitrage-adapter.js';
@@ -80,6 +86,7 @@ toolashaRoot.Actions = {
     costSummary,
     actionPanelLayout,
     craftingPlan,
+    taskCraftingTrain,
     productionArbitrageBoard,
     // Reached by Equipment Watch, which lives in the market bundle: importing
     // it there would copy the whole recursive costing model into a second bundle

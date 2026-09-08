@@ -55,6 +55,8 @@ vi.mock('./crafting-plan-walk.js', async () => {
     };
 });
 
+import craftingPlanWalk from './crafting-plan-walk.js';
+
 const {
     default: taskCraftingTrain,
     mergeWalkSteps,
@@ -331,5 +333,62 @@ describe('initialize', () => {
 
         expect(mocks.walkInitialized).toBe(1);
         taskCraftingTrain.disable();
+    });
+});
+
+describe('disable', () => {
+    test('takes its header button and chooser panel off the page', () => {
+        const header = document.createElement('div');
+        document.body.appendChild(header);
+        taskCraftingTrain._addButton(header);
+        expect(header.querySelector('#mwi-task-train-button')).not.toBeNull();
+
+        taskCraftingTrain.disable();
+
+        expect(document.getElementById('mwi-task-train-button')).toBeNull();
+        expect(document.getElementById('mwi-task-train-panel')).toBeNull();
+        header.remove();
+    });
+
+    test('takes its own hook off the shared walk', async () => {
+        const group = groupTasksBySharedChain(
+            planTaskTargets(
+                [
+                    { actionHrid: '/actions/tailoring/hat', quantity: 1, label: 'Hat' },
+                    { actionHrid: '/actions/tailoring/boots', quantity: 1, label: 'Boots' },
+                ],
+                {
+                    planFor: (actionHrid) => (actionHrid === '/actions/tailoring/hat' ? hatPlan() : bootsPlan()),
+                }
+            )
+        )[0];
+
+        await taskCraftingTrain.startMergedWalk(group);
+        expect(craftingPlanWalk.onStepAboutToRun).not.toBeNull();
+
+        taskCraftingTrain.disable();
+        expect(craftingPlanWalk.onStepAboutToRun).toBeNull();
+    });
+
+    test('leaves a hook the action panel installed afterwards alone', async () => {
+        const group = groupTasksBySharedChain(
+            planTaskTargets(
+                [
+                    { actionHrid: '/actions/tailoring/hat', quantity: 1, label: 'Hat' },
+                    { actionHrid: '/actions/tailoring/boots', quantity: 1, label: 'Boots' },
+                ],
+                {
+                    planFor: (actionHrid) => (actionHrid === '/actions/tailoring/hat' ? hatPlan() : bootsPlan()),
+                }
+            )
+        )[0];
+
+        await taskCraftingTrain.startMergedWalk(group);
+        const panelHook = () => {};
+        craftingPlanWalk.onStepAboutToRun = panelHook;
+
+        taskCraftingTrain.disable();
+        expect(craftingPlanWalk.onStepAboutToRun).toBe(panelHook);
+        craftingPlanWalk.onStepAboutToRun = null;
     });
 });
