@@ -563,6 +563,13 @@ export const settingsGroups = {
                     'exactly one game action. A step the plan says to buy opens the marketplace instead and waits ' +
                     'for the item to arrive. Skip and Stop are on the strip; a reload or a character switch ends it.',
             },
+            inventoryReservations: {
+                id: 'inventoryReservations',
+                label: 'Share one inventory between plans (reservation ledger)',
+                type: 'checkbox',
+                default: false,
+                help: 'Every plan works out what it is short of against the same bag, so two plans that each need 500 logs both read those 500 as theirs and both say nothing is missing. With this on, a plan writes down what it has claimed and the others plan against what is left — the goal planner and the crafting plan hold their claims until you change or delete them, the missing-materials and budget panels hold theirs only while they are open, and an item queued for selling stops counting as a crafting material. Where a shortfall exists only because something else claimed the stock first, the line says which plan claimed it.',
+            },
             actions_artisanMaterialMode: {
                 id: 'actions_artisanMaterialMode',
                 label: 'Missing materials: Artisan requirement mode',

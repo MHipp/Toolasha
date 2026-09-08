@@ -41,6 +41,7 @@ import { describe, test, expect, vi } from 'vitest';
 import { mergeForKey } from './sync-merge-registry.js';
 
 await import('./chest-tally.js');
+await import('./inventory-reservations.js');
 await import('./watchlist.js');
 await import('../features/market/trade-history.js');
 await import('../features/market/trade-ledger-store.js');
@@ -214,6 +215,13 @@ const corpus = [
     { store: 'settings', key: `goalPlannerGoals_${CHAR}`, label: 'Goal planner goals' },
     { store: 'settings', key: 'goalPlannerSnapshot', label: null },
     { store: 'settings', key: 'goalPlannerCombatGear', label: null },
+
+    // utils/inventory-reservations.js — character-scoped. The stem is spelled
+    // `inventoryReservationLedger` rather than `inventoryReservations` so the
+    // base matcher can never reach the settings blob's own key of that name
+    { store: 'settings', key: 'inventoryReservationLedger', label: 'Inventory reservations' },
+    { store: 'settings', key: `inventoryReservationLedger_${CHAR}`, label: 'Inventory reservations' },
+    { store: 'settings', key: 'inventoryReservations', label: null },
 
     // utils/chest-tally.js — and the lookalike record it must not absorb
     { store: 'settings', key: 'treasureTally', label: 'Treasure tally' },
