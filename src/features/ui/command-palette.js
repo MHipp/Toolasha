@@ -262,9 +262,17 @@ function registerOwnCommands() {
     pformancePanel.initialize();
 }
 
-/** The names {@link registerOwnCommands} puts up directly, withdrawn together. PFormance is
- * withdrawn separately, through its own `disable()`, so an open panel closes with it. */
-const OWN_COMMANDS = ['Settings', 'Guild Trials', 'Health report'];
+/**
+ * The names {@link registerOwnCommands} puts up, withdrawn together.
+ *
+ * `PFormance` is withdrawn by name rather than through `pformancePanel.disable()`:
+ * that call also removes the panel from the page, and this list is unwound by
+ * `cleanup()`, which the feature registry runs as the teardown half of every
+ * character switch. A diagnostic the user opened — from the palette or from the
+ * settings button, which does not go through the palette at all — must not
+ * vanish because they changed character while watching it.
+ */
+const OWN_COMMANDS = ['Settings', 'Guild Trials', 'Health report', 'PFormance'];
 
 /**
  * Every setting the schema names, flattened.
@@ -566,7 +574,6 @@ class CommandPalette {
     cleanup() {
         try {
             for (const name of OWN_COMMANDS) unregisterCommand(name);
-            pformancePanel.disable();
             document.removeEventListener('keydown', this.onKeyDown, true);
             this.close();
             this.initialized = false;

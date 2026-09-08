@@ -28,7 +28,14 @@ vi.mock('../../core/settings-schema.js', () => ({
         },
     },
 }));
-vi.mock('../../utils/panel-z-index.js', () => ({ PANEL_Z_CAP: 1199 }));
+// `registerFloatingPanel` and friends are here for the PFormance panel, which
+// this file opens for real to check what the palette's cleanup does to it.
+vi.mock('../../utils/panel-z-index.js', () => ({
+    PANEL_Z_CAP: 1199,
+    registerFloatingPanel: () => {},
+    unregisterFloatingPanel: () => {},
+    bringPanelToFront: () => {},
+}));
 
 /** What the palette said when a command had nowhere to land */
 const toasts = vi.hoisted(() => ({ said: [], kinds: [] }));
@@ -61,6 +68,8 @@ vi.mock('../../utils/bundle-bridge.js', async (importOriginal) => {
 
 const { registerCommand, unregisterCommand, resetCommands, registeredCommands } =
     await import('../../utils/command-registry.js');
+
+const { default: pformancePanel } = await import('../dev/pformance-panel.js');
 
 const {
     default: palette,
@@ -712,13 +721,47 @@ describe('the PFormance entry', () => {
         expect(document.getElementById('toolasha-pformance-panel')).toBeNull();
     });
 
-    test('cleanup withdraws it and closes an open panel', () => {
+    test('cleanup withdraws the command', () => {
         palette.initialize();
         expect(registeredCommands().map((c) => c.name)).toContain('PFormance');
 
         palette.cleanup();
         expect(registeredCommands().map((c) => c.name)).not.toContain('PFormance');
-        expect(document.getElementById('toolasha-pformance-panel')).toBeNull();
+    });
+
+    /**
+     * `cleanup()` is the teardown the feature registry runs on every character
+     * switch (entrypoint wires the module's `cleanup` in as the registry's
+     * `disable`, and `disableAllFeatures` is the cleanup half of a switch), so
+     * anything it removes from the page is removed on every switch. Withdrawing
+     * the command through `pformancePanel.disable()` also removed the panel
+     * itself — including one opened from the settings button, which never goes
+     * through the palette at all — so a diagnostic left open vanished the
+     * moment the user changed character.
+     */
+    test('cleanup leaves an open panel on screen — a character switch runs it', () => {
+        window.Toolasha = {
+            ...(window.Toolasha || {}),
+            Core: {
+                performanceMonitor: {
+                    enabled: false,
+                    getAllStats: () => new Map(),
+                    getSnapshots: () => new Map(),
+                    getSpans: () => [],
+                    getMarks: () => [],
+                },
+            },
+        };
+        palette.initialize();
+        registeredCommands()
+            .find((c) => c.name === 'PFormance')
+            .run();
+        expect(document.getElementById('toolasha-pformance-panel')).not.toBeNull();
+
+        palette.cleanup();
+
+        expect(document.getElementById('toolasha-pformance-panel')).not.toBeNull();
+        pformancePanel.hide();
     });
 });
 
