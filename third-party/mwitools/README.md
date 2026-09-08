@@ -71,6 +71,25 @@ which portions, what Toolasha does with them, and where.
   `craftingPlan_guidedWalk`. MWITools' `taskTrainPlanner` merge of several tasks onto one chain
   was not taken.
 
+- **The shared inventory reservation ledger.** MWITools' `procurementAssistant` keeps a cart of
+  plans and answers `getEffectiveInventory(itemHrid, level, excludePlanId)` — what is held less
+  every OTHER plan's locked materials — so two plans cannot both count the same stock. Toolasha
+  computed its shortfalls in five places, each against the whole bag and none aware of the others.
+  The ledger is `src/utils/inventory-reservations.js`, wired into the goal planner, the crafting
+  plan, the missing-materials tabs, the budget calculator and the sell queue, behind the
+  default-off `inventoryReservations` setting. Taken: the idea that a plan's claim is written down
+  and that the asking plan excludes itself. Toolasha's own: the owner-id model (any plan, panel or
+  queue rather than a cart entry), the per-character persisted record and its per-owner
+  newer-wins sync fold, orphan release for owners a consumer can enumerate plus a stated TTL for
+  those it cannot, the sell queue as an owner that releases stock rather than planning to spend
+  it, and the visibility line that names which plan holds the stock. **Not taken:** the cart UI —
+  MWITools' plan list, its progress bars and its add-to-cart flow have no counterpart here; a
+  claim is made by the plan that already exists, never authored. Also not taken: its
+  `getProjectReservedInventory`/allocation-snapshot reporting surface, and its
+  `excludeActionHrids` filter, which exists for that cart's own bookkeeping. Toolasha's
+  `actions_artisanMaterialMode` already handles the tea-rounding half of the same problem, and was
+  left alone.
+
 ## What was not adapted
 
 - **MWITools' own market API.** Its value handling sits beside a fetch of a third-party market

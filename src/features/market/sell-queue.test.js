@@ -36,6 +36,24 @@ vi.mock('../../core/dom-observer.js', () => ({
         },
     },
 }));
+/**
+ * The reservation ledger, doubled. The queue is the one consumer that RELEASES
+ * stock: an item on its way out of the bag is not a crafting material, and what
+ * is asserted here is that the whole held count is held back while it is
+ * queued, and given back when the queue goes.
+ */
+const ledger = vi.hoisted(() => ({ reserved: [], released: [] }));
+vi.mock('../../utils/inventory-reservations.js', () => ({
+    reserve: async (ownerId, lines) => {
+        ledger.reserved.push({ ownerId, lines });
+        return true;
+    },
+    release: async (ownerId) => {
+        ledger.released.push(ownerId);
+        return true;
+    },
+}));
+
 vi.mock('../../utils/marketplace-tabs.js', () => ({
     createMaterialTab: vi.fn(() => document.createElement('div')),
     removeMaterialTabs: vi.fn(),
@@ -215,5 +233,50 @@ describe('the marketplace cleanup watchdog', () => {
         queueCheese();
         sellQueue.cleanup();
         expect(tabsState.unregisters.every((unregister) => unregister.mock.calls.length > 0)).toBe(true);
+    });
+});
+
+describe('what the queue holds back from every other plan', () => {
+    /** A marketplace tab strip the queue accepts as "already in the market" */
+    function marketplaceStrip() {
+        const container = document.createElement('div');
+        const myListings = document.createElement('button');
+        myListings.textContent = 'My Listings';
+        const marketListings = document.createElement('button');
+        marketListings.textContent = 'Market Listings';
+        container.append(myListings, marketListings);
+        document.body.appendChild(container);
+        return container;
+    }
+
+    beforeEach(() => {
+        ledger.reserved = [];
+        ledger.released = [];
+        tabsState.container = marketplaceStrip();
+        dataManagerMock.inventory = [
+            { itemHrid: '/items/cheese', itemLocationHrid: '/item_locations/inventory', count: 12 },
+        ];
+    });
+
+    test('queueing an item claims every copy of it in the bag', async () => {
+        observerState.handler(popper('<a href="/items/cheese">Cheese</a>'));
+        shiftRightClickInventory();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(ledger.reserved.at(-1)).toEqual({
+            ownerId: 'sellQueue',
+            lines: [{ itemHrid: '/items/cheese', count: 12 }],
+        });
+    });
+
+    test('leaving the marketplace empties the queue and gives the stock back', async () => {
+        observerState.handler(popper('<a href="/items/cheese">Cheese</a>'));
+        shiftRightClickInventory();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        tabsState.cleanups.at(-1)();
+        expect(ledger.released).toContain('sellQueue');
     });
 });

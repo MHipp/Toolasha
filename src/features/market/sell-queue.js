@@ -16,8 +16,20 @@ import {
     visibleTabsContainer,
 } from '../../utils/marketplace-tabs.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
+import { release, reserve } from '../../utils/inventory-reservations.js';
 
 const timerRegistry = createTimerRegistry();
+
+/**
+ * The owner the queue holds its stock under.
+ *
+ * The queue is the one consumer that RELEASES stock rather than planning to
+ * spend it: an item queued for sale is on its way out of the bag, and a
+ * crafting plan that counts it as a material is planning against something that
+ * will not be there. So the whole held count of every queued item is claimed —
+ * not a part of it — for as long as the queue stands.
+ */
+const RESERVATION_OWNER = 'sellQueue';
 
 /** @type {Array<{itemHrid: string, itemName: string}>} */
 const queue = [];
@@ -122,6 +134,23 @@ function getInventoryCount(itemHrid) {
     return inventory
         .filter((i) => i.itemHrid === itemHrid && i.itemLocationHrid === '/item_locations/inventory')
         .reduce((sum, i) => sum + (i.count || 0), 0);
+}
+
+/**
+ * Hold everything on the queue back from every plan that would craft with it.
+ *
+ * Re-stated whenever the queue changes, which includes a partial sale: an item
+ * half sold is half still in the bag, and the claim shrinks with it. An empty
+ * queue claims nothing, which `reserve` treats as a release.
+ *
+ * @returns {Promise<boolean>} Whether a write landed
+ */
+function claimQueue() {
+    return reserve(
+        RESERVATION_OWNER,
+        queue.map((entry) => ({ itemHrid: entry.itemHrid, count: getInventoryCount(entry.itemHrid) })),
+        { label: 'Queued for selling' }
+    );
 }
 
 /**
@@ -249,6 +278,10 @@ function updateTabsOnInventoryChange() {
         }
     }
 
+    // What is left in the bag for the queue has moved, so what it is holding
+    // back from everything else moves with it
+    claimQueue();
+
     // After removing sold-out tabs, navigate to the first remaining queued item —
     // but not out from under a modal or a half-typed field
     if (toRemove.length > 0 && queue.length > 0) {
@@ -285,6 +318,8 @@ function handleMarketplaceCleanup() {
     removeMaterialTabs();
     currentTabs.length = 0;
     queue.length = 0;
+    // Nothing is queued any more, so nothing is on its way out of the bag
+    release(RESERVATION_OWNER);
     // The watchdog goes with the session it was watching. Left running, the next
     // queued item took the first-item path again and registered a second one over
     // the top of it — the first was then unreachable, polling `currentTabs`
@@ -336,6 +371,7 @@ async function addToQueue(itemHrid, itemName) {
     }
 
     injectTabs();
+    await claimQueue();
     navigateToMarketplace(itemHrid, 0);
 }
 
