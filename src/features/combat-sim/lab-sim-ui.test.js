@@ -58,7 +58,11 @@ const game = vi.hoisted(() => ({
     /** Whether the opt-in "remember upgrade results" setting is on */
     rememberUpgradeResults: false,
 }));
-const sim = vi.hoisted(() => ({ calls: [], onCall: null }));
+const sim = vi.hoisted(() => ({
+    cancelled: 0,
+    calls: [],
+    onCall: null,
+}));
 /** Every key the panel wrote, so a persisted choice can be asserted on */
 const storage = vi.hoisted(() => ({ written: {}, values: {} }));
 const rowActions = vi.hoisted(() => ({ wired: [] }));
@@ -172,7 +176,9 @@ vi.mock('./combat-sim-runner.js', () => ({
         sim.onCall?.(sim.calls.length);
         return { labyAttemptCount: 100, encounters: 70, deaths: {}, simulatedTime: 3 * 3600 * 1e9 };
     },
-    cancelSimulation: () => {},
+    cancelSimulation: () => {
+        sim.cancelled++;
+    },
     getMaxWorkers: () => 2,
 }));
 
@@ -860,6 +866,21 @@ describe('a house room level reaches the character the simulation is handed', ()
 
         // One baseline plus one run per combat-relevant room — not doubled
         expect(sim.calls).toHaveLength(3);
+    });
+
+    test('Stop terminates the workers, not just the loop between sims', () => {
+        // The analysis polls its abort flag BETWEEN simulations, so setting the
+        // flag alone ends nothing already running. With Uncapped ticked the
+        // in-flight sim has a million-hour budget and no trial cap, so Stop
+        // appeared dead: it had been honoured, and was waiting on a sim that was
+        // never going to finish. The Single Sim and Skilling Stop buttons have
+        // always called cancelSimulation(); this one did not.
+        sim.cancelled = 0;
+
+        ui.panel.querySelector('#mwi-labsim-upgrade-stop').dispatchEvent(new Event('click'));
+
+        expect(ui._upgradeAborted).toBe(true);
+        expect(sim.cancelled, 'Stop must terminate the running workers').toBe(1);
     });
 
     test('an analysis finishing after a character switch does not overwrite the arriving character’s remembered run', async () => {

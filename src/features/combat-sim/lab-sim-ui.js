@@ -1490,6 +1490,17 @@ class LabSimUI {
         });
         this.panel.querySelector('#mwi-labsim-upgrade-stop').addEventListener('click', () => {
             this._upgradeAborted = true;
+            // The flag alone only ends the run BETWEEN sims: the analysis polls
+            // `abortSignal` between one simulation and the next, so whatever is
+            // already in flight still runs to completion. With Uncapped ticked
+            // that sim has a million-hour budget and no trial cap, so Stop looked
+            // dead — it had in fact been honoured and was waiting on a sim that
+            // was never going to end. Terminating the workers is what actually
+            // stops it, which is what the Single Sim and Skilling Stop buttons
+            // have always done.
+            cancelSimulation();
+            this.panel.querySelector('#mwi-labsim-upgrade-progress')?.style.setProperty('display', 'none');
+            this._setStatus('Upgrade analysis cancelled.');
         });
 
         // Skilling listeners

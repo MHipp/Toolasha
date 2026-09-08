@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Stop actually stops the Lab Simulator's upgrade analysis
+
+Stop on the Upgrade tab set the flag the analysis checks between one simulation and the next, and nothing else — so whatever was already running ran to the end first. With Uncapped ticked that simulation has a million-hour budget and no fight cap, and Stop looked like it had done nothing at all when in fact it had been heard and was waiting on a sim that was never going to finish. It now ends the running work the way the Single Sim and Skilling Stop buttons always have.
+
 ### The Lab Simulator's precision and fight-cap controls now govern the single-fight upgrade run
 
 Precision ±, Max fights and Uncapped sat above the Upgrade tab doing nothing whenever it ran against one fight: the panel handed them over, but the analysis behind it never took them, so its baseline ran the plain time budget instead — and since every candidate is played at the baseline's fight count, that set the sample size for the whole comparison. The all-fights run and the combat simulator both honoured the same controls, which is why the difference never showed. Runs will now end where the controls say rather than where the clock did.
