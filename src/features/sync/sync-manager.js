@@ -8,7 +8,9 @@
  * access token they supply.
  *
  * The conflict model is deliberately small. Every payload carries an
- * `exportedAt`, newest wins, and the only case that asks a question is the one
+ * `exportedAt` and — since `KEY_LAST_SYNCED_SEQ` — a Lamport counter that
+ * orders the exchanges when the two devices' clocks disagree; newest wins, and
+ * the only case that asks a question is the one
  * where both sides moved: the remote is newer than what this device last
  * exchanged *and* this device has changed since then. Anything else resolves
  * without a dialog, because a sync that interrogates you on startup is a sync
@@ -63,6 +65,29 @@ const KEY_LAST_SYNCED_AT = 'toolasha_sync_lastSyncedAt';
  * Written only on a successful push.
  */
 const KEY_LAST_PUSHED_AT = 'toolasha_sync_lastPushedAt';
+
+/**
+ * Lamport counter of the payload this device last pushed or accepted.
+ *
+ * `exportedAt` is stamped from the pushing device's wall clock, and a clock an
+ * hour fast puts an hour of the future in the gist. Every other device records
+ * that stamp as `lastSyncedAt`, and every correctly stamped payload after it
+ * reads as older — so sync stops applying anything, for an hour, while saying
+ * it is up to date. Nothing is destroyed (every merge is a union or a per-field
+ * max), which is why it went unnoticed; it just stops.
+ *
+ * The counter orders the exchanges instead of the clocks: a push carries one
+ * above everything this device has seen, and accepting a pull raises this
+ * device to the counter it accepted. It decides a comparison only when BOTH
+ * sides carry one, so a gist or a device that predates it is unaffected — see
+ * {@link isNewer}.
+ *
+ * Device-local like the rest of this bookkeeping, and under the same
+ * `toolasha_sync_` prefix, which is what keeps it out of every payload
+ * (`LOCAL_ONLY_KEY_PREFIXES` in sync-payload.js) and per device rather than
+ * per account. A counter taken from a payload would be another device's clock.
+ */
+const KEY_LAST_SYNCED_SEQ = 'toolasha_sync_lastSyncedSeq';
 
 /** Fingerprint of that payload, so local drift since then is detectable */
 const KEY_LAST_HASH = 'toolasha_sync_lastHash';
@@ -306,10 +331,23 @@ class SyncManager {
         const previousChunks = Number(await storage.get(KEY_CHUNK_COUNT, STORE, 0)) || 0;
 
         const exportedAt = new Date().toISOString();
+        // Read here rather than at the top of the method: the never-synced
+        // dialog above can sit open for as long as the player ignores it, and
+        // a counter read before that wait would be one a takeover has since
+        // moved past. (A takeover is stood down on by `_stillOwns` below
+        // anyway; this keeps the number itself honest.)
+        const syncSeq = (readSeq(await storage.get(KEY_LAST_SYNCED_SEQ, STORE, null)) ?? 0) + 1;
         const manifest = {
             toolashaSync: 1,
             scope,
             exportedAt,
+            // In the MANIFEST, never the payload. The payload is byte for byte
+            // a full backup, restorable by hand through "Restore Backup", and
+            // the manifest is the one part of a sync gist that only this
+            // feature reads — an older build's `readSyncGist` gates on
+            // `toolashaSync` and `chunks` and passes the rest through
+            // untouched, so a field it has never heard of costs it nothing.
+            syncSeq,
             chunks: chunks.length,
             bytes: payload.length,
             hash,
@@ -336,7 +374,7 @@ class SyncManager {
         // unsynced again.
         if (!this._stillOwns(opToken)) return this._supersededResult(silent, 'push');
 
-        await this._remember({ gistId: written.id, exportedAt, hash, chunkCount: chunks.length });
+        await this._remember({ gistId: written.id, exportedAt, hash, chunkCount: chunks.length, syncSeq });
         await rememberLocal({ [KEY_LAST_PUSHED_AT]: exportedAt });
 
         if (!silent) {
@@ -400,8 +438,10 @@ class SyncManager {
 
         const remoteAt = manifest?.exportedAt ?? null;
         const lastSyncedAt = await storage.get(KEY_LAST_SYNCED_AT, STORE, null);
+        const remoteSeq = readSeq(manifest?.syncSeq);
+        const lastSeq = readSeq(await storage.get(KEY_LAST_SYNCED_SEQ, STORE, null));
 
-        if (!isNewer(remoteAt, lastSyncedAt)) {
+        if (!isNewer(remoteAt, lastSyncedAt, remoteSeq, lastSeq)) {
             if (!silent) showToast('Already up to date with GitHub.');
             return { ok: true, skipped: true, reason: 'not-newer' };
         }
@@ -491,6 +531,13 @@ class SyncManager {
             // manufactured a permanent conflict.
             hash: contentHash(applied ?? payload),
             chunkCount: Number(manifest?.chunks) || 0,
+            // Lamport's rule on receive: this device is now at least as far
+            // along as the payload it accepted. Written only here, after the
+            // `complete === false` return above — a counter advanced by a
+            // half-applied pull would make the retry answer 'not-newer' and
+            // the data would never arrive, which is the same trap the stamp
+            // already has to avoid.
+            syncSeq: advanceSeq(lastSeq, remoteSeq),
         });
 
         const combined = merged?.length
@@ -549,6 +596,11 @@ class SyncManager {
             [KEY_LAST_SYNCED_AT]: null,
             [KEY_LAST_HASH]: null,
             [KEY_CHUNK_COUNT]: 0,
+            // The counter counts exchanges with the gist we just forgot. Kept,
+            // it would make the first push to a NEW gist claim a counter above
+            // everything that gist has ever carried, and the devices already
+            // on it would read their own newer payloads as older.
+            [KEY_LAST_SYNCED_SEQ]: null,
             // The push stamp belongs to the gist we just forgot. Leaving it behind makes
             // the next gist look like somewhere this device has already pushed to, which
             // is exactly the check that decides whether a first push stops to ask.
@@ -686,15 +738,18 @@ class SyncManager {
 
     /**
      * Record what this device now believes about the gist.
-     * @param {{gistId: string, exportedAt: string, hash: string, chunkCount: number}} state - New state
+     * @param {{gistId: string, exportedAt: string, hash: string, chunkCount: number,
+     *   syncSeq?: number|null}} state - New state. `syncSeq` is null for an exchange
+     *   with a gist that carries no counter, which must not invent one.
      * @private
      */
-    async _remember({ gistId, exportedAt, hash, chunkCount }) {
+    async _remember({ gistId, exportedAt, hash, chunkCount, syncSeq = null }) {
         await rememberLocal({
             [KEY_GIST_ID]: gistId,
             [KEY_LAST_SYNCED_AT]: exportedAt,
             [KEY_LAST_HASH]: hash,
             [KEY_CHUNK_COUNT]: chunkCount,
+            [KEY_LAST_SYNCED_SEQ]: syncSeq,
         });
     }
 
@@ -959,13 +1014,68 @@ function verifyAgainstManifest(manifest, payload) {
 }
 
 /**
+ * A Lamport counter, or null for "this side carries none".
+ *
+ * Null is the whole compatibility story: a gist written before the counter
+ * existed has no `syncSeq`, a device that has only ever exchanged with such a
+ * gist has none stored, and both must go on being ordered by their timestamps.
+ * So anything that is not a plain non-negative integer — absent, a boolean, a
+ * hand-edited string, a float, `Infinity` — reads as "none" rather than as a
+ * number to compare against.
+ *
+ * @param {*} value - Raw manifest field or stored bookkeeping value
+ * @returns {number|null} The counter, or null when there isn't one
+ */
+function readSeq(value) {
+    if (typeof value !== 'number' && typeof value !== 'string') return null;
+    if (typeof value === 'string' && value.trim() === '') return null;
+    const seq = Number(value);
+    return Number.isSafeInteger(seq) && seq >= 0 ? seq : null;
+}
+
+/**
+ * This device's counter after accepting a payload — Lamport's receive rule.
+ *
+ * A payload with no counter must not reset one this device already has (that is
+ * the mixed fleet: an old device's push would otherwise drag the new device
+ * back to zero and let it re-apply payloads it has already taken), and must not
+ * start one either, because a device with a counter and a gist without one
+ * still has nothing to compare.
+ *
+ * @param {number|null} localSeq - What this device had
+ * @param {number|null} incomingSeq - What the accepted payload carried
+ * @returns {number|null} The counter to store
+ */
+function advanceSeq(localSeq, incomingSeq) {
+    if (localSeq === null && incomingSeq === null) return null;
+    return Math.max(localSeq ?? 0, incomingSeq ?? 0);
+}
+
+/**
  * Is `candidate` strictly after `reference`? An absent reference counts as
  * "never synced", so anything at all is newer.
+ *
+ * The counters decide it only when both sides have one, and only when they
+ * differ. Two reasons for that shape, and both are compatibility:
+ *
+ * - One side without a counter is an old gist or an old device, and there is
+ *   nothing to compare — the stamps answer it exactly as they always did.
+ * - EQUAL counters are two devices that pushed from the same base without
+ *   seeing each other. Reading that as "not newer" would make each device skip
+ *   the other's push for ever and the two would never converge, so a tie falls
+ *   through to the stamps, which raise the conflict the tie actually is and
+ *   let the merge take both.
+ *
  * @param {string|null} candidate - ISO timestamp
  * @param {string|null} reference - ISO timestamp
+ * @param {number|null} [candidateSeq] - Counter the candidate carries, if any
+ * @param {number|null} [referenceSeq] - Counter this device has recorded, if any
  * @returns {boolean} True when candidate wins
  */
-function isNewer(candidate, reference) {
+function isNewer(candidate, reference, candidateSeq = null, referenceSeq = null) {
+    if (candidateSeq !== null && referenceSeq !== null && candidateSeq !== referenceSeq) {
+        return candidateSeq > referenceSeq;
+    }
     if (!candidate) return false;
     if (!reference) return true;
     const a = Date.parse(candidate);
