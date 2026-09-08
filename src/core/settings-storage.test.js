@@ -450,3 +450,76 @@ describe('a save keeps setting ids this build does not know about', () => {
         );
     });
 });
+
+describe('a saved boolean entry that carries both fields', () => {
+    const KEY = 'script_settingsMap_alice';
+
+    beforeEach(() => {
+        stored.clear();
+        outage.on = false;
+        settingsStorage.currentCharacterId = 'alice';
+        settingsStorage.currentCharacterName = 'Alice';
+    });
+
+    test('loads the value the user set, not the stale isTrue beside it', async () => {
+        // The shape the old setter wrote when a ticked box was unticked: the new
+        // answer went into `.value` and the stale `.isTrue` was left standing.
+        stored.set(`json:${KEY}`, {
+            whatsNew_showPopup: { id: 'whatsNew_showPopup', type: 'checkbox', isTrue: true, value: false },
+        });
+
+        const map = await settingsStorage.loadSettings();
+
+        expect(map.whatsNew_showPopup.isTrue).toBe(false);
+        // And the stray does not come back with it, so nothing reads it again
+        expect(Object.hasOwn(map.whatsNew_showPopup, 'value')).toBe(false);
+    });
+
+    test('the same heal runs the other way round', async () => {
+        stored.set(`json:${KEY}`, {
+            whatsNew_showPopup: { id: 'whatsNew_showPopup', type: 'checkbox', isTrue: false, value: true },
+        });
+
+        const map = await settingsStorage.loadSettings();
+
+        expect(map.whatsNew_showPopup.isTrue).toBe(true);
+    });
+
+    test('the checkboxWithButton value-only migration still works', async () => {
+        stored.set(`json:${KEY}`, {
+            simulateScrollEffects: { id: 'simulateScrollEffects', type: 'checkboxWithButton', value: true },
+        });
+
+        const map = await settingsStorage.loadSettings();
+
+        expect(map.simulateScrollEffects.isTrue).toBe(true);
+        expect(Object.hasOwn(map.simulateScrollEffects, 'value')).toBe(false);
+    });
+
+    test('a boolean entry with only isTrue is left alone', async () => {
+        stored.set(`json:${KEY}`, {
+            whatsNew_showPopup: { id: 'whatsNew_showPopup', type: 'checkbox', isTrue: false },
+        });
+
+        const map = await settingsStorage.loadSettings();
+
+        expect(map.whatsNew_showPopup.isTrue).toBe(false);
+    });
+
+    test('a non-boolean setting carrying both fields is untouched by the rule', async () => {
+        stored.set(`json:${KEY}`, {
+            actionQueue_valueMode: {
+                id: 'actionQueue_valueMode',
+                type: 'select',
+                value: 'estimated_value',
+                isTrue: true,
+            },
+        });
+
+        const map = await settingsStorage.loadSettings();
+
+        expect(map.actionQueue_valueMode.value).toBe('estimated_value');
+        // The stray boolean rides along exactly as it did before
+        expect(map.actionQueue_valueMode.isTrue).toBe(true);
+    });
+});

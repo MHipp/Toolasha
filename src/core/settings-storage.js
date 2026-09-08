@@ -214,11 +214,22 @@ class SettingsStorage {
                     // Merge saved non-boolean values
                     if (savedValue.hasOwnProperty('value')) {
                         if (isBooleanType(settings[settingId].type)) {
-                            // Migration: checkboxWithButton settings once persisted
-                            // their boolean in .value instead of .isTrue
-                            if (!savedValue.hasOwnProperty('isTrue')) {
-                                settings[settingId].isTrue = !!savedValue.value;
-                            }
+                            // A boolean setting keeps its state in `.isTrue`, so a stored
+                            // `.value` beside it is not a second opinion — it is either the
+                            // old checkboxWithButton shape (which persisted its boolean in
+                            // `.value` alone) or the write of a setter that put the new
+                            // answer in the wrong field. Both mean `.value` holds the newer
+                            // intent, so it wins and the entry rebuilt from the schema keeps
+                            // no `.value` at all.
+                            //
+                            // The one case this gets wrong: a settings-panel change (which
+                            // wrote `.isTrue`) made AFTER the stray `.value` write in the
+                            // same session leaves `.isTrue` as the newer intent, and this
+                            // prefers `.value`. That window is narrow, cannot recur now the
+                            // setter deletes the field it did not write, and the alternative
+                            // is that every player who ticked a box on the buggy build stays
+                            // stuck with the value they tried to change.
+                            settings[settingId].isTrue = !!savedValue.value;
                         } else {
                             settings[settingId].value = savedValue.value;
                         }
