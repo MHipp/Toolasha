@@ -125,6 +125,30 @@ describe('crossing', () => {
         expect(game.notified[0].options.subject).toBe('Cheese Sword');
     });
 
+    test('a reach that reached no channel is retried on the next look, not lost until the goal resolves', () => {
+        game.fired = false;
+        game.targets = [gearTarget({ affordable: false })];
+        savingsGoalAlerts.check();
+
+        game.targets = [gearTarget({ affordable: true })];
+        savingsGoalAlerts.check();
+        expect(game.notified).toHaveLength(1);
+
+        // Still affordable, still nothing delivered — the goal's armed bit
+        // must not have been spent on a notice nobody saw
+        savingsGoalAlerts.check();
+        expect(game.notified).toHaveLength(2);
+
+        game.fired = true;
+        savingsGoalAlerts.check();
+        expect(game.notified).toHaveLength(3);
+
+        // Delivered: further re-reads of the same affordable goal are the
+        // ordinary one-message-per-goal case again
+        savingsGoalAlerts.check();
+        expect(game.notified).toHaveLength(3);
+    });
+
     test('a goal already affordable on the first look is worth one message', () => {
         game.targets = [gearTarget({ affordable: true })];
         savingsGoalAlerts.check();

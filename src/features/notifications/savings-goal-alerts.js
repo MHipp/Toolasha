@@ -236,10 +236,12 @@ class SavingsGoalAlerts {
             affordable: reading.affordable,
             costKnown: reading.cost !== null && reading.cost !== undefined,
         });
-        state.armed = armed;
-        if (!fire) return;
+        if (!fire) {
+            state.armed = armed;
+            return;
+        }
 
-        notificationService.notify(
+        const result = notificationService.notify(
             `${EVENT_KEY_PREFIX}:${reading.key}:${state.signature}:${state.generation}`,
             this.buildMessage(reading),
             {
@@ -249,6 +251,14 @@ class SavingsGoalAlerts {
                 subject: reading.name,
             }
         );
+
+        // Disarmed only once the notice actually reached the player, exactly as
+        // the undercut alert disarms its own bit: a goal that became affordable
+        // while nothing was there to say so — no toast host mounted yet, most
+        // likely — must stay retryable rather than going quiet until the coins
+        // are spent and saved up again, which for a goal never touched again is
+        // never.
+        if (result?.fired) state.armed = armed;
     }
 
     /**
