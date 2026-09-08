@@ -20,6 +20,7 @@ const game = vi.hoisted(() => ({
     wsHandlers: {},
     stored: null,
     readFails: false,
+    alertCalls: [],
 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -46,6 +47,17 @@ vi.mock('../../core/storage.js', () => ({
             return true;
         },
         delete: async () => true,
+    },
+}));
+// Severed rather than exercised: the alert's own suite covers its delivery
+// guard, and importing it for real drags the notification service — and its
+// settings watchers — into a test about counting waves.
+vi.mock('./spawn-divergence-alert.js', () => ({
+    default: {
+        check: (report) => {
+            game.alertCalls.push(report);
+            return null;
+        },
     },
 }));
 vi.mock('../../core/data-manager.js', () => ({
@@ -724,5 +736,75 @@ describe('the tables the counts were drawn from', () => {
         battle(['rat'], { wave: 2 });
 
         expect(spawnCensus.tableHashes.get('chimerical_den')).toHaveLength(1);
+    });
+});
+
+describe('the divergence check', () => {
+    /** Give the dungeon a one-table spawn map so the check has something to score. */
+    const withTables = () => {
+        game.actionDetails[DUNGEON].name = 'Chimerical Den';
+        game.actionDetails[DUNGEON].combatZoneInfo.dungeonInfo.fixedSpawnsMap = {};
+        game.actionDetails[DUNGEON].combatZoneInfo.dungeonInfo.randomSpawnInfoMap = {
+            0: {
+                maxSpawnCount: 2,
+                maxTotalStrength: 100,
+                spawns: [
+                    { combatMonsterHrid: '/monsters/rat', difficultyTier: 0, rate: 1, strength: 50 },
+                    { combatMonsterHrid: '/monsters/frog', difficultyTier: 0, rate: 1, strength: 50 },
+                ],
+            },
+        };
+    };
+
+    test('the readout carries a line per dungeon and tier', () => {
+        withTables();
+        for (let i = 0; i < 200; i++) battle(['rat', 'frog'], { wave: 1 });
+
+        // Every wave is rat+frog, which the table says happens half the time —
+        // as unambiguous a divergence as the counts can express.
+        const summary = spawnCensus.summary();
+        expect(summary.divergence).toHaveLength(1);
+        expect(summary.divergence[0]).toMatch(/^Chimerical Den T0: diverged — /);
+    });
+
+    test('and says so plainly while a band is short of the minimum', () => {
+        withTables();
+        for (let i = 0; i < 20; i++) battle(['rat', 'frog'], { wave: 1 });
+
+        expect(spawnCensus.summary().divergence[0]).toContain('not enough waves yet');
+    });
+
+    test('a flush offers the report to the alert, at most once per window', async () => {
+        withTables();
+        game.alertCalls = [];
+        for (let i = 0; i < 60; i++) battle(['rat', 'frog'], { wave: 1 });
+
+        await spawnCensus.flush();
+        expect(game.alertCalls).toHaveLength(1);
+        expect(game.alertCalls[0].zones[0].verdict).toBe('insufficient');
+
+        // Another flush a moment later, with more waves: still inside the window.
+        for (let i = 0; i < 60; i++) battle(['rat', 'frog'], { wave: 1 });
+        await spawnCensus.flush();
+        expect(game.alertCalls).toHaveLength(1);
+
+        // Time passes and waves keep arriving: checked again.
+        vi.setSystemTime(Date.now() + 11 * 60_000);
+        for (let i = 0; i < 60; i++) battle(['rat', 'frog'], { wave: 1 });
+        await spawnCensus.flush();
+        expect(game.alertCalls).toHaveLength(2);
+    });
+
+    test('an idle census is not re-analysed however long it sits', async () => {
+        withTables();
+        game.alertCalls = [];
+        for (let i = 0; i < 60; i++) battle(['rat', 'frog'], { wave: 1 });
+        await spawnCensus.flush();
+
+        vi.setSystemTime(Date.now() + 60 * 60_000);
+        spawnCensus.dirty = true;
+        await spawnCensus.flush();
+
+        expect(game.alertCalls).toHaveLength(1);
     });
 });

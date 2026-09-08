@@ -2342,6 +2342,13 @@ export const settingsGroups = {
                 default: false,
                 help: "Counts how often each set of monsters appears at each zone, difficulty and wave number, so the simulator's wave-draw rule can be checked against what the game actually does. Identical waves share one row and a counter, so weeks of play cost about a megabyte and nothing is written per battle. Shows nothing in game — use the Export button below to get the data out.",
             },
+            spawnCensus_divergenceAlert: {
+                id: 'spawnCensus_divergenceAlert',
+                label: 'Spawn Census: Alert when the spawn tables stop matching',
+                type: 'checkbox',
+                default: false,
+                help: "Checks the recorded rosters against the spawn tables the combat simulator was fitted to, and notifies you once when a dungeon's draws no longer match them or the game's tables themselves change - the day it happens, rather than when the clear-time estimates have been quietly wrong for a month. Needs the Spawn Census above switched on, and at least 100 recorded waves in a wave band before it says anything. The per-dungeon verdicts are in Toolasha.Debug.spawnCensus().",
+            },
             spawnCensusExport: {
                 id: 'spawnCensusExport',
                 label: 'Spawn Census: Export the recorded data',

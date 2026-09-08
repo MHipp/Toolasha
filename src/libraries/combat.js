@@ -468,6 +468,7 @@ toolashaRoot.Debug = {
                 (summary.evictedRows ? `, ${summary.evictedRows} rows evicted at the cap` : '')
         );
         console.table(summary.zones);
+        for (const line of summary.divergence || []) console.log(`[SpawnCensus] ${line}`);
         return summary;
     },
     // Download the census as JSON — the counts, the duration aggregates, the

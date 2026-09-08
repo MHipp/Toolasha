@@ -51,6 +51,8 @@ import dataManager from '../../core/data-manager.js';
 import webSocketHook from '../../core/websocket.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { runningCombatAction } from '../../utils/combat-actions.js';
+import { analyzeSpawnDivergence, divergenceLines, fingerprintOf } from './spawn-divergence.js';
+import spawnDivergenceAlert from './spawn-divergence-alert.js';
 
 /** Object store and key. Account-wide on purpose — see below. */
 const STORE = 'combatExport';
@@ -265,15 +267,18 @@ export function isNextWave(open, wave) {
     return to === from || to === from + 1;
 }
 
-/** FNV-1a over a string, base-36. Short, stable, and not a security claim. */
-function fingerprintOf(text) {
-    let hash = 0x811c9dc5;
-    for (let i = 0; i < text.length; i++) {
-        hash ^= text.charCodeAt(i);
-        hash = Math.imul(hash, 0x01000193) >>> 0;
-    }
-    return hash.toString(36);
-}
+/**
+ * How long between divergence checks.
+ *
+ * The check rebuilds the whole export and sweeps a Markov chain per species per
+ * band, which is milliseconds but not free, and the thing it is watching for
+ * moves on the scale of a game patch. Ten minutes is far below "the day it
+ * happens" and far above "every flush".
+ */
+export const DIVERGENCE_CHECK_MS = 10 * 60_000;
+
+/** Waves that must have arrived since the last check before running another. */
+export const DIVERGENCE_CHECK_WAVES = 50;
 
 /**
  * What a stored record holds beyond the copy this tab last wrote.
@@ -367,6 +372,11 @@ class SpawnCensus {
         this.lastWritten = null;
         /** The wave still waiting for the next announcement to close its duration. */
         this.openWave = null;
+        /** When the divergence check last ran, and the wave count it ran at. */
+        this.divergenceCheckedAt = 0;
+        this.divergenceCheckedWaves = 0;
+        /** The last divergence report, so the readout need not recompute it. */
+        this.lastDivergence = null;
     }
 
     async initialize() {
@@ -678,6 +688,7 @@ class SpawnCensus {
             const record = this.serialize();
             await storage.setJSON(RECORD_KEY, record, STORE, true);
             this.lastWritten = record;
+            this._checkDivergence();
             return true;
         } catch (error) {
             // Left dirty so the next flush tries again rather than losing it.
@@ -699,6 +710,60 @@ class SpawnCensus {
         const stored = await storage.getJSON(RECORD_KEY, STORE, null);
         if (!stored || stored.version !== RECORD_VERSION) return;
         this.hydrate(foreignDelta(stored, this.lastWritten));
+    }
+
+    /**
+     * Whether the rosters counted so far still look like draws from the tables
+     * the simulator was fitted to.
+     *
+     * Recomputed from the export rather than cached against the tally, because
+     * the tables it compares against are read live and can change without a
+     * single roster row changing.
+     *
+     * @returns {{ok: boolean, reason?: string, zones: Array<Object>}} The report
+     */
+    divergence() {
+        this.lastDivergence = analyzeSpawnDivergence(this.exportFile());
+        return this.lastDivergence;
+    }
+
+    /**
+     * Run the divergence check, at most every {@link DIVERGENCE_CHECK_MS} and
+     * only once another {@link DIVERGENCE_CHECK_WAVES} have arrived.
+     *
+     * Both conditions, not either: the time bound keeps a busy census from
+     * sweeping the chain every flush, and the wave bound keeps an idle one from
+     * re-running the identical analysis forever. Failures are swallowed — a
+     * statistics bug must not be able to stop the census writing.
+     * @private
+     */
+    _checkDivergence() {
+        if (!config.getSetting('spawnCensus_divergenceAlert')) return;
+        const now = Date.now();
+        if (now - this.divergenceCheckedAt < DIVERGENCE_CHECK_MS) return;
+        if (this.waves - this.divergenceCheckedWaves < DIVERGENCE_CHECK_WAVES) return;
+        this.divergenceCheckedAt = now;
+        this.divergenceCheckedWaves = this.waves;
+        try {
+            spawnDivergenceAlert.check(this.divergence(), (hrid) => this._zoneName(hrid));
+        } catch (error) {
+            console.error('[SpawnCensus] The divergence check failed:', error);
+        }
+    }
+
+    /**
+     * A zone's display name, falling back to the tail of its hrid when the game
+     * data is not loaded.
+     * @private
+     */
+    _zoneName(zoneHrid) {
+        try {
+            const name = dataManager.getActionDetails?.(zoneHrid)?.name;
+            if (name) return name;
+        } catch (error) {
+            console.error('[SpawnCensus] Reading a zone name failed:', error);
+        }
+        return shortHrid(zoneHrid);
     }
 
     /**
@@ -839,11 +904,22 @@ class SpawnCensus {
             entry._n = (entry._n || 0) + aggregate.n;
             entry._sum = (entry._sum || 0) + aggregate.sum;
         }
+        // One line per dungeon/tier saying whether its rosters still match the
+        // tables. Computed here rather than cached, so the readout is never
+        // quoting a verdict from before the last hour of play.
+        let divergence = [];
+        try {
+            divergence = divergenceLines(this.divergence(), (hrid) => this._zoneName(hrid));
+        } catch (error) {
+            console.error('[SpawnCensus] The divergence readout failed:', error);
+        }
+
         return {
             wavesSeen: this.waves,
             distinctRosters: this.rosters.size,
             evictedRows: this.evicted,
             startedAt: this.startedAt ? new Date(this.startedAt).toISOString() : null,
+            divergence,
             zones: [...zones.values()]
                 .map((entry) => ({
                     zone: entry.zone,
