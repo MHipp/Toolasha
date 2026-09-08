@@ -7,7 +7,7 @@
  * which source was chosen, what that source contains, and what is held back.
  */
 
-import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const game = vi.hoisted(() => ({
     items: [],
@@ -77,6 +77,9 @@ vi.mock('./marketplace-shortcuts.js', () => ({
             shortcuts.listing.push(label);
             return new Promise(() => {});
         },
+        // The real finder's primary path, which is the row the game renders and
+        // the one the assistant's own prefill writes into
+        findQuantityInput: (modal) => modal.querySelector('div[class*="MarketplacePanel_quantityInputs"] input'),
     },
 }));
 vi.mock('../combat/loadout-snapshot.js', () => ({
@@ -527,5 +530,186 @@ describe('the remembered inventory tab across a character switch', () => {
         withChip();
         await bulkSell._populateTabSelect();
         expect(bulkSell.selectedTabId).toBe('tab-7');
+    });
+});
+
+/**
+ * The strip's own confirm button.
+ *
+ * It presses the game's button rather than selling by itself, so there stays
+ * exactly one path from "sold" to "next item" — the modal closing. What is
+ * worth testing is therefore not the sale but the envelope around it: that both
+ * routes land in the same place, that one press cannot become two, and that
+ * every mismatch between the modal and the queued step refuses out loud.
+ */
+describe('confirming from the strip', () => {
+    const CHIP = 'mwi-bulk-sell-chip';
+    /** Clicks the fixture's game confirm button received */
+    let gameClicks;
+
+    /**
+     * A sell modal shaped like the game's: header, item icon, quantity row and
+     * the game's own confirming button.
+     */
+    const openModal = ({ item = 'cheese', qty = 18, header = 'Sell Now' } = {}) => {
+        const modal = document.createElement('div');
+        modal.className = 'Modal_modalContainer__abc';
+        const head = document.createElement('div');
+        head.className = 'MarketplacePanel_header__x';
+        head.textContent = header;
+        const icon = document.createElement('div');
+        icon.innerHTML = `<svg><use href="/static/media/items.svg#${item}"></use></svg>`;
+        const qtyRow = document.createElement('div');
+        qtyRow.className = 'MarketplacePanel_quantityInputs__y';
+        const input = document.createElement('input');
+        input.value = String(qty);
+        qtyRow.appendChild(input);
+        const confirm = document.createElement('button');
+        confirm.className = 'Button_button__1Fe9z Button_sell__3Rf2';
+        confirm.textContent = 'Sell';
+        confirm.addEventListener('click', () => gameClicks++);
+        modal.append(head, icon, qtyRow, confirm);
+        document.body.appendChild(modal);
+        return modal;
+    };
+
+    /** A run parked on step 0 of two, with the panel up and the modal watched */
+    const runAtStep0 = () => {
+        bulkSell.queue = [
+            { itemHrid: '/items/cheese', enhancementLevel: 0, count: 18, name: 'Cheese' },
+            { itemHrid: '/items/milk', enhancementLevel: 0, count: 4, name: 'Milk' },
+        ];
+        bulkSell.index = 0;
+        bulkSell.current = bulkSell.queue[0];
+        bulkSell.decision = { insta: true, price: 796000, avgPrice: 796000, reason: 'queue ok' };
+        bulkSell.state = 'awaiting_confirm';
+        bulkSell._buildPanel();
+        bulkSell._watchClose();
+        bulkSell._render();
+    };
+
+    const confirmBtn = () => bulkSell.chip.querySelector(`.${CHIP}-confirm`);
+    const statusText = () => bulkSell.chip.querySelector(`.${CHIP}-status`).textContent;
+    /** Only the walk's own state, which both confirm routes must leave identical */
+    const walkState = () => ({ state: bulkSell.state, index: bulkSell.index, current: bulkSell.current?.itemHrid });
+
+    /** Let the poller see the modal, then see it gone — what a real confirm does */
+    const closeModalAndSettle = (modal) => {
+        vi.advanceTimersByTime(200);
+        modal.remove();
+        vi.advanceTimersByTime(200);
+    };
+
+    beforeEach(() => {
+        gameClicks = 0;
+        document.body.textContent = '';
+        settings['market_bulkSellAssistant'] = true;
+        bulkSell.chip = null;
+        vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+        bulkSell._stop('');
+        bulkSell._removePanel();
+        vi.useRealTimers();
+    });
+
+    test('the strip button presses the game button and the walk advances', () => {
+        const modal = openModal();
+        runAtStep0();
+
+        confirmBtn().click();
+        expect(gameClicks).toBe(1);
+
+        closeModalAndSettle(modal);
+        expect(bulkSell.state).toBe('awaiting_next');
+    });
+
+    test("the game's own button still confirms, and lands in the same place", () => {
+        const first = openModal();
+        runAtStep0();
+        confirmBtn().click();
+        closeModalAndSettle(first);
+        const viaStrip = walkState();
+
+        bulkSell._stop('');
+        bulkSell._removePanel();
+        const second = openModal();
+        runAtStep0();
+        // The player's own click on the game's button: the game closes the modal
+        second.querySelector('button').click();
+        closeModalAndSettle(second);
+
+        expect(walkState()).toEqual(viaStrip);
+        expect(bulkSell.state).toBe('awaiting_next');
+    });
+
+    test('confirming twice for one step sells once', () => {
+        openModal();
+        runAtStep0();
+
+        confirmBtn().click();
+        confirmBtn().click();
+        confirmBtn().click();
+
+        expect(gameClicks).toBe(1);
+        expect(confirmBtn().disabled).toBe(true);
+    });
+
+    test('it refuses with the modal shut, and says so', () => {
+        runAtStep0();
+
+        confirmBtn().click();
+
+        expect(gameClicks).toBe(0);
+        expect(statusText()).toMatch(/not open/i);
+    });
+
+    test('it refuses when the modal is showing a different item, and says so', () => {
+        openModal({ item: 'milk' });
+        runAtStep0();
+
+        confirmBtn().click();
+
+        expect(gameClicks).toBe(0);
+        expect(statusText()).toMatch(/milk/i);
+        expect(statusText()).toMatch(/not Cheese/i);
+    });
+
+    test('it refuses when the quantity does not match the queued stack', () => {
+        openModal({ qty: 3 });
+        runAtStep0();
+
+        confirmBtn().click();
+
+        expect(gameClicks).toBe(0);
+        expect(statusText()).toMatch(/3/);
+        expect(statusText()).toMatch(/18/);
+    });
+
+    test('Skip and Stop are untouched by the new button', () => {
+        const modal = openModal();
+        runAtStep0();
+
+        bulkSell.chip.querySelector(`.${CHIP}-main`).click();
+        expect(bulkSell.state).toBe('preparing');
+        expect(bulkSell.index).toBe(1);
+        expect(gameClicks).toBe(0);
+
+        bulkSell.chip.querySelector(`.${CHIP}-stop`).click();
+        expect(bulkSell.state).toBe('idle');
+        expect(bulkSell.queue).toEqual([]);
+        expect(confirmBtn().style.display).toBe('none');
+        modal.remove();
+    });
+
+    test('with the feature off there is no panel and no confirm button', async () => {
+        settings['market_bulkSellAssistant'] = false;
+        bulkSell.isInitialized = false;
+
+        await bulkSell.initialize();
+
+        expect(bulkSell.isInitialized).toBe(false);
+        expect(document.querySelector(`.${CHIP}-confirm`)).toBeNull();
     });
 });

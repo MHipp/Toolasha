@@ -13,8 +13,17 @@
  * percentage) and posting a sell listing, then opens the matching modal with
  * the quantity prefilled.
  * Confirming (or closing) the modal advances to the next item automatically,
- * so after Start every sale is exactly one click on the game's confirm button
- * — always in the same place. The assistant never confirms a sale itself.
+ * so after Start every sale is exactly one click — always in the same place.
+ *
+ * That click can be the game's own confirm button or the Confirm button on the
+ * assistant's strip, which presses the game's for you so a long run never moves
+ * the cursor. Both are the same sale: the strip's button only causes the press,
+ * and the modal closing is still the one thing that advances the walk. So the
+ * assistant does press the game's confirm button — but only for a press of
+ * yours, only while the open modal is selling exactly the item, enhancement
+ * level and quantity this step queued, and only once per step. One click of
+ * yours is still one sale; it is no longer the game's button that has to
+ * receive it.
  */
 
 import config from '../../core/config.js';
@@ -93,6 +102,13 @@ const TUNABLES = [
 ];
 const MS_PER_DAY = 86400000;
 
+/**
+ * What the game's confirming button in a sell modal says. Matched only after
+ * the class check misses — a wrong button here is a sale of the wrong thing,
+ * so the list is the exact labels rather than anything fuzzy.
+ */
+const CONFIRM_LABELS = ['sell', 'sell now', 'post', 'post listing', 'list', 'confirm'];
+
 const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
 
 /**
@@ -158,6 +174,14 @@ class BulkSellAssistant {
         this.toggleBtn = null;
         this.panelVisible = false;
         this.rulesOpen = false;
+        /**
+         * The queue step the strip's Confirm was pressed for, so a second press
+         * of the same step does nothing. The index is part of it, so advancing
+         * re-arms the button without anything having to reset this.
+         */
+        this._confirmedStep = null;
+        /** Why the last Confirm press was refused, shown on the strip */
+        this.confirmNote = '';
     }
 
     /**
@@ -332,8 +356,10 @@ class BulkSellAssistant {
             'Bulk Sell \u2014 clears the inventory through the market one item at a time.\n\n' +
             'Start builds a queue of everything tradable, then for each item opens its order book, ' +
             'decides between insta-selling and posting a listing, and opens the matching modal with the ' +
-            'quantity already filled in. After that every sale is one click on the game\u2019s own confirm ' +
-            'button, always in the same place. It never confirms a sale for you.\n\n' +
+            'quantity already filled in. After that every sale is one click, always in the same place: the ' +
+            'game\u2019s own confirm button, or the panel\u2019s Confirm, which presses it for you. The ' +
+            'panel\u2019s refuses unless the open modal is selling exactly what the current step queued, ' +
+            'and works once per item \u2014 one click of yours is still one sale.\n\n' +
             'Works best pointed at a Toolasha inventory tab rather than the whole inventory: put the things ' +
             'you actually want gone in one tab and pick it in the panel, and nothing outside it can be sold ' +
             'by a mis-click. Items you also filed in a tab above the selected one are kept, not sold.\n\n' +
@@ -447,6 +473,18 @@ class BulkSellAssistant {
 
         widget.main.addEventListener('click', () => this._onMainClick());
 
+        // Confirms the open sale without the cursor leaving the strip. A plain
+        // click listener and nothing else: no key binding, no pointer-down, no
+        // repeat — the only thing that can sell is a deliberate press of this.
+        const confirmBtn = document.createElement('button');
+        confirmBtn.type = 'button';
+        confirmBtn.className = `${CHIP_ID}-confirm`;
+        confirmBtn.textContent = '✔ Confirm';
+        confirmBtn.style.cssText =
+            'display:none; border:0; border-radius:5px; background:rgba(76,175,80,0.25); color:#a5d6a7; ' +
+            'font-weight:700; font-size:12px; padding:3px 7px; cursor:pointer; font-family:inherit;';
+        confirmBtn.addEventListener('click', () => this._onConfirmClick());
+
         const stopBtn = document.createElement('button');
         stopBtn.className = `${CHIP_ID}-stop`;
         // Spelled out rather than an ✕, now that there is a close button beside
@@ -481,6 +519,7 @@ class BulkSellAssistant {
         });
 
         widget.extras.appendChild(tabSel);
+        widget.row.insertBefore(confirmBtn, widget.main);
         widget.row.insertBefore(stopBtn, widget.gear);
         widget.settings.classList.add(`${CHIP_ID}-rules`);
 
@@ -630,15 +669,17 @@ class BulkSellAssistant {
         const tabSel = this.chip.querySelector(`.${CHIP_ID}-tab`);
         const mainBtn = this.chip.querySelector(`.${CHIP_ID}-main`);
         const stopBtn = this.chip.querySelector(`.${CHIP_ID}-stop`);
+        const confirmBtn = this.chip.querySelector(`.${CHIP_ID}-confirm`);
         const progress = this.queue.length ? `${Math.min(this.index + 1, this.queue.length)}/${this.queue.length}` : '';
 
         if (this.state === 'idle' || this.state === 'done') {
             status.textContent = this.statusNote || 'Sell every tradable inventory item, one confirm per item';
             status.style.display = this.statusNote || this.state === 'done' ? '' : 'none';
             tabSel.style.display = this._hasTabs ? '' : 'none';
+            if (confirmBtn) confirmBtn.style.display = 'none';
             mainBtn.textContent = '▶ Bulk Sell';
             mainBtn.title =
-                'Queue every tradable inventory item (or only the selected Toolasha tab), most valuable stack first. Each item opens a prefilled sell modal — oversupplied or slow-queue items insta-sell to the best bid, others list at the ask. Confirming the modal advances to the next item.';
+                'Queue every tradable inventory item (or only the selected Toolasha tab), most valuable stack first. Each item opens a prefilled sell modal — oversupplied or slow-queue items insta-sell to the best bid, others list at the ask. Confirming the modal \u2014 in the game or with this panel\u2019s Confirm button \u2014 advances to the next item.';
             stopBtn.style.display = 'none';
             return;
         }
@@ -646,6 +687,20 @@ class BulkSellAssistant {
         status.style.display = '';
         tabSel.style.display = 'none';
         stopBtn.style.display = '';
+        // Only offered while a market sell modal of ours is the thing on screen.
+        // The vendor path has no modal to check the item and quantity against,
+        // so it keeps the game's own "Sell For" button and nothing else.
+        if (confirmBtn) {
+            const offered = this.state === 'awaiting_confirm' && !this.decision?.vendor;
+            confirmBtn.style.display = offered ? '' : 'none';
+            confirmBtn.disabled = offered ? this._confirmSent() : true;
+            confirmBtn.style.opacity = confirmBtn.disabled ? '0.5' : '1';
+            confirmBtn.style.cursor = confirmBtn.disabled ? 'default' : 'pointer';
+            confirmBtn.title = confirmBtn.disabled
+                ? 'Already confirmed — waiting for the game to close the modal'
+                : 'Press the sell modal’s own confirm button. Refuses unless the modal is open and ' +
+                  'showing exactly the item and quantity this step queued.';
+        }
         if (this.state === 'preparing') {
             status.textContent = `${progress} · checking ${this.current?.name || ''}${this.statusNote ? ` (${this.statusNote})` : ''}…`;
             mainBtn.textContent = '⏭ Skip';
@@ -653,7 +708,13 @@ class BulkSellAssistant {
         } else if (this.state === 'awaiting_confirm') {
             const d = this.decision;
             const verb = d?.vendor ? 'Vendor-sell' : d?.insta ? 'Insta-sell' : 'List';
-            const confirmHint = d?.vendor ? 'click Sell For in the item menu' : 'confirm in modal';
+            const confirmHint = this.confirmNote
+                ? `can’t confirm: ${this.confirmNote}`
+                : this._confirmSent()
+                  ? 'confirm sent — waiting for the game'
+                  : d?.vendor
+                    ? 'click Sell For in the item menu'
+                    : 'confirm in the modal, or press Confirm here';
             const shown = d?.insta && d.avgPrice ? d.avgPrice : d?.price || 0;
             status.textContent = `${progress} · ${verb} ${this.current.count}× ${this.current.name} @ ${d?.insta ? '~' : ''}${formatKMB(shown)} (${d?.reason}) — ${confirmHint}`;
             mainBtn.textContent = '⏭ Skip';
@@ -663,6 +724,158 @@ class BulkSellAssistant {
             mainBtn.textContent = '▶ Next';
             mainBtn.title = 'Open the next item. Its own click, so one click never does two game actions.';
         }
+    }
+
+    /**
+     * What the strip's Confirm was, or would be, pressed for.
+     *
+     * The index is in the key, so the moment the walk moves on the key changes
+     * and the button arms itself again — nothing has to remember to reset it.
+     * The item and count are in it too, so a queue rebuilt under the same index
+     * is a different step.
+     *
+     * @returns {string|null} Null when there is no step to confirm
+     */
+    _stepKey() {
+        if (!this.current) return null;
+        return `${this.index}:${this.current.itemHrid}:${this.current.enhancementLevel}:${this.current.count}`;
+    }
+
+    /** Whether this step's confirm has already been pressed */
+    _confirmSent() {
+        const key = this._stepKey();
+        return key !== null && this._confirmedStep === key;
+    }
+
+    /**
+     * The item a marketplace modal is about, from its icon.
+     * @param {HTMLElement} modal
+     * @returns {string|null} Item hrid, or null when the icon can't be read
+     */
+    _modalItemHrid(modal) {
+        // Plain `svg use`, then both attribute spellings: an escaped
+        // `[xlink\:href]` in the selector is not portable across parsers
+        let href = '';
+        for (const use of modal.querySelectorAll('svg use')) {
+            href = use.getAttribute('href') || use.getAttribute('xlink:href') || '';
+            if (href) break;
+        }
+        const slug = href.match(/#(.+)$/)?.[1];
+        return slug ? `/items/${slug}` : null;
+    }
+
+    /** The enhancement level the modal is set to; 0 when it has no such field */
+    _modalEnhancementLevel(modal) {
+        for (const input of modal.querySelectorAll('input')) {
+            if (input.closest('div')?.textContent?.includes('Enhancement Level')) {
+                return parseInt(input.value, 10) || 0;
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * The quantity typed into the modal — the same field the run prefilled.
+     * @returns {number|null} Null when the field can't be found or read
+     */
+    _modalQuantity(modal) {
+        const input = marketplaceShortcuts.findQuantityInput(modal);
+        if (!input) return null;
+        // The fields are text since the marketplace update, and the game groups
+        // them with separators
+        const value = parseInt(String(input.value).replace(/[^0-9-]/g, ''), 10);
+        return Number.isFinite(value) ? value : null;
+    }
+
+    /**
+     * The game's own confirming button inside the sell modal.
+     *
+     * The variant class first, because that is the game's own marking of "this
+     * is the sell action"; the exact labels only as a fallback for a build that
+     * renamed it. Anything the script itself injected is excluded — pressing
+     * one of our own buttons would be a sale nobody asked for.
+     *
+     * @param {HTMLElement} modal
+     * @returns {HTMLButtonElement|null}
+     */
+    _findModalConfirmButton(modal) {
+        const candidates = Array.from(modal.querySelectorAll('button')).filter((btn) => {
+            const cls = String(btn.className || '');
+            return !cls.includes('Modal_closeButton') && !cls.includes('mwi-');
+        });
+        return (
+            candidates.find((btn) => String(btn.className || '').includes('Button_sell')) ||
+            candidates.find((btn) => CONFIRM_LABELS.includes(btn.textContent.trim().toLowerCase())) ||
+            null
+        );
+    }
+
+    /**
+     * The button the strip's Confirm may press, or why it may not.
+     *
+     * This is the whole safety envelope of confirming from the strip: a
+     * mis-timed press, a modal the player opened themselves, or a strip left
+     * stale after the queue moved on must all refuse rather than sell. So
+     * everything the step queued — the item, its enhancement level, the
+     * quantity — has to be what the open modal is actually showing.
+     *
+     * @returns {{button: HTMLButtonElement}|{why: string}}
+     */
+    _confirmTarget() {
+        if (this.state !== 'awaiting_confirm' || !this.current) return { why: 'there is no sale waiting' };
+        if (this.decision?.vendor) return { why: 'this one is a vendor sale' };
+
+        const modal = document.querySelector('[class*="Modal_modalContainer"]');
+        if (!modal) return { why: 'the sell modal is not open' };
+        const header = modal.querySelector('div[class*="MarketplacePanel_header"]')?.textContent || '';
+        if (!header.includes('Sell Now') && !header.includes('Sell Listing')) {
+            return { why: 'the open modal is not a sell form' };
+        }
+
+        const hrid = this._modalItemHrid(modal);
+        if (!hrid) return { why: 'the modal does not say what it is selling' };
+        if (hrid !== this.current.itemHrid) {
+            const clientData = dataManager.getInitClientData();
+            const name = clientData?.itemDetailMap?.[hrid]?.name || hrid.split('/').pop();
+            return { why: `the modal is selling ${name}, not ${this.current.name}` };
+        }
+        const level = this._modalEnhancementLevel(modal);
+        if (level !== (this.current.enhancementLevel || 0)) {
+            return { why: `the modal is selling +${level}, not +${this.current.enhancementLevel || 0}` };
+        }
+        const quantity = this._modalQuantity(modal);
+        if (quantity === null) return { why: 'the modal quantity cannot be read' };
+        if (quantity !== this.current.count) {
+            return { why: `the modal says ${quantity}, not the queued ${this.current.count}` };
+        }
+
+        const button = this._findModalConfirmButton(modal);
+        if (!button) return { why: "the modal's own confirm button was not found" };
+        return { button };
+    }
+
+    /**
+     * Press the game's confirm button for this step.
+     *
+     * It presses rather than sells: the modal closing is still the only thing
+     * that advances the walk, so this route and a press of the game's own
+     * button are the same single path. Once per step — the button disables
+     * itself and the step key makes a second press a no-op even if it does not.
+     */
+    _onConfirmClick() {
+        if (this._confirmSent()) return;
+        const target = this._confirmTarget();
+        if (target.why) {
+            // Said on the strip rather than swallowed: a button that does
+            // nothing and explains nothing is one you press again harder
+            this.confirmNote = target.why;
+            this._render();
+            return;
+        }
+        this.confirmNote = '';
+        this._confirmedStep = this._stepKey();
+        this._render();
+        target.button.click();
     }
 
     _onMainClick() {
@@ -1193,6 +1406,8 @@ class BulkSellAssistant {
             this.modalPoll = null;
         }
         this.statusNote = '';
+        this.confirmNote = '';
+        this._confirmedStep = null;
     }
 
     cleanup() {
