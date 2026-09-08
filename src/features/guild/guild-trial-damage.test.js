@@ -2150,6 +2150,30 @@ describe('per-name history is immutable across wave boundaries', () => {
         expect(report.totalDamage).toBe(0);
         expect(totals()).toEqual({});
     });
+
+    /**
+     * The elapsed denominator is the other half of the same carryover. It is
+     * accumulated from the gaps between ticks across every tier of a trial (a
+     * tier boundary is not a new fight, which is why it has to survive one),
+     * and a second trial in the same session used to start from the first
+     * trial's total — dividing its own damage by an hour nobody in it fought.
+     */
+    test('a new trial starts its elapsed denominator from zero', () => {
+        game.wsHandlers.new_guild_battle(roster(3, ['Rick', 'NPD']));
+        tick(3, { 0: { atkCounter: 1 }, 1: { atkCounter: 1 } }, 650_000, 0, 0);
+        tick(3, { 0: { atkCounter: 2 } }, 500_000, 1, 250);
+        tick(3, { 1: { atkCounter: 2 } }, 400_000, 2, 500);
+        expect(guildTrialDamage.breakdown().seconds).toBeGreaterThan(0);
+
+        game.wsHandlers.new_guild_battle({
+            battleId: 10,
+            tier: 1,
+            players: [{ character: { id: 200, name: 'Zeta' } }],
+            monsters: [{ hrid: '/monsters/trial_hedgehog', name: 'Trial Hedgehog', combatDetails: {} }],
+        });
+
+        expect(guildTrialDamage.breakdown().seconds).toBe(0);
+    });
 });
 
 describe('the trial ends and its figures stop moving', () => {

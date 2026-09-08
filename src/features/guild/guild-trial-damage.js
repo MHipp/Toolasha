@@ -1539,6 +1539,16 @@ class GuildTrialDamage {
                 this.bankedTally = {};
                 this.bankedDeaths = {};
                 this.bankedSupport = {};
+
+                // And the denominator those numerators are divided by. It is
+                // accumulated tick-gap by tick-gap across every tier of a trial
+                // (`newFight` is false at a tier boundary, which is why it may
+                // survive one), and nothing reset it between trials — so a
+                // second trial in the same session divided its own damage by
+                // its own seconds *plus* the previous trial's whole hour, and
+                // reported a DPS a fraction of the real one. `_unfreezeElapsed`
+                // below lets it run again; this is what it runs from.
+                this.seconds = 0;
             }
         }
 
