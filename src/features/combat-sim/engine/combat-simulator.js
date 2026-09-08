@@ -478,7 +478,16 @@ class CombatSimulator {
                 // Labyrinth: full reset every encounter (independent fights)
                 this.players[i].reset(0);
             } else {
+                // A wipe restart deliberately keeps the party's running buffs
+                // (reset() only prunes the expired ones), but every one of those
+                // players died, and dying swept their expiry checks off the
+                // queue. Re-arm them or the survivors of the wipe carry the buff
+                // for the rest of the run.
+                const wasDown = this.players[i].combatDetails.currentHitpoints <= 0;
                 this.players[i].reset(this.simulationTime);
+                if (wasDown) {
+                    this._rescheduleBuffExpirations(this.players[i]);
+                }
             }
         }
 
@@ -614,8 +623,17 @@ class CombatSimulator {
                 this.lastDungeonCompletionTime = this.simulationTime;
                 this.dungeonPairBroken = false;
                 for (let i = 0; i < this.players.length; i++) {
+                    // Clearing the dungeon puts a downed party member back on
+                    // their feet — a revive by another name, so it owes the same
+                    // re-arming a cast revive does. Their expiry checks went with
+                    // them when they died and nothing else prunes a buff.
+                    const wasDown = this.players[i].combatDetails.currentHitpoints <= 0;
                     this.players[i].combatDetails.currentHitpoints = this.players[i].combatDetails.maxHitpoints;
                     this.players[i].combatDetails.currentManapoints = this.players[i].combatDetails.maxManapoints;
+                    if (wasDown) {
+                        this.players[i].removeExpiredBuffs(this.simulationTime);
+                        this._rescheduleBuffExpirations(this.players[i]);
+                    }
                 }
             }
         }

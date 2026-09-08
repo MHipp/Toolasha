@@ -1049,3 +1049,136 @@ describe('dungeon clean clear-time metric', () => {
         expect(sim.dungeonPairBroken).toBe(true);
     });
 });
+
+/**
+ * The other two doors a downed player comes back through.
+ *
+ * A cast revive re-arms the buff expiry checks that dying swept off the queue.
+ * Nothing else prunes a buff, so every other path that puts a corpse back on its
+ * feet owes the same re-arming: clearing a dungeon heals the whole party
+ * (survivors and corpses alike), and a wipe restart resets the party while
+ * deliberately keeping its still-running buffs. Both left a timed buff running
+ * for the rest of the run — an accuracy or damage aura that never lapses is a
+ * free permanent upgrade the player does not have.
+ */
+describe('a buff does not outlive its duration when a downed player is put back up', () => {
+    const DUNGEON_HRID = '/actions/combat/golden_crypt';
+    const TEST_BUFF = {
+        uniqueHrid: '/buff_uniques/test_aura',
+        typeHrid: '/buff_types/damage',
+        flatBoost: 0,
+        ratioBoost: 0.3,
+        duration: 10 * ONE_SECOND,
+    };
+
+    /** A two-wave dungeon of fixed rosters — the wave draw is not what is under test. */
+    function installDungeon() {
+        installGameData();
+        getGameData().actionDetailMap[DUNGEON_HRID] = {
+            buffs: null,
+            combatZoneInfo: {
+                isDungeon: true,
+                fightInfo: { bossSpawns: null },
+                dungeonInfo: {
+                    maxWaves: 2,
+                    fixedSpawnsMap: {
+                        1: [{ combatMonsterHrid: RAT_HRID, difficultyTier: 0 }],
+                        2: [{ combatMonsterHrid: TOAD_HRID, difficultyTier: 0 }],
+                    },
+                    randomSpawnInfoMap: null,
+                },
+            },
+        };
+    }
+
+    /**
+     * A seeded dungeon sim with `count` players, each buffed and ready to fight.
+     * @param {number} count - Party size
+     * @returns {{sim: CombatSimulator, zone: Zone, players: Player[]}}
+     */
+    function buffedParty(count) {
+        installDungeon();
+        seedSimRng(3);
+        const zone = new Zone(DUNGEON_HRID, 0);
+        const players = Array.from({ length: count }, (_, i) => {
+            const player = fixturePlayer();
+            player.hrid = 'player' + (i + 1);
+            player.zoneBuffs = zone.buffs;
+            player.extraBuffs = [];
+            return player;
+        });
+        const sim = new CombatSimulator(players, zone);
+        sim.reset();
+        sim.simulationTime = ONE_SECOND;
+        players.forEach((player) => player.reset(sim.simulationTime));
+        players.forEach((player) => player.addBuff(TEST_BUFF, sim.simulationTime));
+        return { sim, zone, players };
+    }
+
+    /**
+     * The buff-expiry checks standing for one unit.
+     * @param {CombatSimulator} sim - The simulator to read
+     * @param {Object} unit - The unit the checks must name
+     * @returns {number[]} Their event times
+     */
+    function expiryChecks(sim, unit) {
+        return sim.eventQueue.minHeap.data
+            .filter((event) => event.type === 'checkBuffExpiration' && event.source === unit)
+            .map((event) => event.time);
+    }
+
+    afterEach(() => {
+        clearSimRng();
+        setGameData(null);
+    });
+
+    test('clearing the dungeon re-arms the checks of a party member who died on the way', () => {
+        const { sim, zone, players } = buffedParty(2);
+        const expiry = sim.simulationTime + TEST_BUFF.duration;
+
+        // One player goes down mid-run; in a dungeon nobody respawns, so they
+        // stay down until the clear. Dying is what sweeps their expiry check.
+        const victim = players[1];
+        victim.combatDetails.currentHitpoints = 0;
+        sim.eventQueue.clearEventsForUnit(victim);
+        expect(expiryChecks(sim, victim)).toEqual([]);
+
+        // The next wave wraps past maxWaves — the clear that heals the party
+        zone.encountersKilled = 3;
+        sim.enemies = null;
+        sim.simulationTime += ONE_SECOND;
+        sim.startNewEncounter();
+
+        expect(zone.dungeonsCompleted).toBe(1);
+        expect(victim.combatDetails.currentHitpoints).toBe(victim.combatDetails.maxHitpoints);
+        expect(expiryChecks(sim, victim)).toContain(expiry);
+
+        // And the buff really goes when that check fires
+        sim.simulationTime = expiry;
+        victim.removeExpiredBuffs(sim.simulationTime);
+        expect(victim.combatBuffs[TEST_BUFF.uniqueHrid]).toBeUndefined();
+    });
+
+    test('a wipe restart re-arms the checks the wipe itself threw away', () => {
+        const { sim, players } = buffedParty(1);
+        const expiry = sim.simulationTime + TEST_BUFF.duration;
+
+        const victim = players[0];
+        victim.combatDetails.currentHitpoints = 0;
+        sim.eventQueue.clearEventsForUnit(victim);
+        sim.allPlayersDead = true;
+        sim.enemies = null;
+
+        // The CombatStartEvent the wipe schedules. reset() keeps the buff by
+        // design (it is still inside its duration), so the check must come back.
+        sim.simulationTime += ONE_SECOND;
+        sim.processCombatStartEvent({ time: sim.simulationTime });
+
+        expect(victim.combatBuffs[TEST_BUFF.uniqueHrid]).toBeDefined();
+        expect(expiryChecks(sim, victim)).toContain(expiry);
+
+        sim.simulationTime = expiry;
+        victim.removeExpiredBuffs(sim.simulationTime);
+        expect(victim.combatBuffs[TEST_BUFF.uniqueHrid]).toBeUndefined();
+    });
+});
