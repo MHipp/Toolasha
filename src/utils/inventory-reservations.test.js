@@ -269,12 +269,74 @@ describe('the setting is off by default and off means inert', () => {
         expect(effectiveInventoryRows(rows, { excludeOwner: 'goal:b' })).toBe(rows);
     });
 
-    test('reserve and release write nothing at all', async () => {
+    test('reserve writes nothing at all', async () => {
         mockStorage.set.mockClear();
         expect(await reserve('goal:a', [{ itemHrid: LOGS, count: 300 }])).toBe(false);
+        expect(mockStorage.set).not.toHaveBeenCalled();
+        expect(allReservations()).toEqual({});
+    });
+
+    test('a release with nothing to drop still writes nothing', async () => {
+        mockStorage.set.mockClear();
         expect(await release('goal:a')).toBe(false);
         expect(await releaseMissing('goal:', [])).toBe(0);
+        await flushReservationWrites();
         expect(mockStorage.set).not.toHaveBeenCalled();
+    });
+
+    test('an owner that releases while off is gone, not waiting to come back on', async () => {
+        mockConfig.enabled = true;
+        await reserve('missingMats', [{ itemHrid: LOGS, count: 300 }]);
+        await flushReservationWrites();
+
+        mockConfig.enabled = false;
+        expect(await release('missingMats')).toBe(true);
+        await flushReservationWrites();
+        expect(mockStorage.storeFor('settings').get(KEY)).toEqual({});
+
+        // Switched back on, with the record read from storage rather than memory
+        _resetReservations();
+        mockConfig.enabled = true;
+        expect(await loadReservations()).toEqual({});
+        expect(effectiveInventory(LOGS, 0, { excludeOwner: 'goal:b' })).toBe(500);
+    });
+
+    test('an orphan sweep while off drops the deleted goal’s claim', async () => {
+        mockConfig.enabled = true;
+        await reserve('goal:a', [{ itemHrid: LOGS, count: 300 }]);
+        await reserve('goal:b', [{ itemHrid: LOGS, count: 100 }]);
+        await flushReservationWrites();
+
+        mockConfig.enabled = false;
+        expect(await releaseMissing('goal:', ['goal:b'])).toBe(1);
+        await flushReservationWrites();
+        expect(Object.keys(mockStorage.storeFor('settings').get(KEY))).toEqual(['goal:b']);
+    });
+
+    /*
+     * The load a release needs must not leak into the read paths: those staying
+     * inert is the whole safety property of the off switch, and the release now
+     * puts a real ledger in memory for them to be tempted by.
+     */
+    test('the read paths stay inert even once a release has loaded the ledger', async () => {
+        mockConfig.enabled = true;
+        await reserve('goal:a', [{ itemHrid: LOGS, count: 300 }]);
+        await reserve('missingMats', [{ itemHrid: LOGS, count: 150 }]);
+        await flushReservationWrites();
+
+        mockConfig.enabled = false;
+        expect(effectiveInventory(LOGS, 0, { excludeOwner: 'goal:b' })).toBe(500);
+
+        await release('missingMats');
+        await flushReservationWrites();
+
+        // `goal:a` is still on the record, and still claims nothing anyone can see
+        expect(effectiveInventory(LOGS, 0, { excludeOwner: 'goal:b' })).toBe(500);
+        expect(effectiveInventory(LOGS, 0, { excludeOwner: 'goal:b', held: 700 })).toBe(700);
+        expect(reservedElsewhere(LOGS)).toBe(0);
+        expect(reservationDetail(LOGS)).toEqual({ total: 0, byOwner: [] });
+        expect(shortfallNote(120, LOGS)).toBe('');
+        expect(effectiveInventoryRows(mockDataManager.inventory)).toBe(mockDataManager.inventory);
         expect(allReservations()).toEqual({});
     });
 });

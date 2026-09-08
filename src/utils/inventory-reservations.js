@@ -27,10 +27,18 @@
  *
  * The `inventoryReservations` setting is off by default, and off means off at
  * the seam rather than in each consumer: `effectiveInventory()` answers the
- * held count untouched, `reservedElsewhere()` answers zero, and `reserve()` and
- * `release()` write nothing at all. A consumer therefore behaves exactly as it
- * did before this module existed without having to branch on the setting for
- * anything but its own visibility line.
+ * held count untouched, `reservedElsewhere()` answers zero, and `reserve()`
+ * writes nothing at all. A consumer therefore behaves exactly as it did before
+ * this module existed without having to branch on the setting for anything but
+ * its own visibility line.
+ *
+ * `release()` and `releaseMissing()` are the exception and run either way: they
+ * only ever remove a claim, so they cannot make a figure wrong, and a release
+ * refused while off is a claim left in storage for a panel the player has since
+ * closed — which comes back as a phantom when the setting is switched on again.
+ * The stored ledger is not wiped when the setting goes off, so an accidental
+ * toggle does not discard the persistent goal-planner and crafting-plan
+ * claims.
  *
  * ## Owners that go away
  *
@@ -218,16 +226,18 @@ function sweepExpired(ledger, now) {
 }
 
 /**
- * Read the ledger back from storage.
+ * Read the ledger back from storage, whatever the setting says.
  *
- * Call once at start-up and after a character switch; every other entry point
- * reads what is already in memory, because a shortfall is recomputed on every
- * keystroke and must not await storage.
+ * Separate from {@link loadReservations} because a release must be able to load
+ * while the feature is off: a claim can only be removed by rewriting the record
+ * it lives in, and refusing the load is what leaves the claim behind. Nothing
+ * that reads the ledger for a figure goes through here — every one of those
+ * gates on {@link reservationsEnabled} in its own right — so an off-switch load
+ * changes no number anywhere.
  *
  * @returns {Promise<Object>} The ledger, expired owners already dropped
  */
-export async function loadReservations() {
-    if (!reservationsEnabled()) return {};
+async function readLedger() {
     try {
         claim();
         await record.load({ authoritative: true });
@@ -238,6 +248,20 @@ export async function loadReservations() {
         console.error('[InventoryReservations] Loading the ledger failed:', error);
         return {};
     }
+}
+
+/**
+ * Read the ledger back from storage.
+ *
+ * Call once at start-up and after a character switch; every other entry point
+ * reads what is already in memory, because a shortfall is recomputed on every
+ * keystroke and must not await storage.
+ *
+ * @returns {Promise<Object>} The ledger, expired owners already dropped; empty while the feature is off
+ */
+export async function loadReservations() {
+    if (!reservationsEnabled()) return {};
+    return readLedger();
 }
 
 /** The in-flight or finished load for the character in `owner`, so it happens once */
@@ -252,13 +276,16 @@ let loading = null;
  * `release()` or explicit `loadReservations()` of a session is enough and no
  * consumer has to remember a boot step.
  *
+ * Goes through {@link readLedger} rather than {@link loadReservations} so that a
+ * release still has the stored record in hand while the feature is off.
+ *
  * @returns {Promise<void>}
  */
 async function ensureLoaded() {
     claim();
     if (record.isLoaded()) return;
     if (!loading) {
-        loading = loadReservations().finally(() => {
+        loading = readLedger().finally(() => {
             loading = null;
         });
     }
@@ -342,11 +369,19 @@ export async function reserve(ownerId, lines, { label = '' } = {}) {
 
 /**
  * Drop an owner's claim.
+ *
+ * Runs whether or not the feature is on. A release only ever removes a claim,
+ * so it can make no figure wrong; refusing one is what leaves a claim in
+ * storage for a panel that has since closed, to surface as a phantom the next
+ * time the setting is switched back on. The stored ledger is never wiped
+ * wholesale on the setting going off for the opposite reason — the goal
+ * planner's and crafting plan's claims outlive a mistaken toggle.
+ *
  * @param {string} ownerId - The owner
  * @returns {Promise<boolean>} Whether a write landed
  */
 export async function release(ownerId) {
-    if (!reservationsEnabled() || typeof ownerId !== 'string' || !ownerId) return false;
+    if (typeof ownerId !== 'string' || !ownerId) return false;
     try {
         await ensureLoaded();
         const ledger = record.get();
@@ -367,12 +402,14 @@ export async function release(ownerId) {
  * `goal:` owner missing from that list is a goal the player deleted, and its
  * claim must go with it.
  *
+ * Like {@link release}, runs regardless of the setting: it only ever removes.
+ *
  * @param {string} prefix - Owner-id prefix this consumer owns, e.g. `'goal:'`
  * @param {Iterable<string>} liveIds - Owner ids that still exist
  * @returns {Promise<number>} How many claims were dropped
  */
 export async function releaseMissing(prefix, liveIds) {
-    if (!reservationsEnabled() || typeof prefix !== 'string' || !prefix) return 0;
+    if (typeof prefix !== 'string' || !prefix) return 0;
     try {
         await ensureLoaded();
         const live = new Set(liveIds || []);
