@@ -61,6 +61,11 @@ const utilsExternalGlobals = new Map([
     // of memoised summaries, reached from the actions and sim bundles
     [normalize(join(__dirname, 'src/utils/calibration-badge.js')), 'Toolasha.Utils.calibrationBadge'],
     [normalize(join(__dirname, 'src/utils/class-weapon.js')), 'Toolasha.Utils.classWeapon'],
+    // The one ledger of who has claimed what is in the bag. Five features in
+    // three bundles read and write it, and a second copy would be a second
+    // ledger — each plan invisible to the others, which is the bug the module
+    // exists to fix.
+    [normalize(join(__dirname, 'src/utils/inventory-reservations.js')), 'Toolasha.Utils.inventoryReservations'],
     // What an entry key costs bought against crafted: the ROI board (combat)
     // ranks dungeons with it and the consumables panel's readiness card (ui)
     // prices its key shortfall with it. One copy so the two cannot quote

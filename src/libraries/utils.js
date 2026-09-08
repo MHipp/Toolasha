@@ -90,6 +90,9 @@ import * as toast from '../utils/toast.js';
 // apply the same bound (see utils/liquidity-cap.js). Needs a matching
 // utilsExternalGlobals entry in rollup.config.js to be deduplicated.
 import * as liquidityCap from '../utils/liquidity-cap.js';
+// One reservation ledger for the whole script: two copies would be two
+// ledgers, and every plan invisible to the plans in the other bundle
+import * as inventoryReservations from '../utils/inventory-reservations.js';
 // The calibration badges beside the forecasts, shared so the actions and sim
 // bundles read one cached ledger (see utils/calibration-badge.js).
 import * as calibrationBadge from '../utils/calibration-badge.js';
@@ -237,6 +240,7 @@ toolashaRoot.Utils = {
     scrollBuffValues,
     toast,
     liquidityCap,
+    inventoryReservations,
     calibrationBadge,
     keyCost,
     actionContext,
