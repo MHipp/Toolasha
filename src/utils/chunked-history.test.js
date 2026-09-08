@@ -46,6 +46,7 @@ const storageMock = vi.hoisted(() => {
 
 vi.mock('../core/storage.js', () => ({ default: storageMock }));
 
+const { mergeForKey } = await import('./sync-merge-registry.js');
 const {
     createChunkedHistory,
     timeChunkId,
@@ -53,6 +54,9 @@ const {
     recordKeysFor,
     maxRecordsPerCharacter,
     registerCharacterScopedPrefix,
+    mergeTombstones,
+    TOMBSTONE_MAX_AGE_MS,
+    MAX_TOMBSTONES,
 } = await import('./chunked-history.js');
 
 /** A history keyed by the month each point falls in */
@@ -528,7 +532,10 @@ describe('the changed-chunk hint', () => {
         // forward, so the shrink would never reach disk at all.
         await history.save('c1', [at(2026, 6), at(2026, 7), at(2026, 7, 2)], { changedChunks: '2026-07' });
 
-        expect(written().sort()).toEqual(['rec_c1_2026-06', 'rec_c1_2026-07']);
+        // The removed entry has a survivor on either side of it in the stored
+        // order, which is what `_recordDeletions` reads as a deletion rather
+        // than as a window sliding, so the deletion record is written too
+        expect(written().sort()).toEqual(['recTomb_c1', 'rec_c1_2026-06', 'rec_c1_2026-07']);
         expect(storageMock.store.get('rec_c1_2026-06')).toHaveLength(1);
     });
 
@@ -955,5 +962,267 @@ describe('a split that cannot see what is already stored', () => {
         expect(entries.map((p) => p.v)).toEqual(['2026-6-9']);
         expect(storageMock.store.get('legacy_c1')).toHaveLength(1);
         expect(storageMock.store.get('rec_c1_2026-06')).toHaveLength(2);
+    });
+});
+
+/**
+ * A history whose entries carry a mutable field, keyed by a stable id — the
+ * loot log's shape, whose live session's `endTime` is rewritten for as long as
+ * the session runs.
+ */
+const buildLive = () =>
+    createChunkedHistory({
+        storeName: 'testStore',
+        prefix: 'rec',
+        legacyKey: (charId) => `legacy_${charId}`,
+        groupOf: (point) => timeChunkId(point?.t, 'month'),
+        compare: (a, b) => a.t - b.t,
+        identityOf: (point) => String(point?.t),
+        label: 'Test',
+    });
+
+/** Everything one device's disk holds, as a sync payload would carry it */
+const snapshotOfDisk = () => JSON.parse(JSON.stringify([...storageMock.store.entries()]));
+
+/** Replace the disk with a payload, for standing the other device up */
+const restoreDisk = (entries) => {
+    storageMock.store.clear();
+    for (const [key, value] of entries) storageMock.store.set(key, value);
+};
+
+/**
+ * Apply a peer's payload the way `sync-payload.js` does: a key with a
+ * registered merge is folded onto this device's copy, and anything else is
+ * written whole. The registry holds the FIRST built store's closures, so the
+ * fold is asked of the device doing the pulling instead — same functions, the
+ * right device's tombstones.
+ * @param {Object} device - The store doing the pulling
+ * @param {Array<Array>} payload - The peer's `[key, value]` pairs
+ * @returns {void}
+ */
+const pull = (device, payload) => {
+    for (const [key, incoming] of payload) {
+        const local = storageMock.store.has(key) ? storageMock.store.get(key) : undefined;
+        if (key.startsWith('recTomb_')) storageMock.store.set(key, mergeTombstones(local, incoming));
+        else if (Array.isArray(local) && Array.isArray(incoming)) {
+            storageMock.store.set(key, device._union(local, incoming));
+        } else storageMock.store.set(key, incoming);
+    }
+};
+
+/**
+ * The `v` of every entry a device reads back from disk.
+ * @param {Object} device - The store to read
+ * @param {string} [charId] - Whose history
+ * @returns {Promise<Array<string>>} The labels, in the comparator's order
+ */
+const readBack = async (device, charId = 'c1') => {
+    device.forget();
+    return (await device.load(charId)).map((point) => point.v);
+};
+
+describe('a deleted entry is not handed back by the next pull', () => {
+    test('the deleting device does not take it back from a peer that still holds it', async () => {
+        const peer = build();
+        await peer.save('c1', [at(2026, 6, 1), at(2026, 6, 2), at(2026, 6, 3)]);
+        const theirs = snapshotOfDisk();
+
+        // The user deletes the middle entry here and the peer never learns of
+        // it before pushing: the fold used to union its copy straight back in
+        const device = build();
+        await device.load('c1');
+        await device.save('c1', [at(2026, 6, 1), at(2026, 6, 3)]);
+        pull(device, theirs);
+
+        expect(await readBack(device)).toEqual(['2026-6-1', '2026-6-3']);
+    });
+
+    test('the peer stops holding it too, so it cannot come back on the round trip', async () => {
+        const device = build();
+        await device.save('c1', [at(2026, 6, 1), at(2026, 6, 2), at(2026, 6, 3)]);
+        await device.save('c1', [at(2026, 6, 1), at(2026, 6, 3)]);
+        const ours = snapshotOfDisk();
+
+        // The peer still has all three, and only the pulling device merges
+        restoreDisk([['rec_c1_2026-06', [at(2026, 6, 1), at(2026, 6, 2), at(2026, 6, 3)]]]);
+        const peer = build();
+        await peer.load('c1');
+        pull(peer, ours);
+
+        expect(await readBack(peer)).toEqual(['2026-6-1', '2026-6-3']);
+
+        // …and what it would push back no longer carries the deleted entry
+        const back = snapshotOfDisk();
+        restoreDisk(ours);
+        await device.load('c1');
+        pull(device, back);
+        expect(await readBack(device)).toEqual(['2026-6-1', '2026-6-3']);
+    });
+
+    test('an entry the peer added after the deletion is not caught by the tombstone', async () => {
+        const device = build();
+        await device.save('c1', [at(2026, 6, 1), at(2026, 6, 2), at(2026, 6, 3)]);
+        await device.save('c1', [at(2026, 6, 1), at(2026, 6, 3)]);
+
+        const theirs = [['rec_c1_2026-06', [at(2026, 6, 1), at(2026, 6, 2), at(2026, 6, 3), at(2026, 6, 4)]]];
+        pull(device, theirs);
+
+        expect(await readBack(device)).toEqual(['2026-6-1', '2026-6-3', '2026-6-4']);
+    });
+
+    test('a cleared history stays cleared when the peer pushes its copy back', async () => {
+        const device = build();
+        await device.save('c1', [at(2026, 6, 1), at(2026, 6, 2), at(2026, 6, 3)]);
+        const theirs = snapshotOfDisk();
+
+        expect(await device.clear('c1')).toBe(true);
+        pull(device, theirs);
+
+        expect(await readBack(device)).toEqual([]);
+    });
+
+    test('the deletion is registered as its own sync merge, not swept into the record union', async () => {
+        const { clearSyncMerges } = await import('./sync-merge-registry.js');
+
+        // Registration is per constructed store and deduplicated by prefix, so
+        // a fresh registry needs a fresh prefix — as the merge tests above do
+        clearSyncMerges();
+        createChunkedHistory({
+            storeName: 'testStore',
+            prefix: 'tombRec',
+            legacyKey: (charId) => `tombLegacy_${charId}`,
+            groupOf: (point) => timeChunkId(point?.t, 'month'),
+            compare: (a, b) => a.t - b.t,
+            label: 'TombTest',
+        });
+
+        // The deletion key must be owned by exactly one registration: an
+        // overlap resolves to bundle import order, and the record union would
+        // read a tombstone map as "not an array" and take the remote copy whole
+        expect(mergeForKey('testStore', 'tombRecTomb_c1')?.label).toBe('TombTest deletions');
+        expect(mergeForKey('testStore', 'tombRec_c1_2026-06')?.label).toBe('TombTest records');
+    });
+});
+
+describe('a copy touched since the deletion keeps the entry', () => {
+    /*
+     * The loot log's live session: `endTime` and `actionCount` are rewritten
+     * while it runs, which is why `_union` prefers the base copy at all. A
+     * device still writing to a session has seen the deletion and kept it, so
+     * the deletion is stale news and the tombstone is dropped rather than
+     * applied to a copy it was never about.
+     */
+    const live = (t, endTime) => ({ t, endTime, v: `s${t}` });
+
+    test('a peer copy rewritten after the tombstone survives the fold', async () => {
+        const device = buildLive();
+        await device.save('c1', [live(1, 10), live(2, 20), live(3, 30)]);
+        await device.save('c1', [live(1, 10), live(3, 30)]);
+
+        // The peer's copy of the deleted session has run on since
+        pull(device, [['rec_c1_1970-01', [live(1, 10), live(2, 99), live(3, 30)]]]);
+
+        expect(await readBack(device)).toEqual(['s1', 's2', 's3']);
+        // And the tombstone is cleared, so it cannot fire again later
+        expect(storageMock.store.has('recTomb_c1')).toBe(false);
+    });
+
+    test('an unchanged peer copy is still deleted', async () => {
+        const device = buildLive();
+        await device.save('c1', [live(1, 10), live(2, 20), live(3, 30)]);
+        await device.save('c1', [live(1, 10), live(3, 30)]);
+        pull(device, [['rec_c1_1970-01', [live(1, 10), live(2, 20), live(3, 30)]]]);
+
+        expect(await readBack(device)).toEqual(['s1', 's3']);
+    });
+});
+
+describe('the deletion record is bounded', () => {
+    test('a deletion older than the max age stops being remembered', async () => {
+        const device = build();
+        await device.save('c1', [at(2026, 6, 1), at(2026, 6, 2), at(2026, 6, 3)]);
+        await device.save('c1', [at(2026, 6, 1), at(2026, 6, 3)]);
+
+        const stones = storageMock.store.get('recTomb_c1');
+        for (const stone of Object.values(stones)) stone.at = Date.now() - TOMBSTONE_MAX_AGE_MS - 1;
+
+        pull(device, [['rec_c1_2026-06', [at(2026, 6, 1), at(2026, 6, 2), at(2026, 6, 3)]]]);
+
+        // Degrades to the old behaviour for that entry — never to losing one
+        expect(await readBack(device)).toEqual(['2026-6-1', '2026-6-2', '2026-6-3']);
+        expect(storageMock.store.has('recTomb_c1')).toBe(false);
+    });
+
+    test('the map is held to MAX_TOMBSTONES, newest kept', () => {
+        const many = {};
+        for (let index = 0; index <= MAX_TOMBSTONES; index += 1) many[`id-${index}`] = { at: index, fp: 'f' };
+
+        const capped = mergeTombstones({}, many, 0);
+
+        expect(Object.keys(capped)).toHaveLength(MAX_TOMBSTONES);
+        expect(capped['id-0']).toBeUndefined();
+        expect(capped[`id-${MAX_TOMBSTONES}`]).toBeDefined();
+    });
+
+    test('the later deletion wins when both devices tombstoned the same entry', () => {
+        const merged = mergeTombstones({ a: { at: 5, fp: 'x' } }, { a: { at: 9, fp: 'y' } }, 9);
+        expect(merged.a).toEqual({ at: 9, fp: 'y', bulk: false });
+    });
+});
+
+describe('a tombstone set that would empty the history', () => {
+    test('is refused rather than half-applied', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const points = [1, 2, 3, 4, 5, 6].map((day) => at(2026, 6, day));
+
+        const device = build();
+        await device.save('c1', points);
+        // Four of the six deleted at once, all interior
+        await device.save('c1', [points[0], points[5]]);
+        const ours = snapshotOfDisk();
+
+        // The peer holds all six and pulls only the deletions — its own copies
+        // are the base of the union, so nothing drops until the read
+        restoreDisk([['rec_c1_2026-06', points]]);
+        const peer = build();
+        await peer.load('c1');
+        pull(
+            peer,
+            ours.filter(([key]) => key === 'recTomb_c1')
+        );
+
+        expect(await readBack(peer)).toHaveLength(6);
+        expect(warn.mock.calls.some(([line]) => String(line).includes('Refusing a fold'))).toBe(true);
+        warn.mockRestore();
+    });
+
+    test('does not hold back a whole-history clear, which is what the user asked for', async () => {
+        const points = [1, 2, 3, 4, 5, 6].map((day) => at(2026, 6, day));
+
+        const device = build();
+        await device.save('c1', points);
+        await device.clear('c1');
+        const ours = snapshotOfDisk();
+
+        restoreDisk([['rec_c1_2026-06', points]]);
+        const peer = build();
+        await peer.load('c1');
+        pull(peer, ours);
+
+        expect(await readBack(peer)).toEqual([]);
+    });
+});
+
+describe('a history nobody has deleted from', () => {
+    test('writes exactly the keys it always did, and no deletion record', async () => {
+        const history = build();
+        await history.save('c1', [at(2026, 6), at(2026, 7)]);
+        await history.save('c1', [at(2026, 6), at(2026, 7), at(2026, 8)], { changedChunks: '2026-08' });
+        // A rolling window sliding off the old end is housekeeping, not a deletion
+        await history.save('c1', [at(2026, 7), at(2026, 8)]);
+
+        expect(written().filter((key) => key.includes('Tomb'))).toEqual([]);
+        expect([...storageMock.store.keys()].filter((key) => key.includes('Tomb'))).toEqual([]);
+        expect(await readBack(history)).toEqual(['2026-7-1', '2026-8-1']);
     });
 });

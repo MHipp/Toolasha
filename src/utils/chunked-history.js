@@ -53,8 +53,135 @@ import { registerSyncMerge } from './sync-merge-registry.js';
  */
 const registeredPrefixes = new Set();
 
+/**
+ * How long a deletion is remembered.
+ *
+ * A tombstone only has to outlive the slowest round trip between two devices —
+ * the other machine being switched on, pulling, and pushing back. A month
+ * covers a laptop left shut over a holiday; past that the deletion is dropped
+ * and the key stops growing, which is the same trade `custom-tabs-data.js`
+ * makes for the same reason. An expired tombstone degrades to the behaviour
+ * this file had before it existed (a peer still holding the entry revives it),
+ * never to losing an entry nobody deleted.
+ */
+export const TOMBSTONE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Most deletions one record remembers, newest kept.
+ *
+ * Thirty days of unbounded deleting is bounded by nothing at all, and this key
+ * is rewritten whenever it changes — an unbounded one would reintroduce the
+ * write amplification this whole module exists to end. The newest deletion is
+ * the one a peer has least likely seen, so the oldest are evicted first.
+ */
+export const MAX_TOMBSTONES = 500;
+
+/**
+ * Below this many dropped entries a fold is never refused: a two-entry history
+ * has no majority worth protecting, and the refusal is about accidents of
+ * scale rather than about single deletions.
+ */
+const MASS_DELETE_FLOOR = 2;
+
 /** Two digits, for a date part */
 const pad = (value) => String(value).padStart(2, '0');
+
+/**
+ * A cheap content hash of an entry, for "has this copy been touched since?".
+ *
+ * FNV-1a over the entry's JSON. It is not the entry's identity — that is the
+ * caller's `identityOf` — but a stamp of the entry's *contents* at the moment
+ * it was deleted, which is the only last-touched signal a generic store has:
+ * these entries carry no `updatedAt`, and the one entry shape that mutates in
+ * place (the loot log's live session, whose `endTime` and `actionCount` are
+ * rewritten while it runs) changes its JSON every time it is touched.
+ * @param {Object} entry - A history entry
+ * @returns {string} An 8-ish character hash, or '' for an entry that will not serialise
+ */
+function fingerprintOf(entry) {
+    let json;
+    try {
+        json = JSON.stringify(entry);
+    } catch {
+        return '';
+    }
+    if (typeof json !== 'string') return '';
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < json.length; index += 1) {
+        hash ^= json.charCodeAt(index);
+        hash = Math.imul(hash, 0x01000193);
+    }
+    return (hash >>> 0).toString(16);
+}
+
+/**
+ * A stored tombstone map, absent or corrupt one included.
+ *
+ * The shape is `id → {at, fp, bulk}`: when the deletion happened, what the
+ * entry looked like when it did, and whether it came from a whole-record
+ * `clear()` rather than from a single-entry deletion.
+ * @param {*} value - What was under the tombstone key
+ * @returns {Object<string, {at: number, fp: string, bulk: boolean}>} The map
+ */
+function stonesOf(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    const out = {};
+    for (const [id, stone] of Object.entries(value)) {
+        if (!stone || typeof stone !== 'object') continue;
+        const at = Number(stone.at);
+        out[id] = {
+            at: Number.isFinite(at) ? at : 0,
+            fp: typeof stone.fp === 'string' ? stone.fp : '',
+            bulk: stone.bulk === true,
+        };
+    }
+    return out;
+}
+
+/**
+ * Forget deletions older than `TOMBSTONE_MAX_AGE_MS`, then hold the rest to
+ * `MAX_TOMBSTONES`, newest first.
+ * @param {Object<string, Object>} stones - The map, mutated in place
+ * @param {number} [now] - Clock, for tests
+ * @returns {boolean} Whether anything was dropped
+ */
+function ageTombstones(stones, now = Date.now()) {
+    let changed = false;
+    for (const [id, stone] of Object.entries(stones)) {
+        if (now - stone.at < TOMBSTONE_MAX_AGE_MS) continue;
+        delete stones[id];
+        changed = true;
+    }
+    const ids = Object.keys(stones);
+    if (ids.length <= MAX_TOMBSTONES) return changed;
+    ids.sort((one, two) => stones[two].at - stones[one].at);
+    for (const id of ids.slice(MAX_TOMBSTONES)) delete stones[id];
+    return true;
+}
+
+/**
+ * Fold two devices' tombstone maps, the later deletion winning per id.
+ *
+ * Registered as the sync merge for the tombstone key, so a deletion that only
+ * one device knows about survives the pull that would otherwise write the
+ * other device's map over it — which is the whole point: without this, a
+ * device that had never deleted anything would erase the record of the
+ * deletion and then push the entry back.
+ * @param {*} local - This device's map
+ * @param {*} incoming - The map coming down
+ * @param {number} [now] - Clock, for tests
+ * @returns {Object<string, Object>} The union, aged and capped
+ */
+export function mergeTombstones(local, incoming, now = Date.now()) {
+    const out = stonesOf(local);
+    for (const [id, stone] of Object.entries(stonesOf(incoming))) {
+        const held = out[id];
+        if (!held || stone.at > held.at) out[id] = stone;
+        else if (stone.at === held.at && stone.bulk) out[id] = stone;
+    }
+    ageTombstones(out, now);
+    return out;
+}
 
 /**
  * Which bucket a timestamp falls in.
@@ -254,6 +381,14 @@ class ChunkedHistory {
         /** chunkId → {json, count} last written for it, so a save can write only what moved */
         this._snapshot = new Map();
         /**
+         * The loaded character's deletions, `id → {at, fp, bulk}`.
+         *
+         * Read with the records and consulted wherever an entry could come
+         * back: `_union`, for a copy folding in from a peer, and the read
+         * itself, for one a pull has already written to disk.
+         */
+        this._tombs = {};
+        /**
          * Whether the split failed and the legacy key is still the record.
          *
          * Set when a migration could not be written — a full disk, a database
@@ -334,6 +469,21 @@ class ChunkedHistory {
             merge,
         });
 
+        // The deletions, under their own claim. Deliberately NOT
+        // `${prefix}_tomb_`: that key would also match the record matcher
+        // above, and `mergeForKey()`'s contract is that exactly one
+        // registration owns a key — an overlap resolves to bundle import
+        // order, which here would hand a tombstone map to the array union and
+        // take the remote copy whole. `${prefix}Tomb_` cannot be read as a
+        // record key by any of `recordKeysFor`, `idsFromRecordKeys` or the
+        // record matcher, for the same reason the legacy stem cannot be.
+        registerSyncMerge({
+            store: this.storeName,
+            prefix: `${this.prefix}Tomb_`,
+            label: `${this.label} deletions`,
+            merge: (local, incoming) => mergeTombstones(local, incoming),
+        });
+
         const legacyBase = this._legacyBase();
         if (legacyBase) {
             registerSyncMerge({
@@ -373,22 +523,34 @@ class ChunkedHistory {
      *
      * Base first: an entry both sides have keeps this device's copy, which for
      * a session still being recorded is the one with the live figures in it.
+     *
+     * **Tombstones apply to the incoming side only.** An entry this device does
+     * not hold and has a tombstone for is one the user deleted here, and the
+     * union is what used to hand it straight back. This device's own entries
+     * are never dropped here: a merge has no idea which character's chunk it
+     * has been handed — `mergeForKey()` passes values, not keys — so the
+     * tombstones in hand may belong to a different character than the chunk
+     * does. Requiring the fingerprint to match as well as the id makes that
+     * mistake need identical contents too, and the read path, which IS
+     * character-scoped, is where a copy already on disk is filtered.
      * @param {Array<Object>} base - This device's entries
      * @param {Array<Object>} extra - The entries being folded in
+     * @param {Object} [stones] - The tombstones to judge against; the loaded
+     *   character's, except during a read, which has not committed its own yet
      * @returns {Array<Object>} The union
      * @private
      */
-    _union(base, extra) {
+    _union(base, extra, stones = this._tombs) {
         const seen = new Set();
         const out = [];
+        const held = new Set();
+        for (const entry of base) {
+            const id = this._identity(entry);
+            if (id !== undefined && id !== null) held.add(id);
+        }
         for (const entry of [...base, ...extra]) {
             if (entry == null) continue;
-            let id;
-            try {
-                id = this.identityOf(entry);
-            } catch {
-                id = undefined;
-            }
+            const id = this._identity(entry);
             // An entry with no usable identity cannot be deduplicated; keeping
             // it is the safe half of the choice
             if (id === undefined || id === null) {
@@ -397,9 +559,48 @@ class ChunkedHistory {
             }
             if (seen.has(id)) continue;
             seen.add(id);
+            if (!held.has(id) && this._tombstoned(id, entry, stones)) continue;
             out.push(entry);
         }
         return this._sorted(out);
+    }
+
+    /**
+     * @param {Object} entry - A history entry
+     * @returns {*} What `identityOf` makes of it, or undefined when it throws
+     * @private
+     */
+    _identity(entry) {
+        if (entry == null) return undefined;
+        try {
+            return this.identityOf(entry);
+        } catch {
+            return undefined;
+        }
+    }
+
+    /**
+     * Whether a tombstone applies to this copy of an entry.
+     *
+     * A tombstone whose fingerprint does not match the copy in hand does NOT
+     * apply. That copy has been written since the deletion was recorded — the
+     * loot log's live session gains `endTime` and `actionCount` for as long as
+     * it runs — so it has already seen the deletion and kept the entry, and the
+     * deletion is stale news. Same judgement `custom-tabs-data.js` makes
+     * against a tab's `updatedAt`, against the only stamp these entries have.
+     * @param {string} id - The entry's identity
+     * @param {Object} entry - The copy being judged
+     * @param {Object} stones - The tombstone map to look in
+     * @returns {boolean} True when the entry should be dropped
+     * @private
+     */
+    _tombstoned(id, entry, stones) {
+        const stone = stones[id];
+        if (!stone) return false;
+        // Aged out here as well as on the way in: a fold can run for hours
+        // against a map that was read when the page loaded
+        if (Date.now() - stone.at >= TOMBSTONE_MAX_AGE_MS) return false;
+        return stone.fp !== '' && stone.fp === fingerprintOf(entry);
     }
 
     /**
@@ -409,6 +610,122 @@ class ChunkedHistory {
      */
     keyFor(charId, chunkId) {
         return `${this.prefix}_${charId}_${chunkId}`;
+    }
+
+    /**
+     * @param {string} charId - Whose deletions
+     * @returns {string} The key this character's tombstones live under
+     */
+    tombKey(charId) {
+        return `${this.prefix}Tomb_${charId}`;
+    }
+
+    /**
+     * This character's deletions, aged and capped on the way in.
+     *
+     * Reads nothing when the key is not in the listing the caller already has,
+     * so a history nobody has ever deleted from costs exactly the round trips
+     * it always did.
+     * @param {Array<string>} keys - The store's key listing
+     * @param {string} charId - Whose deletions
+     * @returns {Promise<{stones: Object, changed: boolean}>} The map, and whether ageing moved it
+     * @private
+     */
+    async _readTombs(keys, charId) {
+        const key = this.tombKey(charId);
+        if (!keys.includes(key)) return { stones: {}, changed: false };
+        try {
+            const stones = stonesOf(await storage.get(key, this.storeName, null));
+            const changed = ageTombstones(stones);
+            return { stones, changed };
+        } catch (error) {
+            console.error(`[${this.label}] Reading the deletion record failed:`, error);
+            return { stones: {}, changed: false };
+        }
+    }
+
+    /**
+     * Persist a tombstone map, or delete the key when nothing is left in it.
+     *
+     * Fire and forget: nothing downstream waits on it, and a write that does
+     * not land leaves the map exactly as it was on disk — which is the same
+     * degradation an expired tombstone has.
+     * @param {string} charId - Whose deletions
+     * @param {Object} stones - The map to write
+     * @returns {Promise<*>} The write, for callers that must await it
+     * @private
+     */
+    _writeTombs(charId, stones) {
+        const key = this.tombKey(charId);
+        const write =
+            Object.keys(stones).length === 0
+                ? storage.delete(key, this.storeName)
+                : storage.set(key, stones, this.storeName, this.immediate);
+        return Promise.resolve(write).catch((error) => {
+            console.error(`[${this.label}] Writing the deletion record failed:`, error);
+        });
+    }
+
+    /**
+     * Drop the entries a tombstone claims, or refuse the lot.
+     *
+     * Runs on every read, not only on a sync fold: a pull writes chunk keys
+     * straight to disk, and the merge that saw them may never have been given
+     * this character's tombstones (see `_union`). The read is where the
+     * deletion is applied for certain, because it is the one place that knows
+     * whose record it is holding.
+     *
+     * **The mass-delete refusal.** Tombstones are the only thing in this file
+     * that can delete, they arrive from a peer that may be wrong about them,
+     * and "most of my history vanished on a page load" is never the outcome the
+     * user wanted. So a fold that would drop more than half the entries — and
+     * more than `MASS_DELETE_FLOOR` of them, since a two-entry history has no
+     * majority worth protecting — keeps every entry and holds the tombstones
+     * back UN-APPLIED, so a genuinely widespread deletion still applies later.
+     * A whole-record `clear()` is exempt: its tombstones are marked `bulk`, and
+     * emptying the record is exactly what the user asked for. The threshold is
+     * counted over the non-`bulk` drops alone, so a clear arriving beside an
+     * ordinary deletion still empties the record.
+     *
+     * @param {Array<Object>} entries - The assembled history
+     * @param {Object} stones - The tombstone map, mutated: a revived id is cleared
+     * @returns {{entries: Array<Object>, changed: boolean, dropped: Array<Object>}} What survives
+     * @private
+     */
+    _applyTombstones(entries, stones) {
+        // Identity is `JSON.stringify` by default, so the loop below is not
+        // free; a history nobody has deleted from must not pay for it
+        if (Object.keys(stones).length === 0) return { entries, changed: false, dropped: [] };
+        let changed = false;
+        const kept = [];
+        const dropped = [];
+        for (const entry of entries) {
+            const id = this._identity(entry);
+            const stone = id === undefined || id === null ? undefined : stones[id];
+            if (!stone) {
+                kept.push(entry);
+                continue;
+            }
+            if (!this._tombstoned(id, entry, stones)) {
+                // Touched since the deletion, so this copy has outlived it
+                delete stones[id];
+                changed = true;
+                kept.push(entry);
+                continue;
+            }
+            dropped.push(entry);
+        }
+
+        const casual = dropped.filter((entry) => stones[this._identity(entry)]?.bulk !== true).length;
+        if (casual > MASS_DELETE_FLOOR && casual * 2 > entries.length) {
+            console.warn(
+                `[${this.label}] Refusing a fold that would delete ${casual} of ${entries.length} entries at once; ` +
+                    'keeping every entry and holding the tombstones back un-applied.'
+            );
+            return { entries, changed, dropped: [] };
+        }
+        if (dropped.length === 0) return { entries, changed, dropped };
+        return { entries: kept, changed, dropped };
     }
 
     /** @returns {boolean} True while the legacy single-array key is still in use */
@@ -460,7 +777,14 @@ class ChunkedHistory {
      * @private
      */
     async _read(charId, token) {
-        const state = { entries: [], snapshot: new Map(), legacy: false, readable: true };
+        const state = {
+            entries: [],
+            snapshot: new Map(),
+            tombs: {},
+            tombsChanged: false,
+            legacy: false,
+            readable: true,
+        };
 
         try {
             const legacy = await storage.get(this.legacyKey(charId), this.storeName, null);
@@ -474,7 +798,7 @@ class ChunkedHistory {
                     // An empty legacy array is nothing to split and nothing to keep
                     await storage.delete(this.legacyKey(charId), this.storeName);
                 }
-                const records = await this._readRecords(charId, state.snapshot);
+                const records = await this._readRecords(charId, state);
                 if (records === null) state.readable = false;
                 else state.entries = records;
             }
@@ -508,9 +832,26 @@ class ChunkedHistory {
         if (this._loadToken !== token) return state.entries;
         this._unreadableFor = null;
 
+        // A pull writes chunk keys whole, and the merge that saw them cannot
+        // know whose record it was handed (`_union`), so the read is where a
+        // resurrected entry is actually caught. Chunks that lost an entry drop
+        // out of the snapshot, which is what makes the next save rewrite them.
+        const applied = this._applyTombstones(state.entries, state.tombs);
+        state.entries = applied.entries;
+        for (const entry of applied.dropped) {
+            try {
+                state.snapshot.delete(String(this.groupOf(entry)));
+            } catch {
+                // A chunk id that cannot be derived is one the next save
+                // rewrites anyway, having never matched a snapshot entry
+            }
+        }
+        if (applied.changed || state.tombsChanged) this._writeTombs(charId, state.tombs);
+
         this._charId = charId;
         this._entries = state.entries;
         this._snapshot = state.snapshot;
+        this._tombs = state.tombs;
         this._legacy = state.legacy;
         this._loaded = true;
         return [...this._entries];
@@ -569,7 +910,11 @@ class ChunkedHistory {
         const snapshot = owns ? this._snapshot : new Map();
 
         const list = Array.isArray(entries) ? entries : [];
-        if (owns) this._entries = this._sorted(list);
+        const before = owns ? this._entries : [];
+        if (owns) {
+            this._entries = this._sorted(list);
+            this._recordDeletions(charId, before, this._entries);
+        }
 
         if (owns && this._legacy) {
             storage.set(this.legacyKey(charId), list, this.storeName, this.immediate);
@@ -646,6 +991,62 @@ class ChunkedHistory {
     }
 
     /**
+     * Remember the entries this save took out, so a pull cannot put them back.
+     *
+     * **Only an INTERIOR removal counts.** `save()` is handed a whole list and
+     * cannot be told why an id has gone from it, and most of the ids that go
+     * are not deletions at all: every recorder on this store keeps a rolling
+     * window (the loot log's 2000 newest, the networth series' year, the task
+     * tracker's window), and a window drops from an END. Tombstoning those
+     * would turn routine housekeeping into an instruction to a peer to delete
+     * entries it is still entitled to keep — a far worse bug than the one this
+     * fixes. A removal with a survivor on both sides of it in the stored order
+     * is not a window sliding; it is an entry taken out of the middle, which is
+     * what the delete buttons in the loot log, the alchemy session lists and
+     * the networth chart all do.
+     *
+     * The cost of the rule is that deleting the single oldest or single newest
+     * entry records nothing and behaves as it did before. Clearing the whole
+     * record is not affected: `clear()` writes its own tombstones.
+     * @param {string} charId - Whose history
+     * @param {Array<Object>} previous - The list as this store last knew it, sorted
+     * @param {Array<Object>} next - The list being saved, sorted
+     * @returns {void}
+     * @private
+     */
+    _recordDeletions(charId, previous, next) {
+        if (previous.length === 0) return;
+        const surviving = new Set();
+        for (const entry of next) {
+            const id = this._identity(entry);
+            if (id !== undefined && id !== null) surviving.add(id);
+        }
+        if (surviving.size === 0) return;
+
+        let first = -1;
+        let last = -1;
+        for (let index = 0; index < previous.length; index += 1) {
+            if (!surviving.has(this._identity(previous[index]))) continue;
+            if (first === -1) first = index;
+            last = index;
+        }
+
+        const at = Date.now();
+        let added = false;
+        for (let index = first + 1; index < last; index += 1) {
+            const entry = previous[index];
+            const id = this._identity(entry);
+            if (id === undefined || id === null || surviving.has(id)) continue;
+            this._tombs[id] = { at, fp: fingerprintOf(entry), bulk: false };
+            added = true;
+        }
+        if (!added) return;
+
+        ageTombstones(this._tombs);
+        this._writeTombs(charId, this._tombs);
+    }
+
+    /**
      * Drop a chunk's snapshot entry, so the next save writes it again.
      *
      * Guarded on the serialisation: a later save that changed the chunk has
@@ -678,6 +1079,18 @@ class ChunkedHistory {
      */
     async clear(charId) {
         if (!charId) return false;
+
+        // Read before deleting, so the tombstones below can name what went.
+        // A read that fails leaves `entries` empty and the clear still
+        // happens — it simply cannot be told to a peer, which is where this
+        // module stood before tombstones existed.
+        let entries = [];
+        try {
+            entries = await this.load(charId);
+        } catch {
+            entries = [];
+        }
+        const stones = { ...this._tombs };
 
         try {
             const keys = await storage.tryGetAllKeys(this.storeName);
@@ -716,6 +1129,26 @@ class ChunkedHistory {
         }
 
         this.forget();
+
+        // Written only once the deletes have landed: a tombstone for an entry
+        // that is still on disk would be applied to this device's own copy on
+        // the next read, and the clear reported `false`.
+        // Every id at one stamp, so `MAX_TOMBSTONES` keeps the first
+        // `MAX_TOMBSTONES` in the comparator's order (the sort is stable). A
+        // history longer than the cap therefore tells a peer about only part
+        // of the clear; the rest degrades to the behaviour this file had
+        // before tombstones, which is the deliberate cost of a bounded key.
+        const at = Date.now();
+        for (const entry of entries) {
+            const id = this._identity(entry);
+            if (id === undefined || id === null) continue;
+            // `bulk`, so the mass-delete refusal lets it through on the other
+            // device: emptying the record is precisely what the user asked for
+            stones[id] = { at, fp: fingerprintOf(entry), bulk: true };
+        }
+        ageTombstones(stones);
+        if (Object.keys(stones).length > 0) await this._writeTombs(charId, stones);
+
         return true;
     }
 
@@ -732,6 +1165,7 @@ class ChunkedHistory {
         this._unreadableFor = null;
         this._entries = [];
         this._snapshot = new Map();
+        this._tombs = {};
         this._legacy = false;
         // A read still in flight was for the departing character. Moving the
         // token past it is what stops it committing its entries into the
@@ -784,6 +1218,9 @@ class ChunkedHistory {
                 console.warn(`[${this.label}] Could not list existing chunks before the split; keeping the legacy key`);
                 return { ok: false, entries: legacy };
             }
+            const tombs = await this._readTombs(keys, charId);
+            state.tombs = tombs.stones;
+            state.tombsChanged = tombs.changed;
             const recordKeys = recordKeysFor(keys, this.prefix, charId);
             if (recordKeys.length > 0) {
                 const buckets = await storage.getMany(recordKeys, this.storeName);
@@ -810,7 +1247,7 @@ class ChunkedHistory {
         const merged = new Map(existing);
         for (const [chunkId, bucket] of grouped) {
             const base = merged.get(chunkId);
-            merged.set(chunkId, base ? this._union(base, bucket) : bucket);
+            merged.set(chunkId, base ? this._union(base, bucket, state.tombs) : bucket);
         }
 
         // Only the chunks the legacy entries actually touch are rewritten;
@@ -870,11 +1307,13 @@ class ChunkedHistory {
      * hourly records was paying several hundred round trips to open a panel.
      *
      * @param {string} charId - Whose records
-     * @param {Map<string, Object>} snapshot - Filled in with what each chunk holds
+     * @param {{snapshot: Map<string, Object>, tombs: Object, tombsChanged: boolean}} state -
+     *   The read being assembled: the per-chunk serialisations and this character's deletions
      * @returns {Promise<Array<Object>>} The assembled entries
      * @private
      */
-    async _readRecords(charId, snapshot) {
+    async _readRecords(charId, state) {
+        const snapshot = state.snapshot;
         // `tryGetAllKeys`, not `getAllKeys`: the latter answers a listing it
         // could not make with an empty array, which here reads as "this
         // character has no history at all" — and the caller then appends one
@@ -883,6 +1322,10 @@ class ChunkedHistory {
         // read is not an empty history.
         const keys = await storage.tryGetAllKeys(this.storeName);
         if (keys === null) return null;
+
+        const tombs = await this._readTombs(keys, charId);
+        state.tombs = tombs.stones;
+        state.tombsChanged = tombs.changed;
 
         const recordKeys = recordKeysFor(keys, this.prefix, charId);
         if (recordKeys.length === 0) return [];

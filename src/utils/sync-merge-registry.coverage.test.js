@@ -292,6 +292,24 @@ const corpus = [
     // alchemy/coinify-history-tracker.js — chunked, daily buckets
     { store: 'alchemyHistory', key: `coinifySessionsRec_${CHAR}_2026-01-15`, label: 'CoinifyHistoryTracker records' },
     { store: 'alchemyHistory', key: `coinifySessions_${CHAR}`, label: 'CoinifyHistoryTracker legacy key' },
+
+    // Every `ChunkedHistory` also keeps a per-character record of what the user
+    // has DELETED, so a pull cannot hand a deleted entry back (see
+    // `utils/chunked-history.js`). The key is `<recordPrefix>Tomb_<charId>`
+    // rather than `<recordPrefix>_tomb_<charId>` precisely so the record
+    // matcher cannot claim it as well — an overlap here would hand a tombstone
+    // map to the array union, which would read it as "not an array" and take
+    // the remote copy whole, which is the deletion coming back.
+    { store: 'xpHistory', key: `skillCheckpointRecTomb_${CHAR}`, label: 'SkillCheckpoints deletions' },
+    { store: 'xpHistory', key: `abilityCheckpointRecTomb_${CHAR}`, label: 'AbilityCheckpoints deletions' },
+    { store: 'lootLogHistory', key: `lootLogRecTomb_${CHAR}`, label: 'LootLogHistory deletions' },
+    { store: 'networthHistory', key: `networthSeriesTomb_${CHAR}`, label: 'NetworthHistory deletions' },
+    { store: 'networthHistory', key: `chestOpenRecTomb_${CHAR}`, label: 'ChestOpenings deletions' },
+    { store: 'networthHistory', key: `prodIncomeRecTomb_${CHAR}`, label: 'ProductionIncome deletions' },
+    { store: 'rerollSpending', key: `taskCompletionRecTomb_${CHAR}`, label: 'TaskCompletionTracker deletions' },
+    { store: 'alchemyHistory', key: `transmuteSessionsRecTomb_${CHAR}`, label: 'TransmuteHistoryTracker deletions' },
+    { store: 'alchemyHistory', key: `decomposeSessionsRecTomb_${CHAR}`, label: 'DecomposeHistoryTracker deletions' },
+    { store: 'alchemyHistory', key: `coinifySessionsRecTomb_${CHAR}`, label: 'CoinifyHistoryTracker deletions' },
 ];
 
 describe('every registered store is disjoint over the real key corpus', () => {

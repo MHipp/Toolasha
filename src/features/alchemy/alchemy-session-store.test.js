@@ -164,7 +164,9 @@ describe('clearing the history', () => {
 
         await store.clear('char-1');
 
-        expect([...storageMock.store.keys()]).toEqual([]);
+        // The deletion record outlives the clear on purpose: it is what stops
+        // the next sync pull handing the whole history back
+        expect([...storageMock.store.keys()]).toEqual(['transmuteSessionsRecTomb_char-1']);
         expect(await store.load('char-1')).toEqual([]);
     });
 });
