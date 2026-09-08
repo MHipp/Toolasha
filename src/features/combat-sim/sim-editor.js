@@ -39,6 +39,17 @@ const ACCENT_BTN_BORDER = 'rgba(74, 158, 255, 0.4)';
 const MAX_COMMUNITY_BUFF_LEVEL = 20;
 
 /**
+ * Escape a string for interpolation into this file's `innerHTML` templates.
+ * Import text is pasted by the user, so an item hrid that reaches the DOM as a
+ * fallback label is not trusted markup.
+ * @param {string} text
+ * @returns {string}
+ */
+function escapeHtml(text) {
+    return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/**
  * Where the last Loadout dropdown selection is remembered, per character.
  *
  * Only the combat sim's own Configure tab uses it: the lab editor drives the
@@ -66,6 +77,7 @@ export class SimEditor {
         this._activeEditPlayer = null;
         this._selfHrid = null;
         this._missingMembers = [];
+        this._importSkipped = [];
         this._editorInitialized = false;
         this._selectedLoadoutName = '';
     }
@@ -244,6 +256,7 @@ export class SimEditor {
             this._selfHrid = selfHrid;
             this._activeEditPlayer = selfHrid;
             this._missingMembers = missingMembers;
+            this._importSkipped = [];
             this._editorInitialized = true;
 
             this.renderEditor();
@@ -271,6 +284,7 @@ export class SimEditor {
         this._selfHrid = null;
         this._activeEditPlayer = 'player1';
         this._missingMembers = [];
+        this._importSkipped = [];
         this._editorInitialized = true;
         this.renderEditor();
     }
@@ -279,8 +293,9 @@ export class SimEditor {
      * Import players from parsed export data.
      * @param {Array<Object>} players - Player DTOs
      * @param {Array<string>} names - Player names
+     * @param {Array<Object>} [skipped] - Equipment `parseShykaiImport` could not place
      */
-    importPlayers(players, names) {
+    importPlayers(players, names, skipped = []) {
         if (!this._editedDTOs) {
             this._editedDTOs = {};
             this._originalDTOs = {};
@@ -305,6 +320,7 @@ export class SimEditor {
         this._activeEditPlayer = this._editedPlayerInfo[this._editedPlayerInfo.length - 1]?.hrid;
         this._selfHrid = this._selfHrid || null;
         this._missingMembers = [];
+        this._importSkipped = Array.isArray(skipped) ? skipped : [];
         this._editorInitialized = true;
         this._selectedLoadoutName = '';
 
@@ -355,6 +371,7 @@ export class SimEditor {
         this._selfHrid = 'player1';
         this._activeEditPlayer = 'player1';
         this._missingMembers = [];
+        this._importSkipped = [];
         this._selectedLoadoutName = '';
         this._editorInitialized = true;
 
@@ -394,6 +411,7 @@ export class SimEditor {
         this._editedPlayerInfo = null;
         this._selfHrid = null;
         this._missingMembers = [];
+        this._importSkipped = [];
         this._selectedLoadoutName = '';
     }
 
@@ -443,6 +461,27 @@ export class SimEditor {
         return `<div style="color:#c9a227; font-size:11px; margin:-4px 0 8px;">
             Not loaded: ${missing.join(', ')} — a party member's loadout comes from their shared profile.
             Open their character card once, then reset again.
+        </div>`;
+    }
+
+    /**
+     * Equipment the last import could not place, and therefore left off the loadout.
+     *
+     * The import fails closed on an item the game's own sheet cannot resolve rather
+     * than guessing its slot from the export's raw location string. Without this the
+     * only trace is a console warning, and a dropped main hand simply reads as a
+     * character who fights unarmed.
+     * @private
+     * @returns {string} HTML for the note, or '' when everything was placed
+     */
+    _renderImportSkippedNote() {
+        const skipped = this._importSkipped || [];
+        if (!skipped.length) return '';
+        const names = [...new Set(skipped.map((entry) => entry.itemName || entry.itemHrid))];
+        return `<div style="color:#c9a227; font-size:11px; margin:-4px 0 8px;">
+            Not equipped from the import: ${escapeHtml(names.join(', '))} — this game version's item
+            data has no equipment slot for ${names.length === 1 ? 'it' : 'them'}, so the sim runs
+            without ${names.length === 1 ? 'it' : 'them'}.
         </div>`;
     }
 
@@ -530,7 +569,7 @@ export class SimEditor {
                         if (errorEl) errorEl.textContent = 'Invalid format. Paste a Combat Sim Export JSON.';
                         return;
                     }
-                    this.importPlayers(result.players, result.names);
+                    this.importPlayers(result.players, result.names, result.skipped);
                 });
             }
             const importCancel = editorArea.querySelector('#mwi-csim-import-cancel');
@@ -579,6 +618,7 @@ export class SimEditor {
         html += this._renderResetControls();
         html += '</div>';
         html += this._renderMissingMembersNote();
+        html += this._renderImportSkippedNote();
 
         // Import paste area (hidden by default)
         html += `<div id="mwi-csim-import-area" style="display:none; margin-bottom:10px;">
@@ -2149,7 +2189,7 @@ export class SimEditor {
                     if (errorEl) errorEl.textContent = 'Invalid format. Paste a Shykai export JSON.';
                     return;
                 }
-                this.importPlayers(result.players, result.names);
+                this.importPlayers(result.players, result.names, result.skipped);
                 const area = editorArea.querySelector('#mwi-csim-import-area');
                 if (area) area.style.display = 'none';
             });

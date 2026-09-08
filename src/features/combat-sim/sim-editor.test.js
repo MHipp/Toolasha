@@ -253,6 +253,48 @@ describe('reset to party', () => {
     });
 });
 
+describe('equipment an import could not place', () => {
+    /**
+     * The parse fails closed on an item the game's own sheet cannot resolve rather
+     * than guessing its slot from the export's raw location string. Left to a
+     * console warning, a dropped main hand reads on screen as a character who
+     * simply fights unarmed.
+     */
+    const SKIPPED = [
+        {
+            slot: 1,
+            itemHrid: '/items/unknown_blade',
+            itemName: 'Unknown Blade',
+            itemLocationHrid: '/item_locations/two_hand',
+        },
+    ];
+
+    test('is named in the editor, not only in the console', () => {
+        const el = document.createElement('div');
+        const editor = new SimEditor({ editorEl: el });
+
+        editor.importPlayers([emptyDTO('x')], ['Stranger A'], SKIPPED);
+
+        expect(el.textContent).toContain('Unknown Blade');
+        expect(el.textContent).toContain('Not equipped from the import');
+    });
+
+    test('says nothing when every piece resolved', () => {
+        const { el } = editorWithStrangers();
+        expect(el.textContent).not.toContain('Not equipped from the import');
+    });
+
+    test('the note does not survive a reset to the live character', () => {
+        const el = document.createElement('div');
+        const editor = new SimEditor({ editorEl: el });
+        editor.importPlayers([emptyDTO('x')], ['Stranger A'], SKIPPED);
+
+        editor.resetToSelf();
+
+        expect(el.textContent).not.toContain('Not equipped from the import');
+    });
+});
+
 describe('the reset buttons', () => {
     test('both sit beside the player chips', () => {
         const { el } = editorWithStrangers();

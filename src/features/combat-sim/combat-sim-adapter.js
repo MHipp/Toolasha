@@ -457,7 +457,9 @@ export function buildPlayerDTOFromProfile(profileData) {
  * Accepts the multi-slot format: {"1": "{...}", "2": "{...}", ...}
  * Each slot is a stringified player object with player/food/drinks/abilities/triggerMap/houseRooms.
  * @param {string} jsonString - The pasted export string
- * @returns {{ players: Array<Object>, names: Array<string> }|null} Parsed DTOs, or null on error
+ * @returns {{ players: Array<Object>, names: Array<string>,
+ *   skipped: Array<{slot: number, itemHrid: string, itemName: string, itemLocationHrid: string|null}> }|null}
+ *   Parsed DTOs plus any equipment that could not be placed, or null on error
  */
 export function parseShykaiImport(jsonString) {
     const clientData = dataManager.getInitClientData();
@@ -498,6 +500,9 @@ export function parseShykaiImport(jsonString) {
 
     const players = [];
     const names = [];
+    // Equipment the export named but the item sheet cannot place. Reported so the
+    // editor can say so on screen rather than leaving a hole only the console knows about.
+    const skipped = [];
 
     for (const { slot, data: slotData } of slotEntries) {
         const p = slotData.player;
@@ -544,6 +549,15 @@ export function parseShykaiImport(jsonString) {
                         enhancementLevel: eq.enhancementLevel || 0,
                     };
                 } else {
+                    // Reported back to the caller as well as logged: a skipped piece is
+                    // silently absent from the loadout, and a skipped main hand makes the
+                    // sim fight unarmed with nothing on screen to say why.
+                    skipped.push({
+                        slot,
+                        itemHrid: eq.itemHrid,
+                        itemName: itemDetailMap[eq.itemHrid]?.name || eq.itemHrid,
+                        itemLocationHrid: eq.itemLocationHrid ?? null,
+                    });
                     console.warn(
                         `[CombatSimAdapter] Shykai import: could not resolve equipment slot for itemHrid ` +
                             `"${eq.itemHrid}" (itemLocationHrid "${eq.itemLocationHrid}"); skipping.`
@@ -632,7 +646,7 @@ export function parseShykaiImport(jsonString) {
 
     if (!players.length) return null;
 
-    return { players, names };
+    return { players, names, skipped };
 }
 
 /**

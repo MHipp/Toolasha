@@ -517,6 +517,46 @@ describe('the equipment a Shykai import carries', () => {
 
         warnSpy.mockRestore();
     });
+    test('TLA-045: a skipped piece is reported to the caller, not just the console', () => {
+        // A console warning is not a user interface. A dropped main hand simply reads
+        // as a character who fights unarmed, so the parse has to hand the skip back
+        // for the editor to show.
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const payload = JSON.stringify({
+            player: {
+                attackLevel: 50,
+                equipment: [
+                    { itemLocationHrid: '/item_locations/head', itemHrid: '/items/helm', enhancementLevel: 3 },
+                    { itemLocationHrid: '/item_locations/two_hand', itemHrid: '/items/unknown_blade' },
+                ],
+            },
+        });
+
+        const result = parseShykaiImport(payload);
+
+        expect(result.players[0].equipment['/equipment_types/two_hand']).toBeUndefined();
+        expect(result.skipped).toEqual([
+            {
+                slot: 1,
+                itemHrid: '/items/unknown_blade',
+                itemName: '/items/unknown_blade',
+                itemLocationHrid: '/item_locations/two_hand',
+            },
+        ]);
+
+        warnSpy.mockRestore();
+    });
+
+    test('nothing is reported skipped when every piece resolves', () => {
+        const payload = JSON.stringify({
+            player: {
+                attackLevel: 50,
+                equipment: [{ itemLocationHrid: '/item_locations/head', itemHrid: '/items/helm' }],
+            },
+        });
+
+        expect(parseShykaiImport(payload).skipped).toEqual([]);
+    });
 });
 
 /**
