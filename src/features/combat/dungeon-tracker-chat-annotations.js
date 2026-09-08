@@ -691,7 +691,17 @@ class DungeonTrackerChatAnnotations {
             // Get team key
             const teamKey = dungeonTrackerStorage.getTeamKey(event.team);
 
-            // Create run object
+            // Create run object.
+            //
+            // The timestamp is the chat stamp, which the game prints truncated
+            // to the second, and it is banked as-is rather than dressed up with
+            // milliseconds chat never had. Nothing else is recorded beside it
+            // because nothing else is needed: the tracker's own record of the
+            // same run carries the server's millisecond stamp for the very same
+            // key-count message, so truncating both to the second makes the two
+            // identical, and `saveTeamRun` joins them on exactly that - one team
+            // cannot begin two runs in the same second - instead of on how far
+            // apart they happen to fall.
             const run = {
                 timestamp: event.timestamp.toISOString(),
                 duration: duration,

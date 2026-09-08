@@ -275,6 +275,25 @@ describe('saveTeamRun', () => {
         expect(game.saved.unifiedRuns.allRuns).toHaveLength(1);
     });
 
+    test('a backfilled run and the tracker’s own record of it are one run', async () => {
+        // The tracker banks the server's millisecond stamp for the key count
+        // that opened the run; the chat backfill can only read that same
+        // message's rendered stamp, which the game prints truncated to the
+        // second. Same run, same start second, and the durations each route
+        // measured need not agree to within the two seconds the tolerance
+        // check allows.
+        seedRuns([{ timestamp: '2026-01-01T00:00:00.431Z', teamKey: 'A,B', duration: 600_000 }]);
+
+        const saved = await dungeonTrackerStorage.saveTeamRun('A,B', {
+            timestamp: '2026-01-01T00:00:00.000Z',
+            duration: 594_000,
+            dungeonName: 'Chimerical Den',
+        });
+
+        expect(saved).toBe(false);
+        expect(game.saved.unifiedRuns.allRuns).toHaveLength(1);
+    });
+
     test('a different team at the same moment is not a duplicate', async () => {
         seedRuns([{ timestamp: '2026-01-01T00:00:00.000Z', teamKey: 'A,B', duration: 500 }]);
 

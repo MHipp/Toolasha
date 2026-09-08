@@ -671,10 +671,27 @@ class DungeonTrackerStorage {
         // Parse incoming timestamp
         const newTimestamp = new Date(run.timestamp).getTime();
 
-        // Check for duplicates (same time window, team, and duration). Only
-        // this team's runs can match, so only they are looked at.
+        // The one instant both recording routes can state exactly. The tracker
+        // banks the server's millisecond stamp for the key count that opened
+        // the run; the chat backfill can only read that same message's rendered
+        // stamp, which the game prints truncated to the second. Truncating both
+        // is what makes the two records of one run identical rather than merely
+        // close - the precision the chat never had is dropped instead of being
+        // absorbed by a tolerance.
+        const startSecond = Math.floor(newTimestamp / 1000) * 1000;
+
+        // Check for duplicates. Only this team's runs can match, so only they
+        // are looked at.
         const existing = (this._byTeam.get(teamKey) || []).find((r) => {
             const existingTimestamp = new Date(r.timestamp).getTime();
+
+            // Exact: one team cannot begin two runs in the same second, so a
+            // record already sitting on this second is this run seen by the
+            // other route. Checked before the tolerance below and without
+            // consulting the duration, because the two routes measure the run
+            // from stamps of different precision and need not agree on it.
+            if (Math.floor(existingTimestamp / 1000) * 1000 === startSecond) return true;
+
             const timeDiff = Math.abs(existingTimestamp - newTimestamp);
             const durationDiff = Math.abs(r.duration - run.duration);
 
