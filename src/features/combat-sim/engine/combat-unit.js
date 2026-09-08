@@ -508,16 +508,6 @@ class CombatUnit {
         return strongest;
     }
 
-    removeBuff(buff) {
-        if (!this.combatBuffs[buff.uniqueHrid]) {
-            return;
-        }
-        delete this.combatBuffs[buff.uniqueHrid];
-        this.buffSources.delete(buff.uniqueHrid);
-
-        this.updateCombatDetails();
-    }
-
     /**
      * Update fury accuracy and damage buffs in a single batch, calling updateCombatDetails() once.
      * @param {number} furyAmount - Current fury stack count (0-5)
