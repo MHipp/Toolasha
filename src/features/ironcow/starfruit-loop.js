@@ -213,10 +213,12 @@ export async function calculateStarfruitLoop() {
             dataManager.getItemDetails(items.essenceHrid)?.alchemyDetail?.bulkMultiplier ||
             coinify.requirementCosts?.find((cost) => cost.itemHrid === items.essenceHrid)?.count ||
             1;
-        // How many fruit one decompose action swallows. Star Fruit is one, and
-        // the per-fruit costing below assumes that; it is read rather than
-        // assumed because {@link balanceBatch} turns it into a queue count,
-        // where being wrong means asking for fruit the forage leg never grew.
+        // How many fruit one decompose action swallows — two, for Star Fruit,
+        // whose Decompose panel reads "Uses 2 items per action". Read rather
+        // than assumed, and used in two places that must stay in step: the
+        // per-fruit time below divides one action's duration by it, and
+        // {@link balanceBatch} turns it into a queue count, where being wrong
+        // means asking for fruit the forage leg never grew.
         const decomposeBulk =
             dataManager.getItemDetails(items.starfruitHrid)?.alchemyDetail?.bulkMultiplier ||
             decompose.requirementCosts?.find((cost) => cost.itemHrid === items.starfruitHrid)?.count ||
@@ -234,7 +236,15 @@ export async function calculateStarfruitLoop() {
 
         // One fruit, all the way through.
         const forageHours = 1 / fruitPerHour;
-        const decomposeHours = 1 / decomposeActionsPerHour;
+        // One action feeds `decomposeBulk` fruit, so a fruit owes a share of it
+        // and not the whole thing — the same division coinify already does two
+        // lines down. A zero or missing multiplier falls back to one action per
+        // fruit rather than to Infinity.
+        const decomposeHours = 1 / decomposeActionsPerHour / (decomposeBulk > 0 ? decomposeBulk : 1);
+        // Not divided by bulk: `decomposeItems[].count` is stated per fruit (the
+        // game's panel shows count × bulk as the action's output), so ten
+        // essence at a 60% success rate is six essence a fruit however the
+        // action is sized.
         const essencePerFruit = essencePerSuccess * decomposeRate;
         const coinifyActionsPerFruit = coinifyBulk > 0 ? essencePerFruit / coinifyBulk : 0;
         const coinifyHours = coinifyActionsPerFruit / coinifyActionsPerHour;

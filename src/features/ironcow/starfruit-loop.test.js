@@ -531,3 +531,73 @@ describe('duration and a cowbell target, each derived from the other', () => {
         expect(hoursForBells(loop, 40)).toBeNull();
     });
 });
+
+describe('a bulk decompose is shared out over the fruit it swallows', () => {
+    /** Seconds of decomposing charged to one fruit, read back off the loop */
+    const decomposeSeconds = (loop) => loop.timeShare.decompose * loop.hoursPerFruit * 3600;
+
+    /**
+     * Star Fruit as the live client reports it: two fruit per decompose action,
+     * ten essence per fruit, 60% base. The game's own panel reads "Uses 2 items
+     * per action" and "Outputs 20 Foraging Essence" — 10 × bulk.
+     * @param {number} bulkMultiplier - Fruit per decompose action
+     * @returns {Object} An `initClientData` with the fruit overridden
+     */
+    const realStarfruit = (bulkMultiplier) =>
+        gameData({
+            [STARFRUIT]: {
+                name: 'Star Fruit',
+                itemLevel: 65,
+                sellPrice: 40,
+                alchemyDetail: {
+                    bulkMultiplier,
+                    isCoinifiable: false,
+                    decomposeItems: [{ itemHrid: ESSENCE, count: 10 }],
+                },
+            },
+        });
+
+    test('a bulk-2 fruit is charged half a decompose action, not a whole one', async () => {
+        game.initClientData = realStarfruit(2);
+        const loop = await calculateStarfruitLoop();
+
+        expect(loop.decomposeBulk).toBe(2);
+        // 180 actions/hr over 2 fruit an action = 10s a fruit, not 20s
+        expect(decomposeSeconds(loop)).toBeCloseTo(10, 6);
+        // 10s forage + 10s decompose + (6 essence / bulk 10) / 180 actions/hr = 12s coinify
+        expect(loop.hoursPerFruit * 3600).toBeCloseTo(32, 6);
+        // 0.6 coinify actions × 15,000 × 0.7 = 6,300 in, less the 750 action fee
+        expect(loop.goldPerHour).toBeCloseTo((6300 - 750) / (32 / 3600), 3);
+    });
+
+    test('the essence leg is untouched: a bulk-2 fruit still becomes six essence', async () => {
+        game.initClientData = realStarfruit(2);
+        const loop = await calculateStarfruitLoop();
+
+        // decomposeItems.count is stated per fruit, so 10 × 0.6 — no bulk in it
+        expect(loop.essencePerFruit).toBeCloseTo(6, 10);
+        expect(loop.coinifyBulk).toBe(10);
+    });
+
+    test('a bulk-1 fruit is charged a whole decompose action, exactly as before', async () => {
+        game.initClientData = realStarfruit(1);
+        const loop = await calculateStarfruitLoop();
+
+        expect(loop.decomposeBulk).toBe(1);
+        expect(decomposeSeconds(loop)).toBeCloseTo(20, 6);
+        // 10s forage + 20s decompose + 12s coinify
+        expect(loop.hoursPerFruit * 3600).toBeCloseTo(42, 6);
+    });
+
+    test('a missing or zero multiplier falls back to one rather than to Infinity', async () => {
+        for (const bulkMultiplier of [0, undefined]) {
+            game.initClientData = realStarfruit(bulkMultiplier);
+            const loop = await calculateStarfruitLoop();
+
+            expect(loop.decomposeBulk).toBe(1);
+            expect(decomposeSeconds(loop)).toBeCloseTo(20, 6);
+            expect(Number.isFinite(loop.hoursPerFruit)).toBe(true);
+            expect(Number.isFinite(loop.goldPerHour)).toBe(true);
+        }
+    });
+});
