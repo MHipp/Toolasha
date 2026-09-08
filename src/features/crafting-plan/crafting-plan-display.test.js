@@ -65,6 +65,38 @@ vi.mock('../../utils/experience-calculator.js', () => ({
     calculateExpPerHour: () => ({ expPerHour: 0, actionsPerHour: 0 }),
 }));
 
+/**
+ * The reservation ledger, doubled at the seam. What matters at this join is
+ * that the panel excludes ITS OWN owner id from what it deducts, claims the
+ * required totals when the player commits, and says who took the stock when
+ * that is the only reason it is buying — never the ledger's own arithmetic,
+ * which `utils/inventory-reservations.test.js` owns.
+ */
+const ledger = vi.hoisted(() => ({
+    enabled: false,
+    held: 0,
+    claimedElsewhere: 0,
+    rowsCalls: [],
+    reserveCalls: [],
+}));
+vi.mock('../../utils/inventory-reservations.js', () => ({
+    reservationsEnabled: () => ledger.enabled,
+    heldInInventory: () => ledger.held,
+    effectiveInventory: (hrid, level, { held } = {}) => Math.max(0, held - ledger.claimedElsewhere),
+    effectiveInventoryRows: (rows, options) => {
+        ledger.rowsCalls.push(options);
+        return rows;
+    },
+    reserve: async (ownerId, lines, options) => {
+        ledger.reserveCalls.push({ ownerId, lines, options });
+        return true;
+    },
+    shortfallNote: (short) =>
+        ledger.claimedElsewhere > 0
+            ? `${short} short — ${ledger.claimedElsewhere} reserved by "Goal: Cheese sword"`
+            : '',
+}));
+
 const { buildPlanUI } = await import('./crafting-plan-display.js');
 
 /** A craft-strategy plan whose one leaf is a market buy, so the shopping list
@@ -100,6 +132,11 @@ describe('the Buy Missing Materials button', () => {
         state.inventory = [];
         state.settings = {};
         state.openMaterialsList.mockClear();
+        ledger.enabled = false;
+        ledger.held = 0;
+        ledger.claimedElsewhere = 0;
+        ledger.rowsCalls = [];
+        ledger.reserveCalls = [];
     });
 
     test('hands the shared path the required totals, one line per tradeable material', async () => {
@@ -145,5 +182,66 @@ describe('the Buy Missing Materials button', () => {
         await Promise.resolve();
 
         expect(state.openMaterialsList).not.toHaveBeenCalled();
+    });
+});
+
+describe('the crafting plan and the reservation ledger', () => {
+    beforeEach(() => {
+        state.inventory = [];
+        state.settings = {};
+        state.openMaterialsList.mockClear();
+        ledger.enabled = false;
+        ledger.held = 0;
+        ledger.claimedElsewhere = 0;
+        ledger.rowsCalls = [];
+        ledger.reserveCalls = [];
+        state.plan = craftPlanBuying('/items/wood', 'Wood', 100);
+        state.missing = [{ itemHrid: '/items/wood', itemName: 'Wood', missing: 160, required: 200, isTradeable: true }];
+    });
+
+    test('the plan nets off other owners’ claims, never its own', async () => {
+        const section = buildPlanUI('/actions/crafting/wooden_bow');
+        findBuyButton(section).click();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(ledger.rowsCalls).toEqual([{ excludeOwner: 'craftingPlan:/items/wooden_bow' }]);
+    });
+
+    test('committing to the plan claims the required totals under its own owner', async () => {
+        const section = buildPlanUI('/actions/crafting/wooden_bow');
+        findBuyButton(section).click();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(ledger.reserveCalls).toHaveLength(1);
+        expect(ledger.reserveCalls[0].ownerId).toBe('craftingPlan:/items/wooden_bow');
+        expect(ledger.reserveCalls[0].lines).toEqual([{ itemHrid: '/items/wood', count: 200 }]);
+    });
+
+    test('with the ledger off the panel draws no reservation line at all', () => {
+        ledger.enabled = false;
+        ledger.held = 500;
+        ledger.claimedElsewhere = 450;
+        const section = buildPlanUI('/actions/crafting/wooden_bow');
+        expect(section.querySelector('.mwi-crafting-plan-reserved')).toBeNull();
+    });
+
+    test('a shortfall that is only somebody else’s claim is named', () => {
+        ledger.enabled = true;
+        ledger.held = 500;
+        ledger.claimedElsewhere = 450;
+        const section = buildPlanUI('/actions/crafting/wooden_bow');
+        expect(section.querySelector('.mwi-crafting-plan-reserved').textContent).toBe(
+            'Wood: 50 short — 450 reserved by "Goal: Cheese sword"'
+        );
+    });
+
+    test('an ordinary shortfall — the bag simply has not got it — says nothing', () => {
+        ledger.enabled = true;
+        ledger.held = 10;
+        ledger.claimedElsewhere = 450;
+        const section = buildPlanUI('/actions/crafting/wooden_bow');
+        expect(section.querySelector('.mwi-crafting-plan-reserved')).toBeNull();
     });
 });

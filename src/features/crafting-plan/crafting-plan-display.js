@@ -15,8 +15,65 @@ import { findActionInput, onDetailPanel } from '../../utils/action-panel-helper.
 import { calculateActionStats } from '../../utils/action-calculator.js';
 import { calculateEfficiencyMultiplier } from '../../utils/efficiency.js';
 import { calculateExpPerHour } from '../../utils/experience-calculator.js';
+import {
+    effectiveInventory,
+    effectiveInventoryRows,
+    heldInInventory,
+    reserve,
+    reservationsEnabled,
+    shortfallNote,
+} from '../../utils/inventory-reservations.js';
 
 const UI_ID = 'mwi-crafting-plan';
+
+/**
+ * Owner-id prefix for a crafting plan's claim on the bag.
+ *
+ * Keyed by the item the panel is planning, which is the only stable identity a
+ * panel-borne plan has. Nothing announces that the player is finished with one,
+ * so these claims are the ones the ledger's TTL exists for.
+ */
+const RESERVATION_OWNER_PREFIX = 'craftingPlan:';
+
+/**
+ * The owner id a panel's plan claims under.
+ * @param {string} itemHrid - The item being planned
+ * @returns {string} Owner id
+ */
+function planOwner(itemHrid) {
+    return `${RESERVATION_OWNER_PREFIX}${itemHrid}`;
+}
+
+/**
+ * One line naming who took the stock, when that is the only reason the plan is
+ * buying something the bag could otherwise have covered.
+ *
+ * Deliberately silent about an ordinary shortfall: a player who is simply short
+ * of logs needs no explanation, and a line that fires either way explains
+ * nothing. Empty string when the ledger is off or nothing is claimed, so the
+ * caller can ask unconditionally.
+ *
+ * @param {Array<{itemHrid: string, itemName: string, quantity: number}>} items - The shopping list
+ * @param {string} outputHrid - What this panel is planning, for its own owner id
+ * @returns {string} The line, or `''`
+ */
+function reservedShoppingNote(items, outputHrid) {
+    if (!reservationsEnabled()) return '';
+
+    const excludeOwner = planOwner(outputHrid);
+    for (const item of items) {
+        if (!item?.itemHrid) continue;
+        const wanted = Math.ceil(item.quantity);
+        const held = heldInInventory(item.itemHrid);
+        if (wanted > held) continue; // short whatever anybody else claims
+        const available = effectiveInventory(item.itemHrid, 0, { excludeOwner, held });
+        const short = wanted - available;
+        if (short <= 0) continue;
+        const note = shortfallNote(short, item.itemHrid, 0, { excludeOwner });
+        if (note) return `${item.itemName}: ${note}`;
+    }
+    return '';
+}
 
 const PRICING_MODES = [
     { value: 'conservative', label: 'Instant Buy' },
@@ -65,6 +122,7 @@ function collectBuyItems(node, buyItems) {
             existing.totalCost += node.totalCost;
         } else {
             buyItems.set(node.itemHrid, {
+                itemHrid: node.itemHrid,
                 itemName: node.itemName,
                 quantity: node.quantity,
                 unitCost: node.unitCost,
@@ -456,12 +514,25 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
             const fullPlan = fullPlanForPanel(buyButton);
             if (!fullPlan) return;
 
-            const inventory = dataManager.getInventory() || [];
+            // What this plan may actually spend: the bag less every OTHER
+            // owner's claim, never its own — a plan that deducted its own claim
+            // would grow a shortfall every time the panel redrew
+            const inventory = effectiveInventoryRows(dataManager.getInventory() || [], {
+                excludeOwner: planOwner(output.itemHrid),
+            });
             const missingMaterials = collectMissingMaterials(fullPlan, inventory).filter(
                 (material) => material.isTradeable
             );
 
             if (missingMaterials.length === 0) return;
+
+            // The click is the commitment: from here the plan holds what it
+            // needs against every other plan until it is replaced or expires
+            await reserve(
+                planOwner(output.itemHrid),
+                missingMaterials.map((material) => ({ itemHrid: material.itemHrid, count: material.required })),
+                { label: `Crafting plan: ${dataManager.getItemDetails(output.itemHrid)?.name || output.itemHrid}` }
+            );
 
             // Route through the shared missing-mats mechanism so the tabs get
             // live inventory tracking: buying a material lowers its badge and
@@ -474,6 +545,20 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
             );
         });
         content.appendChild(buyButton);
+
+        // A shopping list that is longer than the bag explains is a mystery
+        // unless the panel says who took the stock
+        const claimNote = reservedShoppingNote(sortedItems, output.itemHrid);
+        if (claimNote) {
+            const claimRow = document.createElement('div');
+            claimRow.className = 'mwi-crafting-plan-reserved';
+            claimRow.style.cssText = `
+                margin-top: 6px; font-size: 0.8em; line-height: 1.35;
+                color: var(--text-color-secondary, #e8a87c);
+            `;
+            claimRow.textContent = claimNote;
+            content.appendChild(claimRow);
+        }
     }
 
     // === Crafting Steps (what to craft, in order) ===
