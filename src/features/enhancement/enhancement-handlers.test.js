@@ -10,36 +10,11 @@ const state = vi.hoisted(() => ({
     handlers: {},
     current: null,
     calls: [],
+    actions: [],
 }));
 
-vi.mock('../../core/websocket.js', () => ({
-    default: {
-        on: (type, fn) => {
-            state.handlers[type] = fn;
-        },
-        off: () => {},
-    },
-}));
-vi.mock('../../core/config.js', () => ({ default: { getSetting: () => true } }));
-vi.mock('../../core/data-manager.js', () => ({
-    default: {
-        getInitClientData: () => ({
-            itemDetailMap: {
-                '/items/enchanted_cloak_refined': { name: 'Enchanted Cloak ★', enhancementCosts: [] },
-            },
-        }),
-    },
-}));
-vi.mock('../../api/marketplace.js', () => ({ default: { getPrice: () => null } }));
-vi.mock('./enhancement-xp.js', () => ({
-    calculateSuccessXP: () => 0,
-    calculateFailureXP: () => 0,
-    calculateAdjustedAttemptCount: () => 1,
-}));
-vi.mock('./tooltip-enhancement.js', () => ({ getEnhancementMaterialPrice: () => 0 }));
-vi.mock('./enhancement-ui.js', () => ({ default: { switchToSession: () => {}, scheduleUpdate: () => {} } }));
-vi.mock('./enhancement-tracker.js', () => ({
-    default: {
+const trackerMock = vi.hoisted(() => {
+    const mock = {
         isInitialized: true,
         pendingSessionStart: false,
         getCurrentSession: () => state.current,
@@ -58,13 +33,57 @@ vi.mock('./enhancement-tracker.js', () => ({
             state.calls.push(['finalize']);
             state.current = null;
         }),
+        // Mirrors the real tracker: arms the same flag the handler itself checks/clears, so a
+        // bootstrapped pending start actually drives the next action_completed in tests.
         setPendingStart: vi.fn(() => {
             state.calls.push(['pendingStart']);
+            mock.pendingSessionStart = true;
         }),
+    };
+    return mock;
+});
+
+vi.mock('../../core/websocket.js', () => ({
+    default: {
+        on: (type, fn) => {
+            state.handlers[type] = fn;
+        },
+        off: () => {},
     },
 }));
+vi.mock('../../core/config.js', () => ({ default: { getSetting: () => true } }));
+vi.mock('../../core/data-manager.js', () => ({
+    default: {
+        getInitClientData: () => ({
+            itemDetailMap: {
+                '/items/enchanted_cloak_refined': { name: 'Enchanted Cloak ★', enhancementCosts: [] },
+            },
+        }),
+        getCurrentActions: () => state.actions,
+    },
+}));
+vi.mock('../../api/marketplace.js', () => ({ default: { getPrice: () => null } }));
+vi.mock('./enhancement-xp.js', () => ({
+    calculateSuccessXP: () => 0,
+    calculateFailureXP: () => 0,
+    calculateAdjustedAttemptCount: () => 1,
+}));
+vi.mock('./tooltip-enhancement.js', () => ({ getEnhancementMaterialPrice: () => 0 }));
+vi.mock('./enhancement-ui.js', () => ({ default: { switchToSession: () => {}, scheduleUpdate: () => {} } }));
+vi.mock('./enhancement-tracker.js', () => ({ default: trackerMock }));
 
 const { setupEnhancementHandlers } = await import('./enhancement-handlers.js');
+
+const cachedEnhanceAction = (extra = {}) => ({
+    actionHrid: '/actions/enhancing/enhance',
+    isDone: false,
+    ordinal: 3,
+    currentCount: 2070,
+    primaryItemHash: '30404::/item_locations/inventory::/items/enchanted_cloak_refined::5',
+    enhancingMaxLevel: 15,
+    enhancingProtectionMinLevel: 2,
+    ...extra,
+});
 
 const attempt = (level, currentCount) => ({
     endCharacterAction: {
@@ -81,6 +100,8 @@ beforeEach(() => {
     state.handlers = {};
     state.current = null;
     state.calls = [];
+    state.actions = [];
+    trackerMock.pendingSessionStart = false;
     setupEnhancementHandlers();
 });
 
@@ -176,5 +197,110 @@ describe('two attempts landing before the first has finished writing', () => {
         // The failure mode this guards: 6 → 7 scored from a stale level 5,
         // reported as a Blessed double jump that never happened
         expect(results).not.toContainEqual(['success', 5, 7, true]);
+    });
+});
+
+describe('TLA-043: bootstrap from an already-cached current action', () => {
+    // Before this fix, setupEnhancementHandlers() only ever installed the action_completed and
+    // actions_updated listeners — it never looked at what DataManager already had cached. A
+    // setting enabled, or a page reload, after the queue's own actions_updated had already fired
+    // left pendingSessionStart false with nothing left to set it, other than the mid-run pickup
+    // fallback in handleEnhancementResult reacting to the very next action_completed. This test
+    // asserts the bootstrap fires synchronously at subscribe time, with no WebSocket message at
+    // all — something pre-fix code cannot do, since it never reads getCurrentActions().
+    test('an active cached Enhance action arms pendingSessionStart immediately, before any message', () => {
+        state.actions = [cachedEnhanceAction()];
+
+        setupEnhancementHandlers();
+
+        expect(state.calls).toContainEqual(['pendingStart']);
+        expect(trackerMock.pendingSessionStart).toBe(true);
+    });
+
+    test('the very next action_completed after that immediately produces a session', async () => {
+        state.actions = [cachedEnhanceAction()];
+        setupEnhancementHandlers();
+
+        await state.handlers.action_completed(attempt(6, 2071));
+
+        const session = state.current;
+        expect(session).toBeTruthy();
+        expect(session.itemHrid).toBe('/items/enchanted_cloak_refined');
+    });
+
+    test('a requeued repeat sitting first in the array with a higher ordinal is not read as the running action', () => {
+        // Both entries are Enhance rows, so array position ([0]) would pick the ordinal-9 one —
+        // the repeat requeued to the front of the queue — and read its level (8) as "current".
+        // The real running action is the ordinal-2 one, sitting second, at level 5. Feeding
+        // findExtendableSession the wrong (position-read) level would miss the extendable
+        // session the correct (ordinal-read) level finds, letting the bootstrap wrongly fire.
+        trackerMock.findExtendableSession = vi.fn((itemHrid, level) => level === 5);
+        state.actions = [
+            cachedEnhanceAction({
+                ordinal: 9,
+                primaryItemHash: '30404::/item_locations/inventory::/items/enchanted_cloak_refined::8',
+            }),
+            cachedEnhanceAction({ ordinal: 2 }), // level 5, from the shared fixture
+        ];
+
+        setupEnhancementHandlers();
+
+        expect(trackerMock.findExtendableSession).toHaveBeenCalledWith('/items/enchanted_cloak_refined', 5);
+        expect(state.calls).not.toContainEqual(['pendingStart']);
+        trackerMock.findExtendableSession = () => null;
+    });
+
+    test('a non-enhancing cached action does not arm the bootstrap', () => {
+        state.actions = [{ actionHrid: '/actions/milking/milk', isDone: false, ordinal: 1, currentCount: 40 }];
+
+        setupEnhancementHandlers();
+
+        expect(state.calls).not.toContainEqual(['pendingStart']);
+        expect(trackerMock.pendingSessionStart).toBe(false);
+    });
+
+    test('an already-active session is left alone — bootstrap never resets or duplicates it', () => {
+        state.current = { id: 's1', itemHrid: '/items/enchanted_cloak_refined', totalXP: 0, lastAttempt: null };
+        state.actions = [cachedEnhanceAction()];
+
+        setupEnhancementHandlers();
+
+        expect(state.calls).not.toContainEqual(['pendingStart']);
+    });
+
+    test('a finished (isDone) cached row does not arm the bootstrap', () => {
+        state.actions = [cachedEnhanceAction({ isDone: true })];
+
+        setupEnhancementHandlers();
+
+        expect(state.calls).not.toContainEqual(['pendingStart']);
+    });
+
+    test('an extendable completed session for the same item/level is extended instead of shadowed', () => {
+        // Same guard enhancement-tracker.js's disable() documents for a character switch: forcing
+        // shouldStartNew via pendingSessionStart would skip findExtendableSession entirely and
+        // fragment a session that should have been picked back up.
+        trackerMock.findExtendableSession = vi.fn((itemHrid, level) => {
+            expect(itemHrid).toBe('/items/enchanted_cloak_refined');
+            expect(level).toBe(5);
+            return 'old_session';
+        });
+        state.actions = [cachedEnhanceAction()];
+
+        setupEnhancementHandlers();
+
+        expect(state.calls).not.toContainEqual(['pendingStart']);
+        trackerMock.findExtendableSession = () => null;
+    });
+
+    test('the setting disabled skips the bootstrap entirely', async () => {
+        state.actions = [cachedEnhanceAction()];
+        const configModule = await import('../../core/config.js');
+        configModule.default.getSetting = () => false;
+
+        setupEnhancementHandlers();
+
+        expect(state.calls).not.toContainEqual(['pendingStart']);
+        configModule.default.getSetting = () => true;
     });
 });

@@ -12,6 +12,7 @@ import marketAPI from '../../api/marketplace.js';
 import { calculateSuccessXP, calculateFailureXP, calculateAdjustedAttemptCount } from './enhancement-xp.js';
 import { getEnhancementMaterialPrice } from './tooltip-enhancement.js';
 import { parseItemHash } from '../../utils/item-hash.js';
+import { runningAction } from '../../utils/combat-actions.js';
 
 /**
  * Setup enhancement event handlers
@@ -23,6 +24,42 @@ export function setupEnhancementHandlers() {
     // Listen for actions_updated to detect new enhancing queues (handles page-load mid-session
     // and sets pending start so the next action_completed creates a session regardless of currentCount)
     webSocketHook.on('actions_updated', handleActionsUpdated);
+
+    // TLA-043 Layer A: handlers are registered above FIRST so a completion can never land in a
+    // gap between subscribing and inspecting current state. Only now do we check DataManager's
+    // already-cached current action for an Enhance queue that was already running before these
+    // handlers existed (setting enabled mid-run, page reload, or character switch).
+    bootstrapFromCurrentEnhancingAction();
+}
+
+/**
+ * TLA-043 Layer A of the mid-run bootstrap: if Enhancing is already the running action per
+ * DataManager's cached current-character actions and there is no session yet, arm the same
+ * pendingSessionStart flag a live actions_updated would have set, so the next action_completed
+ * creates a session regardless of currentCount. Does not backfill history from the cached action.
+ * Uses runningAction() (execution order, lowest ordinal) rather than array position — a requeued
+ * repeat sits first in the queue with a higher ordinal, so positional reads pick the wrong entry.
+ */
+function bootstrapFromCurrentEnhancingAction() {
+    if (!config.getSetting('enhancementTracker')) return;
+    if (!enhancementTracker.isInitialized) return;
+    if (enhancementTracker.getCurrentSession()) return;
+
+    const activeEnhancingAction = runningAction(
+        dataManager.getCurrentActions(),
+        (action) => action.actionHrid === '/actions/enhancing/enhance'
+    );
+    if (!activeEnhancingAction) return;
+
+    // A completed session for this item near this level is meant to be picked back up by
+    // extending it (see findExtendableSession below in handleEnhancementResult), not shadowed by
+    // a brand-new one — the same failure mode enhancement-tracker.js's disable() already guards
+    // against for a character switch that lands with pendingSessionStart still set. Leave that
+    // case alone here too; the next action_completed still finds and extends it on its own.
+    const { itemHrid, level } = parseItemHash(activeEnhancingAction.primaryItemHash);
+    if (itemHrid && enhancementTracker.findExtendableSession(itemHrid, level)) return;
+
+    enhancementTracker.setPendingStart();
 }
 
 /**
