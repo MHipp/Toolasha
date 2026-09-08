@@ -29,6 +29,16 @@ const trackerMock = vi.hoisted(() => {
         trackCoinCost: async () => {},
         trackMaterialCost: async () => {},
         trackProtectionCost: vi.fn(async (...a) => state.calls.push(['prot', ...a])),
+        extendSessionTarget: vi.fn(async (sessionId, newTarget) => {
+            state.calls.push(['extend', sessionId, newTarget]);
+            state.current = {
+                id: sessionId,
+                itemHrid: '/items/enchanted_cloak_refined',
+                totalXP: 0,
+                lastAttempt: null,
+            };
+            return true;
+        }),
         finalizeCurrentSession: vi.fn(async () => {
             state.calls.push(['finalize']);
             state.current = null;
@@ -290,6 +300,25 @@ describe('TLA-043: bootstrap from an already-cached current action', () => {
         setupEnhancementHandlers();
 
         expect(state.calls).not.toContainEqual(['pendingStart']);
+        trackerMock.findExtendableSession = () => null;
+    });
+
+    test('backing off for an extendable session does not leave the tracker idle', async () => {
+        // The follow-through the guard depends on: with pendingSessionStart deliberately
+        // left unarmed, the next action_completed has to reach the !currentSession branch
+        // and extend the completed session there. Were that path not to fire, the tracker
+        // would sit idle for the rest of the run with nothing left to arm it.
+        trackerMock.findExtendableSession = vi.fn(() => 'old_session');
+        state.actions = [cachedEnhanceAction()];
+
+        setupEnhancementHandlers();
+        expect(state.calls).not.toContainEqual(['pendingStart']);
+
+        await state.handlers.action_completed(attempt(6, 2071));
+
+        expect(state.calls).toContainEqual(['extend', 'old_session', 15]);
+        expect(state.calls.map((call) => call[0])).not.toContain('start');
+        expect(state.current).toBeTruthy();
         trackerMock.findExtendableSession = () => null;
     });
 

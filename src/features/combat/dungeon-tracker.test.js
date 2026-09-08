@@ -1758,6 +1758,31 @@ describe('picking the run back up on page load', () => {
         expect(tracker.pendingDungeonInfo).toEqual({ dungeonHrid: LAIR, tier: 0 });
     });
 
+    test('a dungeon swapped during the reload does not inherit the old dungeon\u2019s record', async () => {
+        // The record and the battle agree on battleId \u2014 the sharpest case the
+        // deferred restore has to refuse, because battle identity alone would let
+        // Chimerical Den\u2019s wave 4, its wave times and its key-count anchor
+        // through onto a Sinister Circus run.
+        game.actions = [{ actionHrid: LAIR, difficultyTier: 2, isDone: false }];
+        parkRun({ keyCountsMap: { Alice: 11 }, firstKeyCountTimestamp: Date.now() - 60000 });
+
+        await tracker.checkForActiveDungeon();
+        expect(tracker.pendingDungeonInfo).toEqual({ dungeonHrid: LAIR, tier: 2 });
+
+        await tracker.onNewBattle({ wave: 3, battleId: 42 });
+        await flush();
+
+        expect(tracker.restoredMidRun).toBe(false);
+        expect(tracker.currentRun.dungeonHrid).toBe(LAIR);
+        expect(tracker.currentRun.tier).toBe(2);
+        expect(tracker.currentRun.maxWaves).toBe(12);
+        expect(tracker.currentRun.wavesCompleted).toBe(0);
+        expect(tracker.waveTimes).toEqual([]);
+        expect(tracker.firstKeyCountTimestamp).toBeNull();
+        // The Den record is gone, replaced by this run's own
+        expect(stored()).toMatchObject({ dungeonHrid: LAIR, battleId: 42, wavesCompleted: 0 });
+    });
+
     test('a key count arriving before the battle that restores the run is ignored', async () => {
         // Nothing may act on a run that has not been verified yet. The cost of
         // deferring is this one message; the alternative was consuming it against

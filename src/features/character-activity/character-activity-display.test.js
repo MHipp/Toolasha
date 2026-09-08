@@ -186,6 +186,23 @@ describe('offline cap overlay', () => {
         expect(resolved.terminalAt).toBe(wentOffline + 24 * HOUR);
     });
 
+    test('a character never seen offline never reaches the MooPass comparison at all', () => {
+        // `mooPassExpireTime > freshLastOfflineTime` is false against a null, which would
+        // read as "the pass was already dead" and quietly trust a cap nothing has measured.
+        // The no-evidence-of-going-offline guard stands in front of it, so the comparison
+        // is unreachable and both shapes below answer as they did before TLA-025B.
+        const withPass = { hourCap: 24, mooPassExpireTime: NOW + 2 * HOUR };
+
+        expect(
+            resolveDisplayProjection(record({ endsInMs: null, terminalCause: 'infinite', offline: withPass }), null)
+        ).toMatchObject({ terminalCause: 'unknown', terminalAt: null });
+
+        expect(resolveDisplayProjection(record({ endsInMs: 2 * HOUR, offline: withPass }), null)).toMatchObject({
+            terminalCause: 'queue',
+            terminalAt: NOW + 2 * HOUR,
+        });
+    });
+
     test('an already-uncertain projection is never turned into a claim by the cap', () => {
         const resolved = resolveDisplayProjection(
             record({ endsInMs: null, terminalCause: 'unknown', offline: { hourCap: 8, mooPassExpireTime: null } }),
