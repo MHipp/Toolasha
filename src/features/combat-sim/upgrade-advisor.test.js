@@ -119,6 +119,13 @@ vi.mock('../combat/labyrinth-clear-rate.js', () => ({
         computeEnhancingClearWithParams: (...args) => clearRate.impl.computeEnhancingClearWithParams?.(...args),
     },
 }));
+// The level finder is a binary search over simulations; these tests are about
+// how many times the analysis reaches for it and what it does with the answer,
+// not about the search itself (which has its own tests)
+vi.mock('./labyrinth-level-finder.js', () => ({
+    findMaxLabyrinthLevel: vi.fn(),
+    defaultThreshold: () => 0.7,
+}));
 vi.mock('../../utils/profit-helpers.js', () => ({ resolveItemPrice: vi.fn() }));
 vi.mock('../../utils/market-data.js', () => ({ getItemPrices: vi.fn() }));
 // Partial: the chain solve is stubbed so a test can say how many attempts a run
@@ -166,6 +173,7 @@ const {
     getMainTrainingSkills,
     getPrimaryTrainingSkill,
     primaryLevelsAlongside,
+    runLabyrinthUpgradeAnalysis,
     runLabyrinthAllFightsAnalysis,
     runLabyrinthCombinationCheck,
     labAllFightsTrialBudget,
@@ -214,6 +222,7 @@ const { explainAbilityLevelUpCost } = await import('../../utils/ability-cost-cal
 const { runSimulation, plannedWorkerCount } = await import('./combat-sim-runner.js');
 const { buildGameDataPayload, calculateSimRevenue } = await import('./combat-sim-adapter.js');
 const { runLabyrinthSimulation } = await import('./combat-sim-runner.js');
+const { findMaxLabyrinthLevel } = await import('./labyrinth-level-finder.js');
 
 // The advisor asks the shared pricing rule what one attempt's materials come to.
 // Most tests here are not about that number, so give it a default they can ignore
@@ -6049,5 +6058,131 @@ describe('the skilling escalation walk only climbs items the clear-rate model ca
             (r) => r.candidate.type === 'enhancement' && r.candidate.currentHrid === '/items/necklace_of_speed'
         );
         expect(speed.candidate.upgradeLevel).toBe(20);
+    });
+});
+
+describe('runLabyrinthUpgradeAnalysis ranked by room levels', () => {
+    /**
+     * A labyrinth analysis over a handful of named candidates, with every
+     * candidate beating the baseline by a different margin so the shortlist has
+     * an unambiguous order.
+     * @param {Object} over - Extra params for the analysis
+     * @returns {Promise<Object>} The analysis result
+     */
+    const runWithCandidates = async (over = {}) => {
+        buildGameDataPayload.mockReturnValue(buildGameData());
+        let call = 0;
+        runLabyrinthSimulation.mockImplementation(async () => {
+            const winRate = call === 0 ? 0.5 : 0.5 + call * 0.01;
+            call++;
+            return { labyAttemptCount: 100, encounters: Math.round(winRate * 100) };
+        });
+        const extraCandidates = ['a', 'b', 'c', 'd', 'e'].map((name) => ({
+            type: 'combat_level',
+            // Distinct slots: candidates are deduped on the assignment key, and
+            // for a combat level that key is the slot, not the skill
+            slot: `level_${name}`,
+            skillKey: `${name}Level`,
+            upgradeLevel: 60,
+            description: `Candidate ${name}`,
+        }));
+        return runLabyrinthUpgradeAnalysis(
+            {
+                playerDTOs: [{ equipment: {}, abilities: [], staminaLevel: 50 }],
+                playerIndex: 0,
+                monsterHrid: '/monsters/goblin',
+                roomLevel: 100,
+                crates: [],
+                hours: 1,
+                communityBuffs: {},
+                labyrinthCombatBuffs: [],
+                upgradeMode: 'ability_swap',
+                extraCandidates,
+                ...over,
+            },
+            null,
+            {}
+        );
+    };
+
+    test('is off unless asked for, so today’s table is unchanged', async () => {
+        const result = await runWithCandidates();
+        expect(findMaxLabyrinthLevel).not.toHaveBeenCalled();
+        expect(result.roomLevels).toBeNull();
+    });
+
+    test('runs the expensive search on the shortlist only, plus one baseline', async () => {
+        findMaxLabyrinthLevel.mockImplementation(async ({ playerDTOs }) => ({
+            maxLevel: playerDTOs[0]?.aLevel === 60 ? 137 : 130,
+            cleared: true,
+            aborted: false,
+        }));
+        const result = await runWithCandidates({ rankByRoomLevels: true, roomLevelShortlistSize: 2 });
+
+        expect(findMaxLabyrinthLevel).toHaveBeenCalledTimes(3);
+        expect(result.roomLevels.baselineLevel).toBe(130);
+        // 130 finishes floor 5 (its band tops out at 120); 137 does not reach 6
+        expect(result.roomLevels.baselineFloor).toBe(5);
+        const measured = result.results.filter((r) => r.roomLevelMeasured);
+        expect(measured).toHaveLength(2);
+    });
+
+    test('a candidate that moves the cleared level reports the gain, one that does not reports +0', async () => {
+        findMaxLabyrinthLevel.mockImplementation(async ({ playerDTOs }) => ({
+            maxLevel: playerDTOs[0]?.eLevel === 60 ? 145 : 130,
+            cleared: true,
+            aborted: false,
+        }));
+        const result = await runWithCandidates({ rankByRoomLevels: true, roomLevelShortlistSize: 5 });
+
+        const gained = result.results.find((r) => r.candidate.skillKey === 'eLevel');
+        expect(gained.roomLevelDelta).toBe(15);
+        expect(gained.floorReached).toBe(6);
+        const flat = result.results.find((r) => r.candidate.skillKey === 'aLevel');
+        expect(flat.roomLevelDelta).toBe(0);
+        expect(flat.roomLevelMeasured).toBe(true);
+    });
+
+    test('cancelling stops the pass where it stands', async () => {
+        let searches = 0;
+        findMaxLabyrinthLevel.mockImplementation(async () => {
+            searches++;
+            return { maxLevel: 130, cleared: true, aborted: false };
+        });
+        buildGameDataPayload.mockReturnValue(buildGameData());
+        let call = 0;
+        runLabyrinthSimulation.mockImplementation(async () => {
+            const winRate = call === 0 ? 0.5 : 0.5 + call * 0.01;
+            call++;
+            return { labyAttemptCount: 100, encounters: Math.round(winRate * 100) };
+        });
+        const result = await runLabyrinthUpgradeAnalysis(
+            {
+                playerDTOs: [{ equipment: {}, abilities: [], staminaLevel: 50 }],
+                playerIndex: 0,
+                monsterHrid: '/monsters/goblin',
+                roomLevel: 100,
+                crates: [],
+                hours: 1,
+                communityBuffs: {},
+                labyrinthCombatBuffs: [],
+                upgradeMode: 'ability_swap',
+                rankByRoomLevels: true,
+                roomLevelShortlistSize: 5,
+                extraCandidates: ['a', 'b', 'c'].map((name) => ({
+                    type: 'combat_level',
+                    slot: `level_${name}`,
+                    skillKey: `${name}Level`,
+                    upgradeLevel: 60,
+                    description: `Candidate ${name}`,
+                })),
+            },
+            null,
+            // Cancelled once the baseline search and one candidate are done
+            { abortSignal: () => searches >= 2 }
+        );
+
+        expect(searches).toBe(2);
+        expect(result.roomLevels.aborted).toBe(true);
     });
 });

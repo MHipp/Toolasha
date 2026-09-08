@@ -4,7 +4,7 @@ import { describe, test, expect, beforeEach, vi } from 'vitest';
 const settings = vi.hoisted(() => ({ map: new Map() }));
 
 /** Win rate the mocked runner reports, as a function of room level */
-const sim = vi.hoisted(() => ({ winRateAt: () => 1, probed: [] }));
+const sim = vi.hoisted(() => ({ winRateAt: () => 1, probed: [], precisions: [] }));
 
 vi.mock('../../core/config.js', () => ({
     default: {
@@ -14,8 +14,9 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('./combat-sim-runner.js', () => ({
-    runLabyrinthSimulation: async ({ roomLevel }) => {
+    runLabyrinthSimulation: async ({ roomLevel, precision }) => {
         sim.probed.push(roomLevel);
+        sim.precisions.push(precision || {});
         const attempts = 1000;
         return {
             labyAttemptCount: attempts,
@@ -44,6 +45,7 @@ const params = (over = {}) => ({
 beforeEach(() => {
     settings.map.clear();
     sim.probed = [];
+    sim.precisions = [];
     sim.winRateAt = () => 1;
 });
 
@@ -128,5 +130,30 @@ describe('findMaxLabyrinthLevel', () => {
         sim.winRateAt = (level) => (level <= 150 ? 0.9 : 0.1);
         const result = await findMaxLabyrinthLevel(params({ referenceLevel: 120 }));
         expect(result.avgFightSeconds).toBeCloseTo(20, 6);
+    });
+});
+
+describe('cancelling a search', () => {
+    test('stops probing the moment the abort signal is raised', async () => {
+        sim.winRateAt = () => 1;
+        const result = await findMaxLabyrinthLevel(
+            params({ referenceLevel: 120, abortSignal: () => sim.probed.length >= 2 })
+        );
+        // Two probes, not the dozen a 1-1119 binary search would take
+        expect(sim.probed.length).toBe(2);
+        expect(result.aborted).toBe(true);
+    });
+
+    test('an unaborted search does not claim to have been aborted', async () => {
+        sim.winRateAt = (level) => (level <= 150 ? 0.9 : 0.1);
+        const result = await findMaxLabyrinthLevel(params({ referenceLevel: 120, abortSignal: () => false }));
+        expect(result.aborted).toBe(false);
+        expect(result.maxLevel).toBe(150);
+    });
+
+    test('the probe trial cap can be tightened to the tab’s Max fights', async () => {
+        sim.winRateAt = () => 1;
+        await findMaxLabyrinthLevel(params({ referenceLevel: 120, maxTrials: 250 }));
+        expect(sim.precisions.every((p) => p.maxTrials === 250)).toBe(true);
     });
 });

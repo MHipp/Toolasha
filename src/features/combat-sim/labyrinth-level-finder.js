@@ -80,10 +80,15 @@ export function defaultThreshold() {
  * @param {number} [params.minLevel] - Lowest room level to search
  * @param {number} [params.maxLevel] - Highest room level to search
  * @param {number} [params.simHours=2] - Hours to simulate per level
+ * @param {number} [params.maxTrials] - Fights a single probe may run before it
+ *   gives up deciding. Defaults to DECISION_MAX_TRIALS; a caller with its own
+ *   fight budget (the Upgrade tab's Max fights) passes the tighter of the two
+ * @param {Function} [params.abortSignal] - Polled between probes; a true stops
+ *   the search where it stands and returns what it had
  * @param {Function} [onProgress] - Progress callback ({ level, winRate, step, totalSteps })
  * @returns {Promise<Object>} { maxLevel, winRate, steps, threshold, minLevel,
- *   maxSearched, cleared, atCeiling } — `cleared` is false when nothing in the
- *   window met the bar, in which case `maxLevel` is 0 rather than a level
+ *   maxSearched, cleared, atCeiling, aborted } — `cleared` is false when nothing
+ *   in the window met the bar, in which case `maxLevel` is 0 rather than a level
  */
 export async function findMaxLabyrinthLevel(params, onProgress) {
     const {
@@ -97,7 +102,10 @@ export async function findMaxLabyrinthLevel(params, onProgress) {
         threshold = defaultThreshold(),
         referenceLevel = null,
         simHours = DEFAULT_SIM_HOURS,
+        maxTrials = DECISION_MAX_TRIALS,
+        abortSignal = null,
     } = params;
+    const probeMaxTrials = Math.max(DECISION_MIN_TRIALS, Math.floor(Number(maxTrials) || DECISION_MAX_TRIALS));
 
     const window = searchWindowFor(referenceLevel);
     const minLevel = Math.max(MIN_ROOM_LEVEL, Math.floor(Number(params.minLevel) || window.minLevel));
@@ -111,7 +119,14 @@ export async function findMaxLabyrinthLevel(params, onProgress) {
     let step = 0;
     const totalSteps = Math.ceil(Math.log2(maxLevel - minLevel + 1)) + 1;
 
+    let aborted = false;
     while (low <= high) {
+        // Polled before the probe rather than after it: a search that has been
+        // cancelled should not pay for one more simulation to notice.
+        if (abortSignal?.()) {
+            aborted = true;
+            break;
+        }
         const mid = Math.floor((low + high) / 2);
         step++;
 
@@ -128,7 +143,7 @@ export async function findMaxLabyrinthLevel(params, onProgress) {
             // a few dozen fights; pinning that 90% to a point would take nearly
             // two thousand. Only a level sitting on the bar runs to the cap,
             // and there the search is indifferent to which way it falls.
-            precision: { decideAgainst: threshold, minTrials: DECISION_MIN_TRIALS, maxTrials: DECISION_MAX_TRIALS },
+            precision: { decideAgainst: threshold, minTrials: DECISION_MIN_TRIALS, maxTrials: probeMaxTrials },
             communityBuffs,
             labyrinthCombatBuffs,
             // Build the monster with its full tier-gated kit (stun, defence shred,
@@ -172,5 +187,9 @@ export async function findMaxLabyrinthLevel(params, onProgress) {
         // Still clearing at the top of the window, so the true answer is at
         // least this and possibly higher
         atCeiling: bestLevel === maxLevel,
+        // Cut short. Whatever `maxLevel` holds is a level that did clear, but
+        // the search never ruled out the levels above it, so the caller must
+        // not present it as the answer.
+        aborted,
     };
 }

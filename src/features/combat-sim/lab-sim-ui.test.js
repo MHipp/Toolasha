@@ -1039,7 +1039,9 @@ describe('the Configure fight is analysed at a level that was chosen', () => {
             'labSimSwapAuraOnly_me',
             'labSimUpgradeDimensions_me',
             'labSimUpgradeLevelSource_me',
+            'labSimUpgradeRoomLevels_me',
             'labSimUpgradeScope_me',
+            'labSimUpgradeTargetFloor_me',
         ]);
     });
 
@@ -2983,5 +2985,158 @@ describe('the Skilling tab’s per-character loadout assignments', () => {
 
         expect(storage.written.labSimSkillingLoadouts_alt).toBeUndefined();
         expect(storage.written.labSimSkillingLoadouts_me['/skills/woodcutting']).toBe('Alt WC');
+    });
+});
+
+/**
+ * The Upgrade tab's room-level ranking: the checkbox that turns the second,
+ * dearer pass on, the target floor it aims at, and the two columns it adds.
+ *
+ * Off by default, so an unchanged tab is exactly today's tab.
+ */
+describe('ranking upgrades by room levels', () => {
+    const box = () => ui.panel.querySelector('#mwi-labsim-upgrade-room-levels');
+    const floorInput = () => ui.panel.querySelector('#mwi-labsim-upgrade-target-floor');
+
+    let singleSpy;
+
+    beforeEach(async () => {
+        geometry.saved = null;
+        geometry.wasOpen = false;
+        game.monsters = [{ hrid: '/monsters/mimic', name: 'Mimic' }];
+        game.skipLevels = { '/monsters/mimic': 130 };
+        game.players = [{ hrid: 'p1', equipment: {}, abilities: [], guildShrineLevels: {} }];
+
+        ui.buildPanel();
+        await settle();
+        ui._switchTab('upgrade');
+        ui.panel.querySelector('#mwi-labsim-monster').value = '/monsters/mimic';
+        await ui._restoreUpgradeSelection();
+        ui.panel.querySelector('#mwi-labsim-level-source').value = 'configure';
+
+        singleSpy = vi
+            .spyOn(upgradeAdvisor, 'runLabyrinthUpgradeAnalysis')
+            .mockResolvedValue({ baseline: null, results: [] });
+    });
+
+    afterEach(() => {
+        singleSpy.mockRestore();
+        game.players = [];
+        ui.destroy();
+    });
+
+    test('is off until it is asked for, and hides the floor box with it', () => {
+        expect(box().checked).toBe(false);
+        expect(ui.panel.querySelector('#mwi-labsim-target-floor-label').style.display).toBe('none');
+    });
+
+    test('reaches the single-fight analysis with the window and the fight cap', async () => {
+        await ui._onUpgradeAnalyze();
+        expect(singleSpy.mock.calls[0][0].rankByRoomLevels).toBe(false);
+
+        box().checked = true;
+        box().dispatchEvent(new window.Event('change', { bubbles: true }));
+        expect(ui.panel.querySelector('#mwi-labsim-target-floor-label').style.display).toBe('flex');
+
+        await ui._onUpgradeAnalyze();
+        const params = singleSpy.mock.calls[1][0];
+        expect(params.rankByRoomLevels).toBe(true);
+        // The search window comes from the character, and a probe is bounded by
+        // the same Max fights every other sim on this tab is
+        expect(params.referenceLevel).toBeGreaterThan(0);
+        expect(params.maxTrials).toBe(
+            Math.max(1, parseInt(ui.panel.querySelector('#mwi-labsim-upgrade-maxfights').value, 10))
+        );
+    });
+
+    test('the choice and the target floor are remembered like their neighbours', async () => {
+        box().checked = true;
+        box().dispatchEvent(new window.Event('change', { bubbles: true }));
+        floorInput().value = '7';
+        floorInput().dispatchEvent(new window.Event('change', { bubbles: true }));
+        await settle();
+
+        expect(storage.written.labSimUpgradeRoomLevels_me).toBe(true);
+        expect(storage.written.labSimUpgradeTargetFloor_me).toBe(7);
+    });
+
+    test('the table gains a Levels and a Floor column, and +0 is legible', () => {
+        const container = ui.panel.querySelector('#mwi-labsim-upgrade-results');
+        ui._renderUpgradeResults(
+            {
+                baseline: { winRate: 0.5, encounters: 50, attempts: 100 },
+                roomLevels: {
+                    baselineLevel: 120,
+                    baselineFloor: 5,
+                    baselineCleared: true,
+                    measured: 2,
+                    aborted: false,
+                    shortlistSize: 6,
+                    threshold: 0.7,
+                    targetFloor: 6,
+                },
+                results: [
+                    {
+                        candidate: { description: 'Deep Upgrade' },
+                        costType: 'gold',
+                        cost: 1e6,
+                        winRate: 0.6,
+                        winRateDelta: 0.1,
+                        metricType: 'winRate',
+                        roomLevelDelta: 20,
+                        maxRoomLevel: 140,
+                        floorReached: 6,
+                        roomLevelMeasured: true,
+                    },
+                    {
+                        candidate: { description: 'Flat Upgrade' },
+                        costType: 'gold',
+                        cost: 5e5,
+                        winRate: 0.51,
+                        winRateDelta: 0.01,
+                        metricType: 'winRate',
+                        roomLevelDelta: 0,
+                        maxRoomLevel: 120,
+                        floorReached: 5,
+                        roomLevelMeasured: true,
+                    },
+                ],
+            },
+            container
+        );
+
+        const html = container.innerHTML;
+        expect(html).toContain('Levels');
+        expect(html).toContain('Floor');
+        expect(html).toContain('+20');
+        // The upgrade that changes nothing says so, rather than going blank
+        expect(html).toContain('+0');
+        // Floor 6's requirement is the top of its band, not its average room
+        expect(html).toContain('room level <b>140</b>');
+        // Ranked in levels, so the biggest gain is the first row
+        expect(html.indexOf('Deep Upgrade')).toBeLessThan(html.indexOf('Flat Upgrade'));
+    });
+
+    test('the table is untouched when the pass was not run', () => {
+        const container = ui.panel.querySelector('#mwi-labsim-upgrade-results');
+        ui._renderUpgradeResults(
+            {
+                baseline: { winRate: 0.5, encounters: 50, attempts: 100 },
+                roomLevels: null,
+                results: [
+                    {
+                        candidate: { description: 'Some Upgrade' },
+                        costType: 'gold',
+                        cost: 1e6,
+                        winRate: 0.6,
+                        winRateDelta: 0.1,
+                        metricType: 'winRate',
+                    },
+                ],
+            },
+            container
+        );
+
+        expect(container.innerHTML).not.toContain('Levels');
     });
 });

@@ -7,7 +7,13 @@
 
 import { describe, test, expect } from 'vitest';
 
-import { labyrinthGridSize, labyrinthRoomRewards } from './labyrinth-formulas.js';
+import {
+    labyrinthFloorClearLevel,
+    labyrinthFloorForLevel,
+    labyrinthFloorLevelBand,
+    labyrinthGridSize,
+    labyrinthRoomRewards,
+} from './labyrinth-formulas.js';
 
 describe('official labyrinth reward tables', () => {
     test('a challenge room rolls MIN(Floor × 5%, 50%) for a token, capped from floor 10', () => {
@@ -93,5 +99,50 @@ describe('labyrinthGridSize', () => {
     test('there is no grid below floor 1', () => {
         expect(labyrinthGridSize(0)).toBe(0);
         expect(labyrinthGridSize(null)).toBe(0);
+    });
+});
+
+describe('the floor ↔ room-level model', () => {
+    test('floor 1 runs 20-40 and each floor adds 20', () => {
+        expect(labyrinthFloorLevelBand(1)).toEqual({ minLevel: 20, maxLevel: 40 });
+        expect(labyrinthFloorLevelBand(2)).toEqual({ minLevel: 40, maxLevel: 60 });
+        expect(labyrinthFloorLevelBand(5)).toEqual({ minLevel: 100, maxLevel: 120 });
+    });
+
+    test('there is no band below floor 1', () => {
+        expect(labyrinthFloorLevelBand(0)).toBeNull();
+        expect(labyrinthFloorLevelBand(null)).toBeNull();
+    });
+
+    test('clearing a floor means clearing the top of its band, where the exit is', () => {
+        expect(labyrinthFloorClearLevel(1)).toBe(40);
+        expect(labyrinthFloorClearLevel(5)).toBe(120);
+        expect(labyrinthFloorClearLevel(0)).toBe(0);
+    });
+
+    test('the inverse gives the deepest floor a level fully covers', () => {
+        expect(labyrinthFloorForLevel(40)).toBe(1);
+        expect(labyrinthFloorForLevel(120)).toBe(5);
+        expect(labyrinthFloorForLevel(2000)).toBe(99);
+    });
+
+    test('a level one short of the exit does not reach the floor', () => {
+        expect(labyrinthFloorForLevel(39)).toBe(0);
+        expect(labyrinthFloorForLevel(119)).toBe(4);
+        expect(labyrinthFloorForLevel(59)).toBe(1);
+    });
+
+    test('a level below the first floor’s exit reaches no floor at all', () => {
+        expect(labyrinthFloorForLevel(0)).toBe(0);
+        expect(labyrinthFloorForLevel(20)).toBe(0);
+        expect(labyrinthFloorForLevel(null)).toBe(0);
+    });
+
+    test('the band and its inverse agree at every boundary', () => {
+        for (let floor = 1; floor <= 30; floor++) {
+            const band = labyrinthFloorLevelBand(floor);
+            expect(labyrinthFloorForLevel(band.maxLevel)).toBe(floor);
+            expect(labyrinthFloorForLevel(band.maxLevel - 1)).toBe(floor - 1);
+        }
     });
 });

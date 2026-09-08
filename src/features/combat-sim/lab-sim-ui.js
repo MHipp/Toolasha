@@ -93,6 +93,8 @@ import { createEtaTracker } from '../../utils/progress-eta.js';
 import { toCsv, csvFilename, downloadCsv } from '../../utils/csv-export.js';
 import { SimEditor } from './sim-editor.js';
 import bundledLabyrinthClearRate from '../combat/labyrinth-clear-rate.js';
+import { labyrinthFloorClearLevel } from '../combat/labyrinth-formulas.js';
+import { ROOM_LEVEL_SHORTLIST_SIZE } from './labyrinth-upgrade-levels.js';
 import { labyrinthClearRate, loadoutSnapshot } from '../../utils/bundle-bridge.js';
 import bundledLoadoutSnapshot from '../combat/loadout-snapshot.js';
 
@@ -148,6 +150,18 @@ const UPGRADE_SWAP_AURA_KEY = 'labSimSwapAuraOnly';
  * guild cannot sell is not an upgrade anyone can buy.
  */
 const SHRINE_CAP_GUILD_KEY = 'labSimShrineCapToGuild';
+
+/**
+ * Whether the Upgrade tab follows its win-rate pass with the room-level search.
+ *
+ * Off until asked for: the search is a binary search of simulations per
+ * shortlisted candidate on top of what is already the panel's dearest run, and
+ * the table it adds to is exactly today's while it is off.
+ */
+const UPGRADE_ROOM_LEVELS_KEY = 'labSimUpgradeRoomLevels';
+
+/** The floor the room-level pass is aiming at, 0 for none. */
+const UPGRADE_TARGET_FLOOR_KEY = 'labSimUpgradeTargetFloor';
 
 /**
  * Labyrinth token levels the Configure tab is simulating under.
@@ -533,6 +547,42 @@ async function openPlanInMarketplace(picks) {
     }
 
     return items.length;
+}
+
+/**
+ * The room-level cells one result row contributes, or null when the pass was
+ * not run.
+ *
+ * `+0` rather than a blank or a dash wherever the pass ran: "this changes
+ * nothing" is the answer for most upgrades and is the one thing a ranking in
+ * room levels must not hide. A row the shortlist did not reach says so in its
+ * tooltip rather than dressing an unmeasured zero as a measured one.
+ *
+ * @param {Object} result - One result row, annotated by `measureRoomLevelGains`
+ * @param {Object} roomLevels - The analysis's `roomLevels` summary
+ * @returns {{delta: number, deltaStr: string, deltaColor: string, floor: number,
+ *   floorStr: string, title: string, reachesTarget: boolean}}
+ */
+function roomLevelCells(result, roomLevels) {
+    const delta = Math.round(Number(result.roomLevelDelta) || 0);
+    const measured = Boolean(result.roomLevelMeasured);
+    const baselineFloor = roomLevels?.baselineFloor || 0;
+    const floor = measured ? result.floorReached || 0 : baselineFloor;
+    const targetFloor = Math.max(0, Math.floor(Number(roomLevels?.targetFloor) || 0));
+    const level = measured ? result.maxRoomLevel : roomLevels?.baselineLevel || 0;
+    return {
+        delta,
+        deltaStr: (delta >= 0 ? '+' : '') + delta,
+        deltaColor: !measured ? '#666' : delta > 0 ? '#4caf50' : delta < 0 ? '#f44336' : '#888',
+        floor,
+        floorStr: floor > 0 ? `F${floor}` : '\u2014',
+        reachesTarget: targetFloor > 0 && floor >= targetFloor,
+        title: measured
+            ? `Clears room level ${level}, which finishes floor ${floor} (its exit room is level ` +
+              `${labyrinthFloorClearLevel(floor)}).`
+            : 'Not searched — this upgrade did not rank inside the measured shortlist, so it is reported ' +
+              'as +0 rather than measured.',
+    };
 }
 
 class LabSimUI {
@@ -940,6 +990,18 @@ class LabSimUI {
                     ).join('')}
                 </select>
                 <span id="mwi-labsim-level-source-resolved" style="color:#666; font-size:11px; white-space:nowrap;"></span>
+            </label>
+            <label id="mwi-labsim-room-levels-label" style="display:flex; align-items:center; gap:4px; color:#888; font-size:12px; cursor:pointer;"
+                title="After the win-rate pass, measure the top ${ROOM_LEVEL_SHORTLIST_SIZE} upgrades in room levels: how much deeper this character clears at the Target Win % bar, and which floor that reaches. Floor N runs levels 20N to 20N+20, and reaching a floor means clearing the TOP of its band — the exit sits in the far corner, so a floor you cannot finish is a floor you have not got. Configure-fight scope only, and it adds a binary search of sims per measured upgrade.">
+                <input type="checkbox" id="mwi-labsim-upgrade-room-levels" style="margin:0; cursor:pointer;">
+                Room levels
+            </label>
+            <label id="mwi-labsim-target-floor-label" style="display:none; align-items:center; gap:4px; color:#888; font-size:12px;"
+                title="The floor you are trying to finish. Its requirement is the top of its own band — floor N needs room level 20N+20, the exit room — and the rows say which upgrades reach it.">
+                Floor
+                <input id="mwi-labsim-upgrade-target-floor" type="number" min="1" step="1" placeholder="—" style="
+                    width:48px; text-align:center; background:#1a1a2e; color:#e0e0e0; border:1px solid #444;
+                    border-radius:4px; padding:3px 4px; font-size:12px;">
             </label>
             <span id="mwi-labsim-scope-summary" style="color:#666; font-size:11px;"></span>
         `;
@@ -1384,6 +1446,15 @@ class LabSimUI {
             void this._saveUpgradeSelection();
         });
         this.panel.querySelector('#mwi-labsim-shrine-cap-guild')?.addEventListener('change', () => {
+            void this._saveUpgradeSelection();
+        });
+        this.panel.querySelector('#mwi-labsim-upgrade-room-levels')?.addEventListener('change', () => {
+            this._refreshRoomLevelControls();
+            void this._saveUpgradeSelection();
+        });
+        this.panel.querySelector('#mwi-labsim-upgrade-target-floor')?.addEventListener('change', (e) => {
+            const floor = Math.max(0, parseInt(e.target.value, 10) || 0);
+            e.target.value = floor ? String(floor) : '';
             void this._saveUpgradeSelection();
         });
         void this._restoreUpgradeSelection();
@@ -1892,6 +1963,8 @@ class LabSimUI {
                     Boolean(this.panel?.querySelector('#mwi-labsim-shrine-cap-guild')?.checked),
                     'settings'
                 ),
+                writeScoped(UPGRADE_ROOM_LEVELS_KEY, this._getRankByRoomLevels(), 'settings'),
+                writeScoped(UPGRADE_TARGET_FLOOR_KEY, this._getTargetFloor(), 'settings'),
             ]);
         } catch (error) {
             console.error('[LabSimUI] Failed to save upgrade selection:', error);
@@ -1913,6 +1986,34 @@ class LabSimUI {
     }
 
     /**
+     * Whether the Upgrade tab should measure room levels after ranking win rates.
+     * @returns {boolean}
+     * @private
+     */
+    _getRankByRoomLevels() {
+        return Boolean(this.panel?.querySelector('#mwi-labsim-upgrade-room-levels')?.checked);
+    }
+
+    /**
+     * The floor the room-level pass is aiming at, 0 when none is set.
+     * @returns {number}
+     * @private
+     */
+    _getTargetFloor() {
+        return Math.max(0, parseInt(this.panel?.querySelector('#mwi-labsim-upgrade-target-floor')?.value, 10) || 0);
+    }
+
+    /**
+     * Show the target-floor box only while the room-level pass is on — the floor
+     * is read off that measurement and means nothing without it.
+     * @private
+     */
+    _refreshRoomLevelControls() {
+        const label = this.panel?.querySelector('#mwi-labsim-target-floor-label');
+        if (label) label.style.display = this._getRankByRoomLevels() ? 'flex' : 'none';
+    }
+
+    /**
      * Restore the remembered selection, migrating anyone still carrying the
      * retired single-mode value.
      * @private
@@ -1924,6 +2025,8 @@ class LabSimUI {
         // Defaults on: a shrine level the guild's shrine building cannot sell
         // is not an upgrade the character can buy, however well it would rank
         let savedShrineCapGuild = true;
+        let savedRoomLevels = false;
+        let savedTargetFloor = 0;
         try {
             // Every key resolved before the first await, for the same reason
             // the save issues its writes together: read one at a time, a switch
@@ -1932,12 +2035,22 @@ class LabSimUI {
             // that mixture back over whichever character was current.
             let savedDimensions;
             let savedScope;
-            [savedDimensions, savedScope, savedLevelSource, savedAuraOnly, savedShrineCapGuild] = await Promise.all([
+            [
+                savedDimensions,
+                savedScope,
+                savedLevelSource,
+                savedAuraOnly,
+                savedShrineCapGuild,
+                savedRoomLevels,
+                savedTargetFloor,
+            ] = await Promise.all([
                 readScoped(UPGRADE_DIMENSIONS_KEY, 'settings', null),
                 readScoped(UPGRADE_SCOPE_KEY, 'settings', null),
                 readScoped(UPGRADE_LEVEL_SOURCE_KEY, 'settings', null),
                 readScoped(UPGRADE_SWAP_AURA_KEY, 'settings', false),
                 readScoped(SHRINE_CAP_GUILD_KEY, 'settings', true),
+                readScoped(UPGRADE_ROOM_LEVELS_KEY, 'settings', false),
+                readScoped(UPGRADE_TARGET_FLOOR_KEY, 'settings', 0),
             ]);
             savedAuraOnly = Boolean(savedAuraOnly);
             savedShrineCapGuild = Boolean(savedShrineCapGuild);
@@ -1969,6 +2082,14 @@ class LabSimUI {
         if (signatureBox) signatureBox.checked = savedAuraOnly;
         const shrineCapBox = this.panel.querySelector('#mwi-labsim-shrine-cap-guild');
         if (shrineCapBox) shrineCapBox.checked = savedShrineCapGuild;
+        const roomLevelsBox = this.panel.querySelector('#mwi-labsim-upgrade-room-levels');
+        if (roomLevelsBox) roomLevelsBox.checked = Boolean(savedRoomLevels);
+        const targetFloorInput = this.panel.querySelector('#mwi-labsim-upgrade-target-floor');
+        if (targetFloorInput) {
+            const floor = Math.max(0, Math.floor(Number(savedTargetFloor) || 0));
+            targetFloorInput.value = floor ? String(floor) : '';
+        }
+        this._refreshRoomLevelControls();
         this._populateUpgradeTargets(selection.monsters);
         this._onUpgradeSelectionChanged();
     }
@@ -2930,6 +3051,13 @@ class LabSimUI {
                     guildShrineTargets,
                     guildShrineCapToGuild,
                     tokenLevels,
+                    // The second ranking pass, and the two numbers it needs:
+                    // the window the level search runs over (the character's
+                    // own level) and this tab's fight cap, so a search probe is
+                    // bounded by the same Max fights every other sim here is.
+                    rankByRoomLevels: this._getRankByRoomLevels(),
+                    referenceLevel: (labyrinthClearRate() || bundledLabyrinthClearRate).getPlayerEffectiveCombatLevel(),
+                    maxTrials: upgradeUncapped ? undefined : upgradeMaxFights,
                     extraCandidates: this._extraDimensionCandidates(
                         plan.extraModes,
                         playerDTOs[playerIndex],
@@ -2968,6 +3096,9 @@ class LabSimUI {
             // run" note before drawing, and remember the new results (opt-in).
             this._restoredUpgradeAt = null;
             this._restoredUpgradeMeta = null;
+            // Travels with the results rather than being read at draw time: a
+            // restored set was measured against whatever floor was set then
+            if (analysisResult?.roomLevels) analysisResult.roomLevels.targetFloor = this._getTargetFloor();
             this._renderUpgradeResults(analysisResult, resultsEl);
             // The remembered set is per character and has no undo: writing this
             // run under the character who arrived mid-analysis would delete the
@@ -4279,6 +4410,12 @@ class LabSimUI {
             return;
         }
 
+        // The second ranking pass, when it was run. Its columns are added to the
+        // token and gold tables; the community rows are ranked on experience and
+        // never touched whether a room is cleared, so they get none.
+        const roomLevels = analysisResult?.roomLevels || null;
+        const targetFloor = Math.max(0, Math.floor(Number(roomLevels?.targetFloor) || 0));
+
         const tokenResults = results.filter((r) => r.costType === 'token');
         const goldResults = results.filter((r) => r.costType === 'gold');
         const communityResults = results.filter((r) => r.costType === 'community');
@@ -4316,7 +4453,20 @@ class LabSimUI {
             const tokensPerPct = deltaVal > 0 ? Math.round(tokenCost / deltaVal) : Infinity;
             const tokensPerPctStr = deltaVal > 0 ? formatWithSeparator(tokensPerPct) : '\u2014';
 
+            const levels = roomLevels ? roomLevelCells(r, roomLevels) : null;
+
             return {
+                ...(levels
+                    ? {
+                          roomLevelDelta: levels.delta,
+                          roomLevelStr: levels.deltaStr,
+                          roomLevelColor: levels.deltaColor,
+                          floorVal: levels.floor,
+                          floorStr: levels.floorStr,
+                          levelTitle: levels.title,
+                          reachesTarget: levels.reachesTarget,
+                      }
+                    : {}),
                 desc: r.candidate?.description || '',
                 // Whatever handoff buttons the shared builder emits for this
                 // row — never a hand-picked subset of them, so a button added
@@ -4339,7 +4489,20 @@ class LabSimUI {
             const winRate = (r.winRate || 0) * 100;
             const goldPerPct = goldPerPercent(r.cost, delta);
 
+            const levels = roomLevels ? roomLevelCells(r, roomLevels) : null;
+
             return {
+                ...(levels
+                    ? {
+                          roomLevelDelta: levels.delta,
+                          roomLevelStr: levels.deltaStr,
+                          roomLevelColor: levels.deltaColor,
+                          floorVal: levels.floor,
+                          floorStr: levels.floorStr,
+                          levelTitle: levels.title,
+                          reachesTarget: levels.reachesTarget,
+                      }
+                    : {}),
                 desc: r.candidate?.description || '',
                 actions: combatSimUI.upgradeRowActionsHtml(r),
                 // Unpriced sorts last rather than as the cheapest thing on the
@@ -4376,9 +4539,12 @@ class LabSimUI {
         });
 
         // Sort state
+        // With the room-level pass on, the table opens on the currency it was
+        // asked for. The cost-efficiency columns are untouched and one click
+        // away, so nothing that was on this table has changed meaning.
         const sortState = {
-            token: { key: 'tokensPerPct', dir: 'asc' },
-            gold: { key: 'goldPerPct', dir: 'asc' },
+            token: roomLevels ? { key: 'roomLevelDelta', dir: 'desc' } : { key: 'tokensPerPct', dir: 'asc' },
+            gold: roomLevels ? { key: 'roomLevelDelta', dir: 'desc' } : { key: 'goldPerPct', dir: 'asc' },
             community: { key: 'xpDelta', dir: 'desc' },
         };
 
@@ -4392,6 +4558,21 @@ class LabSimUI {
         };
 
         const arrow = (dir) => (dir === 'asc' ? ' \u25B2' : ' \u25BC');
+
+        /**
+         * The Levels and Floor cells, empty when the pass was not run.
+         * @param {Object} row - A prepared token or gold row
+         * @returns {string} HTML
+         */
+        const roomLevelCellsHtml = (row) => {
+            if (!roomLevels) return '';
+            const reached = row.reachesTarget ? ' font-weight:700;' : '';
+            const floorColor = row.reachesTarget ? '#4caf50' : '#888';
+            return (
+                `<td style="${tdStyle} color:${row.roomLevelColor}; font-weight:600;" title="${escapeHtmlAttribute(row.levelTitle)}">${row.roomLevelStr}</td>` +
+                `<td style="${tdStyle} color:${floorColor};${reached}" title="${escapeHtmlAttribute(row.levelTitle)}">${row.floorStr}</td>`
+            );
+        };
 
         const renderTokenTable = () => {
             const s = sortState.token;
@@ -4408,6 +4589,8 @@ class LabSimUI {
                 ${th('Tokens', 'tokenCost', 'right')}
                 ${th('Rate', 'rateVal', 'right')}
                 ${th('Delta', 'deltaVal', 'right')}
+                ${roomLevels ? th('Levels', 'roomLevelDelta', 'right') : ''}
+                ${roomLevels ? th('Floor', 'floorVal', 'right') : ''}
                 ${th('Tokens/1%', 'tokensPerPct', 'right')}
             </tr></thead><tbody>`;
 
@@ -4417,6 +4600,7 @@ class LabSimUI {
                     <td style="${tdStyle} color:#ccc;">${row.tokenCost || '\u2014'}</td>
                     <td style="${tdStyle} color:#ccc;">${row.rateStr}</td>
                     <td style="${tdStyle} color:${row.deltaColor}; font-weight:600;">${row.deltaStr}</td>
+                    ${roomLevelCellsHtml(row)}
                     <td style="${tdStyle} color:#888;">${row.tokensPerPctStr}</td>
                 </tr>`;
             }
@@ -4439,6 +4623,8 @@ class LabSimUI {
                 ${th('Cost', 'cost', 'right')}
                 ${th('Win Rate', 'winRate', 'right')}
                 ${th('Delta', 'deltaVal', 'right')}
+                ${roomLevels ? th('Levels', 'roomLevelDelta', 'right') : ''}
+                ${roomLevels ? th('Floor', 'floorVal', 'right') : ''}
                 ${th('Gold/1%', 'goldPerPct', 'right')}
             </tr></thead><tbody>`;
 
@@ -4448,10 +4634,11 @@ class LabSimUI {
                     <td style="${tdStyle} color:#ccc;">${row.costStr}</td>
                     <td style="${tdStyle} color:#ccc;">${row.winRateStr}</td>
                     <td style="${tdStyle} color:${row.deltaColor}; font-weight:600;">${row.deltaStr}</td>
+                    ${roomLevelCellsHtml(row)}
                     <td style="${tdStyle} color:#888;">${row.goldPerPctStr}</td>
                 </tr>
                 <tr data-gold-detail="${i}" style="display:none;">
-                    <td colspan="5" style="padding:6px 10px; background:#0d0d1a; border-bottom:1px solid #222;">
+                    <td colspan="${roomLevels ? 7 : 5}" style="padding:6px 10px; background:#0d0d1a; border-bottom:1px solid #222;">
                         ${row.detailHtml}
                     </td>
                 </tr>`;
@@ -4501,6 +4688,45 @@ class LabSimUI {
             return html;
         };
 
+        /**
+         * What the room-level pass measured, above the tables it annotated.
+         * @returns {string} HTML
+         */
+        const renderRoomLevelSummary = () => {
+            const bar = `${Math.round((roomLevels.threshold || defaultThreshold()) * 100)}%`;
+            const parts = [];
+            if (roomLevels.baselineCleared) {
+                parts.push(
+                    `Today this loadout clears room level <b>${roomLevels.baselineLevel}</b> at ${bar} — ` +
+                        `floor <b>${roomLevels.baselineFloor}</b> finished` +
+                        (roomLevels.baselineFloor > 0
+                            ? ` (its exit room is level ${labyrinthFloorClearLevel(roomLevels.baselineFloor)})`
+                            : '') +
+                        '.'
+                );
+                parts.push(
+                    `Levels is what the top ${roomLevels.shortlistSize} upgrades move that by; every other row ` +
+                        'reads +0 because it was not searched.'
+                );
+            } else {
+                parts.push(`No room in this character’s range cleared at ${bar}, so there is no level to move.`);
+            }
+            if (targetFloor > 0) {
+                const need = labyrinthFloorClearLevel(targetFloor);
+                parts.push(
+                    `Floor ${targetFloor} needs room level <b>${need}</b> — its exit room, not its average one — ` +
+                        `which is ${need - roomLevels.baselineLevel > 0 ? `${need - roomLevels.baselineLevel} levels away` : 'already cleared'}.`
+                );
+            }
+            if (roomLevels.aborted) parts.push('Stopped early: the rows below it were never searched.');
+            return (
+                `<div style="margin:0 0 8px; padding:5px 8px; font-size:11px; color:#9ab; line-height:1.5; ` +
+                `background:rgba(120,150,190,0.10); border:1px solid rgba(120,150,190,0.25); border-radius:5px;">` +
+                parts.join(' ') +
+                `</div>`
+            );
+        };
+
         const renderAll = () => {
             sortRows(tokenRows, sortState.token.key, sortState.token.dir);
             sortRows(goldRows, sortState.gold.key, sortState.gold.dir);
@@ -4509,6 +4735,7 @@ class LabSimUI {
             if (this._restoredUpgradeAt) {
                 html += this._restoredUpgradeNote(this._restoredUpgradeAt, this._restoredUpgradeMeta);
             }
+            if (roomLevels) html += renderRoomLevelSummary();
             if (tokenResults.length > 0) html += renderTokenTable();
             if (communityResults.length > 0) html += renderCommunityTable();
             if (goldResults.length > 0) html += renderGoldTable();

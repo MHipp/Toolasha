@@ -144,3 +144,60 @@ export function roomXpPerHour(xpPerRoom, expectedSeconds, clearChance) {
     if (!Number.isFinite(expectedSeconds) || expectedSeconds <= 0) return 0;
     return (xpPerRoom * 3600) / (expectedSeconds + ROOM_TRAVEL_SECONDS);
 }
+
+/**
+ * Room levels one floor spans. Floor 1 runs 20-40 and every floor adds 20, so
+ * floor N covers 20N to 20N + 20.
+ *
+ * From the game's own in-game labyrinth guide, which states the bands and the
+ * grid sizes together. The grid half of that page — floor 1 is 4x4, floor 2
+ * 5x5, floor 3 6x6, floor 4 7x7, floor 5 and beyond 8x8 — reproduces
+ * `labyrinthGridSize` above exactly, which is independent corroboration that
+ * the level half is being read off the right source.
+ *
+ * Bands meet rather than tile: level 40 is both the top of floor 1 and the
+ * bottom of floor 2. `labyrinthFloorForLevel` resolves that consistently by
+ * asking which floors a level covers *completely*.
+ */
+export const LEVELS_PER_FLOOR = 20;
+
+/**
+ * The room levels a floor spans.
+ * @param {number} floor - Labyrinth floor number
+ * @returns {{minLevel: number, maxLevel: number}|null} Null below floor 1
+ */
+export function labyrinthFloorLevelBand(floor) {
+    const f = Math.max(0, Math.floor(Number(floor) || 0));
+    if (f < 1) return null;
+    return { minLevel: LEVELS_PER_FLOOR * f, maxLevel: LEVELS_PER_FLOOR * (f + 1) };
+}
+
+/**
+ * The room level that clearing a floor actually demands: the top of its band.
+ *
+ * A floor you cannot finish is a floor you have not got — the exit sits at the
+ * far corner of the grid, so the deepest room on the floor is on the way to it,
+ * not an optional detour. This is deliberately not the floor's average or
+ * median room.
+ *
+ * @param {number} floor - Labyrinth floor number
+ * @returns {number} Room level, 0 below floor 1
+ */
+export function labyrinthFloorClearLevel(floor) {
+    return labyrinthFloorLevelBand(floor)?.maxLevel ?? 0;
+}
+
+/**
+ * The deepest floor a character clearing up to `level` gets all the way through.
+ *
+ * The inverse of `labyrinthFloorClearLevel`: clearing level 40 finishes floor 1,
+ * and level 39 finishes none of it, because the room one short of the exit is
+ * still a room between you and the exit.
+ *
+ * @param {number} level - Highest room level cleared
+ * @returns {number} Floor number, 0 when not even floor 1 is finished
+ */
+export function labyrinthFloorForLevel(level) {
+    const l = Math.max(0, Math.floor(Number(level) || 0));
+    return Math.max(0, Math.floor(l / LEVELS_PER_FLOOR) - 1);
+}

@@ -35,6 +35,8 @@ import { buildOverridesForSkill } from './skilling-sim-helpers.js';
 import { priceGuildCreditCosts } from '../../utils/guild-credit-pricing.js';
 import { describeGuildTokenGold, explainGuildTokenValue } from '../guild/guild-token-value.js';
 import { COMBAT_SCROLL_LABELS, COMBAT_SCROLL_BUFF_TYPES } from '../../utils/combat-scroll-buffs.js';
+import { findMaxLabyrinthLevel, defaultThreshold } from './labyrinth-level-finder.js';
+import { measureRoomLevelGains, ROOM_LEVEL_SHORTLIST_SIZE } from './labyrinth-upgrade-levels.js';
 
 /** Enhancement breakpoints by slot type */
 const BREAKPOINTS_DEFAULT = [7, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20];
@@ -4261,6 +4263,15 @@ function explainLabCandidateCost(candidate, gameData) {
  *   built to Lv4 stops at Lv4
  * @param {Object} [params.tokenLevels] - buffKey → level the token rows step up from,
  *   matching whatever `labyrinthCombatBuffs` was built out of
+ * @param {boolean} [params.rankByRoomLevels=false] - Follow the win-rate pass with a
+ *   binary-search level finder over the best-ranked candidates, so the table can be
+ *   read in room levels gained and the floor those levels reach
+ * @param {number} [params.referenceLevel] - The character's effective combat level,
+ *   which sets the level search's window
+ * @param {number} [params.roomLevelShortlistSize] - How many candidates get the
+ *   expensive search; defaults to ROOM_LEVEL_SHORTLIST_SIZE
+ * @param {number} [params.maxTrials] - Fight cap for a single level-search probe,
+ *   so the tab's Max fights bounds this pass too
  * @param {Function} onProgress - Called with { current, total, description }
  * @param {Object} [options] - { abortSignal: () => boolean }
  * @returns {Promise<Object>} { baseline, results: [{candidate, costType, ...}] }
@@ -4289,6 +4300,10 @@ export async function runLabyrinthUpgradeAnalysis(params, onProgress, options = 
         guildShrineCapToGuild = false,
         tokenLevels = null,
         extraCandidates = [],
+        rankByRoomLevels = false,
+        referenceLevel = null,
+        roomLevelShortlistSize = ROOM_LEVEL_SHORTLIST_SIZE,
+        maxTrials = null,
     } = params;
     const { abortSignal } = options;
     const gameData = buildGameDataPayload();
@@ -4553,6 +4568,52 @@ export async function runLabyrinthUpgradeAnalysis(params, onProgress, options = 
         return bDelta - aDelta;
     });
 
+    // ── Room levels gained ──
+    //
+    // A second, dearer pass over the best of the above. Everything up to here
+    // is measured at one room level; this asks the question the labyrinth is
+    // actually scored on — how much deeper the character can go — and it costs
+    // a binary search per candidate, so only the shortlist gets one.
+    let roomLevels = null;
+    if (rankByRoomLevels) {
+        const threshold = defaultThreshold();
+        const searchFor = (dto, buffs) =>
+            findMaxLabyrinthLevel({
+                gameData,
+                playerDTOs: [dto],
+                zoneHrid,
+                monsterHrid,
+                crates,
+                simHours: hours,
+                communityBuffs,
+                labyrinthCombatBuffs: buffs,
+                threshold,
+                referenceLevel,
+                maxTrials: maxTrials ?? undefined,
+                abortSignal,
+            });
+
+        const levelTotal = Math.min(roomLevelShortlistSize, results.length) + 1;
+        roomLevels = await measureRoomLevelGains(results, {
+            shortlistSize: roomLevelShortlistSize,
+            abortSignal,
+            onProgress: ({ current, description }) =>
+                onProgress?.({
+                    current: progress.current,
+                    total,
+                    description: `Room levels ${current}/${levelTotal}: ${description}`,
+                }),
+            measure: (result) => {
+                if (!result) return searchFor(playerDTOs[playerIndex], labyrinthCombatBuffs);
+                const candidate = result.candidate;
+                return result.costType === 'token'
+                    ? searchFor(playerDTOs[playerIndex], buildModifiedCombatBuffs(labyrinthCombatBuffs, candidate))
+                    : searchFor(applyCandidateToDTO(playerDTOs[playerIndex], candidate), labyrinthCombatBuffs);
+            },
+        });
+        roomLevels.threshold = threshold;
+    }
+
     return {
         baseline: {
             winRate: baselineWinRate,
@@ -4561,6 +4622,7 @@ export async function runLabyrinthUpgradeAnalysis(params, onProgress, options = 
             xpPerRoom: baselineXpPerAttempt,
         },
         results,
+        roomLevels,
     };
 }
 
