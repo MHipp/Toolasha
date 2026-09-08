@@ -106,7 +106,12 @@ export function computeLiveProjection(now = Date.now()) {
             break;
         }
 
-        const timing = actionTimeDisplay.calculateSingleQueueActionTime(actionObj, actionDetails, inventoryLookup);
+        // Counted rows are capped by what the ledger can actually pay for, as in the queue
+        // tooltip: a row asking for 500 with materials for 40 runs 40 and hands the queue on
+        // early. Without the cap the projection reported an idle time far later than the truth.
+        const timing = actionTimeDisplay.calculateSingleQueueActionTime(actionObj, actionDetails, inventoryLookup, {
+            limitCountedByMaterials: true,
+        });
 
         // The walk is sequential in time, so it has to be sequential in materials too: this
         // action's inputs are gone before the next one is costed. Without the ledger every

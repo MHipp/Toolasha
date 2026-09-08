@@ -439,7 +439,11 @@ class ActionTimeDisplay {
                 const actionDetails = dataManager.getActionDetails(actionObj.actionHrid);
                 if (!actionDetails) continue;
 
-                const result = this.calculateSingleQueueActionTime(actionObj, actionDetails, inventoryLookup);
+                // The walk costs each row against what its predecessors left, so a counted
+                // row is shown for what it can actually run, not for what it asked.
+                const result = this.calculateSingleQueueActionTime(actionObj, actionDetails, inventoryLookup, {
+                    limitCountedByMaterials: true,
+                });
 
                 // The queue is walked in order, so this row's materials are gone before the
                 // next row is costed — otherwise every row claims the whole starting bag.
@@ -555,7 +559,9 @@ class ActionTimeDisplay {
         const actionDetails = dataManager.getActionDetails(currentAction.actionHrid);
         if (!actionDetails) return null;
 
-        const result = this.calculateSingleQueueActionTime(currentAction, actionDetails, inventoryLookup);
+        const result = this.calculateSingleQueueActionTime(currentAction, actionDetails, inventoryLookup, {
+            limitCountedByMaterials: true,
+        });
         this.deductQueueActionMaterials(inventoryLookup, actionDetails, currentAction, result);
 
         return {
@@ -570,10 +576,15 @@ class ActionTimeDisplay {
      * @param {Object} actionObj - Action object from dataManager cache
      * @param {Object} actionDetails - Action details from dataManager
      * @param {Object} inventoryLookup - Inventory lookup map
+     * @param {Object} [options] - {limitCountedByMaterials} — cap a counted row's request at
+     *   what the lookup can actually pay for. Off by default: this helper also answers for a
+     *   single, unqueued action, where the whole bag is the right basis and the requested
+     *   count is what the player asked to run. Only the queue walks, which cost each row
+     *   against a running ledger, ask for the cap.
      * @returns {Object} { totalTime, actionTimeSeconds, count, baseActionsNeeded, isTrulyInfinite,
      *      isInfinite, materialLimit, limitType, limitLabel, materialLimitIsEstimated, isEnhancing }
      */
-    calculateSingleQueueActionTime(actionObj, actionDetails, inventoryLookup) {
+    calculateSingleQueueActionTime(actionObj, actionDetails, inventoryLookup, options = {}) {
         const isEnhancing = actionDetails.type === '/action_types/enhancing';
         const isInfinite = !actionObj.hasMaxCount || actionObj.actionHrid.includes('/combat/');
 
@@ -641,6 +652,15 @@ class ActionTimeDisplay {
 
             if (!isInfinite) {
                 count = actionObj.maxCount - actionObj.currentCount;
+                if (options.limitCountedByMaterials) {
+                    const capped = this.capCountedRequestByMaterials(count, actionDetails, inventoryLookup, actionObj);
+                    count = capped.count;
+                    if (capped.limitType !== null) {
+                        materialLimit = capped.count;
+                        limitType = capped.limitType;
+                        materialLimitIsEstimated = capped.isEstimated;
+                    }
+                }
             } else if (materialLimit !== null) {
                 count = materialLimit;
             }
@@ -2200,6 +2220,43 @@ class ActionTimeDisplay {
     }
 
     /**
+     * Cap a counted queue row's request at what its materials can actually buy.
+     *
+     * A counted row — "produce 500" — used to be displayed for all 500 while the ledger it
+     * fed spent only the 40 it could pay for, so the row contradicted itself and every
+     * "Complete at" clock after it was wrong. Both figures now come from the same limit.
+     *
+     * The rule is the one already chosen for limits: report the real remainder, zero
+     * included. A row that can perform nothing shows no time rather than promising work
+     * that will not happen.
+     *
+     * `limitType` is returned only when the cap actually binds. An unlimited row's figure
+     * rests on the request the player typed, not on a material channel, so reporting one
+     * would mislabel why it stops — and mark an exact figure as an estimate.
+     *
+     * @param {number} requested - Actions the row still asks for (maxCount − currentCount)
+     * @param {Object} actionDetails - Action detail object for the row
+     * @param {Object} inventoryLookup - Maps from buildInventoryLookup; read, never mutated
+     * @param {Object} actionObj - Character action object (carries the item hashes)
+     * @returns {{count: number, limitType: string|null, isEstimated: boolean}} Capped count,
+     *      always a finite non-negative integer
+     */
+    capCountedRequestByMaterials(requested, actionDetails, inventoryLookup, actionObj) {
+        // Neither a display nor the ledger may ever see Infinity, NaN or a negative
+        const count = Number.isFinite(requested) ? Math.max(0, Math.floor(requested)) : 0;
+        const unlimited = { count, limitType: null, isEstimated: false };
+        if (!inventoryLookup || !actionDetails) return unlimited;
+
+        const artisanBonus = this.getArtisanBonusForAction(actionDetails);
+        const limitResult = this.calculateMaterialLimit(actionDetails, inventoryLookup, artisanBonus, actionObj);
+        if (!limitResult || !Number.isFinite(limitResult.maxActions)) return unlimited;
+
+        const cap = Math.max(0, Math.floor(limitResult.maxActions));
+        if (cap >= count) return unlimited;
+        return { count: cap, limitType: limitResult.limitType, isEstimated: limitResult.isEstimated === true };
+    }
+
+    /**
      * Expected quantity for one drop-table entry, whose count is a range.
      * @param {Object} drop - Entry carrying minCount/maxCount, or a flat count
      * @returns {number} Average quantity per drop
@@ -2373,8 +2430,10 @@ class ActionTimeDisplay {
         const artisanBonus = this.getArtisanBonusForAction(actionDetails);
 
         // What the row performs, not what it asked for: a request for 500 backed by materials
-        // for 40 consumes 40. Counted rows carry no material limit of their own (their display
-        // shows the full requested time), so the limit is resolved here against the ledger.
+        // for 40 consumes 40. The queue walks now cap a counted row's displayed count the same
+        // way, so this clamp agrees with the display rather than contradicting it; it stays
+        // because a caller that passes a raw count (the edit menu's current-action block) must
+        // still be charged only for what it can pay for.
         let performed = Number.isFinite(timing.count) ? Math.max(0, Math.floor(timing.count)) : 0;
         const limit = this.calculateMaterialLimit(actionDetails, inventoryLookup, artisanBonus, actionObj);
         if (limit && Number.isFinite(limit.maxActions)) {
@@ -2668,7 +2727,15 @@ class ActionTimeDisplay {
                             hasInfinite = true;
                         }
                     } else {
-                        count = currentAction.maxCount - currentAction.currentCount;
+                        // Counted row: shown for what its materials can actually buy, the same
+                        // rule the shared helper applies for the queue tooltip. This block
+                        // duplicates that timing logic inline; the two must stay in step.
+                        count = this.capCountedRequestByMaterials(
+                            currentAction.maxCount - currentAction.currentCount,
+                            actionDetails,
+                            inventoryLookup,
+                            currentAction
+                        ).count;
                         const timeData = this.calculateActionTime(actionDetails, currentAction.actionHrid);
                         if (timeData) {
                             const { actionTime, totalEfficiency } = timeData;
@@ -2831,7 +2898,21 @@ class ActionTimeDisplay {
 
                     // Calculate count for finite actions or material-limited infinite actions
                     if (!isInfinite) {
-                        count = actionObj.maxCount - actionObj.currentCount;
+                        // As in the shared helper: a counted row is displayed for what it can
+                        // actually run. `materialLimit` is set only when the cap binds, so an
+                        // unlimited counted row keeps its plain `[time]` bracket.
+                        const capped = this.capCountedRequestByMaterials(
+                            actionObj.maxCount - actionObj.currentCount,
+                            actionDetails,
+                            inventoryLookup,
+                            actionObj
+                        );
+                        count = capped.count;
+                        if (capped.limitType !== null) {
+                            materialLimit = capped.count;
+                            limitType = capped.limitType;
+                            materialLimitIsEstimated = capped.isEstimated;
+                        }
                     } else if (materialLimit !== null) {
                         count = materialLimit;
                     }
