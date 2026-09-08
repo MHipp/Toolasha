@@ -237,7 +237,15 @@ class WebSocketHook {
             }
 
             hookInstance.markMessageEventProcessed(this);
-            hookInstance.processMessage(message, socket);
+            // Whatever this getter returns is what the *game* reads from
+            // `event.data`, so a throw in our own processing is a throw out of
+            // the game's message handler. Our work costs at most the frame it
+            // was for.
+            try {
+                hookInstance.processMessage(message, socket);
+            } catch (error) {
+                console.error('[WebSocket] Dropped a frame our processing could not handle:', error);
+            }
 
             return message;
         };
@@ -490,6 +498,15 @@ class WebSocketHook {
      * @param {WebSocket|Object|null} socket - The socket that delivered it, when known
      */
     processMessage(message, socket = null) {
+        // Not every frame on this socket is a JSON string: binary frames arrive
+        // as Blob/ArrayBuffer, and the dedup hash below calls `substring` on
+        // whatever it is given. The socket listener already screens for this;
+        // the `MessageEvent.data` getter path does not, and that one runs
+        // inside the game's own read.
+        if (typeof message !== 'string') {
+            return;
+        }
+
         // Parse message type first to determine deduplication strategy
         let messageType;
         try {
