@@ -158,6 +158,65 @@ describe('Config.setSetting', () => {
     });
 });
 
+/**
+ * `setSettingValue` wrote `value` whatever the setting was. On a checkbox that
+ * is not the field the setting uses, and nothing complains: `getSettingValue`
+ * prefers `value` when it is there, so the write appears to work for the rest of
+ * the session. The entry saved is `{isTrue: <stale>, value: <new>}`, and on the
+ * next load it is rebuilt from the schema shape without the stray `value` — so
+ * the stale `isTrue` answers, and the change is silently undone.
+ *
+ * This is the Lab Sim "Uncapped" box that could not be unticked: untick, reload,
+ * ticked again, every time.
+ */
+describe('a checkbox written through setSettingValue', () => {
+    beforeEach(() => {
+        config.settingsMap = {
+            uncapped: { id: 'uncapped', type: 'checkbox', isTrue: true },
+            pricingMode: { id: 'pricingMode', value: 'hybrid' },
+        };
+        config.settingChangeCallbacks = {};
+        config._pendingValues = {};
+    });
+
+    test('lands in isTrue, not in a second field beside it', () => {
+        config.setSettingValue('uncapped', false);
+
+        expect(config.settingsMap.uncapped.isTrue).toBe(false);
+        expect(config.settingsMap.uncapped.value, 'a stray value field is what survives a reload').toBeUndefined();
+        expect(config.getSettingValue('uncapped')).toBe(false);
+    });
+
+    test('survives the entry being rebuilt, which is what a reload does', () => {
+        config.setSettingValue('uncapped', false);
+        const saved = { ...config.settingsMap.uncapped };
+
+        // A reload rebuilds each entry from the schema shape: a checkbox comes
+        // back with isTrue and nothing else. Whatever the write left in `value`
+        // is gone, so `isTrue` is the only answer left.
+        config.settingsMap = { uncapped: { id: 'uncapped', type: 'checkbox', isTrue: saved.isTrue } };
+
+        expect(config.getSettingValue('uncapped')).toBe(false);
+    });
+
+    test('an entry already carrying both fields is healed, not added to', () => {
+        // What is on disk for anyone who hit this before the fix
+        config.settingsMap.uncapped = { id: 'uncapped', type: 'checkbox', isTrue: true, value: false };
+
+        config.setSettingValue('uncapped', false);
+
+        expect(config.settingsMap.uncapped.isTrue).toBe(false);
+        expect(config.settingsMap.uncapped.value).toBeUndefined();
+    });
+
+    test('and a non-checkbox setting still writes value', () => {
+        config.setSettingValue('pricingMode', 'conservative');
+
+        expect(config.settingsMap.pricingMode.value).toBe('conservative');
+        expect(config.settingsMap.pricingMode.isTrue).toBeUndefined();
+    });
+});
+
 describe('Config.onSettingsLoaded', () => {
     beforeEach(() => {
         config.settingsLoadedCallbacks = [];

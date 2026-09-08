@@ -786,6 +786,39 @@ class Config {
     }
 
     /**
+     * Write a value into the field the setting actually uses, and leave no other.
+     *
+     * A checkbox lives in `isTrue`; everything else lives in `value`. Writing the
+     * wrong one does not throw and does not even look wrong at first, because
+     * `getSettingValue` prefers `value` when it is present: the entry ends up
+     * holding both, the freshly written `value` answers every read this session,
+     * and the stale `isTrue` answers every read after the next reload, when the
+     * entry is rebuilt from the schema shape and the stray field is gone. That is
+     * the shape of the Lab Sim "Uncapped" box that could not be unticked -- it
+     * unticked, saved `{isTrue: true, value: false}`, and came back ticked.
+     *
+     * So the other field is deleted rather than left: an entry carrying two
+     * answers is one reload away from picking the wrong one.
+     * @param {Object} setting - Entry from `settingsMap`
+     * @param {*} value - The value to store
+     * @private
+     */
+    _writeSettingField(setting, value) {
+        const usesIsTrue = Object.hasOwn(setting, 'isTrue')
+            ? true
+            : Object.hasOwn(setting, 'value')
+              ? false
+              : typeof value === 'boolean';
+        if (usesIsTrue) {
+            setting.isTrue = value;
+            delete setting.value;
+        } else {
+            setting.value = value;
+            delete setting.isTrue;
+        }
+    }
+
+    /**
      * Set a setting value (auto-saves)
      * Writes to the field the setting actually uses: isTrue for checkboxes, value otherwise.
      * @param {string} key - Setting key
@@ -795,15 +828,7 @@ class Config {
         if (this._deferWriteDuringReload('setSetting', key, value)) return;
         const setting = this.settingsMap[key];
         if (setting) {
-            if (Object.hasOwn(setting, 'isTrue')) {
-                setting.isTrue = value;
-            } else if (Object.hasOwn(setting, 'value')) {
-                setting.value = value;
-            } else if (typeof value === 'boolean') {
-                setting.isTrue = value;
-            } else {
-                setting.value = value;
-            }
+            this._writeSettingField(setting, value);
             this.saveSettings();
 
             // Re-apply colors if color setting changed
@@ -824,7 +849,7 @@ class Config {
     setSettingValue(key, value) {
         if (this._deferWriteDuringReload('setSettingValue', key, value)) return;
         if (this.settingsMap[key]) {
-            this.settingsMap[key].value = value;
+            this._writeSettingField(this.settingsMap[key], value);
             this.saveSettings();
 
             // Re-apply color settings if this is a color setting
