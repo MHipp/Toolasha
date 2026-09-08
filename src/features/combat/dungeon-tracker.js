@@ -272,6 +272,11 @@ class DungeonTracker {
         // Restore state
         this.isTracking = true;
         this.restoredMidRun = true;
+        // The page-load arm has served its purpose, and `startDungeon` disarms the
+        // same way. Left set, a wave-1 resend that carries no battleId reads as a
+        // fresh start (see the `sameBattle || !this.pendingDungeonInfo` guard in
+        // onNewBattle) and restarts the run this call just picked back up.
+        this.pendingDungeonInfo = null;
         this.currentBattleId = saved.battleId;
         this.waveTimes = saved.waveTimes || [];
         this.waveStartTime = saved.waveStartTime ? new Date(saved.waveStartTime) : null;
@@ -392,100 +397,54 @@ class DungeonTracker {
     }
 
     /**
-     * Check if there's an active dungeon on page load and restore tracking
+     * Note the dungeon the character is running on page load, without restoring anything.
+     *
+     * Page load has no battle identity to check a saved record against: `battleId`
+     * only ever arrives on a live `new_battle`. Matching on `dungeonHrid` alone was
+     * not enough, because a repeating dungeon action keeps its hrid across run
+     * boundaries — a reconnect or a hibernation blip shorter than the record's
+     * ten-minute staleness bound, but longer than a ~35s wave, lands on a *new*
+     * battle under the same hrid with the old run's record still reading fresh. The
+     * old run's waves, wave times and key-count anchor were then grafted onto it,
+     * and the pair of a pre-gap anchor with a post-gap completion banked as a
+     * "validated" run of arbitrary length.
+     *
+     * So restoration is deferred, always, to the one path that can verify identity:
+     * the next `new_battle` routes `!isTracking` through
+     * `restoreInProgressRun(battleId)`, which checks the battle, the running action
+     * and freshness before promoting the record, and clears it when it does not
+     * match. The record is left untouched here for that check to read; nothing is
+     * banked, timed or written in the meantime, and every handler that could touch
+     * a run (`onKeyCountsMessage`, `onActionCompleted`, `onBattleEnded`,
+     * `completeDungeon`, `scanExistingChatMessages` and through it
+     * `recoverPartyStart`) already stands down while `isTracking` is false.
+     *
+     * The cost is the deferral window — at most one wave — during which the panel
+     * shows `getPendingDungeon()`'s provisional card rather than the run.
      */
-    async checkForActiveDungeon() {
+    checkForActiveDungeon() {
         // Check if already tracking (shouldn't be, but just in case)
         if (this.isTracking) {
             return;
         }
 
-        // Both halves — the actions read below and the record read after the
-        // await — have to be one character's; see `restoreInProgressRun`
-        const owner = currentOwner();
-
         // The dungeon the character is *running*, not the first one sitting in the
         // queue: a dungeon queued behind a normal zone (or behind another dungeon)
-        // is not in progress, and arming or restoring on it starts a run that
-        // never began and times it against somebody else's battles.
+        // is not in progress, and arming on it starts a run that never began and
+        // times it against somebody else's battles.
         const dungeonAction = runningCombatAction(dataManager.getCurrentActions());
 
         if (!dungeonAction || !this.isDungeonAction(dungeonAction.actionHrid)) {
             return;
         }
 
-        // Try to restore saved state from IndexedDB
-        const saved = await readScoped(IN_PROGRESS_KEY, 'settings', null, DISCARD_LEGACY);
-        if (currentOwner() !== owner) return;
-
-        if (saved && saved.dungeonHrid === dungeonAction.actionHrid) {
-            // Apply the same guards as restoreInProgressRun — a completion moments ago, a
-            // record with no battle, or one older than 10 minutes all describe a run that
-            // is not this one, and restoring it would corrupt the duration.
-            // There is no live battleId on page load, so the record's own is accepted.
-            if (!this.canRestoreRecord(saved)) {
-                await this.clearInProgressRun();
-                if (currentOwner() !== owner) return;
-                this.pendingDungeonInfo = {
-                    dungeonHrid: dungeonAction.actionHrid,
-                    tier: dungeonAction.difficultyTier,
-                };
-                // No run, no start time, nothing written — but the panel can say
-                // which dungeon is running instead of sitting blank for a whole wave.
-                this.notifyUpdate();
-                return;
-            }
-
-            // Restore state immediately so UI appears
-            this.isTracking = true;
-            this.restoredMidRun = true;
-            this.currentBattleId = saved.battleId;
-            this.waveTimes = saved.waveTimes || [];
-            this.waveStartTime = saved.waveStartTime ? new Date(saved.waveStartTime) : null;
-            this.lastWaveEndTime = saved.lastWaveEndTime ?? null;
-
-            // Restore timestamp tracking fields
-            this.firstKeyCountTimestamp = saved.firstKeyCountTimestamp || null;
-            this.lastKeyCountTimestamp = saved.lastKeyCountTimestamp || null;
-            this.battleStartedTimestamp = saved.battleStartedTimestamp || null;
-            this.keyCountMessages = saved.keyCountMessages || [];
-
-            // Restore hibernation detection flag (the run's elapsed time may be wrong)
-            this.hibernationDetected = saved.hibernationDetected || false;
-
-            // A record written by a run that began at wave 1 restores as a whole
-            // run with a real start; only a record that was already partial stays
-            // partial. Restoring is not itself joining mid-run.
-            this.joinedMidRun = saved.joinedMidRun === true;
-
-            this.currentRun = {
-                dungeonHrid: saved.dungeonHrid,
-                tier: saved.tier,
-                startTime: saved.startTime,
-                currentWave: saved.currentWave,
-                maxWaves: saved.maxWaves,
-                wavesCompleted: saved.wavesCompleted,
-                keyCountsMap: saved.keyCountsMap || {},
-                hibernationDetected: saved.hibernationDetected || false,
-                joinedMidRun: saved.joinedMidRun === true,
-                joinedAtWave: saved.joinedAtWave ?? null,
-                startRecovered: saved.startRecovered === true,
-                recoveredStartTime: saved.recoveredStartTime ?? null,
-                partyNames: Array.isArray(saved.partyNames) ? [...saved.partyNames] : null,
-            };
-
-            // Trigger UI update to show immediately
-            this.notifyUpdate();
-        } else {
-            // Store pending dungeon info for when new_battle fires
-            this.pendingDungeonInfo = {
-                dungeonHrid: dungeonAction.actionHrid,
-                tier: dungeonAction.difficultyTier,
-            };
-            // Same as above: a display-only announcement. Waves run ~35s, so
-            // without this the panel is blank until the next one starts.
-            this.notifyUpdate();
-        }
+        this.pendingDungeonInfo = {
+            dungeonHrid: dungeonAction.actionHrid,
+            tier: dungeonAction.difficultyTier,
+        };
+        // A display-only announcement: no run, no start time, nothing written.
+        // Waves run ~35s, so without this the panel is blank until the next one.
+        this.notifyUpdate();
     }
 
     /**

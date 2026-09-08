@@ -1526,8 +1526,12 @@ describe('waking the computer back up', () => {
 });
 
 describe('picking the run back up on page load', () => {
-    test('a saved record for the running dungeon is restored without a battle message', async () => {
-        game.actions = [{ actionHrid: DEN, difficultyTier: 0, isDone: false }];
+    /**
+     * Page load has no battleId, so it cannot tell this run's record from the
+     * previous run's. Every restore therefore waits for a `new_battle` to say
+     * which battle is actually in front of us; these tests drive that pair.
+     */
+    function parkRun(overrides = {}) {
         mockStorage.storeFor('settings').set(`${IN_PROGRESS}_market123`, {
             battleId: 42,
             dungeonHrid: DEN,
@@ -1538,27 +1542,175 @@ describe('picking the run back up on page load', () => {
             wavesCompleted: 4,
             waveTimes: [3000],
             lastUpdateTime: Date.now(),
+            ...overrides,
         });
+    }
 
-        await tracker.checkForActiveDungeon();
-
-        expect(tracker.isTracking).toBe(true);
-        expect(tracker.currentRun.wavesCompleted).toBe(4);
-    });
-
-    test('a stale record is dropped and the dungeon merely noted as pending', async () => {
-        game.actions = [{ actionHrid: DEN, difficultyTier: 1, isDone: false }];
-        mockStorage.storeFor('settings').set(`${IN_PROGRESS}_market123`, {
-            battleId: 42,
-            dungeonHrid: DEN,
-            lastUpdateTime: Date.now() - 11 * 60 * 1000,
-        });
+    test('page load notes the dungeon and leaves the record for the battle to judge', async () => {
+        game.actions = [{ actionHrid: DEN, difficultyTier: 0, isDone: false }];
+        parkRun();
 
         await tracker.checkForActiveDungeon();
 
         expect(tracker.isTracking).toBe(false);
-        expect(stored()).toBeUndefined();
+        expect(tracker.currentRun).toBeNull();
+        expect(tracker.pendingDungeonInfo).toEqual({ dungeonHrid: DEN, tier: 0 });
+        // Neither promoted nor discarded: the guarded restore has yet to see it
+        expect(stored()).toMatchObject({ battleId: 42, wavesCompleted: 4 });
+    });
+
+    test('an offline gap into a different battle does not graft the old run onto the new one', async () => {
+        // The corruption: a repeating dungeon action keeps its hrid across run
+        // boundaries, so a reconnect longer than a ~35s wave but shorter than the
+        // record's ten-minute staleness bound lands on a *new* battle with the old
+        // record still reading fresh. Matching on dungeonHrid alone grafted wave 20,
+        // its wave times and its key-count anchor onto a run that never had them —
+        // and the pre-gap anchor paired with a post-gap completion banked as a
+        // "validated" duration spanning the gap.
+        game.dungeonInfo[DEN] = { name: 'Chimerical Den', maxWaves: 50 };
+        game.actions = [{ actionHrid: DEN, difficultyTier: 0, isDone: false }];
+        const beforeGap = Date.now() - 9 * 60 * 1000;
+        parkRun({
+            battleId: 1001,
+            startTime: beforeGap,
+            currentWave: 20,
+            maxWaves: 50,
+            wavesCompleted: 19,
+            waveTimes: [3000, 4000, 5000],
+            firstKeyCountTimestamp: beforeGap,
+            lastKeyCountTimestamp: beforeGap,
+            keyCountsMap: { Alice: 11, Marketcow: 9 },
+            partyNames: ['Alice', 'Marketcow'],
+        });
+
+        await tracker.checkForActiveDungeon();
+        await tracker.onNewBattle({ wave: 2, battleId: 2002, combatStartTime: '2026-08-04T10:00:00.000Z' });
+        await flush();
+
+        expect(tracker.currentBattleId).toBe(2002);
+        expect(tracker.currentRun.currentWave).toBe(2);
+        // Nothing of run 1001 survives: no wave-20 progress, no wave times, and no
+        // anchor that would measure this run from before the gap
+        expect(tracker.currentRun.wavesCompleted).toBe(0);
+        expect(tracker.waveTimes).toEqual([]);
+        expect(tracker.firstKeyCountTimestamp).toBeNull();
+        expect(tracker.lastKeyCountTimestamp).toBeNull();
+        expect(tracker.currentRun.keyCountsMap).toBeUndefined();
+        expect(tracker.restoredMidRun).toBe(false);
+        // This run's own record replaces the stale one
+        expect(stored()).toMatchObject({ battleId: 2002, wavesCompleted: 0 });
+    });
+
+    test('a battle that names the saved run restores it whole', async () => {
+        game.actions = [{ actionHrid: DEN, difficultyTier: 0, isDone: false }];
+        const recovered = Date.parse('2026-08-04T10:00:00.000Z');
+        parkRun({
+            waveTimes: [3000, 3500],
+            lastWaveEndTime: 9000,
+            waveStartTime: new Date(8000).toISOString(),
+            keyCountsMap: { Alice: 11, Marketcow: 9 },
+            firstKeyCountTimestamp: recovered,
+            lastKeyCountTimestamp: recovered,
+            battleStartedTimestamp: recovered - 1000,
+            keyCountMessages: [{ timestamp: recovered, keyCountsMap: { Alice: 11 }, text: 'Key counts (start)' }],
+            hibernationDetected: true,
+            joinedMidRun: true,
+            joinedAtWave: 3,
+            startRecovered: true,
+            recoveredStartTime: recovered,
+            partyNames: ['Alice', 'Marketcow'],
+        });
+
+        await tracker.checkForActiveDungeon();
+        // No roster on this message, so the record's own has to survive the trip
+        await tracker.onNewBattle({ wave: 6, battleId: 42 });
+        await flush();
+
+        expect(tracker.isTracking).toBe(true);
+        expect(tracker.restoredMidRun).toBe(true);
+        expect(tracker.currentBattleId).toBe(42);
+        expect(tracker.waveTimes).toEqual([3000, 3500]);
+        expect(tracker.firstKeyCountTimestamp).toBe(recovered);
+        expect(tracker.lastKeyCountTimestamp).toBe(recovered);
+        expect(tracker.battleStartedTimestamp).toBe(recovered - 1000);
+        expect(tracker.keyCountMessages).toHaveLength(1);
+        expect(tracker.hibernationDetected).toBe(true);
+        expect(tracker.joinedMidRun).toBe(true);
+        expect(tracker.currentRun).toMatchObject({
+            dungeonHrid: DEN,
+            tier: 0,
+            startTime: 1000,
+            // The record's own wave; the restore replaces nothing it carries
+            currentWave: 5,
+            maxWaves: 10,
+            wavesCompleted: 4,
+            keyCountsMap: { Alice: 11, Marketcow: 9 },
+            hibernationDetected: true,
+            joinedMidRun: true,
+            joinedAtWave: 3,
+            startRecovered: true,
+            recoveredStartTime: recovered,
+            partyNames: ['Alice', 'Marketcow'],
+        });
+        // The page-load arm is spent, so a wave-1 resend cannot read as a fresh start
+        expect(tracker.pendingDungeonInfo).toBeNull();
+    });
+
+    test('a restored run still learns the roster the battle carries', async () => {
+        game.actions = [{ actionHrid: DEN, difficultyTier: 0, isDone: false }];
+        parkRun({ partyNames: null });
+
+        await tracker.checkForActiveDungeon();
+        await tracker.onNewBattle({
+            wave: 6,
+            battleId: 42,
+            players: [{ character: { name: 'Marketcow' } }, { character: { name: 'Alice' } }],
+        });
+        await flush();
+
+        expect(tracker.currentRun.partyNames).toEqual(['Alice', 'Marketcow']);
+    });
+
+    test('a stale record is refused by the battle that follows the page load', async () => {
+        game.actions = [{ actionHrid: DEN, difficultyTier: 1, isDone: false }];
+        parkRun({ lastUpdateTime: Date.now() - 11 * 60 * 1000 });
+
+        await tracker.checkForActiveDungeon();
         expect(tracker.pendingDungeonInfo).toEqual({ dungeonHrid: DEN, tier: 1 });
+
+        await tracker.onNewBattle({ wave: 6, battleId: 42 });
+        await flush();
+
+        expect(tracker.restoredMidRun).toBe(false);
+        expect(tracker.currentRun.wavesCompleted).toBe(0);
+        expect(stored()).toMatchObject({ battleId: 42, wavesCompleted: 0 });
+    });
+
+    test('a completion seconds ago blocks the pickup too', async () => {
+        // The record belongs to the run that just ended, and its clear may still
+        // be in flight.
+        game.actions = [{ actionHrid: DEN, difficultyTier: 1, isDone: false }];
+        parkRun();
+        tracker._lastCompletionTime = Date.now() - 1000;
+
+        await tracker.checkForActiveDungeon();
+        await tracker.onNewBattle({ wave: 6, battleId: 42 });
+        await flush();
+
+        expect(tracker.restoredMidRun).toBe(false);
+        expect(tracker.currentRun.wavesCompleted).toBe(0);
+    });
+
+    test('a record with no battle to tie it to is not picked up', async () => {
+        game.actions = [{ actionHrid: DEN, difficultyTier: 1, isDone: false }];
+        parkRun({ battleId: undefined });
+
+        await tracker.checkForActiveDungeon();
+        await tracker.onNewBattle({ wave: 6, battleId: 42 });
+        await flush();
+
+        expect(tracker.restoredMidRun).toBe(false);
+        expect(tracker.currentRun.wavesCompleted).toBe(0);
     });
 
     test('no dungeon running means nothing to pick up', async () => {
@@ -1568,77 +1720,20 @@ describe('picking the run back up on page load', () => {
         expect(tracker.pendingDungeonInfo).toBeNull();
     });
 
-    test('a completion seconds ago blocks the page-load pickup too', async () => {
-        // The same guard restoreInProgressRun applies: the record belongs to the
-        // run that just ended, and its clear may still be in flight.
-        game.actions = [{ actionHrid: DEN, difficultyTier: 1, isDone: false }];
-        mockStorage.storeFor('settings').set(`${IN_PROGRESS}_market123`, {
-            battleId: 42,
-            dungeonHrid: DEN,
-            wavesCompleted: 4,
-            lastUpdateTime: Date.now(),
-        });
-        tracker._lastCompletionTime = Date.now() - 1000;
-
-        await tracker.checkForActiveDungeon();
-
-        expect(tracker.isTracking).toBe(false);
-        expect(stored()).toBeUndefined();
-        expect(tracker.pendingDungeonInfo).toEqual({ dungeonHrid: DEN, tier: 1 });
-    });
-
-    test('a record with no battle to tie it to is not picked up', async () => {
-        game.actions = [{ actionHrid: DEN, difficultyTier: 1, isDone: false }];
-        mockStorage.storeFor('settings').set(`${IN_PROGRESS}_market123`, {
-            dungeonHrid: DEN,
-            wavesCompleted: 4,
-            lastUpdateTime: Date.now(),
-        });
-
-        await tracker.checkForActiveDungeon();
-
-        expect(tracker.isTracking).toBe(false);
-        expect(stored()).toBeUndefined();
-        expect(tracker.pendingDungeonInfo).toEqual({ dungeonHrid: DEN, tier: 1 });
-    });
-
-    test('a picked-up run keeps the hibernation flag it was saved with', async () => {
-        game.actions = [{ actionHrid: DEN, difficultyTier: 0, isDone: false }];
-        mockStorage.storeFor('settings').set(`${IN_PROGRESS}_market123`, {
-            battleId: 42,
-            dungeonHrid: DEN,
-            tier: 0,
-            startTime: 1000,
-            currentWave: 5,
-            maxWaves: 10,
-            wavesCompleted: 4,
-            waveTimes: [3000],
-            lastUpdateTime: Date.now(),
-            hibernationDetected: true,
-        });
-
-        await tracker.checkForActiveDungeon();
-
-        expect(tracker.hibernationDetected).toBe(true);
-        expect(tracker.currentRun.hibernationDetected).toBe(true);
-        expect(tracker.getCurrentRun().hibernationDetected).toBe(true);
-    });
-
     test('a picked-up run reads its next key count as the completion', async () => {
         // Restored, so its own start message was never seen — even at wave 0.
         game.actions = [{ actionHrid: DEN, difficultyTier: 0, isDone: false }];
-        mockStorage.storeFor('settings').set(`${IN_PROGRESS}_market123`, {
-            battleId: 42,
-            dungeonHrid: DEN,
-            tier: 0,
+        parkRun({
             startTime: Date.parse('2026-08-04T10:00:00.000Z'),
             currentWave: 1,
             maxWaves: 10,
             wavesCompleted: 0,
-            lastUpdateTime: Date.now(),
+            waveTimes: [],
         });
 
         await tracker.checkForActiveDungeon();
+        await tracker.onNewBattle({ wave: 1, battleId: 42 });
+        await flush();
         expect(tracker.restoredMidRun).toBe(true);
 
         const completions = [];
@@ -1655,16 +1750,28 @@ describe('picking the run back up on page load', () => {
 
     test('a record for a different dungeon only leaves pending info', async () => {
         game.actions = [{ actionHrid: LAIR, difficultyTier: 0, isDone: false }];
-        mockStorage.storeFor('settings').set(`${IN_PROGRESS}_market123`, {
-            battleId: 42,
-            dungeonHrid: DEN,
-            lastUpdateTime: Date.now(),
-        });
+        parkRun();
 
         await tracker.checkForActiveDungeon();
 
         expect(tracker.isTracking).toBe(false);
         expect(tracker.pendingDungeonInfo).toEqual({ dungeonHrid: LAIR, tier: 0 });
+    });
+
+    test('a key count arriving before the battle that restores the run is ignored', async () => {
+        // Nothing may act on a run that has not been verified yet. The cost of
+        // deferring is this one message; the alternative was consuming it against
+        // whichever run the record happened to describe.
+        game.actions = [{ actionHrid: DEN, difficultyTier: 0, isDone: false }];
+        parkRun();
+
+        await tracker.checkForActiveDungeon();
+        tracker.onChatMessage(keyCountsData('2026-08-04T10:04:32.000Z', 'Key counts: [Alice - 11]'));
+        await flush();
+
+        expect(tracker.isTracking).toBe(false);
+        expect(tracker.firstKeyCountTimestamp).toBeNull();
+        expect(game.savedRuns).toEqual([]);
     });
 });
 
@@ -2340,6 +2447,8 @@ describe('a run joined part-way through', () => {
         });
 
         await tracker.checkForActiveDungeon();
+        await tracker.onNewBattle({ wave: 5, battleId: 42 });
+        await flush();
 
         expect(tracker.isTracking).toBe(true);
         expect(tracker.joinedMidRun).toBe(false);
