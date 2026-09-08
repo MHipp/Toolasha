@@ -31,6 +31,17 @@ const timerRegistry = createTimerRegistry();
  */
 const RESERVATION_OWNER = 'sellQueue';
 
+/**
+ * The only enhancement level the queue can sell.
+ *
+ * A queue entry is `{itemHrid, itemName}` and nothing else, and every
+ * navigation it makes is `navigateToMarketplace(hrid, 0)` — so shift-right-
+ * clicking an item queues its plain copies, never the +5 sitting beside them.
+ * The claim has to say the same, or a player holding both claims more level-0
+ * stock than exists.
+ */
+const QUEUED_ENHANCEMENT_LEVEL = 0;
+
 /** @type {Array<{itemHrid: string, itemName: string}>} */
 const queue = [];
 
@@ -124,15 +135,21 @@ function navigateWhenClear(itemHrid) {
 }
 
 /**
- * Get total inventory count for an item hrid.
- * @param {string} itemHrid
- * @returns {number}
+ * Get inventory count for an item hrid, across every enhancement level or at one.
+ * @param {string} itemHrid - The item
+ * @param {number|null} [enhancementLevel] - Count only this level; null sums them all
+ * @returns {number} Units in the bag
  */
-function getInventoryCount(itemHrid) {
+function getInventoryCount(itemHrid, enhancementLevel = null) {
     const inventory = dataManager.getInventory();
     if (!inventory) return 0;
     return inventory
-        .filter((i) => i.itemHrid === itemHrid && i.itemLocationHrid === '/item_locations/inventory')
+        .filter(
+            (i) =>
+                i.itemHrid === itemHrid &&
+                i.itemLocationHrid === '/item_locations/inventory' &&
+                (enhancementLevel === null || (i.enhancementLevel || 0) === enhancementLevel)
+        )
         .reduce((sum, i) => sum + (i.count || 0), 0);
 }
 
@@ -148,7 +165,11 @@ function getInventoryCount(itemHrid) {
 function claimQueue() {
     return reserve(
         RESERVATION_OWNER,
-        queue.map((entry) => ({ itemHrid: entry.itemHrid, count: getInventoryCount(entry.itemHrid) })),
+        queue.map((entry) => ({
+            itemHrid: entry.itemHrid,
+            enhancementLevel: QUEUED_ENHANCEMENT_LEVEL,
+            count: getInventoryCount(entry.itemHrid, QUEUED_ENHANCEMENT_LEVEL),
+        })),
         { label: 'Queued for selling' }
     );
 }

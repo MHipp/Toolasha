@@ -258,7 +258,7 @@ describe('what the queue holds back from every other plan', () => {
         ];
     });
 
-    test('queueing an item claims every copy of it in the bag', async () => {
+    test('queueing an item claims every plain copy of it in the bag', async () => {
         observerState.handler(popper('<a href="/items/cheese">Cheese</a>'));
         shiftRightClickInventory();
         await Promise.resolve();
@@ -266,7 +266,34 @@ describe('what the queue holds back from every other plan', () => {
 
         expect(ledger.reserved.at(-1)).toEqual({
             ownerId: 'sellQueue',
-            lines: [{ itemHrid: '/items/cheese', count: 12 }],
+            lines: [{ itemHrid: '/items/cheese', enhancementLevel: 0, count: 12 }],
+        });
+    });
+
+    /*
+     * The queue only ever navigates to `(hrid, 0)`, so an enhanced copy is not
+     * stock it can sell — claiming it would hold back a crafting material for a
+     * sale that will never happen.
+     */
+    test('enhanced copies of a queued item are not claimed', async () => {
+        dataManagerMock.inventory = [
+            { itemHrid: '/items/cheese', itemLocationHrid: '/item_locations/inventory', count: 12 },
+            {
+                itemHrid: '/items/cheese',
+                itemLocationHrid: '/item_locations/inventory',
+                enhancementLevel: 5,
+                count: 3,
+            },
+        ];
+
+        observerState.handler(popper('<a href="/items/cheese">Cheese</a>'));
+        shiftRightClickInventory();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(ledger.reserved.at(-1)).toEqual({
+            ownerId: 'sellQueue',
+            lines: [{ itemHrid: '/items/cheese', enhancementLevel: 0, count: 12 }],
         });
     });
 
