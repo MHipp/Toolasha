@@ -17,6 +17,13 @@
  * item instead, and waits for the item to actually arrive in the inventory
  * before moving on — the purchase, like the queue press, is the player's.
  *
+ * A step may also name an item that has to be *selected* before its count means
+ * anything — an alchemy action is one action for every item in the game, and the
+ * item is chosen in a slot the game gives no handler for. Such a step navigates
+ * to the action and then waits, without pre-filling, until the panel itself says
+ * the named item is in the slot: a count typed against the wrong item is a count
+ * the player did not ask for, and the press that follows it is theirs.
+ *
  * The walk lives in memory only: a reload ends it, a character switch ends it,
  * and Stop ends it. Nothing about it is written anywhere.
  */
@@ -43,6 +50,15 @@ export const WALK_KEY_ATTRIBUTE = 'data-mwi-walk-key';
 const NAV_SETTLE_MS = 100;
 /** How many of those waits to spend before giving up on pre-filling a step */
 const NAV_RETRY_LIMIT = 15;
+
+/**
+ * How often to look again for a step whose item the player still has to select.
+ *
+ * Slower than {@link NAV_SETTLE_MS} and not spent against the navigation
+ * retries, because this is not waiting on the game to draw — it is waiting on a
+ * person to put an item in a slot. The idle timeout below is what ends it.
+ */
+const ITEM_WAIT_POLL_MS = 500;
 
 /**
  * How long a step may sit untouched before the walk ends itself.
@@ -132,8 +148,27 @@ export function buildWalkSteps(plan) {
     return steps;
 }
 
+/**
+ * The item an action panel currently has selected, for the actions that are
+ * chosen by item rather than being an action apiece.
+ *
+ * Read off the requirement row's sprite, which is the only place the game states
+ * it — there is no handler and no field to ask.
+ *
+ * @param {HTMLElement} panel - An action detail panel
+ * @returns {string|null} Item hrid, or null when nothing is selected
+ */
+function selectedItemHrid(panel) {
+    const use = panel.querySelector(
+        '[class*="SkillActionDetail_itemRequirements"] [class*="Item_itemContainer"] svg use'
+    );
+    const id = use?.getAttribute('href')?.split('#')[1];
+    return id ? `/items/${id}` : null;
+}
+
 /** Human wording for one step, e.g. `craft 40 Rough Leather`. */
 function stepLabel(step) {
+    if (step.label) return step.label;
     const verb = step.kind === 'craft' ? 'craft' : 'buy';
     return `${verb} ${formatWithSeparator(step.count)} ${step.itemName}`;
 }
@@ -180,6 +215,21 @@ class CraftingPlanWalk {
         // Two surfaces drive this one walk: the action panel's plan and the task
         // board's merged walk. Either setting on is a reason to be listening.
         if (!config.getSetting('craftingPlan_guidedWalk') && !config.getSetting('tasks_mergedCraftingWalk')) return;
+        this._listen();
+    }
+
+    /**
+     * Subscribe, whoever asked for the walk.
+     *
+     * Split from {@link initialize} because the settings gate above governs the
+     * crafting plan's own two surfaces, and a walk started by a third — a panel
+     * behind a setting of its own — must still advance and must still end on a
+     * character switch. A walk that is running and not listening is a strip that
+     * never moves.
+     * @private
+     */
+    _listen() {
+        if (this.isInitialized) return;
         this.isInitialized = true;
 
         const onActions = (data) => this._onActionsUpdated(data);
@@ -204,6 +254,7 @@ class CraftingPlanWalk {
      */
     start(steps) {
         if (!Array.isArray(steps) || steps.length === 0) return false;
+        this._listen();
         this.stop('');
         this.steps = steps;
         this.index = 0;
@@ -270,7 +321,7 @@ class CraftingPlanWalk {
         } else {
             // Snapshotted before the player can press anything: only an action
             // id this step did not start with is their press on this step
-            this.queuedBefore = this._queuedIdsFor(step.actionHrid);
+            this.queuedBefore = this._queuedIdsFor(step.actionHrid, step.requiresItemHrid);
             if (!navigateToAction(step.actionHrid)) {
                 this.stop('The game could not be opened on the next step.');
                 return;
@@ -301,13 +352,18 @@ class CraftingPlanWalk {
 
             const panel = document.querySelector(GAME.SKILL_ACTION_DETAIL);
             if (panel && resolveDetailPanel(panel)?.actionHrid === step.actionHrid) {
-                const input = findActionInput(panel);
+                // A step chosen by item is not this step until its item is the
+                // one in the slot, however right the action is.
+                const itemReady = !step.requiresItemHrid || selectedItemHrid(panel) === step.requiresItemHrid;
+                const input = itemReady ? findActionInput(panel) : null;
                 if (input) {
                     setReactInputValue(input, step.actions, { focus: false });
                     return;
                 }
             }
-            if (++retries < NAV_RETRY_LIMIT) {
+            if (step.requiresItemHrid) {
+                this.timerRegistry.registerTimeout(setTimeout(tryFill, ITEM_WAIT_POLL_MS));
+            } else if (++retries < NAV_RETRY_LIMIT) {
                 this.timerRegistry.registerTimeout(setTimeout(tryFill, NAV_SETTLE_MS));
             }
         };
@@ -318,12 +374,21 @@ class CraftingPlanWalk {
     /**
      * The ids of the actions already queued for one action hrid.
      * @param {string} actionHrid
+     * @param {string|null} [requiresItemHrid] - For an action that is chosen by item
      * @returns {Set<*>}
      * @private
      */
-    _queuedIdsFor(actionHrid) {
+    _queuedIdsFor(actionHrid, requiresItemHrid = null) {
         const rows = dataManager.getCurrentActions?.() || [];
-        return new Set(rows.filter((row) => row?.actionHrid === actionHrid).map((row) => row.id));
+        return new Set(
+            rows
+                .filter(
+                    (row) =>
+                        row?.actionHrid === actionHrid &&
+                        (!requiresItemHrid || row.primaryItemHash?.includes(requiresItemHrid))
+                )
+                .map((row) => row.id)
+        );
     }
 
     /**
@@ -347,7 +412,13 @@ class CraftingPlanWalk {
         if (!step || step.kind !== 'craft') return;
         const rows = data?.endCharacterActions;
         if (!Array.isArray(rows)) return;
-        if (!rows.some((row) => row?.actionHrid === step.actionHrid && !this.queuedBefore.has(row.id))) return;
+        const isThisStep = (row) =>
+            row?.actionHrid === step.actionHrid &&
+            !this.queuedBefore.has(row.id) &&
+            // One alchemy action covers every item in the game, so the action
+            // alone does not say this step was the one pressed.
+            (!step.requiresItemHrid || row.primaryItemHash?.includes(step.requiresItemHrid));
+        if (!rows.some(isThisStep)) return;
         this._advance();
     }
 

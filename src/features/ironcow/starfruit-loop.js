@@ -191,8 +191,14 @@ export async function calculateStarfruitLoop() {
 
         // Rate only. The revenue on this object is a market valuation of fruit
         // that is never sold.
-        const fruitPerHour =
-            foraging.baseOutputs?.find((output) => output.itemHrid === items.starfruitHrid)?.itemsPerHour || 0;
+        const fruitOutput = foraging.baseOutputs?.find((output) => output.itemHrid === items.starfruitHrid);
+        const fruitPerHour = fruitOutput?.itemsPerHour || 0;
+        // What one *queued* forage action yields. The game's count box is a
+        // count of completions, and efficiency buys extra completions per unit
+        // of time rather than extra yield per completion — so the per-action
+        // yield is efficiency-free and the actions per hour carry it.
+        const fruitPerForageAction = fruitOutput?.itemsPerAction || 0;
+        const forageActionsPerHour = (foraging.actionsPerHour || 0) * (foraging.efficiencyMultiplier || 1);
 
         const decomposeRate = ironCowSuccessRate(decompose);
         const coinifyRate = ironCowSuccessRate(coinify);
@@ -206,6 +212,14 @@ export async function calculateStarfruitLoop() {
         const coinifyBulk =
             dataManager.getItemDetails(items.essenceHrid)?.alchemyDetail?.bulkMultiplier ||
             coinify.requirementCosts?.find((cost) => cost.itemHrid === items.essenceHrid)?.count ||
+            1;
+        // How many fruit one decompose action swallows. Star Fruit is one, and
+        // the per-fruit costing below assumes that; it is read rather than
+        // assumed because {@link balanceBatch} turns it into a queue count,
+        // where being wrong means asking for fruit the forage leg never grew.
+        const decomposeBulk =
+            dataManager.getItemDetails(items.starfruitHrid)?.alchemyDetail?.bulkMultiplier ||
+            decompose.requirementCosts?.find((cost) => cost.itemHrid === items.starfruitHrid)?.count ||
             1;
 
         // The vendor formula, taken off the calculator rather than restated.
@@ -241,6 +255,9 @@ export async function calculateStarfruitLoop() {
 
             // What the loop is doing
             fruitPerHour,
+            fruitPerForageAction,
+            forageActionsPerHour,
+            decomposeBulk,
             essencePerFruit,
             decomposeRate,
             coinifyRate,
@@ -276,6 +293,101 @@ export async function calculateStarfruitLoop() {
         console.error('[IronCow] Could not cost the Star Fruit loop:', error);
         return null;
     }
+}
+
+/**
+ * The bells a stretch of the loop earns.
+ * @param {Object|null} loop - From `calculateStarfruitLoop`
+ * @param {number} hours - How long the loop runs
+ * @returns {number|null} Bells, or null when there is no bell price to convert at
+ */
+export function bellsForHours(loop, hours) {
+    const price = loop?.bellPrice;
+    if (!Number.isFinite(price) || price <= 0) return null;
+    if (!Number.isFinite(hours) || hours <= 0) return null;
+    return ((loop.goldPerHour || 0) * hours) / price;
+}
+
+/**
+ * How long the loop must run to buy a number of bells — the exact inverse of
+ * {@link bellsForHours}, so the panel's two fields can each fill the other in
+ * without either drifting.
+ *
+ * @param {Object|null} loop - From `calculateStarfruitLoop`
+ * @param {number} bells - The target
+ * @returns {number|null} Hours, or null with no bell price or no gold rate
+ */
+export function hoursForBells(loop, bells) {
+    const price = loop?.bellPrice;
+    const goldPerHour = loop?.goldPerHour || 0;
+    if (!Number.isFinite(price) || price <= 0 || goldPerHour <= 0) return null;
+    if (!Number.isFinite(bells) || bells <= 0) return null;
+    return (bells * price) / goldPerHour;
+}
+
+/**
+ * Size one batch of the three actions so the batch feeds itself.
+ *
+ * The three queue slots are not interchangeable: the decompose leg eats what
+ * the forage leg grew and the coinify leg eats what the decompose leg made, so
+ * three counts picked independently leave the queue either idle or holding
+ * actions with nothing to work on. This sizes the forage leg to the duration
+ * asked for and then sizes each following leg to what the one before it
+ * actually produced, in *actions* rather than items — an alchemy action
+ * consumes `bulkMultiplier` items at a time, so the two are not the same
+ * number.
+ *
+ * ## Rounding
+ *
+ * The forage leg rounds to nearest (nothing upstream constrains it) and never
+ * goes below one action. Every leg after it rounds **down**: a leg that asked
+ * for more than the leg before it produced would run out and stall, while one
+ * that asks for less leaves fruit or essence over, and leftovers roll into the
+ * next batch of an endless loop. The essence figure is the *expected* yield —
+ * decompose is a success rate, not a certainty — so an unlucky run leaves the
+ * last few coinify actions short rather than the queue stalling early.
+ *
+ * @param {Object|null} loop - From `calculateStarfruitLoop`
+ * @param {number} hours - How long the batch should keep the queue busy
+ * @returns {{hours: number, requestedHours: number, forageActions: number, decomposeActions: number,
+ *   coinifyActions: number, fruit: number, essence: number, gold: number, bells: number|null}|null}
+ *   The batch, or null when the loop cannot be costed or the duration is not a duration
+ */
+export function balanceBatch(loop, hours) {
+    if (!loop || loop.missing?.length) return null;
+    if (!Number.isFinite(hours) || hours <= 0) return null;
+
+    const hoursPerFruit = loop.hoursPerFruit || 0;
+    const fruitPerForageAction = loop.fruitPerForageAction || 0;
+    const decomposeBulk = loop.decomposeBulk || 1;
+    const coinifyBulk = loop.coinifyBulk || 1;
+    if (hoursPerFruit <= 0 || fruitPerForageAction <= 0) return null;
+
+    const forageActions = Math.max(1, Math.round(hours / hoursPerFruit / fruitPerForageAction));
+    const fruit = forageActions * fruitPerForageAction;
+    const decomposeActions = Math.floor(fruit / decomposeBulk);
+    const essence = decomposeActions * decomposeBulk * (loop.essencePerFruit || 0);
+    const coinifyActions = Math.floor(essence / coinifyBulk);
+
+    // Read back rather than assumed: what the queue is actually busy for is the
+    // three rounded counts at their own rates, not the duration that was asked
+    // for, and it is the read-back figure the panel quotes and prices.
+    const covered =
+        forageActions / (loop.forageActionsPerHour || Infinity) +
+        decomposeActions / (loop.decomposeActionsPerHour || Infinity) +
+        coinifyActions / (loop.coinifyActionsPerHour || Infinity);
+
+    return {
+        hours: covered,
+        requestedHours: hours,
+        forageActions,
+        decomposeActions,
+        coinifyActions,
+        fruit,
+        essence,
+        gold: (loop.goldPerHour || 0) * covered,
+        bells: bellsForHours(loop, covered),
+    };
 }
 
 /**

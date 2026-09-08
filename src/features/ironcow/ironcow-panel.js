@@ -35,8 +35,19 @@ import { registerFloatingPanel, unregisterFloatingPanel, bringPanelToFront } fro
 import { makeDraggable, makeResizable } from '../../utils/floating-panel.js';
 import { restoreGeometry, saveGeometry, saveOpenState, reopenIfLeftOpen } from '../../utils/panel-geometry.js';
 import { attachMinimize } from '../../utils/panel-minimize.js';
+import { HOURS_PER_DAY } from '../../utils/profit-constants.js';
 import { deriveStages, isIronCowMode, readCharacterState } from './ironcow-plan.js';
-import { calculateStarfruitLoop, cowbellPricing, loopWarnings, offlineWindow } from './starfruit-loop.js';
+import {
+    ASSUMED_OFFLINE_HOURS,
+    balanceBatch,
+    bellsForHours,
+    calculateStarfruitLoop,
+    cowbellPricing,
+    hoursForBells,
+    loopWarnings,
+    offlineWindow,
+} from './starfruit-loop.js';
+import { startQueueWalk } from './ironcow-queue-walk.js';
 import {
     loadOverrides,
     loadPlanCollapsed,
@@ -116,6 +127,41 @@ function button(label, onClick, style = {}) {
 }
 
 /**
+ * A small number box that looks like the rest of the panel.
+ * @param {number|string} value - Starting value
+ * @param {Function} onInput - Called with the raw string on every keystroke
+ * @returns {HTMLInputElement} The box
+ */
+function numberBox(value, onInput) {
+    const element = document.createElement('input');
+    element.type = 'number';
+    element.min = '0';
+    element.value = String(value);
+    Object.assign(element.style, {
+        background: 'rgba(255, 255, 255, 0.06)',
+        border: `1px solid ${COLORS.border}`,
+        borderRadius: '3px',
+        color: COLORS.text,
+        fontSize: '11px',
+        padding: '1px 4px',
+        width: '84px',
+    });
+    element.addEventListener('input', () => onInput(element.value));
+    return element;
+}
+
+/** The durations worth one press, in hours */
+const QUEUE_PRESETS = [
+    { label: '8h', hours: 8 },
+    { label: '16h', hours: 16 },
+    { label: '1 day', hours: 24 },
+    { label: '1 week', hours: 168 },
+];
+
+/** A batch longer than this is not a queue, it is a typo */
+const MAX_QUEUE_HOURS = 24 * 30;
+
+/**
  * A titled block.
  * @param {string} title - Heading
  * @returns {HTMLElement} The card, to append rows to
@@ -168,6 +214,16 @@ function coins(value) {
 }
 
 /**
+ * One decimal, and no trailing zero on a whole number.
+ * @param {number} value - Hours, usually
+ * @returns {string} e.g. "16", "7.8"
+ */
+function round1(value) {
+    if (!Number.isFinite(value)) return '0';
+    return String(Math.round(value * 10) / 10);
+}
+
+/**
  * Bells, which are small enough numbers to want in full.
  * @param {number|null|undefined} value - Bells
  * @returns {string} e.g. "1,204", or "—"
@@ -208,6 +264,13 @@ class IronCowFarmPanel {
         // and a character who shut it sees it shut a moment later rather than
         // everyone seeing it fold up on upgrade.
         this.planCollapsed = false;
+        // The duration the queue helper is sizing for. The plan's assumed
+        // window until `load()` asks for the real one — read there rather than
+        // here because this runs at import, before any game data exists.
+        this.batchHours = ASSUMED_OFFLINE_HOURS;
+        /** Which unit the duration box is being typed in: 'h' or 'd' */
+        this.batchUnit = 'h';
+        this.queueRefs = null;
         this.busy = false;
         this.loaded = null;
         // The overlay tile opens the same panel this toggles, and reads the
@@ -297,6 +360,12 @@ class IronCowFarmPanel {
         // showing the departing character's costed gold/hour, bells/week,
         // and "costed <time>" as if they were this character's.
         this.planCollapsed = await loadPlanCollapsed();
+        // Per character, like everything else here: the window a batch is sized
+        // against is this character's, and a duration typed for the last one is
+        // not an answer for this one.
+        const window = offlineWindow();
+        if (window?.hours > 0) this.batchHours = window.hours;
+        this.batchUnit = 'h';
         const snapshot = await loadSnapshot();
         this.loop = snapshot;
         this.pricedAt = snapshot?.computedAt || null;
@@ -501,6 +570,8 @@ class IronCowFarmPanel {
     _render() {
         if (!this.bodyEl) return;
         this.bodyEl.replaceChildren();
+        // Rebuilt below, or left null when the helper does not draw
+        this.queueRefs = null;
 
         if (!this.busy) {
             this._status(this.pricedAt ? `costed ${new Date(this.pricedAt).toLocaleTimeString()}` : 'not costed yet');
@@ -514,6 +585,7 @@ class IronCowFarmPanel {
             () => this._planCard(stages),
             () => this._loopCard(),
             () => this._bellsCard(),
+            () => this._queueCard(),
             () => this._checksCard(state),
         ];
         for (const build of sections) this._section(build);
@@ -846,6 +918,195 @@ class IronCowFarmPanel {
             })
         );
         return holder;
+    }
+
+    /**
+     * How many of each action to queue, and a walk that puts you in front of
+     * each one.
+     *
+     * The panel already told the player to queue all three actions and to cover
+     * their offline window; this is that advice as three numbers they can type,
+     * balanced so each leg eats what the leg before it grew. The duration and
+     * the cowbell target are the same figure said two ways, and each fills the
+     * other in.
+     *
+     * @returns {HTMLElement} The card
+     */
+    _queueCard() {
+        const holder = card('Queue helper');
+        const loop = this.loop;
+
+        if (!loop || loop.missing?.length) {
+            holder.appendChild(span('Cost the loop to size a batch.', { color: COLORS.textDim }));
+            return holder;
+        }
+
+        const hasBellPrice = Number.isFinite(loop.bellPrice) && loop.bellPrice > 0;
+        const batch = balanceBatch(loop, this.batchHours);
+        if (!batch) {
+            holder.appendChild(span('This loop cannot be sized into a batch.', { color: COLORS.warn }));
+            return holder;
+        }
+
+        const hoursBox = numberBox(round1(this.batchHours), (raw) => this._setBatchHours(Number(raw), 'hours'));
+        const unit = document.createElement('select');
+        for (const [value, label] of [
+            ['h', 'hours'],
+            ['d', 'days'],
+        ]) {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = label;
+            unit.appendChild(option);
+        }
+        Object.assign(unit.style, {
+            background: 'rgba(255, 255, 255, 0.06)',
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: '3px',
+            color: COLORS.text,
+            fontSize: '11px',
+        });
+        unit.value = this.batchUnit || 'h';
+        unit.addEventListener('change', () => {
+            this.batchUnit = unit.value;
+            hoursBox.value = String(round1(this.batchUnit === 'd' ? this.batchHours / HOURS_PER_DAY : this.batchHours));
+        });
+
+        const durationRow = document.createElement('div');
+        Object.assign(durationRow.style, { display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' });
+        durationRow.append(span('Queue for', { color: COLORS.textDim }), hoursBox, unit);
+        for (const preset of QUEUE_PRESETS) {
+            durationRow.appendChild(button(preset.label, () => this._setBatchHours(preset.hours, 'preset')));
+        }
+        holder.appendChild(durationRow);
+
+        const bellsBox = numberBox(hasBellPrice ? Math.round(bellsForHours(loop, this.batchHours) || 0) : '', (raw) =>
+            this._setBatchBells(Number(raw))
+        );
+        const bellsRow = document.createElement('div');
+        Object.assign(bellsRow.style, { display: 'flex', gap: '6px', alignItems: 'center' });
+        bellsRow.append(span('or bells', { color: COLORS.textDim }), bellsBox);
+        holder.appendChild(bellsRow);
+
+        if (!hasBellPrice) {
+            // Never a blank box or a zero that reads as a real target: an empty
+            // field the player can type into is a promise the panel cannot keep
+            // without a price to convert at.
+            bellsBox.disabled = true;
+            bellsBox.value = '';
+            bellsBox.placeholder = '—';
+            bellsBox.style.opacity = '0.5';
+            bellsBox.title = 'No market price for a cowbell yet.';
+            holder.appendChild(
+                span('No cowbell price yet, so a bell target cannot be worked back — the duration still can.', {
+                    display: 'block',
+                    color: COLORS.warn,
+                    fontSize: '11px',
+                })
+            );
+        }
+
+        const counts = document.createElement('div');
+        counts.style.marginTop = '3px';
+        holder.appendChild(counts);
+
+        const summary = span('', { display: 'block', color: COLORS.textDim, fontSize: '11px' });
+        holder.appendChild(summary);
+
+        const walk = button('Walk it — three actions, one press each', () => this._walkQueue());
+        walk.style.marginTop = '4px';
+        walk.style.alignSelf = 'flex-start';
+        walk.title =
+            'Opens each action in turn and types the count into the game\u2019s own box. ' +
+            'It never presses anything — the press that queues each action is yours.';
+        holder.appendChild(walk);
+
+        this.queueRefs = { hoursBox, unit, bellsBox, counts, summary, hasBellPrice };
+        this._drawBatch(batch);
+        return holder;
+    }
+
+    /**
+     * Redraw the three counts and the summary, without rebuilding the fields the
+     * player may be typing in.
+     * @param {Object} batch - From `balanceBatch`
+     * @private
+     */
+    _drawBatch(batch) {
+        const refs = this.queueRefs;
+        if (!refs) return;
+        const loop = this.loop;
+        const fruit = loop?.items?.starfruitName || 'Star Fruit';
+        const essence = loop?.items?.essenceName || 'essence';
+
+        refs.counts.replaceChildren(
+            line('Forage', formatWithSeparator(batch.forageActions), COLORS.good, `Grows the ${fruit}.`),
+            line(
+                'Decompose',
+                formatWithSeparator(batch.decomposeActions),
+                COLORS.good,
+                `Sized to the ${formatWithSeparator(Math.floor(batch.fruit))} ${fruit} the forage leg yields.`
+            ),
+            line(
+                'Coinify',
+                formatWithSeparator(batch.coinifyActions),
+                COLORS.good,
+                `Sized to the ${formatWithSeparator(Math.floor(batch.essence))} ${essence} the decompose leg yields, ` +
+                    `${loop?.coinifyBulk || 1} to an action.`
+            )
+        );
+
+        const earns = batch.bells === null ? '' : ` · about ${bells(batch.bells)} bells`;
+        refs.summary.textContent = `Keeps the queue busy about ${round1(batch.hours)}h${earns}.`;
+    }
+
+    /**
+     * Move the batch to a new duration and bring everything else with it.
+     * @param {number} hours - The new duration, in hours
+     * @param {'hours'|'bells'|'preset'} source - Which field the player touched
+     * @private
+     */
+    _setBatchHours(hours, source) {
+        if (!Number.isFinite(hours) || hours <= 0) return;
+        const inDays = source === 'hours' && this.batchUnit === 'd';
+        this.batchHours = Math.min(MAX_QUEUE_HOURS, inDays ? hours * HOURS_PER_DAY : hours);
+
+        const refs = this.queueRefs;
+        const batch = balanceBatch(this.loop, this.batchHours);
+        if (!refs || !batch) return;
+
+        // The field the player is typing in is left alone; the other two follow.
+        if (source !== 'hours') {
+            refs.hoursBox.value = String(
+                round1(this.batchUnit === 'd' ? this.batchHours / HOURS_PER_DAY : this.batchHours)
+            );
+        }
+        if (source !== 'bells' && refs.hasBellPrice) {
+            refs.bellsBox.value = String(Math.round(bellsForHours(this.loop, this.batchHours) || 0));
+        }
+        this._drawBatch(batch);
+    }
+
+    /**
+     * Work a cowbell target back into a duration.
+     * @param {number} target - Bells wanted
+     * @private
+     */
+    _setBatchBells(target) {
+        const hours = hoursForBells(this.loop, target);
+        if (hours === null) return;
+        this._setBatchHours(hours, 'bells');
+    }
+
+    /**
+     * Hand the current batch to the guided walk.
+     * @private
+     */
+    _walkQueue() {
+        const batch = balanceBatch(this.loop, this.batchHours);
+        if (!startQueueWalk(this.loop, batch)) {
+            this._status('Nothing to walk — cost the loop first.');
+        }
     }
 
     /**

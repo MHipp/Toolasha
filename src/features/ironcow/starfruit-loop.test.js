@@ -115,6 +115,9 @@ const {
     loopBasis,
     loopWarnings,
     offlineWindow,
+    balanceBatch,
+    bellsForHours,
+    hoursForBells,
     LOW_GOLD_BUFFER,
     LOOP_QUEUE_SLOTS,
     ASSUMED_OFFLINE_HOURS,
@@ -459,5 +462,72 @@ describe('loop health checks', () => {
         market.prices = {};
         const list = await warnings();
         expect(find(list, 'bellprice').severity).toBe('warn');
+    });
+});
+
+describe('sizing a batch of the three actions', () => {
+    test('each step is sized to what the step before it actually produced', async () => {
+        const loop = await calculateStarfruitLoop();
+        const batch = balanceBatch(loop, 16);
+
+        // 16h at 0.01h a fruit is 1,600 fruit, one fruit per forage action.
+        expect(batch.forageActions).toBe(1600);
+        expect(batch.fruit).toBeCloseTo(1600, 6);
+        // Star Fruit decomposes one at a time, so one action per fruit...
+        expect(batch.decomposeActions).toBe(1600);
+        // ...yielding 3 essence a fruit, and coinify consumes 10 at a time.
+        expect(batch.essence).toBeCloseTo(4800, 6);
+        expect(batch.coinifyActions).toBe(480);
+    });
+
+    test('no step asks for more input than the step before it produced', async () => {
+        const loop = await calculateStarfruitLoop();
+        for (const hours of [1, 8, 16, 24, 168, 0.3, 7.77]) {
+            const batch = balanceBatch(loop, hours);
+            expect(batch.decomposeActions * loop.decomposeBulk).toBeLessThanOrEqual(batch.fruit + 1e-9);
+            expect(batch.coinifyActions * loop.coinifyBulk).toBeLessThanOrEqual(batch.essence + 1e-9);
+        }
+    });
+
+    test('the three counts add back up to the hours asked for', async () => {
+        const loop = await calculateStarfruitLoop();
+        const batch = balanceBatch(loop, 16);
+        expect(batch.hours).toBeCloseTo(16, 3);
+    });
+
+    test('a loop that could not be costed sizes nothing rather than guessing', async () => {
+        expect(balanceBatch(null, 16)).toBeNull();
+        expect(balanceBatch({ missing: ['coinifying Foraging Essence'] }, 16)).toBeNull();
+    });
+
+    test('an unusable duration sizes nothing', async () => {
+        const loop = await calculateStarfruitLoop();
+        expect(balanceBatch(loop, 0)).toBeNull();
+        expect(balanceBatch(loop, -3)).toBeNull();
+        expect(balanceBatch(loop, Number.NaN)).toBeNull();
+    });
+});
+
+describe('duration and a cowbell target, each derived from the other', () => {
+    test('the two directions agree', async () => {
+        const loop = await calculateStarfruitLoop();
+        for (const hours of [1, 8, 16, 24, 168]) {
+            const target = bellsForHours(loop, hours);
+            expect(hoursForBells(loop, target)).toBeCloseTo(hours, 8);
+        }
+    });
+
+    test('the bells a duration earns are the loop’s own gold at the loop’s own bell price', async () => {
+        const loop = await calculateStarfruitLoop();
+        expect(bellsForHours(loop, 16)).toBeCloseTo((277_500 * 16) / loop.bellPrice, 8);
+    });
+
+    test('with no bell price there is no target, in either direction', async () => {
+        market.prices = {};
+        const loop = await calculateStarfruitLoop();
+
+        expect(loop.bellPrice).toBeNull();
+        expect(bellsForHours(loop, 16)).toBeNull();
+        expect(hoursForBells(loop, 40)).toBeNull();
     });
 });

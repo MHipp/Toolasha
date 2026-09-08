@@ -17,6 +17,7 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 const plan = vi.hoisted(() => ({ state: null, stages: [] }));
 const loop = vi.hoisted(() => ({ result: null, warnings: [], pricing: null, offline: null, pending: null }));
 const store = vi.hoisted(() => ({ overrides: {}, snapshot: null, written: [], collapsed: false, collapses: [] }));
+const walk = vi.hoisted(() => ({ started: [], succeeds: true }));
 // Mutable so the character-switch race test can move the active character
 // mid-flight, the way a real switch does.
 const characterId = vi.hoisted(() => ({ current: 'charA' }));
@@ -74,15 +75,29 @@ vi.mock('./ironcow-plan.js', async (importOriginal) => {
     };
 });
 
-vi.mock('./starfruit-loop.js', () => ({
-    calculateStarfruitLoop: async () => {
-        if (loop.pending) await loop.pending;
-        if (loop.result instanceof Error) throw loop.result;
-        return loop.result;
+// Only the three entry points that read the game are stubbed. `balanceBatch`
+// and the two bell conversions are the real ones — the queue helper's numbers
+// are the loop module's own, not a second opinion grown inside a test.
+vi.mock('./starfruit-loop.js', async (importOriginal) => {
+    const actual = await importOriginal();
+    return {
+        ...actual,
+        calculateStarfruitLoop: async () => {
+            if (loop.pending) await loop.pending;
+            if (loop.result instanceof Error) throw loop.result;
+            return loop.result;
+        },
+        cowbellPricing: () => loop.pricing,
+        loopWarnings: () => loop.warnings,
+        offlineWindow: () => loop.offline,
+    };
+});
+
+vi.mock('./ironcow-queue-walk.js', () => ({
+    startQueueWalk: (costed, batch) => {
+        walk.started.push(batch);
+        return walk.succeeds;
     },
-    cowbellPricing: () => loop.pricing,
-    loopWarnings: () => loop.warnings,
-    offlineWindow: () => loop.offline,
 }));
 
 const { ironCowFarmPanel } = await import('./ironcow-panel.js');
@@ -112,6 +127,9 @@ function costedLoop(overrides = {}) {
         missing: [],
         basis: { gold: 'coinify', sells: false, note: 'An iron cow sells nothing.' },
         fruitPerHour: 360,
+        fruitPerForageAction: 1,
+        forageActionsPerHour: 360,
+        decomposeBulk: 1,
         essencePerFruit: 3,
         decomposeRate: 0.6,
         coinifyRate: 0.7,
@@ -149,6 +167,8 @@ beforeEach(() => {
     store.written = [];
     store.collapsed = false;
     store.collapses = [];
+    walk.started = [];
+    walk.succeeds = true;
 });
 
 afterEach(() => {
@@ -160,6 +180,8 @@ afterEach(() => {
     ironCowFarmPanel.overrides = {};
     ironCowFarmPanel.loaded = null;
     ironCowFarmPanel.busy = false;
+    ironCowFarmPanel.batchHours = 16;
+    ironCowFarmPanel.batchUnit = 'h';
 });
 
 describe('drawing', () => {
@@ -483,6 +505,108 @@ describe('the plan section folds away', () => {
         expect(text()).toContain('The loop');
         expect(text()).toContain('Cowbells');
         expect(text()).toContain('Check');
+        expect(text()).not.toContain(FAILED);
+    });
+});
+
+describe('the queue helper', () => {
+    /** The helper's own inputs, in the order the card builds them */
+    const boxes = () => [...ironCowFarmPanel.panel.querySelectorAll('input[type="number"]')];
+
+    test('sizes the three counts so each leg eats what the leg before it grew', async () => {
+        ironCowFarmPanel.show();
+        await ironCowFarmPanel.refresh();
+
+        // 16h of this loop is 1,600 fruit: 1,600 forages, 1,600 decomposes,
+        // and 480 coinifies at ten essence an action.
+        expect(text()).toContain('Queue helper');
+        expect(text()).toContain('1,600');
+        expect(text()).toContain('480');
+        expect(text()).not.toContain(FAILED);
+    });
+
+    test('the duration is pre-filled from the offline window the plan already assumes', async () => {
+        loop.offline = { hours: 16, assumed: true };
+        ironCowFarmPanel.show();
+        await ironCowFarmPanel.refresh();
+
+        expect(boxes()[0].value).toBe('16');
+    });
+
+    test('typing a duration moves the bell target with it', async () => {
+        ironCowFarmPanel.show();
+        await ironCowFarmPanel.refresh();
+        const [hours, bellTarget] = boxes();
+
+        hours.value = '8';
+        hours.dispatchEvent(new Event('input', { bubbles: true }));
+
+        // 8h at 277.5K/h, bells at 950K each
+        expect(Number(bellTarget.value)).toBe(Math.round((277_500 * 8) / 950_000));
+        expect(text()).toContain('800');
+    });
+
+    test('typing a bell target moves the duration with it', async () => {
+        ironCowFarmPanel.show();
+        await ironCowFarmPanel.refresh();
+        const [hours, bellTarget] = boxes();
+
+        bellTarget.value = '10';
+        bellTarget.dispatchEvent(new Event('input', { bubbles: true }));
+
+        expect(Number(hours.value)).toBeCloseTo((10 * 950_000) / 277_500, 1);
+    });
+
+    test('a preset is one press', async () => {
+        ironCowFarmPanel.show();
+        await ironCowFarmPanel.refresh();
+
+        const week = [...ironCowFarmPanel.panel.querySelectorAll('button')].find(
+            (element) => element.textContent === '1 week'
+        );
+        week.click();
+
+        expect(ironCowFarmPanel.batchHours).toBe(168);
+        expect(boxes()[0].value).toBe('168');
+    });
+
+    test('with no cowbell price the bell field disables itself and says why, and the duration still works', async () => {
+        loop.result = costedLoop({ bellPrice: null, bellPricing: { price: null }, bells: null });
+        loop.pricing = { price: null };
+        ironCowFarmPanel.show();
+        await ironCowFarmPanel.refresh();
+
+        const [hours, bellTarget] = boxes();
+        expect(bellTarget.disabled).toBe(true);
+        // Never a blank that reads as an empty target, nor a zero that reads as a real one
+        expect(bellTarget.value).toBe('');
+        expect(text()).toContain('No cowbell price yet');
+
+        expect(hours.disabled).toBe(false);
+        hours.value = '8';
+        hours.dispatchEvent(new Event('input', { bubbles: true }));
+        expect(text()).toContain('800');
+        expect(text()).not.toContain(FAILED);
+    });
+
+    test('Walk it hands the current batch to the guided walk', async () => {
+        ironCowFarmPanel.show();
+        await ironCowFarmPanel.refresh();
+
+        const go = [...ironCowFarmPanel.panel.querySelectorAll('button')].find((element) =>
+            element.textContent.startsWith('Walk it')
+        );
+        go.click();
+
+        expect(walk.started).toHaveLength(1);
+        expect(walk.started[0]).toMatchObject({ forageActions: 1600, decomposeActions: 1600, coinifyActions: 480 });
+    });
+
+    test('an uncosted loop offers no counts to type in', async () => {
+        ironCowFarmPanel.show();
+        await ironCowFarmPanel.load();
+
+        expect(text()).toContain('Cost the loop to size a batch');
         expect(text()).not.toContain(FAILED);
     });
 });
