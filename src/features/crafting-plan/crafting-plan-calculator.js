@@ -491,7 +491,7 @@ export function computeBestCraftingPlan(
 }
 
 /**
- * Flatten a plan's "buy" leaves into what is still missing from an inventory.
+ * Flatten a plan into what is still missing from an inventory.
  *
  * The plan must already be sized for the real total wanted — the caller plans
  * for `numActions × outputCount` units and this reads the quantities off that
@@ -499,6 +499,13 @@ export function computeBestCraftingPlan(
  * a one-unit plan's buy counts are already a whole action's worth (rounded up),
  * so multiplying them by units-of-output overcounted a multi-output recipe by
  * its outputCount again.
+ *
+ * An owned intermediate is credited at its own craft node before that node is
+ * expanded: owning the leather means the plan buys hide only for the leather
+ * still short, never for all of it. The credit is drawn from one shared ledger,
+ * so the same stock cannot cover two nodes that hold the same intermediate. The
+ * root is never credited — owning copies of the item the player asked to craft
+ * must not shrink the run they requested.
  *
  * Coins are skipped (not bought on the marketplace); untradable items are
  * reported with `isTradeable: false` so the caller can leave them off the tabs.
@@ -510,31 +517,68 @@ export function computeBestCraftingPlan(
  */
 export function collectMissingMaterials(plan, inventory) {
     const needed = new Map(); // itemHrid → { itemName, quantity }
+    const rows = Array.isArray(inventory) ? inventory : [];
 
-    (function walk(node) {
+    // One shared, mutable ledger. Only unenhanced copies count — an enhanced
+    // piece is not a material.
+    const stock = new Map();
+    for (const row of rows) {
+        if (row.enhancementLevel) continue;
+        stock.set(row.itemHrid, (stock.get(row.itemHrid) || 0) + (row.count || 0));
+    }
+    const creditedToCrafts = new Map(); // itemHrid → units the tree's craft nodes took
+
+    (function walk(node, scale, isRoot) {
         if (!node) return;
+        const quantity = node.quantity * scale;
+
         if (node.strategy === 'buy') {
-            if (node.itemHrid === '/items/coin') return;
+            if (node.itemHrid === '/items/coin' || !(quantity > 0)) return;
             const line = needed.get(node.itemHrid);
-            if (line) line.quantity += node.quantity;
-            else needed.set(node.itemHrid, { itemName: node.itemName, quantity: node.quantity });
+            if (line) line.quantity += quantity;
+            else needed.set(node.itemHrid, { itemName: node.itemName, quantity });
             return;
         }
-        for (const child of node.children || []) walk(child);
-    })(plan);
 
-    const rows = Array.isArray(inventory) ? inventory : [];
+        // A craft node without a quantity carries no scale of its own; walk it
+        // through untouched rather than crediting against a number that is not there.
+        let childScale = scale;
+        if (!isRoot && node.quantity > 0) {
+            const held = stock.get(node.itemHrid) || 0;
+            const used = Math.min(held, quantity);
+            if (used > 0) {
+                stock.set(node.itemHrid, held - used);
+                creditedToCrafts.set(node.itemHrid, (creditedToCrafts.get(node.itemHrid) || 0) + used);
+            }
+            const remaining = quantity - used;
+            if (!(remaining > 0)) return;
+            // The children were sized per whole action, so the uncovered
+            // remainder is expanded in whole actions too; the artisan reduction
+            // already baked into those child quantities rides along untouched.
+            childScale =
+                node.actionsNeeded > 0
+                    ? Math.ceil(node.actionsNeeded * (remaining / node.quantity)) / node.actionsNeeded
+                    : remaining / node.quantity;
+        }
+
+        for (const child of node.children || []) walk(child, childScale, false);
+    })(plan, 1, true);
+
     const missing = [];
     for (const [itemHrid, line] of needed) {
         const required = Math.ceil(line.quantity);
-        // Only unenhanced copies count — an enhanced piece is not a material
-        const have = rows
-            .filter((row) => row.itemHrid === itemHrid && !row.enhancementLevel)
-            .reduce((sum, row) => sum + (row.count || 0), 0);
-        const short = Math.max(0, required - have);
+        const short = Math.max(0, required - (stock.get(itemHrid) || 0));
         if (short <= 0) continue;
         const isTradeable = dataManager.getItemDetails(itemHrid)?.isTradable !== false;
-        missing.push({ itemHrid, itemName: line.itemName, missing: short, required, isTradeable });
+        // The caller re-subtracts the player's real inventory from `required`,
+        // so add back whatever a craft node already spent of this item's stock.
+        missing.push({
+            itemHrid,
+            itemName: line.itemName,
+            missing: short,
+            required: required + (creditedToCrafts.get(itemHrid) || 0),
+            isTradeable,
+        });
     }
     return missing;
 }

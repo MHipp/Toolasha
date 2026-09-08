@@ -468,6 +468,70 @@ describe('collectMissingMaterials', () => {
     });
 });
 
+describe('collectMissingMaterials — owned intermediates', () => {
+    test('an owned intermediate is credited before its node is expanded', () => {
+        // 10 boots = 60 rough leather = 180 cowhide. Owning 24 leather leaves 36
+        // to craft, so only 108 cowhide is short — the leather is not re-expanded.
+        const plan = computeBestCraftingPlan(BOOTS, 10);
+        const missing = collectMissingMaterials(plan, [{ itemHrid: LEATHER, count: 24 }]);
+
+        expect(missing).toEqual([
+            { itemHrid: COWHIDE, itemName: 'Cowhide', missing: 108, required: 108, isTradeable: true },
+        ]);
+    });
+
+    test('a fully owned intermediate leaves nothing missing, and is not itself listed', () => {
+        const plan = computeBestCraftingPlan(BOOTS, 10);
+        const missing = collectMissingMaterials(plan, [{ itemHrid: LEATHER, count: 60 }]);
+
+        expect(missing).toEqual([]);
+    });
+
+    test('the root is never credited from inventory', () => {
+        // Owning the boots must not shrink the run the player asked for.
+        const plan = computeBestCraftingPlan(BOOTS, 10);
+        const missing = collectMissingMaterials(plan, [{ itemHrid: BOOTS, count: 10 }]);
+
+        expect(missing).toEqual([
+            { itemHrid: COWHIDE, itemName: 'Cowhide', missing: 180, required: 180, isTradeable: true },
+        ]);
+    });
+
+    test('one stock of an intermediate cannot cover two nodes that hold it', () => {
+        // A set is 1 pair of boots (6 leather) + 2 loose leather: leather appears
+        // at two craft nodes. 5 owned covers the first node's 6 and nothing else,
+        // so 1 + 2 leather remain = 9 cowhide. Crediting 5 twice would say 3.
+        const SET = '/items/leather_set';
+        game.itemDetails[SET] = { name: 'Leather Set', isTradable: true };
+        market.prices[SET] = 5000;
+        game.initClientData.actionDetailMap['/actions/crafting/leather_set'] = {
+            type: '/action_types/crafting',
+            category: '/action_categories/crafting/equipment',
+            inputItems: [
+                { itemHrid: BOOTS, count: 1 },
+                { itemHrid: LEATHER, count: 2 },
+            ],
+            outputItems: [{ itemHrid: SET, count: 1 }],
+        };
+
+        const plan = computeBestCraftingPlan(SET, 1);
+        const missing = collectMissingMaterials(plan, [{ itemHrid: LEATHER, count: 5 }]);
+
+        expect(missing).toEqual([
+            { itemHrid: COWHIDE, itemName: 'Cowhide', missing: 9, required: 9, isTradeable: true },
+        ]);
+    });
+
+    test('a buy-strategy leaf still credits inventory exactly as before', () => {
+        const plan = computeBestCraftingPlan(BOOTS, 1);
+        const missing = collectMissingMaterials(plan, [{ itemHrid: COWHIDE, count: 10 }]);
+
+        expect(missing).toEqual([
+            { itemHrid: COWHIDE, itemName: 'Cowhide', missing: 8, required: 18, isTradeable: true },
+        ]);
+    });
+});
+
 describe('missing game data', () => {
     test('an item is bought when the recipe book is unavailable', () => {
         game.initClientData = null;
