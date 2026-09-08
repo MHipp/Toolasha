@@ -79,7 +79,14 @@ class EmptyQueueNotification {
 
         // Only notify on transition from not-empty to empty
         if (isEmpty && !this.wasEmpty) {
-            notificationService.notify(EVENT_KEY, 'Your action queue is empty!');
+            const result = notificationService.notify(EVENT_KEY, 'Your action queue is empty!');
+            // Only a delivered notice counts as seen. Marking the transition
+            // seen regardless — no toast host mounted yet, most likely, right
+            // after a fresh load — left an empty queue that fired into no
+            // channel un-retried until the queue filled and emptied again,
+            // which for a queue nobody is tending is never.
+            this.wasEmpty = result?.fired === true;
+            return;
         }
 
         this.wasEmpty = isEmpty;

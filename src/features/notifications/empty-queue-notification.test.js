@@ -6,6 +6,7 @@ const game = vi.hoisted(() => ({
     wsHandlers: {},
     dmHandlers: {},
     notified: [],
+    fired: true,
 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -33,7 +34,12 @@ vi.mock('../../core/websocket.js', () => ({
     },
 }));
 vi.mock('./notification-service.js', () => ({
-    default: { notify: (key, message) => game.notified.push({ key, message }) },
+    default: {
+        notify: (key, message) => {
+            game.notified.push({ key, message });
+            return { fired: game.fired };
+        },
+    },
 }));
 
 const emptyQueueNotification = (await import('./empty-queue-notification.js')).default;
@@ -45,6 +51,7 @@ describe('empty queue notification', () => {
         game.wsHandlers = {};
         game.dmHandlers = {};
         game.notified = [];
+        game.fired = true;
         emptyQueueNotification.disable();
         await emptyQueueNotification.initialize();
     });
@@ -92,6 +99,30 @@ describe('empty queue notification', () => {
         game.wsHandlers.actions_updated({});
 
         expect(game.notified).toHaveLength(2);
+    });
+
+    test('a notice that reached no channel is retried on the next update, not lost for the session', () => {
+        game.fired = false;
+        game.actions = [{ actionHrid: '/actions/foraging/x' }];
+        game.wsHandlers.actions_updated({});
+
+        game.actions = [];
+        game.wsHandlers.actions_updated({});
+        expect(game.notified).toHaveLength(1);
+
+        // Still empty, still nothing delivered — the transition flag must not
+        // have been marked seen for a notice nobody saw
+        game.wsHandlers.actions_updated({});
+        expect(game.notified).toHaveLength(2);
+
+        game.fired = true;
+        game.wsHandlers.actions_updated({});
+        expect(game.notified).toHaveLength(3);
+
+        // Delivered: further updates on the same empty queue are the ordinary
+        // one-notification-per-emptying case again
+        game.wsHandlers.actions_updated({});
+        expect(game.notified).toHaveLength(3);
     });
 
     test('the setting is re-checked per event, not only at initialize', () => {
