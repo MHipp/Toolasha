@@ -33,6 +33,8 @@
  * name where there was previously a right one.
  */
 
+import { parseGameNumber } from './number-parser.js';
+
 const MONSTER_AREA = '[class*="BattlePanel_monstersArea"]';
 const UNIT_GRID = '[class*="BattlePanel_combatUnitGrid"]';
 
@@ -47,7 +49,7 @@ const LOOSE_BAR = /(\d[\d,]*)\s*\/\s*(\d[\d,]*)/;
  * @returns {number} NaN when it is not one
  */
 function toNumber(text) {
-    return Number(String(text).replace(/,/g, ''));
+    return parseGameNumber(text);
 }
 
 /**

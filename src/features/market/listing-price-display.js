@@ -21,6 +21,7 @@ import { coinFormatter, formatKMB, formatRelativeTime } from '../../utils/format
 import { calculatePriceAfterTax } from '../../utils/profit-helpers.js';
 import { createCleanupRegistry } from '../../utils/cleanup-registry.js';
 import { clampToBand } from '../../utils/market-values.js';
+import { parseGameNumber } from '../../utils/number-parser.js';
 
 /**
  * Create a styled table cell for the listings table.
@@ -840,8 +841,8 @@ class ListingPriceDisplay {
                 };
                 filledSuffixMultiplier = getSuffixMultiplier(match[2]);
                 orderSuffixMultiplier = getSuffixMultiplier(match[4]);
-                filledQuantity = Math.round(parseFloat(match[1].replace(/,/g, '')) * filledSuffixMultiplier);
-                orderQuantity = Math.round(parseFloat(match[3].replace(/,/g, '')) * orderSuffixMultiplier);
+                filledQuantity = Math.round(parseGameNumber(match[1]) * filledSuffixMultiplier);
+                orderQuantity = Math.round(parseGameNumber(match[3]) * orderSuffixMultiplier);
             }
         }
 

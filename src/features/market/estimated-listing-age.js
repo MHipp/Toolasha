@@ -16,6 +16,7 @@ import marketAPI from '../../api/marketplace.js';
 import { formatRelativeTime, formatDateTime } from '../../utils/formatters.js';
 import { readScoped } from '../../utils/character-key.js';
 import { GAME } from '../../utils/selectors.js';
+import { parseGameNumber } from '../../utils/number-parser.js';
 
 /** Store both halves of the old shared key live in */
 const LISTINGS_STORE = 'marketListings';
@@ -1480,7 +1481,7 @@ class EstimatedListingAge {
         if (!match) return null;
 
         // Remove commas from number
-        const value = parseFloat(match[1].replace(/,/g, ''));
+        const value = parseGameNumber(match[1]);
         const suffix = match[2];
 
         if (isNaN(value)) return null;

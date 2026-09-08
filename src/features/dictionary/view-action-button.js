@@ -9,6 +9,7 @@ import { setReactInputValue } from '../../utils/react-input.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { calculateMaterialRequirements } from '../../utils/material-calculator.js';
 import { getActionHridFromName, getItemHridFromName } from '../../utils/game-lookups.js';
+import { parseGameNumber } from '../../utils/number-parser.js';
 
 /**
  * ViewActionButton class manages action button in Item Dictionary
@@ -234,8 +235,8 @@ class ViewActionButton {
                 const haveMatch = haveText.match(/^[\d,]+(?:\.\d+)?$/);
                 const needMatch = needText.match(/^\/\s*([\d,]+(?:\.\d+)?)$/);
                 if (haveMatch && needMatch) {
-                    const have = parseFloat(haveText.replace(/,/g, ''));
-                    const need = parseFloat(needMatch[1].replace(/,/g, ''));
+                    const have = parseGameNumber(haveText);
+                    const need = parseGameNumber(needMatch[1]);
                     if (!isNaN(have) && !isNaN(need) && need > 0) {
                         const missing = Math.ceil(need - have);
                         return missing > 0 ? missing : null;

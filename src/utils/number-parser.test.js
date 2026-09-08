@@ -1,4 +1,5 @@
-import { parseItemCount } from './number-parser.js';
+/** @vitest-environment happy-dom */
+import { parseItemCount, parseGameNumber, gameNumberSeparators, _resetGameNumberSeparators } from './number-parser.js';
 
 describe('parseItemCount', () => {
     describe('plain numbers', () => {
@@ -58,5 +59,85 @@ describe('parseItemCount', () => {
         test('returns default on empty string', () => expect(parseItemCount('', 0)).toBe(0));
         test('returns default on null', () => expect(parseItemCount(null, 0)).toBe(0));
         test('returns default on unparseable', () => expect(parseItemCount('abc', 0)).toBe(0));
+    });
+});
+
+describe('parseGameNumber', () => {
+    /** Point the game's language key at one locale for the duration of a test. */
+    const asLocale = (value) => {
+        if (value === null) localStorage.removeItem('i18nextLng');
+        else localStorage.setItem('i18nextLng', value);
+        _resetGameNumberSeparators();
+    };
+
+    afterEach(() => {
+        localStorage.removeItem('i18nextLng');
+        _resetGameNumberSeparators();
+    });
+
+    describe('en-US', () => {
+        beforeEach(() => asLocale('en-US'));
+
+        test('drops comma grouping', () => expect(parseGameNumber('1,234,567')).toBe(1234567));
+        test('keeps the period as the decimal point', () => expect(parseGameNumber('1,234.5')).toBe(1234.5));
+        test('reads a bare decimal', () => expect(parseGameNumber('1.5')).toBe(1.5));
+        test('keeps the sign', () => expect(parseGameNumber('-1,200')).toBe(-1200));
+        test('ignores surrounding text', () => expect(parseGameNumber('Cost: 12,000 coins')).toBe(12000));
+    });
+
+    describe('de-DE (comma decimal, period grouping)', () => {
+        beforeEach(() => asLocale('de-DE'));
+
+        test('reads the comma as a decimal point, not as grouping', () => {
+            // The hardcoded strip this replaces read this back as 15.
+            expect(parseGameNumber('1,5')).toBe(1.5);
+        });
+
+        test('drops period grouping instead of reading it as a decimal', () => {
+            expect(parseGameNumber('1.234')).toBe(1234);
+            expect(parseGameNumber('1.234.567')).toBe(1234567);
+        });
+
+        test('handles both separators together', () => expect(parseGameNumber('1.234,5')).toBe(1234.5));
+    });
+
+    describe('a missing or unusable language key', () => {
+        test('defaults to en-US when the key is absent', () => {
+            asLocale(null);
+            expect(gameNumberSeparators()).toMatchObject({ locale: 'en-US', group: ',', decimal: '.' });
+            expect(parseGameNumber('1,234')).toBe(1234);
+        });
+
+        test('defaults to en-US when the key names a locale Intl does not know', () => {
+            asLocale('not a locale');
+            expect(gameNumberSeparators().locale).toBe('en-US');
+            expect(parseGameNumber('1,234')).toBe(1234);
+        });
+
+        test('accepts an underscore-separated tag', () => {
+            asLocale('de_DE');
+            expect(gameNumberSeparators().decimal).toBe(',');
+        });
+    });
+
+    describe('non-numbers', () => {
+        beforeEach(() => asLocale('en-US'));
+
+        test('returns the default for text with no number', () => {
+            expect(parseGameNumber('none')).toBeNaN();
+            expect(parseGameNumber('none', 0)).toBe(0);
+            expect(parseGameNumber(null, -1)).toBe(-1);
+            expect(parseGameNumber(undefined, -1)).toBe(-1);
+        });
+
+        test('passes a finite number straight through', () => expect(parseGameNumber(42.5)).toBe(42.5));
+        test('returns the default for a non-finite number', () => expect(parseGameNumber(Infinity, 0)).toBe(0));
+    });
+
+    test('re-resolves when the game language changes mid-session', () => {
+        asLocale('en-US');
+        expect(parseGameNumber('1,5')).toBe(15);
+        localStorage.setItem('i18nextLng', 'de-DE'); // no cache reset — the getter must notice
+        expect(parseGameNumber('1,5')).toBe(1.5);
     });
 });

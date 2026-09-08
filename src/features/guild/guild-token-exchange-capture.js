@@ -46,6 +46,7 @@
 
 import storage from '../../core/storage.js';
 import { itemHridFromIcon } from '../../utils/item-icon.js';
+import { parseGameNumber } from '../../utils/number-parser.js';
 
 /** Object store the record lives in — shared with guild XP and trial history */
 const STORE_NAME = 'guildHistory';
@@ -98,11 +99,10 @@ export function isCreditHrid(hrid) {
  * @returns {number} The number, or 0 when there is not one
  */
 function parseCount(text) {
-    const cleaned = String(text ?? '')
-        .replace(/,/g, '')
-        .trim();
-    const match = cleaned.match(/^\d+(?:\.\d+)?/);
-    return match ? Number(match[0]) : 0;
+    const match = String(text ?? '')
+        .trim()
+        .match(/^[\d\s,.']+/);
+    return match ? parseGameNumber(match[0], 0) : 0;
 }
 
 /**

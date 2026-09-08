@@ -20,6 +20,7 @@ import marketAPI from '../../api/marketplace.js';
 import dataManager from '../../core/data-manager.js';
 import { runningAction } from '../../utils/combat-actions.js';
 import expectedValueCalculator from '../market/expected-value-calculator.js';
+import { parseGameNumber } from '../../utils/number-parser.js';
 
 class AlchemyProfit {
     /**
@@ -228,8 +229,7 @@ class AlchemyProfit {
                     let parsedCount = 1;
 
                     if (match) {
-                        const cleaned = match[1].replace(/,/g, '');
-                        parsedCount = parseFloat(cleaned);
+                        parsedCount = parseGameNumber(match[1]);
                     }
 
                     result.count = parsedCount || 1;
@@ -268,8 +268,7 @@ class AlchemyProfit {
                             // Extract count (at start of text)
                             const countMatch = text.match(/^([\d\s,.]+)/);
                             if (countMatch) {
-                                const cleaned = countMatch[1].replace(/,/g, '').trim();
-                                result.count = parseFloat(cleaned) || 1;
+                                result.count = parseGameNumber(countMatch[1]) || 1;
                             } else {
                                 result.count = 1;
                             }
@@ -281,8 +280,7 @@ class AlchemyProfit {
                                 // Extract drop rate percentage from DOM (handles both "7.29%" and "~7.29%")
                                 const rateMatch = text.match(/~?([\d,.]+)%/);
                                 if (rateMatch) {
-                                    const cleaned = rateMatch[1].replace(/,/g, '');
-                                    result.dropRate = parseFloat(cleaned) / 100 || 1;
+                                    result.dropRate = parseGameNumber(rateMatch[1]) / 100 || 1;
                                 } else {
                                     result.dropRate = 1;
                                 }

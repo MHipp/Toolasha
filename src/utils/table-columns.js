@@ -3,6 +3,7 @@
  */
 
 import { formatWithSeparator } from './formatters.js';
+import { parseGameNumber } from './number-parser.js';
 
 const SORT_ICON_CLASS = 'mwi-col-sort-icon';
 
@@ -179,8 +180,7 @@ export function addColumn(tableEl, cssPrefix, options) {
                 const currentIndex = Array.from(theadTr.children).indexOf(th);
                 const cell = currentIndex >= 0 ? trEl.children[currentIndex] : undefined;
                 if (cell && cell._sortValue !== undefined) return cell._sortValue;
-                const text = cell?.textContent?.replace(/[^\d.-]/g, '');
-                return text ? parseFloat(text) : 0;
+                return parseGameNumber(cell?.textContent, 0);
             },
         });
     }

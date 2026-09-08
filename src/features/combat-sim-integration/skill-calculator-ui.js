@@ -4,6 +4,7 @@
  */
 
 import { calculateTimeToLevel, calculateLevelsAfterDays, getLevelFromExp } from './skill-calculator-logic.js';
+import { parseGameNumber } from '../../utils/number-parser.js';
 
 /**
  * Create the skill calculator UI
@@ -251,7 +252,7 @@ function capitalize(str) {
  * @returns {number} The value, or NaN when it is not one
  */
 function parseExpValue(text) {
-    return Number(String(text).replace(/,/g, ''));
+    return parseGameNumber(text);
 }
 
 /**

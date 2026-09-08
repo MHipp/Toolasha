@@ -72,6 +72,8 @@
  * one on-screen name unclaimed, the pairing is forced rather than guessed.
  */
 
+import { parseGameNumber } from '../../utils/number-parser.js';
+
 /** A party tile in the fight view; the class names carry a build hash */
 const UNIT = '[class*="CombatUnit_combatUnit"]';
 
@@ -210,9 +212,7 @@ export function rosterFromBattle(data, resolveName = null) {
  */
 function readNumber(value) {
     if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-    const digits = String(value ?? '').replace(/[^\d.-]/g, '');
-    if (!digits) return null;
-    const parsed = Number(digits);
+    const parsed = parseGameNumber(value);
     return Number.isFinite(parsed) ? parsed : null;
 }
 

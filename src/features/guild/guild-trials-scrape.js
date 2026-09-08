@@ -89,6 +89,7 @@ import {
     TRIAL_TIER_RE,
     TRIAL_CLOCK_LABEL_RE,
 } from '../../utils/game-text.js';
+import { parseGameNumber } from '../../utils/number-parser.js';
 
 /** Suffix multipliers on abbreviated numbers the game renders in bars */
 const SUFFIXES = { k: 1e3, m: 1e6, b: 1e9, t: 1e12 };
@@ -103,7 +104,7 @@ export function parseAmount(raw) {
     const match = raw.trim().match(/^([\d,]*\.?\d+)\s*([kmbt])?$/i);
     if (!match) return null;
 
-    const value = Number(match[1].replace(/,/g, ''));
+    const value = parseGameNumber(match[1]);
     if (!Number.isFinite(value)) return null;
 
     const suffix = match[2]?.toLowerCase();
@@ -204,8 +205,8 @@ export function parseSignups(text) {
     const match = text.match(/(\d[\d,]*)\s*\/\s*(\d[\d,]*)/);
     if (!match) return null;
 
-    const signed = Number(match[1].replace(/,/g, ''));
-    const total = Number(match[2].replace(/,/g, ''));
+    const signed = parseGameNumber(match[1]);
+    const total = parseGameNumber(match[2]);
     return Number.isFinite(signed) && Number.isFinite(total) ? { signed, total } : null;
 }
 
@@ -217,7 +218,7 @@ export function parseSignups(text) {
 export function parsePoints(text) {
     const match = typeof text === 'string' ? text.match(TRIAL_POINTS_RE) : null;
     if (!match) return null;
-    const points = Number(match[1].replace(/,/g, ''));
+    const points = parseGameNumber(match[1]);
     return Number.isFinite(points) ? points : null;
 }
 

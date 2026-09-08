@@ -37,7 +37,9 @@ which portions, what Toolasha does with them, and where.
   silently mis-parses every comma-decimal locale (`1,5` reads back as 15). The detection is
   adapted in `parseGameNumber` / `gameNumberSeparators` in `src/utils/formatters.js`, with an
   attribution line in the JSDoc; the parsing built on top of it, and the call sites, are
-  Toolasha's.
+  Toolasha's. `formatters.js` was the obvious home but the wrong one: `number-parser.js`
+  already exists for exactly this — reading a number back out of text the game drew — and
+  `parseGameNumber` is the locale-driven sibling of the `parseItemCount` heuristic there.
 
 ## What was not adapted
 

@@ -28,6 +28,7 @@
 
 import dataManager from '../../core/data-manager.js';
 import { formatKMB } from '../../utils/formatters.js';
+import { parseGameNumber } from '../../utils/number-parser.js';
 
 /**
  * Buttons that live on a task card and are never a reroll option.
@@ -109,7 +110,7 @@ export function freeRerollsLeftIn(text) {
 export function parseRerollCost(text) {
     const match = /([\d,]+(?:\.\d+)?)\s*([KMB])?/i.exec(text || '');
     if (!match) return null;
-    const raw = parseFloat(match[1].replace(/,/g, ''));
+    const raw = parseGameNumber(match[1]);
     if (!Number.isFinite(raw)) return null;
     const scale = { k: 1e3, m: 1e6, b: 1e9 }[(match[2] || '').toLowerCase()] || 1;
     return raw * scale;

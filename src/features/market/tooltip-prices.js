@@ -32,7 +32,7 @@ import { explainAbilityCost } from '../../utils/ability-cost-calculator.js';
 import { resolveItemPrice, calculatePriceAfterTax } from '../../utils/profit-helpers.js';
 import { MARKET_TAX, COWBELL_BAG_HRID, COWBELL_BAG_TAX } from '../../utils/profit-constants.js';
 import dom from '../../utils/dom.js';
-import { parseItemCount } from '../../utils/number-parser.js';
+import { parseItemCount, parseGameNumber } from '../../utils/number-parser.js';
 import { DUNGEON_CHEST_CHEST_KEYS } from '../../utils/dungeon-keys.js';
 import { getKeyUnitCost } from '../../utils/key-cost.js';
 import { calculateArtisanBonus } from '../../utils/material-calculator.js';
@@ -1691,7 +1691,7 @@ class TooltipPrices {
      */
     _abilityTooltipLevel(abilityTooltip) {
         const match = (abilityTooltip.textContent || '').match(/Level:\s*([\d,]+)/);
-        return match ? parseInt(match[1].replace(/,/g, ''), 10) : 0;
+        return match ? Math.trunc(parseGameNumber(match[1], 0)) : 0;
     }
 
     /**
