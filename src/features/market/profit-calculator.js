@@ -5,13 +5,12 @@
 
 import config from '../../core/config.js';
 import dataManager from '../../core/data-manager.js';
-import marketAPI from '../../api/marketplace.js';
 import { calculateHouseEfficiency } from '../../utils/house-efficiency.js';
 import { getCommunityProductionEfficiency } from '../../utils/community-buffs.js';
 import { getActionEfficiencyContext } from '../../utils/efficiency.js';
 import { calculateBonusRevenue } from '../../utils/bonus-revenue-calculator.js';
 import { getProductionCost, getProductionChainTime } from '../enhancement/tooltip-enhancement.js';
-import { getItemPrice } from '../../utils/market-data.js';
+import { getItemPrice, getItemPrices } from '../../utils/market-data.js';
 import { MARKET_TAX } from '../../utils/profit-constants.js';
 import {
     calculateActionsPerHour,
@@ -195,9 +194,13 @@ class ProfitCalculator {
         // Total material cost per action
         const totalMaterialCost = materialCosts.reduce((sum, mat) => sum + mat.totalCost, 0);
 
-        // Get market price for the item
-        // Use fallback {ask: 0, bid: 0} if no market data exists (e.g., refined items)
-        const itemPrice = marketAPI.getPrice(itemHrid, 0) || { ask: 0, bid: 0 };
+        // Get market price for the item, reconciled against the official value map the
+        // same way the output price below is: a raw `marketAPI.getPrice` here reported an
+        // empty order book as {ask: 0, bid: 0} even for an item the value-filling patch
+        // prices, which made every `itemPrice.ask > 0` gate downstream (the tooltip's
+        // profit-vs-cost-only display, the own-use compare's buy figure) read "no market
+        // data" for an item this very function just computed a profit for.
+        const itemPrice = getItemPrices(itemHrid, 0) || { ask: 0, bid: 0 };
 
         // Get output price based on pricing mode setting
         // Uses 'profit' context with 'sell' side to get correct sell price

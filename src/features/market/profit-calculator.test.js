@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
     initData: null,
     itemDetails: {},
     resolvedPrices: {},
+    itemPrices: {},
     productionCosts: {},
     chainTimes: {},
     skills: null,
@@ -39,7 +40,10 @@ vi.mock('../enhancement/tooltip-enhancement.js', () => ({
     getProductionCost: (hrid) => mocks.productionCosts[hrid] ?? 0,
     getProductionChainTime: (hrid) => mocks.chainTimes[hrid] ?? 0,
 }));
-vi.mock('../../utils/market-data.js', () => ({ getItemPrice: () => null }));
+vi.mock('../../utils/market-data.js', () => ({
+    getItemPrice: () => null,
+    getItemPrices: (hrid) => mocks.itemPrices?.[hrid] ?? null,
+}));
 vi.mock('../../utils/profit-constants.js', () => ({ MARKET_TAX: 0.02 }));
 vi.mock('../../utils/profit-helpers.js', () => ({
     calculateActionsPerHour: (t) => (t > 0 ? 3600 / Math.max(3, t) : 0),
@@ -61,6 +65,7 @@ beforeEach(() => {
     mocks.initData = { actionDetailMap: {}, communityBuffTypeDetailMap: {} };
     mocks.itemDetails = {};
     mocks.resolvedPrices = {};
+    mocks.itemPrices = {};
     mocks.productionCosts = {};
     mocks.chainTimes = {};
     mocks.skills = [];
@@ -395,6 +400,79 @@ describe('calculateProfit — upgrade-item crafting chain time', () => {
         const result = await profitCalculator.calculateProfit('/items/upgraded');
 
         expect(result.actionTime).toBeCloseTo(20, 6);
+    });
+});
+
+describe('calculateProfit — itemPrice reconciliation', () => {
+    /**
+     * A one-input recipe with no upgrade item, priced entirely through
+     * `resolveItemPrice`/`getItemPrices` — the minimum shape `calculateProfit` needs.
+     * @returns {void}
+     */
+    function simpleRecipe() {
+        mocks.efficiencyContext = {
+            equipment: [],
+            drinkSlots: [],
+            drinkConcentration: 0,
+            itemDetailMap: {},
+            actionTime: 10,
+            artisanBonus: 0,
+            gourmetBonus: 0,
+            processingBonus: 0,
+            equipmentEfficiency: 0,
+            equipmentEfficiencyItems: [],
+            houseEfficiency: 0,
+            teaEfficiency: 0,
+            achievementEfficiency: 0,
+            personalEfficiency: 0,
+            actionLevelBonus: 0,
+            teaSkillLevelBonus: 0,
+            baseRequirement: 1,
+            speedBonus: 0,
+            personalSpeedBonus: 0,
+            efficiencyBreakdown: { totalEfficiency: 0, levelEfficiency: 0, effectiveRequirement: 1 },
+            efficiencyMultiplier: 1,
+        };
+        mocks.skills = [{ skillHrid: '/skills/cheesesmithing', level: 50 }];
+        mocks.itemDetails['/items/cheese'] = { name: 'Cheese' };
+        mocks.itemDetails['/items/milk'] = { name: 'Milk' };
+        mocks.initData.actionDetailMap = {
+            '/actions/cheesesmithing/cheese': {
+                type: '/action_types/cheesesmithing',
+                baseTimeCost: 10e9,
+                inputItems: [{ itemHrid: '/items/milk', count: 1 }],
+                outputItems: [{ itemHrid: '/items/cheese', count: 1 }],
+            },
+        };
+        mocks.resolvedPrices['/items/milk'] = 10;
+        mocks.resolvedPrices['/items/cheese'] = 100;
+    }
+
+    // profit-calculator.js used to read the tooltipped item's own ask/bid straight off
+    // `marketAPI.getPrice`, bypassing the value-map reconciliation `getItemPrices` (and the
+    // output price a few lines below) already goes through. An item whose live order book is
+    // empty but which the value-filling patch still prices came back {ask: 0, bid: 0} from
+    // that raw call, which made every `itemPrice.ask > 0` gate downstream (the tooltip's
+    // profit-vs-cost-only switch, the own-use "buy" figure) report "no market data" for an
+    // item this very function had just priced and computed a profit for.
+    test('itemPrice comes from the reconciled getItemPrices, not the raw order book', async () => {
+        simpleRecipe();
+        // The raw order book is empty (marketplace.js mock always returns null), but the
+        // value-filling patch still prices the item — getItemPrices reports that.
+        mocks.itemPrices['/items/cheese'] = { ask: 120, bid: 110, average: 115, askEstimated: true, bidEstimated: true };
+
+        const result = await profitCalculator.calculateProfit('/items/cheese');
+
+        expect(result.itemPrice).toEqual({ ask: 120, bid: 110, average: 115, askEstimated: true, bidEstimated: true });
+    });
+
+    test('falls back to {ask: 0, bid: 0} when even the reconciled lookup has nothing', async () => {
+        simpleRecipe();
+        // mocks.itemPrices has no entry for '/items/cheese' → getItemPrices returns null
+
+        const result = await profitCalculator.calculateProfit('/items/cheese');
+
+        expect(result.itemPrice).toEqual({ ask: 0, bid: 0 });
     });
 });
 
