@@ -44,8 +44,10 @@
  * ## One interval, and only the changed text is written
  *
  * This redraws every second in combat, so: one shared interval for every unit
- * rather than one per unit, stopped the moment no unit carries an effect; a
- * chip added only when an effect appears and removed only when it expires; and
+ * rather than one per unit, stopped the moment no unit carries an effect and
+ * stopped again when the battle panel goes, so a fight that ended with an
+ * effect of unstated length on a unit leaves no timer behind; a chip added only
+ * when an effect appears and removed only when it expires; and
  * a countdown written only when its *rounded* second changes, which is once a
  * second per chip rather than once a frame. Nothing is measured off the layout,
  * so no draw here forces one.
@@ -421,9 +423,17 @@ class CombatUnitBuffBars {
      */
     draw(now = Date.now()) {
         this._expire(now);
-        this._drawSide(document.querySelector(PLAYERS_AREA), now, true);
-        this._drawSide(document.querySelector(GAME.BATTLE_MONSTERS_AREA), now, false);
-        if (this._hasEffects()) this._startTicking();
+        const players = document.querySelector(PLAYERS_AREA);
+        const monsters = document.querySelector(GAME.BATTLE_MONSTERS_AREA);
+        this._drawSide(players, now, true);
+        this._drawSide(monsters, now, false);
+        // No panel is no countdown to write, and holding the interval open for
+        // one is a timer that outlives the fight: a battle ends without a
+        // message saying so, and an effect `readBuffMap` kept with no stated
+        // expiry never expires, so `_hasEffects()` alone would have ticked for
+        // the rest of the session. The class watcher draws again when the panel
+        // comes back, which is what restarts it.
+        if ((players || monsters) && this._hasEffects()) this._startTicking();
         else this._stopTicking();
     }
 

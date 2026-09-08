@@ -418,6 +418,47 @@ describe('drawing no more than it must', () => {
     });
 });
 
+describe('the interval does not outlive the fight', () => {
+    test('an effect with no stated expiry does not tick for the rest of the session', () => {
+        // Nothing states a duration for it, so it never expires — which on its
+        // own kept `_hasEffects()` true and the interval running forever
+        send('new_battle', {
+            players: [],
+            monsters: [
+                {
+                    combatBuffMap: {
+                        '/buff_uniques/unknown': { uniqueHrid: '/buff_uniques/unknown' },
+                    },
+                },
+            ],
+        });
+        expect(bars.ticking).toBe(true);
+
+        // The fight ends: React takes the battle panel down and no further
+        // message says the effect is gone
+        document.body.innerHTML = '';
+        feature.redraw();
+
+        expect(bars.ticking).toBe(false);
+        expect(opts.intervals).toHaveLength(0);
+    });
+
+    test('the panel coming back restarts it, with the state intact', () => {
+        send('new_battle', {
+            players: [],
+            monsters: [{ combatBuffMap: live('/buff_uniques/weaken', '/buff_types/damage_taken', 300) }],
+        });
+        document.body.innerHTML = '';
+        feature.redraw();
+        expect(bars.ticking).toBe(false);
+
+        panel();
+        feature.redraw();
+        expect(bars.ticking).toBe(true);
+        expect(chipsOn('monsters', 0)).toHaveLength(1);
+    });
+});
+
 describe('icons', () => {
     test('the sprite is scraped from an icon the game already drew', () => {
         document.body.insertAdjacentHTML(
