@@ -468,20 +468,39 @@ class DungeonTrackerChatAnnotations {
 
                 label = this.formatTime(diff);
 
-                // Color run relative to the running cumulative average for this team+dungeon.
-                // Green = faster than average, red = slower, neutral = no history yet.
+                // Color the run against the same average this line reports.
+                // Green = faster, red = slower, neutral = nothing to compare to.
+                //
+                // With a window or a marker in force that is the trailing
+                // figure printed beside it, not the lifetime one: a step change
+                // in speed takes hundreds of runs to move a lifetime average,
+                // so judging against it would paint every run after the change
+                // green for the rest of the log — against the very baseline the
+                // number beside it has already left behind.
+                //
+                // Neither in force is the shipped default and keeps the
+                // lifetime average untouched, so no chat changes on upgrade.
+                const windowed = precomputedAverages[statsKey]?.get(e.timestamp.getTime());
                 const teamStats = this.cumulativeStatsByDungeon[statsKey];
-                if (teamStats && teamStats.runCount > 0) {
-                    const avg = teamStats.totalTime / teamStats.runCount;
-                    if (diff < avg) {
-                        color = config.COLOR_PROFIT || '#5fda5f'; // Green — faster than average
-                    } else if (diff > avg) {
-                        color = config.COLOR_LOSS || '#ff6b6b'; // Red — slower than average
-                    } else {
-                        color = '#90ee90'; // Exactly on average
-                    }
+                let avg = null;
+                if (windowed) {
+                    // covered === 0 is a run in no window at all — the line
+                    // prints no average, so there is nothing to judge it by
+                    // either, and it takes the same neutral colour a run with
+                    // no history behind it has always taken
+                    if (windowed.covered > 0) avg = windowed.average;
+                } else if (teamStats && teamStats.runCount > 0) {
+                    avg = teamStats.totalTime / teamStats.runCount;
+                }
+
+                if (avg === null) {
+                    color = '#90ee90'; // Nothing to compare against — neutral
+                } else if (diff < avg) {
+                    color = config.COLOR_PROFIT || '#5fda5f'; // Green — faster than average
+                } else if (diff > avg) {
+                    color = config.COLOR_LOSS || '#ff6b6b'; // Red — slower than average
                 } else {
-                    color = '#90ee90'; // No history yet — neutral
+                    color = '#90ee90'; // Exactly on average
                 }
 
                 // Track run durations for average calculation

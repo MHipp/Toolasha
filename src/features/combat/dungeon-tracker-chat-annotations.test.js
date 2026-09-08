@@ -1051,6 +1051,91 @@ describe('how far back the average reaches', () => {
         expect(averageOn(nodes[1])).toBe('[Avg last 2: 7m 30s]');
     });
 
+    /** The colour the run timer on this line was given. */
+    function colourOn(node) {
+        return node.querySelector('.dungeon-timer-annotation')?.style.color ?? null;
+    }
+
+    /**
+     * A log whose recent pace differs from its lifetime pace, both in storage
+     * and on screen — the shape that makes the two averages disagree.
+     * @param {number} oldDuration - What the banked runs before today took
+     * @param {Array<number>} recent - Today's run lengths, in ms
+     * @returns {{nodes: Array<HTMLElement>, times: Array<Date>}} The chat lines
+     */
+    function logWithPaceChange(oldDuration, recent) {
+        message('[08/04 08:59:00 AM]', 'Battle started: Chimerical Den');
+        const laid = chatRuns(aug4(9, 0, 0), recent);
+        const old = [];
+        const firstOld = new Date(YEAR, 7, 2, 0, 0, 0).getTime();
+        for (let i = 0; i < 200; i++) {
+            old.push(storedRun({ timestamp: new Date(firstOld + i * 660_000).toISOString(), duration: oldDuration }));
+        }
+        game.allRuns = [
+            ...old,
+            ...recent.map((duration, i) => storedRun({ timestamp: laid.times[i].toISOString(), duration })),
+        ];
+        return laid;
+    }
+
+    test('a window colours a run against the window, not the lifetime figure', async () => {
+        game.settings.dungeonTrackerAverageWindow = 10;
+        // 200 banked runs at 10m20s, then twenty of today's at 9m0s, then one
+        // at 10m0s. Lifetime is 10m13s, so that last run reads faster than
+        // ever; against the ten runs before it (9m0s) it is plainly slower.
+        const { nodes } = logWithPaceChange(620_000, [...Array(20).fill(540_000), 600_000]);
+
+        await annotations.loadRunCountsFromStorage();
+        await annotations.annotateAllMessages();
+
+        expect(averageOn(nodes[20])).toBe('[Avg last 10: 9m 6s]');
+        expect(colourOn(nodes[20])).toBe(asCss('#ff6b6b'));
+    });
+
+    test('and the converse: slower than the lifetime figure, faster than the window', async () => {
+        game.settings.dungeonTrackerAverageWindow = 10;
+        // The same shape upside down: the party got slower, so a 10m50s run is
+        // worse than the 9m20s lifetime average and better than the 11m0s the
+        // ten runs before it took.
+        const { nodes } = logWithPaceChange(500_000, [...Array(20).fill(660_000), 650_000]);
+
+        await annotations.loadRunCountsFromStorage();
+        await annotations.annotateAllMessages();
+
+        expect(averageOn(nodes[20])).toBe('[Avg last 10: 10m 59s]');
+        expect(colourOn(nodes[20])).toBe(asCss('#5fda5f'));
+    });
+
+    test('with the setting at its default the colours are exactly what they have always been', async () => {
+        const { nodes } = maintainersLog();
+
+        await annotations.loadRunCountsFromStorage();
+        await annotations.annotateAllMessages();
+
+        // Every recent run is faster than the 10m17s lifetime average, and with
+        // no window in force that is still what decides the colour
+        for (let i = 0; i < 9; i++) expect(colourOn(nodes[i])).toBe(asCss('#5fda5f'));
+    });
+
+    test('a line whose window covers nothing is neutral, not judged against zero', async () => {
+        const durations = [600_000, 600_000, 300_000, 240_000];
+        message('[08/04 09:59:00 AM]', 'Battle started: Chimerical Den');
+        const { nodes, times } = chatRuns(aug4(10, 0, 0), durations);
+        game.allRuns = durations.map((duration, i) => storedRun({ timestamp: times[i].toISOString(), duration }));
+        game.averageBaselines = { 'Alice::Chimerical Den': times[2].getTime() - 1 };
+
+        await annotations.loadRunCountsFromStorage();
+        await annotations.annotateAllMessages();
+
+        // Runs 1 and 2 are behind the marker: no average line, and so nothing
+        // to be fast or slow against either
+        expect(averageOn(nodes[0])).toBeNull();
+        expect(colourOn(nodes[0])).toBe(asCss('#90ee90'));
+        expect(colourOn(nodes[1])).toBe(asCss('#90ee90'));
+        // The first line the marker lets through is judged again
+        expect(colourOn(nodes[3])).toBe(asCss('#5fda5f'));
+    });
+
     test('a marker on one dungeon leaves another dungeon alone', async () => {
         message('[08/04 09:59:00 AM]', 'Battle started: Sinister Circus');
         const { nodes, times } = chatRuns(aug4(10, 0, 0), [600_000, 300_000]);
