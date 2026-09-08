@@ -27,6 +27,24 @@ export const LINEBREAK_HRID = '__linebreak__';
 export const TOMBSTONE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
+ * How many item deletions are remembered at once, across every tab.
+ *
+ * Item tombstones outnumber tab ones by roughly the number of items a tab
+ * holds, and they all live inside the ONE settings key this config occupies -
+ * the store's key-count budget (`STORE_KEY_BUDGETS.settings`, 500 keys) is
+ * untouched by them, so the number to watch is bytes in that record, not keys.
+ * One entry is an hrid and a millisecond stamp, about 55 bytes of JSON
+ * (`"/items/azure_alembic+5":1757000000000,`) plus ~40 bytes once per tab for
+ * the uuid bucket key. 500 entries is therefore ~30 KB - the same order as a
+ * heavily used config's own tab list, and small against any quota - while
+ * 30 days of unbounded deleting is bounded by nothing at all. Oldest entries
+ * are evicted first: the newest deletion is the one a peer has least likely
+ * seen yet, and an evicted tombstone degrades to the old behaviour for that
+ * one item (a peer that still carries it revives it), never to data loss.
+ */
+export const MAX_ITEM_TOMBSTONES = 500;
+
+/**
  * Generate a unique ID
  * @returns {string}
  */
@@ -96,6 +114,183 @@ function unionTombstones(a, b) {
         if (!(id in out) || when > out[id]) out[id] = when;
     }
     return out;
+}
+
+/**
+ * A config's item-deletion tombstones (`tabId -> itemHrid -> when`), absent
+ * map included. Buckets are per tab because that is the scope an item lives
+ * in: the same hrid removed from one tab and kept in another is two facts.
+ * @param {Object} config
+ * @returns {Object<string, Object<string, number>>}
+ */
+function itemGravesOf(config) {
+    const graves = config?.removedItems;
+    return graves && typeof graves === 'object' ? graves : {};
+}
+
+/**
+ * Union two item-tombstone maps, the later deletion winning per (tab, item).
+ * Buckets are rebuilt rather than shared, so the caller may clear entries out
+ * of the result without reaching into either input.
+ * @param {Object} a
+ * @param {Object} b
+ * @returns {Object<string, Object<string, number>>}
+ */
+function unionItemGraves(a, b) {
+    const out = {};
+    for (const source of [a, b]) {
+        for (const [tabId, bucket] of Object.entries(source)) {
+            if (!bucket || typeof bucket !== 'object') continue;
+            const into = out[tabId] || (out[tabId] = {});
+            for (const [hrid, at] of Object.entries(bucket)) {
+                const when = Number(at) || 0;
+                if (!(hrid in into) || when > into[hrid]) into[hrid] = when;
+            }
+        }
+    }
+    for (const [tabId, bucket] of Object.entries(out)) {
+        if (Object.keys(bucket).length === 0) delete out[tabId];
+    }
+    return out;
+}
+
+/**
+ * Hold the item-tombstone map to `MAX_ITEM_TOMBSTONES` entries, newest kept.
+ * @param {Object} graves
+ * @param {number} [max]
+ * @returns {Object} The map, a new one only if something had to go
+ */
+function capItemGraves(graves, max = MAX_ITEM_TOMBSTONES) {
+    const flat = [];
+    for (const [tabId, bucket] of Object.entries(graves)) {
+        for (const [hrid, at] of Object.entries(bucket)) flat.push([tabId, hrid, Number(at) || 0]);
+    }
+    if (flat.length <= max) return graves;
+    flat.sort((one, two) => two[2] - one[2]);
+    const out = {};
+    for (const [tabId, hrid, at] of flat.slice(0, max)) {
+        const into = out[tabId] || (out[tabId] = {});
+        into[hrid] = at;
+    }
+    return out;
+}
+
+/**
+ * Fold one tab's item list against the rival copy of the same tab.
+ *
+ * Items are a COLLECTION the user builds an entry at a time, not a property of
+ * the tab, so resolving them by the tab's `updatedAt` the way a rename is
+ * resolved loses one device's addition whenever the other device touched the
+ * same tab later. They are unioned instead - the winner's list in the winner's
+ * order, then whatever only the loser has, appended - and item tombstones
+ * supply the fact a bare union lacks: which absences are deletions.
+ *
+ * A tombstone is judged per COPY, exactly as `applyTombstones` judges a tab's:
+ * a copy that still holds the item and was stamped at or after the deletion is
+ * evidence the deletion is stale news (the item was re-added, or the tombstone
+ * predates this copy's whole history), so the item survives and the tombstone
+ * is cleared. An UNSTAMPED copy is never deleted from, for the same reason an
+ * unstamped tab is not: the ordering is unknowable and a hand-built list is the
+ * wrong thing to guess about. The one case this deliberately gives up on is a
+ * deletion CONCURRENT with an unrelated edit to the same tab on the other
+ * device - that copy's stamp outlives the deletion though it never saw it, and
+ * the item comes back. Reviving one item costs a click; a fold that loses one
+ * costs the user something they cannot see is gone.
+ *
+ * Line breaks are exempt from all of it: they are positional decoration, may
+ * repeat, and so have no identity to key a tombstone or a de-duplication by.
+ * The winner's line-break layout is the one that survives.
+ * @param {Object} winner - The copy whose fields and order win
+ * @param {Object} loser
+ * @param {Object<string, number>|undefined} graves - This tab's tombstones
+ * @param {Array<Array<string>>} cleared - Appended to: [tabId, hrid] to forget
+ * @returns {Array<string>} The merged list (the winner's own array if unchanged)
+ */
+function foldItemList(winner, loser, graves, cleared) {
+    const mine = Array.isArray(winner.items) ? winner.items : [];
+    const theirs = Array.isArray(loser.items) ? loser.items : [];
+    const union = [...mine];
+    const seen = new Set(mine);
+    for (const hrid of theirs) {
+        if (typeof hrid !== 'string' || hrid === LINEBREAK_HRID || seen.has(hrid)) continue;
+        seen.add(hrid);
+        union.push(hrid);
+    }
+    const unioned = union.length === mine.length ? mine : union;
+    if (!graves || Object.keys(graves).length === 0) return unioned;
+
+    const revived = [];
+    const kept = union.filter((hrid) => {
+        const at = graves[hrid];
+        if (at === undefined || hrid === LINEBREAK_HRID) return true;
+        const stamps = [];
+        if (mine.includes(hrid)) stamps.push(stampOf(winner));
+        if (theirs.includes(hrid)) stamps.push(stampOf(loser));
+        if (!stamps.some((stamp) => stamp === 0 || at <= stamp)) return false;
+        revived.push(hrid);
+        return true;
+    });
+
+    // The mass-delete cap, per tab: a tab's item list is a curated list of its
+    // own, and "most of this tab emptied itself on a load" is the same accident
+    // as "most of my tabs vanished". Refused whole rather than partly, for the
+    // same reason - a half-applied fold is a list the user cannot reason about
+    // - and the tombstones stay in the map un-applied, so a real bulk clear-out
+    // still wins once the surviving copy carries a stamp that proves it came
+    // after. The threshold is the tab one: more than two items AND more than
+    // half, since a two-item list has no majority worth protecting.
+    const dropped = union.length - kept.length;
+    const real = union.filter((hrid) => hrid !== LINEBREAK_HRID).length;
+    if (dropped > 2 && dropped * 2 > real) {
+        console.warn(
+            `[CustomTabs] Refusing a fold that would delete ${dropped} of ${real} items from tab ` +
+                `"${winner.name ?? winner.id}" at once; keeping every item and holding the item ` +
+                'tombstones back un-applied.'
+        );
+        return unioned;
+    }
+    for (const hrid of revived) cleared.push([winner.id, hrid]);
+    return kept.length === mine.length && kept.every((hrid, i) => hrid === mine[i]) ? mine : kept;
+}
+
+/**
+ * Merge the item lists of two copies of one top-level subtree.
+ *
+ * Everything except `items` comes from the winner - a rename, a colour, the
+ * child list and its order all stay last-write-wins by `updatedAt`, which is
+ * what those fields are. Nested tabs are paired by id wherever the loser has
+ * the same id, so an item added to a CHILD tab on the other device survives
+ * too; a child only the loser has is still dropped with the rest of the loser's
+ * structure, which is the existing whole-subtree rule and not what this fixes.
+ * @param {Object} winner
+ * @param {Object} loser
+ * @param {Object} graves - The config-level item-tombstone map
+ * @param {Array<Array<string>>} cleared - Appended to: [tabId, hrid] to forget
+ * @returns {Object} The winner, a new copy only where items actually changed
+ */
+function mergeSubtreeItems(winner, loser, graves, cleared) {
+    const loserById = new Map();
+    const index = (tabs) => {
+        for (const node of Array.isArray(tabs) ? tabs : []) {
+            if (node?.id != null) loserById.set(node.id, node);
+            index(node?.children);
+        }
+    };
+    index([loser]);
+
+    const rewrite = (tab) => {
+        if (!tab || typeof tab !== 'object') return tab;
+        const rival = tab.id != null ? loserById.get(tab.id) : undefined;
+        const items = rival && rival !== tab ? foldItemList(tab, rival, graves[tab.id], cleared) : tab.items;
+        const children = Array.isArray(tab.children) ? tab.children.map(rewrite) : tab.children;
+        const childrenChanged = Array.isArray(children) && children.some((child, i) => child !== tab.children[i]);
+        if (items === tab.items && !childrenChanged) return tab;
+        const next = { ...tab };
+        if (items !== tab.items) next.items = items;
+        if (childrenChanged) next.children = children;
+        return next;
+    };
+    return rewrite(winner);
 }
 
 /**
@@ -186,7 +381,14 @@ function _treeHasId(tabs, id) {
  * wins, unstamped counting as beginning-of-time so a stamped copy beats an
  * unstamped one and two unstamped copies fall back to ours. A tab whose id
  * carries a tombstone newer than that copy is dropped from both sides; one
- * touched after the deletion survives and clears the tombstone. Tab ORDER
+ * touched after the deletion survives and clears the tombstone.
+ *
+ * ITEMS are the exception to "the newer tab wins". A tab's item list is a
+ * collection two devices add to independently, so it is unioned per tab
+ * (`foldItemList`) against per-item tombstones, and only the tab's other
+ * fields follow the newer stamp. Taking the newer tab wholesale silently
+ * dropped whatever the other device had added to it since the last sync. Tab
+ * ORDER
  * comes from the side with the newer `orderUpdatedAt` (order is a property of
  * the list, not of any one tab), falling back to stored-then-new as before.
  * @param {Object} stored - The config as read back / the side that loses ties
@@ -199,13 +401,29 @@ function mergeConfigs(stored, memory) {
     const theirTabs = Array.isArray(theirs.tabs) ? theirs.tabs : [];
     const ourTabs = Array.isArray(ours.tabs) ? ours.tabs : [];
 
-    // Per-tab: the newer stamp wins, ours on a tie (two unstamped copies tie)
+    // Per-tab: the newer stamp wins, ours on a tie (two unstamped copies tie).
+    // Where both sides carry an id the winner's ITEMS are folded against the
+    // loser's rather than replacing them - see `foldItemList`.
+    const itemGraves = unionItemGraves(itemGravesOf(theirs), itemGravesOf(ours));
+    const clearedItems = [];
     const byId = new Map();
     for (const tab of theirTabs) if (tab?.id != null) byId.set(tab.id, tab);
     for (const tab of ourTabs) {
         if (tab?.id == null) continue;
         const rival = byId.get(tab.id);
-        byId.set(tab.id, rival && stampOf(rival) > stampOf(tab) ? rival : tab);
+        if (!rival) {
+            byId.set(tab.id, tab);
+            continue;
+        }
+        const [winner, loser] = stampOf(rival) > stampOf(tab) ? [rival, tab] : [tab, rival];
+        byId.set(tab.id, mergeSubtreeItems(winner, loser, itemGraves, clearedItems));
+    }
+    // An item that survived its own tombstone has outlived it (`foldItemList`)
+    for (const [tabId, hrid] of clearedItems) {
+        const bucket = itemGraves[tabId];
+        if (!bucket) continue;
+        delete bucket[hrid];
+        if (Object.keys(bucket).length === 0) delete itemGraves[tabId];
     }
 
     // Tombstones: the union of both sides, newest deletion per id. Applied to a
@@ -268,6 +486,9 @@ function mergeConfigs(stored, memory) {
     // predates stamps merges to exactly the shape it always did
     if (Object.keys(removed).length > 0) merged.removed = removed;
     else delete merged.removed;
+    const cappedItemGraves = capItemGraves(itemGraves);
+    if (Object.keys(cappedItemGraves).length > 0) merged.removedItems = cappedItemGraves;
+    else delete merged.removedItems;
     const orderAt = Math.max(theirOrderAt, ourOrderAt);
     if (orderAt > 0) merged.orderUpdatedAt = orderAt;
     else delete merged.orderUpdatedAt;
@@ -309,22 +530,51 @@ function normalizeTabs(tabs) {
 
 /**
  * Forget deletions older than `TOMBSTONE_MAX_AGE_MS`.
+ *
+ * Item tombstones age on the same clock as tab ones - the age is sized to the
+ * slowest device's catch-up, which is a property of the devices, not of what
+ * was deleted - and are additionally held to `MAX_ITEM_TOMBSTONES`, since a
+ * month of deleting items is a much larger number than a month of deleting
+ * tabs.
  * @param {Object} config
  * @param {number} [now]
- * @returns {Object} The config, tombstone map replaced only if some expired
+ * @returns {Object} The config, tombstone maps replaced only if some expired
  */
 function pruneTombstones(config, now = Date.now()) {
-    const removed = config?.removed;
-    if (!removed || typeof removed !== 'object') return config;
-    const kept = Object.fromEntries(
-        Object.entries(removed).filter(([, at]) => now - (Number(at) || 0) < TOMBSTONE_MAX_AGE_MS)
-    );
-    if (Object.keys(kept).length === Object.keys(removed).length) return config;
-    if (Object.keys(kept).length === 0) {
-        const { removed: _expired, ...rest } = config;
+    let out = config;
+    const removed = out?.removed;
+    if (removed && typeof removed === 'object') {
+        const kept = Object.fromEntries(
+            Object.entries(removed).filter(([, at]) => now - (Number(at) || 0) < TOMBSTONE_MAX_AGE_MS)
+        );
+        if (Object.keys(kept).length !== Object.keys(removed).length) {
+            if (Object.keys(kept).length === 0) {
+                const { removed: _expired, ...rest } = out;
+                out = rest;
+            } else out = { ...out, removed: kept };
+        }
+    }
+
+    const graves = out?.removedItems;
+    if (!graves || typeof graves !== 'object') return out;
+    let expired = false;
+    const keptGraves = {};
+    for (const [tabId, bucket] of Object.entries(graves)) {
+        if (!bucket || typeof bucket !== 'object') {
+            expired = true;
+            continue;
+        }
+        const fresh = Object.entries(bucket).filter(([, at]) => now - (Number(at) || 0) < TOMBSTONE_MAX_AGE_MS);
+        if (fresh.length !== Object.keys(bucket).length) expired = true;
+        if (fresh.length > 0) keptGraves[tabId] = Object.fromEntries(fresh);
+    }
+    const capped = capItemGraves(keptGraves);
+    if (!expired && capped === keptGraves) return out;
+    if (Object.keys(capped).length === 0) {
+        const { removedItems: _gone, ...rest } = out;
         return rest;
     }
-    return { ...config, removed: kept };
+    return { ...out, removedItems: capped };
 }
 
 /**
@@ -441,7 +691,8 @@ export async function saveConfig(characterId, config) {
  * A file used to be restored verbatim, which produced a config that destroyed
  * itself:
  *
- * - It carried the exporter's `removed` map. Tombstones name ids, the file
+ * - It carried the exporter's `removed` and `removedItems` maps. Tombstones
+ *   name ids, the file
  *   names the same ids, and the next `loadConfig` applied one to the other —
  *   the imported tabs deleted themselves on the next page load. Stripped.
  * - Its tabs were unstamped, so every fold treated them as beginning-of-time
@@ -466,7 +717,11 @@ export async function saveConfig(characterId, config) {
  * @returns {Object} A config safe to hold and save
  */
 export function sanitizeImportedConfig(parsed, now = Date.now()) {
-    const { removed: _removed, ...rest } = parsed && typeof parsed === 'object' ? parsed : {};
+    const {
+        removed: _removed,
+        removedItems: _removedItems,
+        ...rest
+    } = parsed && typeof parsed === 'object' ? parsed : {};
     const idMap = new Map();
     const rebuild = (tabs) =>
         (Array.isArray(tabs) ? tabs : [])
@@ -581,6 +836,50 @@ function tombstone(config, tab, at = Date.now()) {
     _walkTabs([tab], (node) => {
         config.removed[node.id] = at;
     });
+}
+
+/**
+ * Record an item's removal from a tab, so neither a peer device's copy nor the
+ * config on disk revives it through the item union (see `foldItemList`).
+ *
+ * EVERY path that takes an hrid out of a `tab.items` must call this, the
+ * derived ones (a loadout binding sync, an orphaned binding cleanup, an
+ * enhancement-level swap) included: the read-back fold at save time folds the
+ * stored copy under the held one, so an untombstoned removal is undone by the
+ * very next save, not only by a sync.
+ *
+ * Line breaks are not recorded - they repeat, so they have no identity to key
+ * a tombstone by, and the union never duplicates them.
+ * @param {Object} config - Mutated in place (callers pass their fresh clone)
+ * @param {string} tabId
+ * @param {string} itemHrid
+ * @param {number} [at]
+ * @returns {Object} The same config
+ */
+export function tombstoneItem(config, tabId, itemHrid, at = Date.now()) {
+    if (!config || tabId == null || typeof itemHrid !== 'string' || itemHrid === LINEBREAK_HRID) return config;
+    if (!config.removedItems || typeof config.removedItems !== 'object') config.removedItems = {};
+    const bucket = config.removedItems[tabId] || (config.removedItems[tabId] = {});
+    bucket[itemHrid] = at;
+    config.removedItems = capItemGraves(config.removedItems);
+    return config;
+}
+
+/**
+ * Forget an item's removal, because it is back in the tab - the counterpart of
+ * `addTab` clearing a re-created tab's own tombstone.
+ * @param {Object} config - Mutated in place
+ * @param {string} tabId
+ * @param {string} itemHrid
+ * @returns {Object} The same config
+ */
+export function clearItemTombstone(config, tabId, itemHrid) {
+    const bucket = config?.removedItems?.[tabId];
+    if (!bucket || bucket[itemHrid] === undefined) return config;
+    delete bucket[itemHrid];
+    if (Object.keys(bucket).length === 0) delete config.removedItems[tabId];
+    if (Object.keys(config.removedItems).length === 0) delete config.removedItems;
+    return config;
 }
 
 // ---------------------------------------------------------------------------
@@ -716,6 +1015,7 @@ export function addItem(config, tabId, itemHrid) {
     const result = _findNode(c.tabs, tabId);
     if (result && !result.tab.items.includes(itemHrid)) {
         result.tab.items.push(itemHrid);
+        clearItemTombstone(c, tabId, itemHrid);
         stampTab(c, tabId);
     }
     return c;
@@ -735,6 +1035,7 @@ export function insertItem(config, tabId, itemHrid, index) {
     if (result && !result.tab.items.includes(itemHrid)) {
         const clamped = Math.max(0, Math.min(index, result.tab.items.length));
         result.tab.items.splice(clamped, 0, itemHrid);
+        clearItemTombstone(c, tabId, itemHrid);
         stampTab(c, tabId);
     }
     return c;
@@ -757,6 +1058,7 @@ export function moveItem(config, sourceTabId, targetTabId, itemHrid, insertIndex
     const source = _findNode(c.tabs, sourceTabId);
     if (source) {
         source.tab.items = source.tab.items.filter((h) => h !== itemHrid);
+        tombstoneItem(c, sourceTabId, itemHrid, now);
         stampTab(c, sourceTabId, now);
     }
     // Insert into target
@@ -768,6 +1070,7 @@ export function moveItem(config, sourceTabId, targetTabId, itemHrid, insertIndex
         } else {
             target.tab.items.push(itemHrid);
         }
+        clearItemTombstone(c, targetTabId, itemHrid);
         stampTab(c, targetTabId, now);
     }
     return c;
@@ -822,8 +1125,10 @@ export function removeItem(config, tabId, itemHrid) {
     const c = clone(config);
     const result = _findNode(c.tabs, tabId);
     if (result) {
+        const now = Date.now();
         result.tab.items = result.tab.items.filter((h) => h !== itemHrid);
-        stampTab(c, tabId);
+        tombstoneItem(c, tabId, itemHrid, now);
+        stampTab(c, tabId, now);
     }
     return c;
 }
@@ -840,8 +1145,10 @@ export function removeItemAtIndex(config, tabId, index) {
     const c = clone(config);
     const result = _findNode(c.tabs, tabId);
     if (result && index >= 0 && index < result.tab.items.length) {
-        result.tab.items.splice(index, 1);
-        stampTab(c, tabId);
+        const now = Date.now();
+        const [gone] = result.tab.items.splice(index, 1);
+        tombstoneItem(c, tabId, gone, now);
+        stampTab(c, tabId, now);
     }
     return c;
 }
@@ -1061,13 +1368,17 @@ export function syncLoadoutBinding(config, tabId, loadoutName, newSnapshotItems)
                 // and add the new one alongside
                 if (!tab.items.includes(newHrid)) {
                     tab.items.push(newHrid);
+                    clearItemTombstone(c, tabId, newHrid);
                     changed = true;
                 }
             } else if (tab.items.includes(newHrid)) {
                 tab.items.splice(idx, 1);
+                tombstoneItem(c, tabId, oldHrid);
                 changed = true;
             } else {
                 tab.items[idx] = newHrid;
+                tombstoneItem(c, tabId, oldHrid);
+                clearItemTombstone(c, tabId, newHrid);
                 changed = true;
             }
         }
@@ -1081,6 +1392,7 @@ export function syncLoadoutBinding(config, tabId, loadoutName, newSnapshotItems)
         const filtered = tab.items.filter((h) => h !== oldHrid);
         if (filtered.length !== tab.items.length) {
             tab.items = filtered;
+            tombstoneItem(c, tabId, oldHrid);
             changed = true;
         }
     }
@@ -1089,6 +1401,7 @@ export function syncLoadoutBinding(config, tabId, loadoutName, newSnapshotItems)
     for (const [base, newHrid] of newByBase) {
         if (!oldByBase.has(base) && !tab.items.includes(newHrid)) {
             tab.items.push(newHrid);
+            clearItemTombstone(c, tabId, newHrid);
             changed = true;
         }
     }
@@ -1128,7 +1441,9 @@ export function cleanOrphanedBindings(config, tabId, currentSnapshotNames) {
         const orphanItems = tab.loadoutBindings[orphanName] || [];
         for (const hrid of orphanItems) {
             if (!stillBound.has(hrid)) {
-                tab.items = tab.items.filter((h) => h !== hrid);
+                const shorter = tab.items.filter((h) => h !== hrid);
+                if (shorter.length !== tab.items.length) tombstoneItem(c, tabId, hrid);
+                tab.items = shorter;
             }
         }
         delete tab.loadoutBindings[orphanName];

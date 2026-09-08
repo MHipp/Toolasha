@@ -50,6 +50,8 @@ import {
     cleanOrphanedBindings,
     getBaseHrid,
     sanitizeImportedConfig,
+    tombstoneItem,
+    clearItemTombstone,
     LINEBREAK_HRID,
 } from './custom-tabs-data.js';
 
@@ -1423,7 +1425,8 @@ export default class CustomTabsUI {
     /**
      * Serialize the current layout to a JSON file and trigger a download.
      *
-     * `removed` and `orderUpdatedAt` are stripped. Both are sync bookkeeping
+     * `removed`, `removedItems` and `orderUpdatedAt` are stripped. All are sync
+     * bookkeeping
      * about THIS config's history on THIS device, and neither survives the trip
      * usefully: a shared file carrying a tombstone map is a file that deletes
      * tabs on whoever imports it, and an `orderUpdatedAt` from another device's
@@ -1447,7 +1450,12 @@ export default class CustomTabsUI {
     }
 
     _exportLayout() {
-        const { removed: _removed, orderUpdatedAt: _orderUpdatedAt, ...config } = this._config || {};
+        const {
+            removed: _removed,
+            removedItems: _removedItems,
+            orderUpdatedAt: _orderUpdatedAt,
+            ...config
+        } = this._config || {};
         const payload = { _toolasha: 'tabs-v1', ...config };
         const json = JSON.stringify(payload, null, 2);
         const blob = new Blob([json], { type: 'application/json' });
@@ -3068,7 +3076,12 @@ export default class CustomTabsUI {
                                 tab.items.splice(itemIdx, 1);
                             } else {
                                 tab.items[itemIdx] = newHrid;
+                                clearItemTombstone(this._config, tab.id, newHrid);
                             }
+                            // The old hrid is gone from this tab: without a
+                            // tombstone the item union folds it straight back
+                            // in from the stored copy on the next save
+                            tombstoneItem(this._config, tab.id, oldHrid);
                         }
                     }
                 }

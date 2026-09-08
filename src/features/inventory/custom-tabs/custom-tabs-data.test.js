@@ -78,6 +78,9 @@ const {
     setAllTabsOpen,
     findTab,
     sanitizeImportedConfig,
+    tombstoneItem,
+    MAX_ITEM_TOMBSTONES,
+    _resetConfigRecords,
 } = await import('./custom-tabs-data.js');
 
 function buildConfig(tab) {
@@ -1156,5 +1159,345 @@ describe('the loadConfig wipe window', () => {
         const again = await loadConfig('char1');
         storageMock.unavailable = false;
         expect(again.tabs.map((t) => t.id)).toEqual(['a', 'b']);
+    });
+});
+// -------------------------------------------------------------------------
+// Two devices editing one tab: the items are a collection, not a property
+// -------------------------------------------------------------------------
+
+describe('the item merge', () => {
+    const tab = (id, extra = {}) => ({ id, name: id, items: [], children: [], ...extra });
+
+    let merge;
+    beforeEach(async () => {
+        const { mergeForKey } = await import('../../../utils/sync-merge-registry.js');
+        // The registry hands (local, incoming); local is the side that wins ties
+        merge = mergeForKey('settings', 'char1_inventoryTabs_config').merge;
+    });
+
+    test('two devices adding to the same tab keep both items', () => {
+        const local = { version: 1, selectedTabId: null, tabs: [tab('t', { updatedAt: 100, items: ['/items/x'] })] };
+        const incoming = {
+            version: 1,
+            selectedTabId: null,
+            tabs: [tab('t', { updatedAt: 200, items: ['/items/y'] })],
+        };
+
+        // The newer copy's order first, then what only the older one had
+        expect(merge(local, incoming).tabs[0].items).toEqual(['/items/y', '/items/x']);
+        expect(merge(incoming, local).tabs[0].items).toEqual(['/items/y', '/items/x']);
+    });
+
+    test('an item deleted on the newer side stays deleted though the older side still has it', () => {
+        const carrier = {
+            version: 1,
+            selectedTabId: null,
+            tabs: [tab('t', { updatedAt: 100, items: ['/items/x', '/items/y'] })],
+        };
+        const deleter = {
+            version: 1,
+            selectedTabId: null,
+            tabs: [tab('t', { updatedAt: 200, items: ['/items/y'] })],
+            removedItems: { t: { '/items/x': 200 } },
+        };
+
+        for (const merged of [merge(carrier, deleter), merge(deleter, carrier)]) {
+            expect(merged.tabs[0].items).toEqual(['/items/y']);
+            expect(merged.removedItems).toEqual({ t: { '/items/x': 200 } });
+        }
+    });
+
+    test('a rename on one device and an item add on the other keep both', () => {
+        const renamed = {
+            version: 1,
+            selectedTabId: null,
+            tabs: [tab('t', { name: 'Renamed', updatedAt: 300, items: ['/items/x'] })],
+        };
+        const added = {
+            version: 1,
+            selectedTabId: null,
+            tabs: [tab('t', { name: 'Old', updatedAt: 200, items: ['/items/x', '/items/y'] })],
+        };
+
+        const merged = merge(renamed, added);
+        expect(merged.tabs[0].name).toBe('Renamed');
+        expect(merged.tabs[0].items).toEqual(['/items/x', '/items/y']);
+    });
+
+    test('re-adding a tombstoned item outlives the tombstone and clears it', () => {
+        const deleter = {
+            version: 1,
+            selectedTabId: null,
+            tabs: [tab('t', { updatedAt: 200, items: [] })],
+            removedItems: { t: { '/items/x': 200 } },
+        };
+        const readded = { version: 1, selectedTabId: null, tabs: [tab('t', { updatedAt: 300, items: ['/items/x'] })] };
+
+        const merged = merge(readded, deleter);
+        expect(merged.tabs[0].items).toEqual(['/items/x']);
+        expect(merged.removedItems).toBeUndefined();
+    });
+
+    test('an unstamped copy is never deleted from, and clears the tombstone', () => {
+        const legacy = { version: 1, selectedTabId: null, tabs: [tab('t', { items: ['/items/x'] })] };
+        const deleter = {
+            version: 1,
+            selectedTabId: null,
+            tabs: [tab('t', { updatedAt: 5_000_000, items: [] })],
+            removedItems: { t: { '/items/x': 5_000_000 } },
+        };
+
+        const merged = merge(legacy, deleter);
+        expect(merged.tabs[0].items).toEqual(['/items/x']);
+        expect(merged.removedItems).toBeUndefined();
+    });
+
+    test('a tab only one side has is carried through unchanged', () => {
+        const local = {
+            version: 1,
+            selectedTabId: null,
+            tabs: [tab('mine', { updatedAt: 100, items: ['/items/x', LINEBREAK_HRID, '/items/y'] })],
+        };
+        const incoming = {
+            version: 1,
+            selectedTabId: null,
+            tabs: [tab('theirs', { updatedAt: 200, items: ['/items/z'] })],
+        };
+
+        const merged = merge(local, incoming);
+        expect(merged.tabs.find((t) => t.id === 'mine').items).toEqual(['/items/x', LINEBREAK_HRID, '/items/y']);
+        expect(merged.tabs.find((t) => t.id === 'theirs').items).toEqual(['/items/z']);
+    });
+
+    test('an item added to a NESTED tab on the other device survives too', () => {
+        const local = {
+            version: 1,
+            selectedTabId: null,
+            tabs: [tab('root', { updatedAt: 100, children: [tab('kid', { updatedAt: 100, items: ['/items/x'] })] })],
+        };
+        const incoming = {
+            version: 1,
+            selectedTabId: null,
+            tabs: [tab('root', { updatedAt: 200, children: [tab('kid', { updatedAt: 200, items: ['/items/y'] })] })],
+        };
+
+        expect(merge(local, incoming).tabs[0].children[0].items).toEqual(['/items/y', '/items/x']);
+    });
+
+    test("the winner's line breaks survive and are never duplicated", () => {
+        const local = {
+            version: 1,
+            selectedTabId: null,
+            tabs: [tab('t', { updatedAt: 200, items: ['/items/x', LINEBREAK_HRID] })],
+        };
+        const incoming = {
+            version: 1,
+            selectedTabId: null,
+            tabs: [tab('t', { updatedAt: 100, items: [LINEBREAK_HRID, LINEBREAK_HRID, '/items/y'] })],
+        };
+
+        expect(merge(local, incoming).tabs[0].items).toEqual(['/items/x', LINEBREAK_HRID, '/items/y']);
+    });
+
+    test('enhancement levels are separate items — +0 and +5 both survive', () => {
+        const local = {
+            version: 1,
+            selectedTabId: null,
+            tabs: [tab('t', { updatedAt: 100, items: ['/items/sword'] })],
+        };
+        const incoming = {
+            version: 1,
+            selectedTabId: null,
+            tabs: [tab('t', { updatedAt: 200, items: ['/items/sword+5'] })],
+            removedItems: { t: { '/items/sword+5': 50 } },
+        };
+
+        // The tombstone names the +5 alone; the bare hrid is a different item
+        expect(merge(local, incoming).tabs[0].items).toEqual(['/items/sword+5', '/items/sword']);
+    });
+});
+
+describe('the item-level mass-delete cap', () => {
+    const tab = (id, extra = {}) => ({ id, name: id, items: [], children: [], ...extra });
+    const five = ['/items/a', '/items/b', '/items/c', '/items/d', '/items/e'];
+
+    let merge;
+    beforeEach(async () => {
+        const { mergeForKey } = await import('../../../utils/sync-merge-registry.js');
+        merge = mergeForKey('settings', 'char1_inventoryTabs_config').merge;
+    });
+
+    const carrier = () => ({ version: 1, selectedTabId: null, tabs: [tab('t', { updatedAt: 100, items: five })] });
+    const deleter = (gone) => ({
+        version: 1,
+        selectedTabId: null,
+        tabs: [tab('t', { updatedAt: 200, items: five.filter((h) => !gone.includes(h)) })],
+        removedItems: { t: Object.fromEntries(gone.map((h) => [h, 200])) },
+    });
+
+    test('a fold that would empty most of a tab keeps every item and holds the tombstones', () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const merged = merge(carrier(), deleter(['/items/a', '/items/b', '/items/c', '/items/d']));
+
+        // Every item survives, in the surviving copy's order then the rest
+        expect(merged.tabs[0].items).toEqual(['/items/e', '/items/a', '/items/b', '/items/c', '/items/d']);
+        // Un-applied, not forgotten: a real bulk clear-out can still win later
+        expect(Object.keys(merged.removedItems.t)).toHaveLength(4);
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('4 of 5 items'));
+        warn.mockRestore();
+    });
+
+    test('a fold under the threshold applies normally', () => {
+        const merged = merge(carrier(), deleter(['/items/a', '/items/b']));
+        expect(merged.tabs[0].items).toEqual(['/items/c', '/items/d', '/items/e']);
+    });
+
+    test('a short list is not protected — three of three is more than two', () => {
+        const short = ['/items/a', '/items/b', '/items/c'];
+        const local = { version: 1, selectedTabId: null, tabs: [tab('t', { updatedAt: 100, items: short })] };
+        const incoming = {
+            version: 1,
+            selectedTabId: null,
+            tabs: [tab('t', { updatedAt: 200, items: [] })],
+            removedItems: { t: Object.fromEntries(short.map((h) => [h, 200])) },
+        };
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        expect(merge(local, incoming).tabs[0].items).toEqual(short);
+        warn.mockRestore();
+    });
+
+    test('the cap is per tab — one tab holding back does not spare another', () => {
+        const local = {
+            version: 1,
+            selectedTabId: null,
+            tabs: [tab('big', { updatedAt: 100, items: five }), tab('small', { updatedAt: 100, items: five })],
+        };
+        const incoming = {
+            version: 1,
+            selectedTabId: null,
+            tabs: [
+                tab('big', { updatedAt: 200, items: ['/items/e'] }),
+                tab('small', { updatedAt: 200, items: ['/items/c', '/items/d', '/items/e'] }),
+            ],
+            removedItems: {
+                big: Object.fromEntries(five.slice(0, 4).map((h) => [h, 200])),
+                small: { '/items/a': 200, '/items/b': 200 },
+            },
+        };
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+        const merged = merge(local, incoming);
+        expect(merged.tabs.find((t) => t.id === 'big').items).toEqual([
+            '/items/e',
+            '/items/a',
+            '/items/b',
+            '/items/c',
+            '/items/d',
+        ]);
+        expect(merged.tabs.find((t) => t.id === 'small').items).toEqual(['/items/c', '/items/d', '/items/e']);
+        warn.mockRestore();
+    });
+});
+
+describe('item tombstone recording', () => {
+    const seed = () => ({
+        version: 1,
+        selectedTabId: null,
+        tabs: [{ id: 't', name: 't', items: ['/items/x', '/items/y'], children: [] }],
+    });
+
+    test('removing an item records a tombstone scoped to that tab', () => {
+        const config = removeItem(seed(), 't', '/items/x');
+        expect(Object.keys(config.removedItems.t)).toEqual(['/items/x']);
+        expect(config.removedItems.t['/items/x']).toBeGreaterThan(0);
+    });
+
+    test('removing by index records the item that actually went', () => {
+        const config = removeItemAtIndex(seed(), 't', 1);
+        expect(Object.keys(config.removedItems.t)).toEqual(['/items/y']);
+    });
+
+    test('a line break leaves no tombstone — it has no identity to key one by', () => {
+        const config = removeItemAtIndex(addLineBreak(seed(), 't'), 't', 2);
+        expect(config.removedItems).toBeUndefined();
+    });
+
+    test('adding the item back clears its tombstone', () => {
+        const removed = removeItem(seed(), 't', '/items/x');
+        expect(addItem(removed, 't', '/items/x').removedItems).toBeUndefined();
+        expect(insertItem(removed, 't', '/items/x', 0).removedItems).toBeUndefined();
+    });
+
+    test('a move tombstones the source and clears the target', () => {
+        const two = seed();
+        two.tabs.push({ id: 'u', name: 'u', items: [], children: [] });
+        const moved = moveItem(two, 't', 'u', '/items/x');
+        expect(moved.removedItems).toEqual({ t: { '/items/x': expect.any(Number) } });
+        expect(moved.tabs[1].items).toEqual(['/items/x']);
+    });
+
+    test('a removal is not undone by the read-back fold at save time', async () => {
+        const { mergeForKey } = await import('../../../utils/sync-merge-registry.js');
+        const merge = mergeForKey('settings', 'char1_inventoryTabs_config').merge;
+        const stored = seed();
+        stored.tabs[0].updatedAt = 100;
+        const held = removeItem(stored, 't', '/items/x');
+        expect(merge(held, stored).tabs[0].items).toEqual(['/items/y']);
+    });
+
+    test('the map is held to MAX_ITEM_TOMBSTONES, oldest evicted first', () => {
+        let config = { version: 1, selectedTabId: null, tabs: [] };
+        for (let i = 0; i <= MAX_ITEM_TOMBSTONES; i += 1) config = tombstoneItem(config, 't', `/items/i${i}`, 1000 + i);
+        expect(Object.keys(config.removedItems.t)).toHaveLength(MAX_ITEM_TOMBSTONES);
+        expect(config.removedItems.t['/items/i0']).toBeUndefined();
+        expect(config.removedItems.t[`/items/i${MAX_ITEM_TOMBSTONES}`]).toBe(1000 + MAX_ITEM_TOMBSTONES);
+    });
+});
+
+describe('item tombstone ageing', () => {
+    const KEY = 'char1_inventoryTabs_config';
+
+    beforeEach(() => {
+        storageMock.reset();
+        _resetConfigRecords();
+    });
+
+    test('a load forgets item deletions older than the max age and keeps the rest', async () => {
+        const now = Date.now();
+        storageMock.storeFor('settings').set(KEY, {
+            version: 1,
+            selectedTabId: null,
+            tabs: [{ id: 't', name: 't', items: [], children: [], updatedAt: now }],
+            removedItems: {
+                t: { '/items/stale': now - TOMBSTONE_MAX_AGE_MS - 1000, '/items/fresh': now - 1000 },
+                gone: { '/items/old': now - TOMBSTONE_MAX_AGE_MS - 1000 },
+            },
+        });
+
+        const config = await loadConfig('char1');
+        expect(config.removedItems).toEqual({ t: { '/items/fresh': now - 1000 } });
+    });
+
+    test('a load with every item deletion expired drops the map entirely', async () => {
+        const now = Date.now();
+        storageMock.storeFor('settings').set(KEY, {
+            version: 1,
+            selectedTabId: null,
+            tabs: [{ id: 't', name: 't', items: [], children: [], updatedAt: now }],
+            removedItems: { t: { '/items/stale': now - TOMBSTONE_MAX_AGE_MS - 1000 } },
+        });
+
+        expect((await loadConfig('char1')).removedItems).toBeUndefined();
+    });
+
+    test('an imported layout carries neither tombstone map', () => {
+        const sanitized = sanitizeImportedConfig({
+            version: 1,
+            tabs: [{ id: 'a', name: 'a', items: ['/items/x'], children: [] }],
+            removed: { a: 1 },
+            removedItems: { a: { '/items/x': 1 } },
+        });
+        expect(sanitized.removed).toBeUndefined();
+        expect(sanitized.removedItems).toBeUndefined();
     });
 });
