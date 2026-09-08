@@ -6,6 +6,16 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### A trial you are watching no longer wears your own fight's buffs
+
+The buff strips draw into the battle panel's unit area, and a spectated guild trial draws its fight into that same area — so with your own combat running, your live buffs were painted onto your tile in the trial, and the trial boss got whatever the monster in your fight's first slot was carrying. Nothing about it looked wrong: the durations ticked, the icons were real, they were simply somebody else's. Strips are now drawn only in your own panel, which also means they reappear the moment you go back to it.
+
+### A setting you changed is no longer undone by the next reload, or by your other window
+
+Two faults sat behind the checkbox that would not stay unticked. A box already saved with two disagreeing answers is now read as the one you last chose rather than the one you replaced, so a character stuck in the wrong state comes right on its own instead of waiting to be clicked again.
+
+And a save no longer writes this window's whole idea of your settings over what is stored. It writes the settings this window actually changed, and leaves the rest as it found them — so the same character open in two places stops quietly reverting whatever the other one just changed. A deliberate reset to defaults still writes everything, and says so rather than relying on the difference going unnoticed.
+
 ### A checkbox you unticked no longer comes back ticked after a reload
 
 Some checkboxes are written by a setter that always stored the answer in the field a dropdown uses rather than the one a checkbox uses. Nothing complained: the entry ended up holding both answers, the new one was read for the rest of the session, and the old one was read from the next reload onwards, when the entry is rebuilt and the extra field is gone. So the change looked like it took and quietly undid itself — the Lab Simulator's two Uncapped boxes were where this showed. The value now goes to the field the setting actually uses, the other is removed rather than left to be picked up later, and an entry already carrying two answers is repaired the next time it is written.
