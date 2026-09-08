@@ -2355,6 +2355,48 @@ describe('upgrade row handoff', () => {
         }
     });
 
+    test('a piece the swap takes off and puts back on is not something to buy', () => {
+        // `lab-armor-candidates` offers a body/legs pair as soon as ONE slot
+        // differs, so the legs already worn are named in `addedSlots` — and in
+        // `removedItems`. The bill counts held copies from the INVENTORY, where
+        // a worn piece is not, so the tab read "Missing: 1" for trousers that
+        // were already on and the row offered to buy them a second time.
+        const opened = [];
+        mocks.bridgeMissingMats = { openMaterialsList: (lines) => opened.push(lines) };
+        try {
+            const container = document.createElement('div');
+            container.innerHTML = upgradeRowActionsHtml({
+                candidate: {
+                    description: 'Vampiric Robe Top +5 + Vampiric Robe Bottoms +5',
+                    slot: '/equipment_types/body',
+                    labArmor: true,
+                    currentHrid: '/items/cotton_robe_top',
+                    currentLevel: 0,
+                    upgradeHrid: '/items/vampiric_robe_top',
+                    upgradeLevel: 5,
+                    addedSlots: {
+                        '/equipment_types/body': { hrid: '/items/vampiric_robe_top', enhancementLevel: 5 },
+                        '/equipment_types/legs': { hrid: '/items/vampiric_robe_bottoms', enhancementLevel: 5 },
+                    },
+                    clearedSlots: [],
+                    removedItems: [
+                        { hrid: '/items/cotton_robe_top', enhancementLevel: 0 },
+                        { hrid: '/items/vampiric_robe_bottoms', enhancementLevel: 5 },
+                    ],
+                    type: 'cross_slot',
+                },
+                cost: 12_000_000,
+            });
+            const button = container.querySelector('[data-buy-action="market"]');
+            wireUpgradeRowActions(container);
+            button.click();
+
+            expect(opened).toEqual([[{ itemHrid: '/items/vampiric_robe_top', count: 1, enhancementLevel: 5 }]]);
+        } finally {
+            mocks.bridgeMissingMats = null;
+        }
+    });
+
     test('and without that module it still opens the piece it can, as before', () => {
         const container = document.createElement('div');
         container.innerHTML = upgradeRowActionsHtml(crossSlotRow());

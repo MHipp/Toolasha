@@ -1041,14 +1041,27 @@ export function upgradeRowPurchase(result) {
  * those entries. One slot is an ordinary single-item row and gets null, so
  * nothing downstream has to tell "a list of one" from "no list".
  *
+ * A piece the swap takes off and puts straight back on is not a purchase.
+ * `lab-armor-candidates` offers a multi-slot assignment as soon as ONE of its
+ * slots differs — `isAlreadyEquipped` rejects only the assignment that matches
+ * in every slot — so a body/legs pair whose legs are the ones already worn
+ * names those legs in `addedSlots` AND in `removedItems`. The bill counts held
+ * copies from the inventory, and a worn piece is not in the inventory, so the
+ * tab said "Missing: 1" for trousers the player had on. Matched on hrid and
+ * level, which is what makes two pieces the same piece here.
+ *
  * @param {Object} candidate - An equipment candidate
  * @returns {Array<{itemHrid: string, enhancementLevel: number, count: number, name: string}>|null}
  */
 function multiItemPurchase(candidate) {
-    const added = candidate?.addedSlots ? Object.values(candidate.addedSlots) : [];
-    if (added.length < 2) return null;
+    const all = candidate?.addedSlots ? Object.values(candidate.addedSlots) : [];
+    if (all.length < 2) return null;
+    const levelOf = (item) => Math.max(0, Math.floor(Number(item?.enhancementLevel) || 0));
+    const kept = new Set((candidate.removedItems || []).map((item) => `${item?.hrid}|${levelOf(item)}`));
+    const added = all.filter((item) => !kept.has(`${item?.hrid}|${levelOf(item)}`));
+    if (!added.length) return null;
     return added.map((item) => {
-        const level = Math.max(0, Math.floor(Number(item.enhancementLevel) || 0));
+        const level = levelOf(item);
         const base =
             dataManager.getItemDetails?.(item.hrid)?.name || String(item.hrid).split('/').pop().replace(/_/g, ' ');
         return {
