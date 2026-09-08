@@ -102,6 +102,61 @@ describe('labyrinthGridSize', () => {
     });
 });
 
+/**
+ * The band model came from the game's in-game guide, and a guide can be a
+ * rounded retelling of the rule it describes. This is the check against reality:
+ * 120 rooms a real character actually ran, read out of that character's stored
+ * room log (`labyrinthRoomLogs_<charId>`, whose sessions carry both `floor` and
+ * `roomLevel`) on 2026-09-08, reduced here to the observed level range per floor.
+ *
+ * Containment alone would be weak evidence, because the bands tile the whole
+ * line above level 20 — every level belongs to some floor, so "no violations"
+ * could not fail. What makes this corroboration is the EDGES: floors 12 and 15
+ * produced rooms at both `20N` and `20N + 20` exactly, and floors 14 and 16 hit
+ * their lower edge. A band wider or narrower than 20, or offset from `20N`,
+ * would have put those rooms outside it.
+ */
+describe('the floor bands against rooms really observed', () => {
+    // floor: [lowest level seen, highest level seen, rooms observed]
+    const OBSERVED = {
+        11: [224, 232, 3],
+        12: [240, 260, 31],
+        13: [262, 279, 16],
+        14: [280, 299, 29],
+        15: [300, 320, 29],
+        16: [320, 337, 11],
+        17: [353, 353, 1],
+    };
+
+    test('every room really observed falls inside its floor’s band', () => {
+        for (const [floor, [lowest, highest]] of Object.entries(OBSERVED)) {
+            const band = labyrinthFloorLevelBand(Number(floor));
+            expect(lowest, `floor ${floor} lowest observed room`).toBeGreaterThanOrEqual(band.minLevel);
+            expect(highest, `floor ${floor} highest observed room`).toBeLessThanOrEqual(band.maxLevel);
+        }
+    });
+
+    test('and real rooms reach both edges, which is what pins the band', () => {
+        const lowEdge = Object.entries(OBSERVED).filter(
+            ([floor, [lowest]]) => lowest === labyrinthFloorLevelBand(Number(floor)).minLevel
+        );
+        const highEdge = Object.entries(OBSERVED).filter(
+            ([floor, [, highest]]) => highest === labyrinthFloorLevelBand(Number(floor)).maxLevel
+        );
+
+        expect(lowEdge.map(([floor]) => Number(floor))).toEqual([12, 14, 15, 16]);
+        expect(highEdge.map(([floor]) => Number(floor))).toEqual([12, 15]);
+    });
+
+    test('a floor those rooms belong to is the floor the inverse names', () => {
+        // The exit level of floor N is the top of its band, so a room at that
+        // level is the deepest room of N and the inverse must say N, not N+1
+        for (const floor of Object.keys(OBSERVED).map(Number)) {
+            expect(labyrinthFloorForLevel(labyrinthFloorClearLevel(floor))).toBe(floor);
+        }
+    });
+});
+
 describe('the floor ↔ room-level model', () => {
     test('floor 1 runs 20-40 and each floor adds 20', () => {
         expect(labyrinthFloorLevelBand(1)).toEqual({ minLevel: 20, maxLevel: 40 });
