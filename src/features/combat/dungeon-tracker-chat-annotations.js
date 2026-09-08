@@ -790,6 +790,17 @@ class DungeonTrackerChatAnnotations {
 
         for (const node of nodes) {
             if (node.dataset.processed === '1') continue;
+            // A message restored from the previous session is scrollback, not a
+            // live event. It is in the document because the chat history buffer
+            // put it there, and pairing it with this session's events invents
+            // runs: `backfillTeamRuns` pairs each key count with the NEXT one and
+            // breaks only on a battle_start, so a restored key count followed by
+            // this session's first live one banks a "run" spanning the reload —
+            // a gap of arbitrary length, matching nothing already stored, so the
+            // duplicate check lets it into teamRuns. Restored lines also predate
+            // whatever retention already pruned, so counting them resurrects
+            // runs that were deliberately dropped.
+            if (node.dataset.mwiRestored === '1') continue;
 
             // FILTER: skip player messages. A system line carries only a
             // timestamp; a player's carries the sender's name element too, so a

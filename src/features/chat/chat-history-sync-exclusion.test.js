@@ -41,6 +41,8 @@ vi.mock('../../core/storage.js', () => ({
 
 import { CHAT_HISTORY_KEY_BASE, CHAT_HISTORY_STORE } from './chat-history-persistence.js';
 import { applyPayload, buildPayloadJSON } from '../sync/sync-payload.js';
+import { readFileSync } from 'node:fs';
+import { EXCLUDED_STORE_KEY_PREFIXES } from '../../utils/full-backup.js';
 
 const HISTORY_KEY = `${CHAT_HISTORY_KEY_BASE}_char1`;
 const WHISPER = 'meet me at the tower';
@@ -112,5 +114,30 @@ describe('chat history never reaches a sync payload', () => {
         expect(json).not.toContain(WHISPER);
         expect(json).not.toContain(HISTORY_KEY);
         expect(json).toContain('dungeonRuns');
+    });
+});
+
+/**
+ * The settings export is the third way the settings store leaves the machine,
+ * after the sync payload and the full backup. It was the one still carrying
+ * device-local records, and persisted chat history — whispers included — is
+ * exactly what now lives under that prefix.
+ *
+ * `settings-storage.js` is a Core module and Core loads before Utils, so it
+ * cannot import the shared prefix list at module level. It repeats the prefix
+ * instead, and this pins the repeat to the original so the two cannot drift.
+ */
+describe('the settings export excludes what the backup excludes', () => {
+    test('every device-local prefix the backup strips is stripped here too', async () => {
+        const source = readFileSync(new URL('../../core/settings-storage.js', import.meta.url), 'utf8');
+        const block = source.slice(source.indexOf('async exportSettings()'));
+        const listed = block.slice(
+            block.indexOf('EXCLUDE_PREFIXES = ['),
+            block.indexOf(']', block.indexOf('EXCLUDE_PREFIXES = ['))
+        );
+
+        for (const prefix of EXCLUDED_STORE_KEY_PREFIXES.settings || []) {
+            expect(listed, `exportSettings must also drop "${prefix}"`).toContain(prefix);
+        }
     });
 });

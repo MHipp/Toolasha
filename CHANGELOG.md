@@ -6,6 +6,18 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Chat history survives a reload, and stays on your machine
+
+The extended chat history kept what the game evicts, but only until the page reloaded. It is now written to disk per character and restored above the live messages, whispers and private tabs included. Item links in restored messages are made clickable again by this script rather than by the game's own handlers, which cannot be saved; a link that cannot be understood is left plain rather than looking clickable and doing nothing, and markup a game update has changed renders as text instead of breaking the buffer.
+
+None of it leaves the machine. The record is excluded from the cross-device sync payload in both directions and from the full backup, and the settings export — the third way that store leaves a machine, and the file people paste into a chat when they want help — was still carrying it, so it strips the same keys now. Restored messages are also marked as scrollback, so the dungeon tracker no longer reads last session's key counts as this session's events and invents a run spanning the reload.
+
+### The profile card's breakdown opens, and opens for anyone
+
+Clicking "breakdown" could do nothing at all: the panel decided whether it was open by asking what it was holding rather than what was on the page, so a shell that had been torn off — or one whose first open failed part way through — was treated as open for the rest of the session, and every click quietly closed something invisible. A failed open now cleans up after itself instead of poisoning the button.
+
+The link is also no longer limited to your own profile. It opens the breakdown for whoever you are looking at, titled with their name, and a player who hides their equipment gets the note saying so rather than a total presented as fact.
+
 ### Queued rows, trial tiles and the Iron Bell loop stop quoting figures they cannot back
 
 A queued action that asks for more than its materials cover now shows the time it can actually run rather than the time it was asked for, so a row no longer contradicts the very ledger it feeds — and a row that can do nothing says so. The same fault sat in the alt-readiness projection, which had been reporting a character busy long past the point its materials run out.

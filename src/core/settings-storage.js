@@ -766,8 +766,20 @@ class SettingsStorage {
     async exportSettings() {
         const allData = await storage.getAll(this.storageArea);
 
-        // Exclude transient cache keys
-        const EXCLUDE_PREFIXES = ['marketplace_cache'];
+        // Transient caches, and anything device-local.
+        //
+        // `toolasha_local_` is the prefix the sync payload and the full backup
+        // both strip (`LOCAL_ONLY_KEY_PREFIXES` in features/sync/sync-payload.js,
+        // `EXCLUDED_STORE_KEY_PREFIXES` in utils/full-backup.js). This export is
+        // the third way the settings store leaves the machine and was the one
+        // still carrying them: persisted chat history lives under that prefix and
+        // includes whisper tabs, and a settings export is exactly the file people
+        // paste into a chat when they want help with a setting.
+        //
+        // Listed here rather than imported: this is a Core module and Core loads
+        // before Utils, so a module-level import of the shared constant would be
+        // undefined at load. A test pins the two lists together instead.
+        const EXCLUDE_PREFIXES = ['marketplace_cache', 'toolasha_local_'];
         const exported = {};
 
         for (const [key, value] of Object.entries(allData)) {

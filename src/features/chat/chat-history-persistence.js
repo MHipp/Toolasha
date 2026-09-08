@@ -172,6 +172,17 @@ export function parseStoredMessage(html) {
             if (/^on/i.test(attribute.name)) node.removeAttribute(attribute.name);
         }
     }
+
+    // Mark it as scrollback from a previous session. The dungeon tracker scans
+    // every `ChatMessage_chatMessage` in the document, buffer included, and
+    // banks runs from pairs of "Key counts" lines — so without this a restored
+    // key count pairs with this session's first live one and invents a run
+    // spanning the reload. `data-processed` is preserved by the serializer for
+    // lines already counted, but a reset clears that marker from the whole
+    // document; this one is a property of where the node came from, so it
+    // survives.
+    el.dataset.mwiRestored = '1';
+
     return el;
 }
 

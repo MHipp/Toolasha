@@ -299,6 +299,25 @@ describe('sorting chat into events', () => {
         expect(annotations.extractChatEvents()).toEqual([]);
     });
 
+    test('a message restored from a previous session is not a live event', () => {
+        // Chat history persistence puts last session's messages back in the
+        // buffer, and this scan reads every ChatMessage in the document. Pairing
+        // a restored key count with this session's first live one banks a run
+        // spanning the reload: `backfillTeamRuns` pairs each key count with the
+        // NEXT one and breaks only on a battle_start, so nothing else stops it,
+        // and the invented run matches nothing stored so the duplicate check
+        // lets it through. `data-processed` does not save us — a reset clears
+        // that from the whole document, restored nodes included.
+        const restored = message('[08/04 09:00:00 AM]', 'Key counts: [Alice - 12]');
+        restored.dataset.mwiRestored = '1';
+        message('[08/04 10:00:05 AM]', 'Key counts: [Alice - 11]');
+
+        const events = annotations.extractChatEvents();
+
+        expect(events).toHaveLength(1);
+        expect(events[0].timestamp).toEqual(aug4(10, 0, 5));
+    });
+
     test('ordinary chatter is not an event', () => {
         message('[08/04 10:00:00 AM]', 'nice run everyone');
         expect(annotations.extractChatEvents()).toEqual([]);
