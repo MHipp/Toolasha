@@ -108,6 +108,12 @@ export function computeLiveProjection(now = Date.now()) {
 
         const timing = actionTimeDisplay.calculateSingleQueueActionTime(actionObj, actionDetails, inventoryLookup);
 
+        // The walk is sequential in time, so it has to be sequential in materials too: this
+        // action's inputs are gone before the next one is costed. Without the ledger every
+        // queued action was priced against the full starting inventory and the projection
+        // reported an idle time hours later than the truth.
+        actionTimeDisplay.deductQueueActionMaterials(inventoryLookup, actionDetails, actionObj, timing);
+
         if (timing.isTrulyInfinite || !Number.isFinite(timing.totalTime)) {
             segments.push(
                 buildSegment({

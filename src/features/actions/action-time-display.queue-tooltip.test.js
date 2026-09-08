@@ -51,6 +51,8 @@ vi.mock('../../core/data-manager.js', () => ({
     default: {
         getCurrentActions: () => game.currentActions,
         getActionDetails: (hrid) => game.actionDetails[hrid] ?? null,
+        // The queue's material ledger asks what an enhancing row costs before spending it
+        getItemDetails: () => null,
         getInventory: () => [],
         getInitClientData: () => ({ itemDetailMap: {} }),
         getActionDrinkSlots: () => [],

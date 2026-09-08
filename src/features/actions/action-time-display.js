@@ -438,6 +438,10 @@ class ActionTimeDisplay {
 
                 const result = this.calculateSingleQueueActionTime(actionObj, actionDetails, inventoryLookup);
 
+                // The queue is walked in order, so this row's materials are gone before the
+                // next row is costed — otherwise every row claims the whole starting bag.
+                this.deductQueueActionMaterials(inventoryLookup, actionDetails, actionObj, result);
+
                 if (result.isTrulyInfinite) {
                     hasInfinite = true;
                 } else {
@@ -521,8 +525,11 @@ class ActionTimeDisplay {
 
     /**
      * Calculate time for the currently active action (for total time calculation)
+     *
+     * Also spends that action's materials out of `inventoryLookup`: it runs ahead of every
+     * queued row, so the rows after it must be costed against what it leaves.
      * @param {Array} currentActions - All current actions from dataManager
-     * @param {Object} inventoryLookup - Inventory lookup map
+     * @param {Object} inventoryLookup - Inventory lookup map, mutated by the deduction
      * @returns {Object|null} { totalTime, hasInfinite, actionId } or null
      */
     calculateCurrentActionTime(currentActions, inventoryLookup) {
@@ -539,6 +546,7 @@ class ActionTimeDisplay {
         if (!actionDetails) return null;
 
         const result = this.calculateSingleQueueActionTime(currentAction, actionDetails, inventoryLookup);
+        this.deductQueueActionMaterials(inventoryLookup, actionDetails, currentAction, result);
 
         return {
             totalTime: result.actionTimeSeconds,
@@ -1922,9 +1930,6 @@ class ActionTimeDisplay {
     }
 
     /**
-     * Build inventory lookup maps for fast material queries
-     * @param {Array} inventory - Character inventory items
-    /**
      * Build an inline SVG icon HTML string for an item HRID.
      * Returns an empty string if the sprite URL cannot be found or no HRID given.
      * @param {string|null} itemHrid - e.g. "/items/mirror_of_protection"
@@ -1941,6 +1946,8 @@ class ActionTimeDisplay {
     }
 
     /**
+     * Build inventory lookup maps for fast material queries
+     * @param {Array} inventory - Character inventory items
      * @returns {Object} Lookup maps by HRID and enhancement
      */
     buildInventoryLookup(inventory) {
@@ -2054,12 +2061,7 @@ class ActionTimeDisplay {
                     const { itemHrid: catalystHrid } = this.parseItemHash(actionObj.secondaryItemHash);
                     if (catalystHrid) {
                         const availableCatalyst = byHrid[catalystHrid] || 0;
-                        let baseSuccessRate = 0.7;
-                        if (actionDetails.hrid?.includes('decompose')) {
-                            baseSuccessRate = 0.6;
-                        } else if (actionDetails.hrid?.includes('transmute')) {
-                            baseSuccessRate = alchItemDetails?.alchemyDetail?.transmuteSuccessRate || 0.5;
-                        }
+                        const baseSuccessRate = this.getAlchemyCatalystRate(actionDetails, alchItemDetails);
                         if (baseSuccessRate > 0) {
                             const maxFromCatalyst = Math.floor(availableCatalyst / baseSuccessRate);
                             if (maxFromCatalyst < minLimit) {
@@ -2131,6 +2133,126 @@ class ActionTimeDisplay {
         }
 
         return { maxActions: minLimit, limitType };
+    }
+
+    /**
+     * Catalyst draw per alchemy action. A catalyst is spent only on the attempts that succeed,
+     * so the base success rate is both the per-action cost and the divisor the limit uses.
+     * @param {Object} actionDetails - Action detail object
+     * @param {Object|null} alchItemDetails - Item details for the item being alchemized
+     * @returns {number} Catalysts consumed per action
+     */
+    getAlchemyCatalystRate(actionDetails, alchItemDetails) {
+        if (actionDetails?.hrid?.includes('decompose')) return 0.6;
+        if (actionDetails?.hrid?.includes('transmute')) {
+            return alchItemDetails?.alchemyDetail?.transmuteSuccessRate || 0.5;
+        }
+        return 0.7;
+    }
+
+    /**
+     * Artisan material reduction currently in effect for an action type.
+     * @param {Object} actionDetails - Action detail object
+     * @returns {number} Reduction as a 0-1 decimal
+     */
+    getArtisanBonusForAction(actionDetails) {
+        const equipment = dataManager.getEquipment();
+        const itemDetailMap = dataManager.getInitClientData()?.itemDetailMap || {};
+        const drinkConcentration = getDrinkConcentration(equipment, itemDetailMap);
+        const activeDrinks = dataManager.getActionDrinkSlots(actionDetails.type);
+        return parseArtisanBonus(activeDrinks, itemDetailMap, drinkConcentration);
+    }
+
+    /**
+     * Spend one queued action's materials out of a queue-walk inventory ledger.
+     *
+     * The queue runs in order, so every action after the first can only draw on what its
+     * predecessors left behind. `calculateSingleQueueActionTime` is deliberately pure with
+     * respect to the lookup it is handed — it also serves single-action displays, where the
+     * whole bag genuinely is the correct basis — so the running ledger lives here, called
+     * from the callers' loops between rows.
+     *
+     * Every channel `calculateMaterialLimit` counts is spent here. A channel that can limit a
+     * row but is never spent would leave later rows costed against materials already used.
+     *
+     * @param {Object} inventoryLookup - Maps from buildInventoryLookup; mutated in place
+     * @param {Object} actionDetails - Action detail object for the row being spent
+     * @param {Object} actionObj - Character action object (carries the item hashes)
+     * @param {Object} timing - The row's timing, needing only {count, isTrulyInfinite}
+     * @returns {number} Actions actually paid for, which is what the row performs
+     */
+    deductQueueActionMaterials(inventoryLookup, actionDetails, actionObj, timing) {
+        const byHrid = inventoryLookup?.byHrid;
+        const byEnhancedKey = inventoryLookup?.byEnhancedKey;
+        if (!byHrid || !byEnhancedKey || !actionDetails || !timing) return 0;
+        // An unbounded action never hands the queue back, so nothing after it is reachable and
+        // no finite quantity describes what it consumes.
+        if (timing.isTrulyInfinite) return 0;
+
+        const artisanBonus = this.getArtisanBonusForAction(actionDetails);
+
+        // What the row performs, not what it asked for: a request for 500 backed by materials
+        // for 40 consumes 40. Counted rows carry no material limit of their own (their display
+        // shows the full requested time), so the limit is resolved here against the ledger.
+        let performed = Number.isFinite(timing.count) ? Math.max(0, Math.floor(timing.count)) : 0;
+        const limit = this.calculateMaterialLimit(actionDetails, inventoryLookup, artisanBonus, actionObj);
+        if (limit && Number.isFinite(limit.maxActions)) {
+            performed = Math.min(performed, Math.max(0, limit.maxActions));
+        }
+        if (performed <= 0) return 0;
+
+        // byHrid holds the total across enhancement levels and byEnhancedKey the per-level
+        // stack; both have to fall or the alchemy branch and the generic branch disagree.
+        const spend = (itemHrid, amount, enhancementLevel = 0) => {
+            if (!itemHrid || !(amount > 0)) return;
+            byHrid[itemHrid] = Math.max(0, (byHrid[itemHrid] || 0) - amount);
+            const key = `${itemHrid}::${enhancementLevel}`;
+            byEnhancedKey[key] = Math.max(0, (byEnhancedKey[key] || 0) - amount);
+        };
+
+        if (actionDetails.type === '/action_types/enhancing' && actionObj?.primaryItemHash) {
+            const { itemHrid } = this.parseItemHash(actionObj.primaryItemHash);
+            const costs = itemHrid ? dataManager.getItemDetails(itemHrid)?.enhancementCosts : null;
+            if (Array.isArray(costs) && costs.length > 0) {
+                for (const cost of costs) {
+                    spend(cost.itemHrid, cost.count * performed);
+                }
+                return performed;
+            }
+        }
+
+        if (actionDetails.type === '/action_types/alchemy' && actionObj?.primaryItemHash) {
+            const { itemHrid, level } = this.parseItemHash(actionObj.primaryItemHash);
+            if (itemHrid) {
+                const alchItemDetails = dataManager.getItemDetails(itemHrid);
+                spend(itemHrid, performed * (alchItemDetails?.alchemyDetail?.bulkMultiplier || 1), level);
+
+                // The fee is absent from the game's action data; utils/alchemy-fees.js is the
+                // one place that states it, and the limit is computed from the same call.
+                const alchemyType = getAlchemyTypeFromActionHrid(actionDetails.hrid);
+                const alchemyCoinCost =
+                    alchemyType && alchemyType !== 'coinify' ? getAlchemyCoinCost(alchItemDetails, alchemyType) : 0;
+                spend('/items/coin', performed * alchemyCoinCost);
+
+                if (actionObj.secondaryItemHash) {
+                    const { itemHrid: catalystHrid } = this.parseItemHash(actionObj.secondaryItemHash);
+                    spend(catalystHrid, performed * this.getAlchemyCatalystRate(actionDetails, alchItemDetails));
+                }
+                return performed;
+            }
+        }
+
+        if (actionDetails.coinCost > 0) {
+            spend('/items/coin', performed * actionDetails.coinCost);
+        }
+        for (const inputItem of actionDetails.inputItems || []) {
+            spend(inputItem.itemHrid, performed * inputItem.count * (1 - artisanBonus));
+        }
+        // Upgrade items are not reduced by Artisan, matching the limit
+        if (actionDetails.upgradeItemHrid) {
+            spend(actionDetails.upgradeItemHrid, performed);
+        }
+        return performed;
     }
 
     /**
@@ -2334,7 +2456,9 @@ class ActionTimeDisplay {
                                 currentAction
                             );
 
-                            const materialLimit = limitResult?.maxActions || null;
+                            // Not `|| null`: a limit of 0 is a real answer (the bag is empty),
+                            // and coercing it to null would report the action as infinite
+                            const materialLimit = limitResult ? limitResult.maxActions : null;
 
                             if (materialLimit !== null) {
                                 // Material-limited infinite action - calculate time
@@ -2375,6 +2499,10 @@ class ActionTimeDisplay {
                             actionTimeSeconds = totalTime;
                         }
                     }
+
+                    // The current action runs before every queued row, so its materials are
+                    // gone by the time those rows are costed
+                    this.deductQueueActionMaterials(inventoryLookup, actionDetails, currentAction, { count });
 
                     // Store action for profit calculation (done async after UI renders)
                     // Skip enhancing actions — no profit applies
@@ -2520,6 +2648,13 @@ class ActionTimeDisplay {
                         actionTimeSeconds = totalTime;
                     }
                 }
+
+                // Spend this row's materials before the next row is costed — the queue runs in
+                // order, so without this every row claims the whole starting bag
+                this.deductQueueActionMaterials(inventoryLookup, actionDetails, actionObj, {
+                    count,
+                    isTrulyInfinite,
+                });
 
                 // Store action for profit calculation (done async after UI renders)
                 // Skip enhancing actions — no profit applies
