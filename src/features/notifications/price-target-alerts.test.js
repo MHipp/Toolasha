@@ -147,6 +147,27 @@ describe('crossing', () => {
         expect(game.notified[0].options.title).toBe('Price target reached');
     });
 
+    test('a reach that reached no channel is retried on the next sighting, not lost until the price recovers', async () => {
+        game.fired = false;
+        game.pins = [pin({ price: 4_200_000 })];
+        await sight({ ask: 4_100_000 });
+        expect(game.notified).toHaveLength(1);
+
+        // Still under target, still nothing delivered — the pin's armed bit
+        // must not have been spent on a notice nobody saw
+        await sight({ ask: 4_050_000 });
+        expect(game.notified).toHaveLength(2);
+
+        game.fired = true;
+        await sight({ ask: 4_000_000 });
+        expect(game.notified).toHaveLength(3);
+
+        // Delivered: a further sighting under the same target is the ordinary
+        // one-message-per-reach case again
+        await sight({ ask: 3_900_000 });
+        expect(game.notified).toHaveLength(3);
+    });
+
     test('the reach is recorded on the pin, dated by the sighting rather than by now', async () => {
         game.pins = [pin({ price: 4_200_000 })];
         await sight({ ask: 4_100_000, ageMs: 5 * 60_000 });

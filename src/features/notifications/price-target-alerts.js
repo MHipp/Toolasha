@@ -278,8 +278,10 @@ class PriceTargetAlerts {
             priceAgeMs,
             maxPriceAgeMs: marketAPI.CACHE_DURATION,
         });
-        state.armed = armed;
-        if (!fire) return;
+        if (!fire) {
+            state.armed = armed;
+            return;
+        }
 
         // The pin's own record of the target's life. Written here rather than
         // where the chip lights up, because this is the only place that knows
@@ -289,7 +291,7 @@ class PriceTargetAlerts {
         // about the notification depends on it landing.
         noteWatchedTargetReached(pin.key, { at: observation.timestamp, price: observation });
 
-        notificationService.notify(
+        const result = notificationService.notify(
             `${EVENT_KEY_PREFIX}:${pin.key}:${signature}:${state.generation}`,
             this.buildMessage(pin, observation, priceAgeMs),
             {
@@ -299,6 +301,13 @@ class PriceTargetAlerts {
                 subject: pin.name,
             }
         );
+
+        // Disarmed only once the notice actually reached the player, exactly as
+        // the undercut alert disarms its own bit: a target reached while nothing
+        // was there to say so — no toast host mounted yet, most likely — must
+        // stay retryable rather than going quiet until the price crosses back
+        // and forth again, which for a target the market never revisits is never.
+        if (result?.fired) state.armed = armed;
     }
 
     /**
