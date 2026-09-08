@@ -6,6 +6,22 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Audit round: the buff strip showed your whole loadout, and a shopping trip claimed itself twice
+
+The combat buff strip drew a chip for every buff a unit carried — achievements, community buffs, house rooms and drinks included — and labelled each by the stat it moves, so five sources of wisdom read as the same buff five times. It shows fight state now: only what an ability applied, and one cast draws one chip however many effects it granted, with a count on the icon and the full list on hover. On a real party that is one chip a player where there were nineteen.
+
+Two faults in the reservation ledger, both of which made it wrong at exactly what it is for. Opening a plan's shopping list claimed the same bill twice, once for the plan and once for the panel, so every line read its own requirement as taken by somebody else — a bag with a hundred planks in it reported a hundred short. And the line that explains which plan holds the stock stayed silent in its commonest case, which is a full bag and a plan that says otherwise. The guided walk also advanced past a step whose action was already running when the walk started, since the game's queue message names existing actions alongside new ones; and a character switch during a replan could write the departing character's claims into the arriving character's ledger.
+
+Three features drawing on a combat unit each insisted on being the last thing in the tile, so any two of them on together moved each other's work every tick. The buff strip's countdown also kept ticking after a fight ended, redrawing into a panel that was no longer there. The gear warning was positioned once and never again, so a resize or a rotation left it over the game's own controls. And a pushed update of the game's published item values was trusted without checking it was neither empty nor older than what was already held.
+
+### Follow-ups: numbers read by the game's own locale, and tabs that merge item by item
+
+Every number this script reads back out of the game's text is now captured as well as parsed by the game's locale. Eighteen patterns still assumed a comma between thousands, so in a language that groups with a full stop they captured only the first digit group — and one of them mis-read the number rather than shortening it.
+
+Custom inventory tabs merge item by item instead of tab by tab, so two devices that each add something to the same tab before syncing keep both. Deletions still win where they should: a copy that has seen the deletion and kept the item is what makes it stale news. A pull that would empty most of a tab is refused rather than half-applied.
+
+The Skilling Optimizer's protect-from level rule is published for a companion script to read, rather than being copied there and left to drift. And several tasks that share a crafting chain can be walked as one guided walk, with the shared steps queued once at the summed count.
+
 ### Plans share one bag, and a crafting plan can walk you through itself
 
 Two features adapted in idea from MWITools (attribution in `third-party/mwitools/`), both off by default:
