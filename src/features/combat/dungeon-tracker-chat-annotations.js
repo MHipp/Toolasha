@@ -27,6 +27,13 @@ class DungeonTrackerChatAnnotations {
         this.cumulativeStatsByDungeon = {}; // Persistent cumulative stats for color thresholds and averages
         this.storedRunNumbers = {}; // timestamp (ms) → run number, per statsKey, from storage
         this.storedRunDurations = {}; // timestamp (ms) → duration, per statsKey, from storage
+        // statsKey -> Map<chatTimestamp, duration> of runs an earlier pass has
+        // already labelled. Their messages carry data-processed, so
+        // extractChatEvents no longer returns them, but they are still runs and
+        // still hold their number slot. Kept apart from storedRunNumbers on
+        // purpose: a chat run written in there reads back as a second, separate
+        // stored run for the same real run - see the merge in annotateAllMessages.
+        this.annotatedChatRuns = {};
         this.averageBaselines = {}; // statsKey → epoch ms the average is asked to start after
         this.processedMessages = new Map(); // Track processed messages to prevent duplicate counting
         this.initComplete = false; // Flag to ensure storage loads before annotation
@@ -358,39 +365,47 @@ class DungeonTrackerChatAnnotations {
         // window or a marker is in force
         const precomputedAverages = {};
         const chatRunsMatchedStorage = {}; // statsKey → Set<chatTimestamp> matched to a stored run
-        for (const [pStatsKey, chatTsList] of Object.entries(chatRunsByStatsKey)) {
+        // A dungeon whose visible runs were all labelled on an earlier pass has
+        // nothing in chatRunsByStatsKey this time round, and still has to be
+        // merged: its remembered runs hold the slots later runs are numbered off.
+        const mergeKeys = new Set([...Object.keys(chatRunsByStatsKey), ...Object.keys(this.annotatedChatRuns)]);
+        for (const pStatsKey of mergeKeys) {
+            const chatTsList = chatRunsByStatsKey[pStatsKey] || [];
             const tsMap = this.storedRunNumbers[pStatsKey] || {};
             const storedTsList = Object.keys(tsMap)
                 .map(Number)
                 .sort((a, b) => a - b);
 
-            // Match each chat run to a stored run within 10s tolerance
-            const matchedChatSet = new Set();
-            const matchedStoredSet = new Set();
-            for (const chatTs of chatTsList) {
-                const matchedSt = storedTsList.find((st) => Math.abs(st - chatTs) < 10000);
-                if (matchedSt !== undefined) {
-                    matchedStoredSet.add(matchedSt);
-                    matchedChatSet.add(chatTs);
-                }
-            }
+            // Every chat run of this dungeon: the ones on screen now, plus the
+            // ones earlier passes labelled and marked processed. Keyed by
+            // timestamp, so a run seen by both stays one run.
+            const chatRuns = new Map(this.annotatedChatRuns[pStatsKey] || []);
+            for (const ts of chatTsList) chatRuns.set(ts, chatRunDurations[pStatsKey]?.get(ts));
+            const allChatTsList = [...chatRuns.keys()].sort((a, b) => a - b);
+
+            const { matchedChat: matchedChatSet, matchedStored: matchedStoredSet } = this.pairChatRunsWithStored(
+                allChatTsList,
+                storedTsList
+            );
 
             // Stored runs not visible in chat still count toward the running total
             const storedOnlyTsList = storedTsList.filter((st) => !matchedStoredSet.has(st));
 
             // Merge and sort all runs chronologically. A matched chat run is
             // carried by its chat copy only, so no run's duration is counted
-            // twice into the windowed average either.
+            // twice into the windowed average either. A duration nothing knows
+            // stays null rather than becoming a zero: zero is a run that took no
+            // time, and averaging those in is what read a 9m15s run as 5m9s.
             const merged = [
                 ...storedOnlyTsList.map((ts) => ({
                     ts,
                     isChatRun: false,
-                    duration: this.storedRunDurations[pStatsKey]?.[ts] ?? 0,
+                    duration: this.storedRunDurations[pStatsKey]?.[ts] ?? null,
                 })),
-                ...chatTsList.map((ts) => ({
+                ...allChatTsList.map((ts) => ({
                     ts,
                     isChatRun: true,
-                    duration: chatRunDurations[pStatsKey]?.get(ts) ?? 0,
+                    duration: chatRuns.get(ts) ?? null,
                 })),
             ].sort((a, b) => a.ts - b.ts);
 
@@ -543,10 +558,20 @@ class DungeonTrackerChatAnnotations {
                         if (diff > dungeonStats.slowestTime) dungeonStats.slowestTime = diff;
                         this.processedMessages.set(messageId, runNumber);
 
-                        // Register in storedRunNumbers so future annotateAllMessages()
-                        // calls include it in the merge and don't reuse its number slot
-                        if (!this.storedRunNumbers[statsKey]) this.storedRunNumbers[statsKey] = {};
-                        this.storedRunNumbers[statsKey][msgTs] = runNumber;
+                        // Remember it so future annotateAllMessages() calls include
+                        // it in the merge and don't reuse its number slot - this
+                        // message is marked processed below, and extractChatEvents
+                        // will not hand it back again.
+                        //
+                        // Remembered as a chat run, never written into
+                        // storedRunNumbers: in there it reads back as a stored run
+                        // in its own right, sitting a few hundred milliseconds from
+                        // the tracker's own banked copy of the same run, and the
+                        // merge counts the run twice - once with its duration and
+                        // once with none. That was the +90 jump in the run numbers
+                        // and the collapsed trailing average.
+                        if (!this.annotatedChatRuns[statsKey]) this.annotatedChatRuns[statsKey] = new Map();
+                        this.annotatedChatRuns[statsKey].set(msgTs, diff);
                     }
 
                     label = `Run #${runNumber}: ${label}`;
@@ -1061,6 +1086,54 @@ class DungeonTrackerChatAnnotations {
     }
 
     /**
+     * How far apart the two records of one run may sit.
+     *
+     * Both sides are the same instant: the "Key counts" message that opened the
+     * run. The tracker keeps the server's own millisecond stamp for it
+     * (`message.t`, via `firstKeyCountTimestamp`); the chat pass re-reads that
+     * same message's rendered stamp, which the game prints truncated to the
+     * second - so the ordinary gap is under a second, in one direction. The
+     * seconds of slack on top are for the tracker's fallbacks, which anchor a
+     * run on when tracking noticed it rather than on the message. Ten seconds is
+     * the figure this merge and `saveTeamRun`'s own duplicate check have always
+     * used, and it is left alone: the tolerance was never what broke the join.
+     */
+    static CHAT_STORED_MATCH_MS = 10000;
+
+    /**
+     * Pair each chat run with the stored run recording the same real run.
+     *
+     * One-to-one and in time order: a stored run is handed out once and never
+     * again, so several chat runs can no longer all claim the same stored run
+     * and leave its neighbours looking like extra runs nobody has seen.
+     *
+     * @param {Array<number>} chatTsList - Chat run timestamps, ascending
+     * @param {Array<number>} storedTsList - Stored run timestamps, ascending
+     * @returns {{matchedChat: Set<number>, matchedStored: Set<number>}} The two
+     *   sides of the pairing, each timestamp appearing at most once
+     */
+    pairChatRunsWithStored(chatTsList, storedTsList) {
+        const tolerance = DungeonTrackerChatAnnotations.CHAT_STORED_MATCH_MS;
+        const matchedChat = new Set();
+        const matchedStored = new Set();
+
+        // Both lists ascend, so one sweep suffices: advance past stored runs
+        // that are already too old for this chat run, then take the next one if
+        // it is close enough and consume it.
+        let si = 0;
+        for (const chatTs of chatTsList) {
+            while (si < storedTsList.length && storedTsList[si] <= chatTs - tolerance) si++;
+            if (si < storedTsList.length && Math.abs(storedTsList[si] - chatTs) < tolerance) {
+                matchedStored.add(storedTsList[si]);
+                matchedChat.add(chatTs);
+                si++;
+            }
+        }
+
+        return { matchedChat, matchedStored };
+    }
+
+    /**
      * The trailing average to print beside each chat run of one dungeon.
      *
      * Two limits, and they compose: the window caps how far back the average
@@ -1082,9 +1155,18 @@ class DungeonTrackerChatAnnotations {
     buildWindowedAverages(merged, windowSize, baselineAt) {
         if (windowSize <= 0 && !(baselineAt > 0)) return null;
 
-        // Prefix sums so each run's window costs two lookups rather than a scan
+        // Prefix sums so each run's window costs two lookups rather than a scan.
+        // A run whose duration nothing knows is summed as nothing AND counted as
+        // nothing: it still holds its slot, so the window reaches back over the
+        // same runs it always did, but it is not averaged in.
         const sums = [0];
-        for (let i = 0; i < merged.length; i++) sums.push(sums[i] + (merged[i].duration || 0));
+        const known = [0];
+        for (let i = 0; i < merged.length; i++) {
+            const duration = merged[i].duration;
+            const usable = Number.isFinite(duration) && duration > 0;
+            sums.push(sums[i] + (usable ? duration : 0));
+            known.push(known[i] + (usable ? 1 : 0));
+        }
 
         // The first run the marker lets through; every window starts at or after it
         let floor = 0;
@@ -1098,9 +1180,12 @@ class DungeonTrackerChatAnnotations {
                 continue;
             }
             const start = windowSize > 0 ? Math.max(floor, i - windowSize + 1) : floor;
-            const covered = i - start + 1;
+            // What the figure is the average OF, which is what the label goes on
+            // to say. A window holding nothing usable covers nothing, and the
+            // caller prints no average at all rather than "0m 0s".
+            const covered = known[i + 1] - known[start];
             byTimestamp.set(merged[i].ts, {
-                average: Math.floor((sums[i + 1] - sums[start]) / covered),
+                average: covered > 0 ? Math.floor((sums[i + 1] - sums[start]) / covered) : 0,
                 covered,
             });
         }
@@ -1156,6 +1241,8 @@ class DungeonTrackerChatAnnotations {
         this.lastSeenDungeonName = null;
         this.cumulativeStatsByDungeon = {}; // Reset cumulative counters
         this.storedRunNumbers = {}; // Reset storage lookup map
+        this.storedRunDurations = {}; // ...and the durations beside it
+        this.annotatedChatRuns = {}; // Nothing on screen counts as labelled any more
         this.processedMessages.clear(); // Clear message deduplication map
         this._annotatedWithoutDungeonName = false; // Nothing left to redo
         this.initComplete = false; // Reset init flag

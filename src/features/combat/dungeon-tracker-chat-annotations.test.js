@@ -138,6 +138,7 @@ beforeEach(() => {
     annotations.storedRunDurations = {};
     annotations.averageBaselines = {};
     annotations.storedRunNumbers = {};
+    annotations.annotatedChatRuns = {};
     annotations.processedMessages.clear();
     annotations.lastSeenDungeonName = null;
     annotations._annotatedWithoutDungeonName = false;
@@ -1063,5 +1064,149 @@ describe('how far back the average reaches', () => {
         await annotations.annotateAllMessages();
 
         expect(averageOn(nodes[1])).toBe('[Average: 7m 30s]');
+    });
+});
+
+/**
+ * The bug the maintainer reported: two consecutive lines in party chat read
+ * `Run #225` and then `Run #315`, with the trailing average collapsing from
+ * `Avg last 20: 9m 20s` to `Avg last 20: 5m 9s` on a run that itself took
+ * 9m 15s. A page refresh sat between the two lines.
+ *
+ * Both halves come from one place. A run labelled on one pass has its message
+ * marked `data-processed`, so the next pass no longer extracts it — and the
+ * pass used to keep its slot by writing the chat timestamp into
+ * `storedRunNumbers`, the very map it later reads back as "the runs storage
+ * knows about". From then on that run is in the merged list twice: once as the
+ * tracker's own banked copy, and once as a phantom stored run with no entry in
+ * `storedRunDurations` and so no duration at all. The phantoms inflate every
+ * later run number, and the windowed average divided by a slot count that
+ * counted them.
+ */
+describe('a run seen from both sides is still one run', () => {
+    /** August 4, 12-hour with a meridiem — the stamp shape the parser reads unambiguously. */
+    function stamp(date) {
+        const pad = (value) => String(value).padStart(2, '0');
+        const hours = date.getHours();
+        const hour12 = hours % 12 === 0 ? 12 : hours % 12;
+        return `[08/04 ${pad(hour12)}:${pad(date.getMinutes())}:${pad(date.getSeconds())} ${hours < 12 ? 'AM' : 'PM'}]`;
+    }
+
+    /**
+     * Lay out N+1 key-count lines for N runs of the given lengths.
+     * @param {Date} start - When the first key count landed
+     * @param {Array<number>} durations - Run lengths in ms
+     * @returns {{nodes: Array<HTMLElement>, times: Array<Date>}} Lines and their stamps
+     */
+    function chatRuns(start, durations) {
+        const times = [start];
+        for (const duration of durations) times.push(new Date(times[times.length - 1].getTime() + duration));
+        const nodes = times.map((at, index) => message(stamp(at), `Key counts: [Alice - ${400 - index}]`));
+        return { nodes, times };
+    }
+
+    /**
+     * What a page refresh does: every counter this session built is gone and
+     * the chat is re-rendered from the server with nothing marked processed,
+     * so the numbering is rebuilt from storage plus whatever chat still shows.
+     * @returns {Promise<void>} When the rebuilt state has loaded
+     */
+    async function reload() {
+        annotations.cleanup();
+        document.body.innerHTML = '';
+        annotations.storedRunDurations = {};
+        annotations.annotatedChatRuns = {};
+        await annotations.loadRunCountsFromStorage();
+    }
+
+    test('a run labelled on an earlier pass is not re-counted as a stored run', async () => {
+        message('[08/04 09:59:00 AM]', 'Battle started: Chimerical Den');
+        const { nodes, times } = chatRuns(aug4(10, 0, 0), [600_000, 300_000]);
+        game.allRuns = [
+            storedRun({ timestamp: times[0].toISOString(), duration: 600_000 }),
+            storedRun({ timestamp: times[1].toISOString(), duration: 300_000 }),
+        ];
+
+        await annotations.loadRunCountsFromStorage();
+        await annotations.annotateAllMessages();
+        expect(labelOn(nodes[0])).toBe('[Run #1: 10m 0s]');
+        expect(labelOn(nodes[1])).toBe('[Run #2: 5m 0s]');
+
+        // A third run lands: chat gets its lines, the tracker banks it. It is
+        // run 3, not run 5 — the two labelled runs are not phantoms as well.
+        const third = message(stamp(times[2]), 'Key counts: [Alice - 397]');
+        message(stamp(new Date(times[2].getTime() + 240_000)), 'Key counts: [Alice - 396]');
+        game.allRuns.push(storedRun({ timestamp: times[2].toISOString(), duration: 240_000 }));
+
+        await annotations.annotateAllMessages();
+
+        expect(labelOn(third)).toBe('[Run #3: 4m 0s]');
+    });
+
+    test('run numbers survive a refresh', async () => {
+        message('[08/04 09:59:00 AM]', 'Battle started: Chimerical Den');
+        const durations = [600_000, 600_000, 300_000];
+        const { times } = chatRuns(aug4(10, 0, 0), durations);
+        // The tracker banks the server's own millisecond stamp for the same
+        // key count the chat line shows truncated to the second, so the two
+        // sides of one run never hold the identical number
+        game.allRuns = durations.map((duration, i) =>
+            storedRun({ timestamp: new Date(times[i].getTime() + 431).toISOString(), duration })
+        );
+
+        await annotations.loadRunCountsFromStorage();
+        await annotations.annotateAllMessages();
+
+        // A fourth run arrives live: one pass per message, the way chat does it
+        const fourth = message(stamp(times[3]), 'Key counts: [Alice - 396]');
+        await annotations.annotateAllMessages();
+        message(stamp(new Date(times[3].getTime() + 240_000)), 'Key counts: [Alice - 395]');
+        game.allRuns.push(
+            storedRun({ timestamp: new Date(times[3].getTime() + 431).toISOString(), duration: 240_000 })
+        );
+        await annotations.annotateAllMessages();
+
+        expect(labelOn(fourth)).toBe('[Run #4: 4m 0s]');
+
+        // Refresh: same storage, same chat, so the same numbers
+        await reload();
+        message('[08/04 09:59:00 AM]', 'Battle started: Chimerical Den');
+        const relaid = chatRuns(aug4(10, 0, 0), [...durations, 240_000]);
+        await annotations.annotateAllMessages();
+
+        expect(labelOn(relaid.nodes[3])).toBe('[Run #4: 4m 0s]');
+    });
+
+    test('a run whose duration is unknown is left out of the average, not counted as zero', async () => {
+        // The reported shape: a window of twenty over eleven real 9m15s runs
+        // and nine runs nothing knows the length of. The answer is 9m 15s —
+        // the average of what is known — not the 5m 9s that dividing the same
+        // total by twenty gives.
+        game.settings.dungeonTrackerAverageWindow = 20;
+        message('[08/04 08:59:00 AM]', 'Battle started: Chimerical Den');
+        const { nodes, times } = chatRuns(aug4(9, 0, 0), Array(11).fill(555_000));
+        game.allRuns = times.slice(0, 11).map((at) => storedRun({ timestamp: at.toISOString(), duration: 555_000 }));
+
+        await annotations.loadRunCountsFromStorage();
+        // Nine older runs whose length nothing knows. The loader drops a run
+        // with no duration outright, so they are seeded the way a phantom
+        // reached the merge: a number slot with no duration beside it.
+        for (let i = 1; i <= 9; i++) {
+            annotations.storedRunNumbers['Alice::Chimerical Den'][aug4(9, 0, 0).getTime() - i * 600_000] = 0;
+        }
+
+        await annotations.annotateAllMessages();
+
+        expect(labelOn(nodes[10])).toBe('[Run #20: 9m 15s]');
+        expect(averageOn(nodes[10])).toBe('[Avg last 11: 9m 15s]');
+    });
+
+    test('a window with nothing usable in it reports no average rather than zero', () => {
+        const merged = [
+            { ts: 1000, isChatRun: false, duration: null },
+            { ts: 2000, isChatRun: true, duration: null },
+        ];
+
+        expect(annotations.buildWindowedAverages(merged, 2, 0).get(2000)).toEqual({ average: 0, covered: 0 });
     });
 });
