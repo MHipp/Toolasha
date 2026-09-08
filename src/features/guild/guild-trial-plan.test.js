@@ -124,6 +124,20 @@ describe('parsing a plan', () => {
         ]);
     });
 
+    test('a hyphen inside the player name is not mistaken for the separator', () => {
+        const plan = parse('Az-0r: Fierce Aura');
+        expect(plan.lines[0].player).toBe('Az-0r');
+        expect(plan.lines[0].abilities).toEqual([
+            { hrid: '/abilities/fierce_aura', name: 'Fierce Aura', minLevel: null },
+        ]);
+    });
+
+    test('a hyphen-separator still splits a hyphenated name when it is surrounded by spaces', () => {
+        const plan = parse('Bun-Bun - Fierce Aura');
+        expect(plan.lines[0].player).toBe('Bun-Bun');
+        expect(plan.lines[0].abilities[0]).toMatchObject({ hrid: '/abilities/fierce_aura' });
+    });
+
     test('an ability that resolves whole keeps its digits', () => {
         const index = buildAbilityIndex({ '/abilities/rank_2': { name: 'Rank 2' } });
         expect(splitMinLevel('Rank 2', index)).toEqual({ text: 'Rank 2', minLevel: null });

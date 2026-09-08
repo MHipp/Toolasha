@@ -184,7 +184,10 @@ export function parsePlan(text, abilityDetailMap = {}, parsedAt = Date.now()) {
         const trimmed = raw.trim();
         if (!trimmed || trimmed.startsWith('#')) continue;
 
-        const split = trimmed.match(/^([^:\-–—]+)[:\-–—](.*)$/);
+        // Colon needs no surrounding space ("Alice:"), but a bare hyphen or dash
+        // does — otherwise a name that itself contains one ("Az-0r") is cut at
+        // the first hyphen instead of at the intended separator.
+        const split = trimmed.match(/^([^:]+):(.*)$/) || trimmed.match(/^(.+?)\s[-–—]\s(.*)$/);
         const player = (split ? split[1] : trimmed).trim();
         if (!player) continue;
 
