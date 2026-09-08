@@ -6,6 +6,14 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The room tooltips agree with each other, and say how many tries a room takes
+
+A labyrinth room's forecast — how long it takes, and now how many entries it takes — sits in the same place on both the combat and the skilling tooltip, instead of third on one and seventh on the other. The new figure is the expected number of entries before a clear, which is the same quantity the time estimate is already built from, said in tries rather than seconds.
+
+### Pace and Avg Run follow the same average the chat line does
+
+The panel's Avg Run and the "pace vs your avg" chip were still measured against every run on record, so after a change that made runs faster they disagreed with the chat annotation beside them and kept score against a figure you had already left behind. Both now use the window and the reset marker the chat line uses. Left at the default they are exactly what they were.
+
 ### Chat history survives a reload, and stays on your machine
 
 The extended chat history kept what the game evicts, but only until the page reloaded. It is now written to disk per character and restored above the live messages, whispers and private tabs included. Item links in restored messages are made clickable again by this script rather than by the game's own handlers, which cannot be saved; a link that cannot be understood is left plain rather than looking clickable and doing nothing, and markup a game update has changed renders as text instead of breaking the buffer.
