@@ -8,6 +8,7 @@ import config from '../../core/config.js';
 import dataManager from '../../core/data-manager.js';
 import { openMaterialsList } from '../actions/missing-materials-button.js';
 import { computeBestCraftingPlan, collectMissingMaterials } from './crafting-plan-calculator.js';
+import craftingPlanWalk, { buildWalkSteps, WALK_KEY_ATTRIBUTE } from './crafting-plan-walk.js';
 import { createCollapsibleSection } from '../../utils/ui-components.js';
 import { formatKMB, formatWithSeparator, timeReadable } from '../../utils/formatters.js';
 import { findActionInput, onDetailPanel } from '../../utils/action-panel-helper.js';
@@ -127,6 +128,9 @@ function createRow(leftText, rightText, options = {}) {
 
     row.appendChild(left);
     row.appendChild(right);
+    // The guided walk marks the row of the step it is standing on, and finds it
+    // by this key rather than by position — the tree is rebuilt on every toggle.
+    if (options.walkKey) row.setAttribute(WALK_KEY_ATTRIBUTE, options.walkKey);
     return row;
 }
 
@@ -362,6 +366,39 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
         return section;
     }
 
+    /**
+     * Re-plan for the whole run the panel is set to, not the single unit the
+     * section renders. The rendered plan's counts are already a whole action's
+     * worth, rounded up, so scaling them overcounts a multi-output recipe by its
+     * outputCount and compounds every per-unit round-up beneath it.
+     * @param {HTMLElement} anchor - Any element inside the action panel
+     * @returns {Object|null} The plan for the panel's own total, or null
+     */
+    const fullPlanForPanel = (anchor) => {
+        const panel = anchor.closest('[class*="SkillActionDetail_skillActionDetail"]');
+        const inputField = findActionInput(panel);
+        const numActions = parseInt(inputField?.value) || 1;
+        try {
+            return computeBestCraftingPlan(
+                output.itemHrid,
+                numActions * (output.count || 1),
+                mode,
+                new Set(),
+                new Map(),
+                0,
+                undefined,
+                buyIntermediates,
+                taskMode,
+                timeCostEnabled ? goldPerHour : 0,
+                noProcessing,
+                thinMarket
+            );
+        } catch (e) {
+            console.error('[CraftingPlan] computeBestCraftingPlan error:', e);
+            return null;
+        }
+    };
+
     // === Shopping List (what to buy) ===
     const buyItems = new Map();
     collectBuyItems(plan, buyItems);
@@ -381,13 +418,19 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
         content.appendChild(shoppingHeader);
 
         // Sort by total cost descending
-        const sortedItems = [...buyItems.values()].sort((a, b) => b.totalCost - a.totalCost);
+        const sortedItems = [...buyItems.entries()]
+            .map(([itemHrid, item]) => ({ itemHrid, ...item }))
+            .sort((a, b) => b.totalCost - a.totalCost);
 
         for (const item of sortedItems) {
             const qty = Math.ceil(item.quantity);
             const cost = formatKMB(Math.round(item.totalCost));
             const unit = formatWithSeparator(Math.round(item.unitCost));
-            content.appendChild(createRow(`${item.itemName} x${formatWithSeparator(qty)}`, `${cost} (${unit}/ea)`));
+            content.appendChild(
+                createRow(`${item.itemName} x${formatWithSeparator(qty)}`, `${cost} (${unit}/ea)`, {
+                    walkKey: `buy:${item.itemHrid}`,
+                })
+            );
         }
 
         // Total buy cost
@@ -410,36 +453,8 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
             color: white; cursor: pointer; font-size: 0.85em;
         `;
         buyButton.addEventListener('click', async () => {
-            const panel = buyButton.closest('[class*="SkillActionDetail_skillActionDetail"]');
-            const inputField = findActionInput(panel);
-            const numActions = parseInt(inputField?.value) || 1;
-            const outputCount = output.count || 1;
-            // The rendered plan is for ONE unit of output, so its buy counts are
-            // already a whole action's worth, rounded up. Re-plan for the real
-            // total instead of scaling those counts — multiplying them by
-            // numActions × outputCount overcounted a multi-output recipe by its
-            // outputCount, and compounded the per-unit round-ups below it.
-            const totalQty = numActions * outputCount;
-            let fullPlan;
-            try {
-                fullPlan = computeBestCraftingPlan(
-                    output.itemHrid,
-                    totalQty,
-                    mode,
-                    new Set(),
-                    new Map(),
-                    0,
-                    undefined,
-                    buyIntermediates,
-                    taskMode,
-                    timeCostEnabled ? goldPerHour : 0,
-                    noProcessing,
-                    thinMarket
-                );
-            } catch (e) {
-                console.error('[CraftingPlan] computeBestCraftingPlan error:', e);
-                return;
-            }
+            const fullPlan = fullPlanForPanel(buyButton);
+            if (!fullPlan) return;
 
             const inventory = dataManager.getInventory() || [];
             const missingMaterials = collectMissingMaterials(fullPlan, inventory).filter(
@@ -515,7 +530,11 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
                     timeStr = ` (${xpStr.slice(3)})`;
                 }
             }
-            content.appendChild(createRow(`${i + 1}. ${step.itemName}`, `x${qty}${timeStr}`));
+            content.appendChild(
+                createRow(`${i + 1}. ${step.itemName}`, `x${qty}${timeStr}`, {
+                    walkKey: `craft:${step.actionHrid}`,
+                })
+            );
         }
 
         if (totalCraftSeconds > 0) {
@@ -534,6 +553,25 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
                     leftColor: 'var(--text-color-primary, #fff)',
                 })
             );
+        }
+
+        if (config.getSetting('craftingPlan_guidedWalk')) {
+            const walkButton = document.createElement('button');
+            walkButton.textContent = 'Start guided walk';
+            walkButton.style.cssText = `
+                width: 100%; margin-top: 6px; padding: 6px;
+                background: var(--bg-color-tertiary, #1a1a2e);
+                border: 1px solid var(--border-color, #60a5fa); border-radius: 4px;
+                color: var(--text-color-primary, #fff); cursor: pointer; font-size: 0.85em;
+            `;
+            walkButton.addEventListener('click', () => {
+                // The walk steps the real run, not the single unit this section
+                // renders, so it plans against the panel's own count first.
+                const fullPlan = fullPlanForPanel(walkButton);
+                if (!fullPlan) return;
+                craftingPlanWalk.start(buildWalkSteps(fullPlan));
+            });
+            content.appendChild(walkButton);
         }
     }
 

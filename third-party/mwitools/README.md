@@ -59,6 +59,17 @@ which portions, what Toolasha does with them, and where.
   rule the data does not confirm — which is how the enchanted gloves' enhancing bonus turned out
   to be speed, not efficiency. The running action comes from `runningAction()`, never from the
   queue's first entry. Setting `equipmentMismatchWarning`.
+- **The guided walk through a crafting chain.** MWITools' `semiAutoTrain` walks an upgrade chain
+  one stop at a time: it navigates to each stop's action, pre-fills the count, listens for the
+  player's own press on the game's queue button, and — for a stop bought from the shop — waits on
+  an inventory change instead. Toolasha's `src/features/crafting-plan/crafting-plan-walk.js` walks
+  the steps of its own buy-vs-craft plan (`crafting-plan-calculator.js`) rather than an upgrade
+  chain, leaves first and merged where two branches share an intermediate, and confirms a step
+  from the server's `actions_updated` naming that step's action rather than from a DOM click
+  listener — the same contract the task reroll walk already keeps, and the reason nothing here is
+  ever chained. The buy branch opens the marketplace, not the shop. Setting
+  `craftingPlan_guidedWalk`. MWITools' `taskTrainPlanner` merge of several tasks onto one chain
+  was not taken.
 
 ## What was not adapted
 

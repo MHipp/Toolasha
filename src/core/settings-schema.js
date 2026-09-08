@@ -551,6 +551,18 @@ export const settingsGroups = {
                 default: false,
                 help: 'When the plan would buy an intermediate but the community price data shows fewer units listed at that cheap ask than the plan needs, craft it instead so the plan stays achievable. Only acts when the data positively shows a thin listing; falls back to buying when no depth is known. Never overrides "buys raw materials only" or "no processing".',
             },
+            craftingPlan_guidedWalk: {
+                id: 'craftingPlan_guidedWalk',
+                label: 'Crafting plan: guided walk through the plan, one step at a time',
+                type: 'checkbox',
+                default: false,
+                help:
+                    'Adds a “Start guided walk” button under the plan’s crafting steps. The walk takes the ' +
+                    'steps leaves first: for each one it opens the game on that action and types the count into ' +
+                    'the game’s own box, then waits — it never presses the button, so one click is always ' +
+                    'exactly one game action. A step the plan says to buy opens the marketplace instead and waits ' +
+                    'for the item to arrive. Skip and Stop are on the strip; a reload or a character switch ends it.',
+            },
             actions_artisanMaterialMode: {
                 id: 'actions_artisanMaterialMode',
                 label: 'Missing materials: Artisan requirement mode',
