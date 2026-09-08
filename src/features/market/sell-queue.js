@@ -37,8 +37,12 @@ const RESERVATION_OWNER = 'sellQueue';
  * A queue entry is `{itemHrid, itemName}` and nothing else, and every
  * navigation it makes is `navigateToMarketplace(hrid, 0)` — so shift-right-
  * clicking an item queues its plain copies, never the +5 sitting beside them.
- * The claim has to say the same, or a player holding both claims more level-0
- * stock than exists.
+ * Everything the queue counts is counted at this level: the claim, the tab
+ * badge's "In bag", the sold-out check that retires a tab, and the guard that
+ * refuses to queue an item there is nothing to sell of. Counting all levels
+ * anywhere else strands the queue — a player holding 1 plain and 5 enhanced
+ * sells the plain one and the count stays at 5, so the tab never retires and
+ * the queue never advances.
  */
 const QUEUED_ENHANCEMENT_LEVEL = 0;
 
@@ -224,7 +228,7 @@ function injectTabs() {
     tabsContainer.style.flexWrap = 'wrap';
 
     for (const entry of queue) {
-        const count = getInventoryCount(entry.itemHrid);
+        const count = getInventoryCount(entry.itemHrid, QUEUED_ENHANCEMENT_LEVEL);
         const material = {
             itemHrid: entry.itemHrid,
             itemName: entry.itemName,
@@ -277,7 +281,7 @@ function updateTabsOnInventoryChange() {
         const entry = queue.find((e) => e.itemHrid === itemHrid);
         if (!entry) return;
 
-        const count = getInventoryCount(entry.itemHrid);
+        const count = getInventoryCount(entry.itemHrid, QUEUED_ENHANCEMENT_LEVEL);
         const badgeSpan = tab.querySelector('[class*="TabsComponent_badge"]');
         if (badgeSpan) {
             badgeSpan.innerHTML = buildBadgeHtml(entry.itemName, count);
@@ -364,7 +368,7 @@ function handleMarketplaceCleanup() {
 async function addToQueue(itemHrid, itemName) {
     if (queue.some((e) => e.itemHrid === itemHrid)) return;
 
-    const count = getInventoryCount(itemHrid);
+    const count = getInventoryCount(itemHrid, QUEUED_ENHANCEMENT_LEVEL);
     if (count === 0) return;
 
     const isFirstItem = queue.length === 0;

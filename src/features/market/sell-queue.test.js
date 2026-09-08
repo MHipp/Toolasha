@@ -14,6 +14,8 @@ const tabsState = vi.hoisted(() => ({
     cleanups: [],
     unregisters: [],
 }));
+/** The `*` websocket subscriber the queue installs for its first item */
+const socketState = vi.hoisted(() => ({ handler: null }));
 const dataManagerMock = vi.hoisted(() => ({
     getInitClientData: () => ({
         itemDetailMap: { '/items/cheese': { name: 'Cheese', isTradable: true } },
@@ -27,7 +29,16 @@ vi.mock('../../core/config.js', () => ({
     default: { getSetting: () => true, onSettingChange: () => {} },
 }));
 vi.mock('../../core/data-manager.js', () => ({ default: dataManagerMock }));
-vi.mock('../../core/websocket.js', () => ({ default: { on: () => {}, off: () => {} } }));
+vi.mock('../../core/websocket.js', () => ({
+    default: {
+        on: (_event, handler) => {
+            socketState.handler = handler;
+        },
+        off: () => {
+            socketState.handler = null;
+        },
+    },
+}));
 vi.mock('../../core/dom-observer.js', () => ({
     default: {
         onClass: (_name, _classes, callback) => {
@@ -55,7 +66,16 @@ vi.mock('../../utils/inventory-reservations.js', () => ({
 }));
 
 vi.mock('../../utils/marketplace-tabs.js', () => ({
-    createMaterialTab: vi.fn(() => document.createElement('div')),
+    // Shaped like the real tab: the sold-out sweep finds a tab by its
+    // `data-item-hrid` and writes the badge into the badge span
+    createMaterialTab: vi.fn((material) => {
+        const tab = document.createElement('div');
+        tab.setAttribute('data-item-hrid', material.itemHrid);
+        const badge = document.createElement('span');
+        badge.className = 'TabsComponent_badge__1Ei-x';
+        tab.appendChild(badge);
+        return tab;
+    }),
     removeMaterialTabs: vi.fn(),
     setupMarketplaceCleanupObserver: vi.fn((onCleanup) => {
         tabsState.cleanups.push(onCleanup);
@@ -104,6 +124,7 @@ beforeEach(() => {
     tabsState.cleanups.length = 0;
     tabsState.unregisters.length = 0;
     dataManagerMock.inventory = [];
+    socketState.handler = null;
     sellQueue.initialize();
 });
 
@@ -305,5 +326,100 @@ describe('what the queue holds back from every other plan', () => {
 
         tabsState.cleanups.at(-1)();
         expect(ledger.released).toContain('sellQueue');
+    });
+});
+
+/*
+ * The queue sells plain copies and nothing else, so every count it shows or
+ * acts on is the level-0 one. Counting all levels stranded it: a player holding
+ * 1 plain and 5 enhanced sold the plain copy, the count stayed at 5, and the
+ * tab never retired.
+ */
+describe('the tab badge and the sold-out check count plain copies only', () => {
+    /** A marketplace tab strip the queue accepts as "already in the market" */
+    function marketplaceStrip() {
+        const container = document.createElement('div');
+        const myListings = document.createElement('button');
+        myListings.textContent = 'My Listings';
+        const marketListings = document.createElement('button');
+        marketListings.textContent = 'Market Listings';
+        container.append(myListings, marketListings);
+        document.body.appendChild(container);
+        return container;
+    }
+
+    /** Queue the hovered item and let addToQueue's awaits settle. */
+    async function queueCheese() {
+        observerState.handler(popper('<a href="/items/cheese">Cheese</a>'));
+        shiftRightClickInventory();
+        await Promise.resolve();
+        await Promise.resolve();
+    }
+
+    beforeEach(() => {
+        ledger.reserved = [];
+        tabsState.container = marketplaceStrip();
+    });
+
+    test('the badge shows the plain count, not the plain and enhanced together', async () => {
+        dataManagerMock.inventory = [
+            { itemHrid: '/items/cheese', itemLocationHrid: '/item_locations/inventory', count: 1 },
+            {
+                itemHrid: '/items/cheese',
+                itemLocationHrid: '/item_locations/inventory',
+                enhancementLevel: 5,
+                count: 5,
+            },
+        ];
+
+        await queueCheese();
+
+        const badge = document.querySelector('[data-item-hrid="/items/cheese"] [class*="TabsComponent_badge"]');
+        expect(badge.innerHTML).toContain('In bag: 1');
+        expect(badge.innerHTML).not.toContain('In bag: 6');
+    });
+
+    test('the tab retires once the plain copies are gone, enhanced ones notwithstanding', async () => {
+        dataManagerMock.inventory = [
+            { itemHrid: '/items/cheese', itemLocationHrid: '/item_locations/inventory', count: 1 },
+            {
+                itemHrid: '/items/cheese',
+                itemLocationHrid: '/item_locations/inventory',
+                enhancementLevel: 5,
+                count: 5,
+            },
+        ];
+
+        await queueCheese();
+        expect(document.querySelector('[data-item-hrid="/items/cheese"]')).not.toBeNull();
+
+        // The plain copy sells; the +5 stays in the bag
+        dataManagerMock.inventory = [
+            {
+                itemHrid: '/items/cheese',
+                itemLocationHrid: '/item_locations/inventory',
+                enhancementLevel: 5,
+                count: 5,
+            },
+        ];
+        socketState.handler({ type: 'items_updated' });
+
+        expect(document.querySelector('[data-item-hrid="/items/cheese"]')).toBeNull();
+    });
+
+    test('an item with only enhanced copies is not queued at all', async () => {
+        dataManagerMock.inventory = [
+            {
+                itemHrid: '/items/cheese',
+                itemLocationHrid: '/item_locations/inventory',
+                enhancementLevel: 5,
+                count: 5,
+            },
+        ];
+
+        await queueCheese();
+
+        expect(document.querySelector('[data-item-hrid="/items/cheese"]')).toBeNull();
+        expect(ledger.reserved).toHaveLength(0);
     });
 });
