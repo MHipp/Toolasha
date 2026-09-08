@@ -4585,13 +4585,12 @@ class LabyrinthClearRate {
             );
         }
         addRow('Success Rate', pct(result.successChance));
+        // The forecast pair sits directly under the headline rows here as it
+        // does on the combat tooltip, so the two read the same way side by side
+        this.appendForecastRows(addRow, result);
         addRow('Double Progress', pct(result.doubleChance));
         addRow('Actions in 2m', `${result.attempts}`);
         addRow('Action Duration', `${result.actionSeconds.toFixed(2)}s`);
-        // The full expected time to clear, uncapped (the tile badge caps at "999+")
-        if (Number.isFinite(result.expectedSeconds) && result.expectedSeconds > 0) {
-            addRow('Est. clear time', this.fullClearTime(result.expectedSeconds));
-        }
         if (result.xpPerRoom) {
             addRow('EXP / Room', `${result.xpPerRoom.toFixed(1)}`);
         }
@@ -4667,11 +4666,7 @@ class LabyrinthClearRate {
             addRow('Fights Simulated', `${result.trials.toLocaleString()}`);
         }
 
-        // The full expected time to clear, uncapped — the tile badge caps at
-        // "999+", which hides how long a slow room really takes
-        if (Number.isFinite(result.expectedSeconds) && result.expectedSeconds > 0) {
-            addRow('Est. clear time', this.fullClearTime(result.expectedSeconds));
-        }
+        this.appendForecastRows(addRow, result);
 
         // Per entry rather than per clear. A fight earns experience by landing
         // hits, so a room you usually lose still pays — and quoting only what a
@@ -5110,6 +5105,37 @@ class LabyrinthClearRate {
      * @param {number} seconds - Expected seconds per clear (losing attempts included)
      * @returns {string} e.g. "48s", "10m 55s", "1h 5m", or "—" when it never clears
      */
+    /**
+     * The two forecast rows both room tooltips lead with, in one place so they
+     * cannot drift apart: how long a clear takes, and how many entries it takes.
+     *
+     * "Attempt" means one entry into the room — a fight on the combat side, a
+     * two-minute skilling window on the other — which is exactly the unit
+     * `Est. clear time` sums over, so the two rows say the same thing in
+     * different currency. It is a geometric mean, 1 / clearChance, and it is
+     * emphatically NOT the skilling tooltip's `attempts`, which counts actions
+     * inside a single window and keeps its own "Actions in 2m" label.
+     *
+     * @param {Function} addRow - Row builder from renderPreviewContent
+     * @param {Object} result - The room result being previewed
+     */
+    appendForecastRows(addRow, result) {
+        // The full expected time to clear, uncapped — the tile badge caps at
+        // "999+", which hides how long a slow room really takes
+        if (Number.isFinite(result.expectedSeconds) && result.expectedSeconds > 0) {
+            addRow('Est. clear time', this.fullClearTime(result.expectedSeconds));
+        }
+        // A room that never clears has no expected number of attempts at all;
+        // the row is omitted rather than printing an infinity
+        if (Number.isFinite(result.clearChance) && result.clearChance > 0) {
+            addRow(
+                'Est. room attempts',
+                (1 / result.clearChance).toFixed(1),
+                'Expected entries into this room before one clear, at the chance above.'
+            );
+        }
+    }
+
     fullClearTime(seconds) {
         if (!Number.isFinite(seconds) || seconds <= 0) return '—';
         const s = Math.round(seconds);

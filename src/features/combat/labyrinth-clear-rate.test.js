@@ -4432,3 +4432,112 @@ describe('a Reset of the fight outcomes survives a sync pull', () => {
         vi.useRealTimers();
     });
 });
+
+describe('the room preview forecast rows', () => {
+    /**
+     * The labels the tooltip lays down, in order. `renderPreviewContent` builds
+     * flex rows of two spans, so the first span of each is its label.
+     */
+    const previewLabels = (result) => {
+        const el = document.createElement('div');
+        labyrinthClearRate.currentFloor = 0; // keeps appendExpectedRows out of the list
+        labyrinthClearRate.renderPreviewContent(el, result);
+        return [...el.children].filter((row) => row.children.length === 2).map((row) => row.children[0].textContent);
+    };
+
+    /** The value beside a label, or undefined when the row is absent */
+    const previewValue = (result, label) => {
+        const el = document.createElement('div');
+        labyrinthClearRate.currentFloor = 0;
+        labyrinthClearRate.renderPreviewContent(el, result);
+        const row = [...el.children].find((r) => r.children?.[0]?.textContent === label);
+        return row?.children[1]?.textContent;
+    };
+
+    const combatResult = (over = {}) => ({
+        type: 'combat',
+        monsterName: 'Imp',
+        monsterHrid: '/monsters/imp',
+        roomLevel: 100,
+        clearChance: 0.25,
+        winRate: 0.25,
+        halfWidth: 0.02,
+        hitTarget: true,
+        trials: 1000,
+        expectedSeconds: 480,
+        xpPerRoom: 5000,
+        xpPerHour: 37500,
+        ...over,
+    });
+
+    const skillingResult = (over = {}) => ({
+        type: 'skilling',
+        clearChance: 0.5,
+        workPower: 12.5,
+        progressPerSuccess: 12,
+        successChance: 0.9,
+        doubleChance: 0.1,
+        attempts: 24,
+        actionSeconds: 5,
+        expectedSeconds: 300,
+        xpPerRoom: 400,
+        xpPerHour: 4800,
+        efficiencyDelta: null,
+        speedDelta: null,
+        ...over,
+    });
+
+    test('both tooltips put the forecast pair right after their headline rows', () => {
+        const combat = previewLabels(combatResult());
+        const skilling = previewLabels(skillingResult());
+
+        expect(combat.slice(0, 4)).toEqual([
+            'Clear Chance',
+            'Fights Simulated',
+            'Est. clear time',
+            'Est. room attempts',
+        ]);
+        expect(skilling.slice(0, 4)).toEqual(['Work Power', 'Success Rate', 'Est. clear time', 'Est. room attempts']);
+    });
+
+    test('the rows below the pair keep the order they had', () => {
+        const combat = previewLabels(combatResult());
+        expect(combat.slice(4, 6)).toEqual(['EXP / Room', 'EXP / Hour']);
+
+        const skilling = previewLabels(skillingResult());
+        expect(skilling.slice(4, 9)).toEqual([
+            'Double Progress',
+            'Actions in 2m',
+            'Action Duration',
+            'EXP / Room',
+            'EXP / Hour',
+        ]);
+    });
+
+    test('an enhancing room keeps its target at the very top', () => {
+        const labels = previewLabels(skillingResult({ type: 'enhancing', targetLevel: 8 }));
+        expect(labels.slice(0, 5)).toEqual([
+            'Target Enhancement',
+            'Success Rate',
+            'Est. clear time',
+            'Est. room attempts',
+            'Double Progress',
+        ]);
+    });
+
+    test('expected attempts is one over the clear chance, the same on both sides', () => {
+        // A quarter chance is four entries to a clear, and the same arithmetic
+        // stands behind the skilling tooltip's half chance
+        expect(previewValue(combatResult({ clearChance: 0.25 }), 'Est. room attempts')).toBe('4.0');
+        expect(previewValue(skillingResult({ clearChance: 0.5 }), 'Est. room attempts')).toBe('2.0');
+    });
+
+    test('a room that never clears has no attempts row rather than an infinity', () => {
+        expect(previewValue(combatResult({ clearChance: 0, expectedSeconds: Infinity }), 'Est. room attempts')).toBe(
+            undefined
+        );
+        expect(previewValue(skillingResult({ clearChance: 0, expectedSeconds: Infinity }), 'Est. room attempts')).toBe(
+            undefined
+        );
+    });
+});
