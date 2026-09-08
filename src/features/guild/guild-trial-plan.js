@@ -396,6 +396,154 @@ export function planStatusLine(compare) {
     return parts.join(' · ');
 }
 
+/**
+ * The plan's players keyed the way `comparePlan` keys them.
+ *
+ * Lowercased, and a second line for the same player replaces the first —
+ * a rewritten line is a correction, not a second assignment, and the diff has
+ * to read it the same way the comparison does or the two disagree about what
+ * the plan says.
+ *
+ * @param {Object|null} plan - From {@link parsePlan}
+ * @returns {Map<string, Object>} Key to line
+ */
+function planLinesByPlayer(plan) {
+    const byPlayer = new Map();
+    for (const line of plan?.lines || []) {
+        const key = String(line?.player || '')
+            .trim()
+            .toLowerCase();
+        if (key) byPlayer.set(key, line);
+    }
+    return byPlayer;
+}
+
+/**
+ * One line's assignment as `key -> {label, minLevel}`.
+ *
+ * Keyed by hrid, so the order abilities were typed in carries no meaning.
+ * Tokens the parse could not resolve are kept under their normalized spelling
+ * rather than dropped: a plan written before the game data loaded is still a
+ * plan the lead changed, and reporting nothing would be a lie about it.
+ *
+ * @param {Object|null} line - A parsed plan line
+ * @returns {Map<string, {label: string, minLevel: number|null}>} The assignment
+ */
+function assignmentOf(line) {
+    const abilities = new Map();
+    for (const ability of line?.abilities || []) {
+        abilities.set(ability.hrid, { label: ability.name, minLevel: ability.minLevel ?? null });
+    }
+    for (const token of line?.unknown || []) {
+        const key = `?${normalizeToken(token)}`;
+        if (!abilities.has(key)) abilities.set(key, { label: token, minLevel: null });
+    }
+    return abilities;
+}
+
+/**
+ * What changed between two saves of a plan.
+ *
+ * By hrid and minimum level, case-insensitive on player names, order-insensitive
+ * on abilities — the same semantics {@link comparePlan} reads the plan under, so
+ * "changed" here always means a change the comparison would also see. Retyping
+ * the same kit in a different order, or capitalising a name differently, is not
+ * a change and is not reported as one.
+ *
+ * The first save of all has no previous plan; that is `hasPrevious: false` and
+ * an empty diff, not a plan in which everyone was added.
+ *
+ * @param {Object|null} previous - The previously saved parsed plan
+ * @param {Object|null} next - The newly parsed plan
+ * @returns {{hasPrevious: boolean, added: string[], removed: string[],
+ *   changed: Array<{player: string, added: string[], removed: string[],
+ *   levels: Array<{name: string, from: number|null, to: number|null}>}>}} The diff
+ */
+export function planDiff(previous, next) {
+    const empty = { hasPrevious: false, added: [], removed: [], changed: [] };
+    if (!previous || !Array.isArray(previous.lines)) return empty;
+
+    const before = planLinesByPlayer(previous);
+    const after = planLinesByPlayer(next);
+
+    const added = [];
+    const removed = [];
+    const changed = [];
+
+    for (const [key, line] of after) {
+        if (!before.has(key)) {
+            added.push(line.player);
+            continue;
+        }
+        const was = assignmentOf(before.get(key));
+        const now = assignmentOf(line);
+
+        const gained = [];
+        const lost = [];
+        const levels = [];
+        for (const [hrid, entry] of now) {
+            const held = was.get(hrid);
+            if (!held) gained.push(entry.label);
+            else if ((held.minLevel ?? null) !== (entry.minLevel ?? null)) {
+                levels.push({ name: entry.label, from: held.minLevel ?? null, to: entry.minLevel ?? null });
+            }
+        }
+        for (const [hrid, entry] of was) {
+            if (!now.has(hrid)) lost.push(entry.label);
+        }
+
+        if (gained.length || lost.length || levels.length) {
+            changed.push({ player: line.player, added: gained, removed: lost, levels });
+        }
+    }
+
+    for (const [key, line] of before) {
+        if (!after.has(key)) removed.push(line.player);
+    }
+
+    return { hasPrevious: true, added, removed, changed };
+}
+
+/**
+ * One player's change, spelled out.
+ * @param {Object} entry - A `changed` entry from {@link planDiff}
+ * @returns {string} e.g. `Ana: +Fierce Aura −Insanity Vampirism 150→200`
+ */
+export function describePlanChange(entry) {
+    const parts = [
+        ...(entry?.added || []).map((name) => `+${name}`),
+        ...(entry?.removed || []).map((name) => `−${name}`),
+        ...(entry?.levels || []).map((level) => `${level.name} ${level.from ?? 'any'}→${level.to ?? 'any'}`),
+    ];
+    return `${entry?.player}: ${parts.join(' ')}`;
+}
+
+/**
+ * The one-line summary of a save's diff, or null when there is nothing to say.
+ *
+ * Null rather than "no changes" because the line is only drawn when the plan
+ * moved; a permanent "0 changed" would be noise on every draw.
+ *
+ * @param {Object|null} diff - From {@link planDiff}
+ * @param {number} [namedPlayers] - How many changed players are named inline
+ * @returns {string|null} e.g. `3 changed (Ana: +Fierce Aura −Insanity; …), 2 added, 1 removed`
+ */
+export function planDiffSummary(diff, namedPlayers = 2) {
+    if (!diff?.hasPrevious) return null;
+    const { added = [], removed = [], changed = [] } = diff;
+    if (!added.length && !removed.length && !changed.length) return null;
+
+    const parts = [];
+    if (changed.length) {
+        const named = changed.slice(0, Math.max(1, namedPlayers)).map(describePlanChange);
+        if (changed.length > named.length) named.push('…');
+        parts.push(`${changed.length} changed (${named.join('; ')})`);
+    }
+    if (added.length) parts.push(`${added.length} added`);
+    if (removed.length) parts.push(`${removed.length} removed`);
+    return parts.join(', ');
+}
+
 class GuildTrialPlan {
     constructor() {
         this.guildName = null;
@@ -454,11 +602,24 @@ class GuildTrialPlan {
      * @param {string} text - The plan as written
      * @returns {Promise<boolean>} Whether the write landed
      */
-    async setText(text) {
+    async setText(text, abilityDetailMap = this.cache?.map || {}) {
         if (!this.record) this._makeRecord();
+        // Parsed against the plan as it stood a moment ago, before the cache is
+        // dropped: once the text is written the previous plan is gone, and
+        // "what did this save change" has no answer left to give
+        const previous = this.record.get()?.text ? this.parsed(abilityDetailMap) : null;
+        const next = parsePlan(String(text ?? ''), abilityDetailMap);
+        const diff = planDiff(previous, next);
+
         this.cache = null;
-        this.record.set({ text: String(text ?? ''), savedAt: Date.now() });
+        this.record.set({ text: String(text ?? ''), savedAt: Date.now(), diff });
         return this.record.save();
+    }
+
+    /** @returns {Object|null} What the last save changed, from {@link planDiff} */
+    lastDiff() {
+        const diff = this.record?.get()?.diff;
+        return diff?.hasPrevious ? diff : null;
     }
 
     /**

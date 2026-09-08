@@ -928,6 +928,30 @@ describe('trial abilities panel', () => {
         expect(text()).not.toContain(FAILED);
     });
 
+    test('the Plan card reports what the save changed, and says nothing on the first save', async () => {
+        await feature.initialize('Cats');
+        guildTrialAbilities.setRoster(['Alice', 'Bob']);
+
+        openTrialAbilitiesPanel();
+        const box = () => guildTrialAbilitiesPanel.panel.querySelector('textarea');
+        box().value = 'Alice: Fierce Aura 150';
+        box().dispatchEvent(new Event('input'));
+        button('Save plan').click();
+        await vi.waitFor(() => expect(text()).toContain('on plan'));
+        // Nothing preceded this save, so there is no change to report
+        expect(card('Plan').textContent).not.toContain('Since last save');
+
+        box().value = ['Alice: Fierce Aura 200, Sweep', 'Bob: Aqua Aura'].join('\n');
+        box().dispatchEvent(new Event('input'));
+        button('Save plan').click();
+        await vi.waitFor(() => expect(card('Plan').textContent).toContain('Since last save'));
+
+        const plan = card('Plan').textContent;
+        expect(plan).toContain('1 changed (Alice: +Sweep Fierce Aura 150→200)');
+        expect(plan).toContain('1 added');
+        expect(text()).not.toContain(FAILED);
+    });
+
     test('the export carries the plan and each captured player’s verdict', async () => {
         await feature.initialize('Cats');
         guildTrialAbilities.setRoster(['Alice']);

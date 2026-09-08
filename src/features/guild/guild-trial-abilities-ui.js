@@ -18,7 +18,7 @@ import { clickThroughReact } from '../../utils/react-click.js';
 import guildLoadoutCapture from './guild-loadout-capture.js';
 import guildMemberSkills, { findBattleUnits, orderUnitsToAsk, REQUEST_TIMEOUT_MS } from './guild-member-skills.js';
 import guildTrialAbilities, { SESSION_MAX_AGE_MS } from './guild-trial-abilities.js';
-import guildTrialPlan, { planStatusLine } from './guild-trial-plan.js';
+import guildTrialPlan, { planStatusLine, planDiffSummary, describePlanChange } from './guild-trial-plan.js';
 import { formatEta } from '../../utils/progress-eta.js';
 import { ROW_COLORS } from '../../utils/overlay-format.js';
 import { isAuraAbility } from '../../utils/party-lint.js';
@@ -876,6 +876,47 @@ function offPlanExportButton(state) {
 }
 
 /**
+ * What the last save changed, as one line that opens into the full list.
+ *
+ * Drawn only when there is something to report: the first save of all has no
+ * previous plan to compare against, and a save that changed nothing says so by
+ * saying nothing.
+ *
+ * @param {Object|null} diff - From `guildTrialPlan.lastDiff()`
+ * @returns {HTMLElement|null} The note, or null when the plan did not move
+ */
+function planChangeNote(diff) {
+    const summary = planDiffSummary(diff);
+    if (!summary) return null;
+
+    const details = document.createElement('details');
+    details.className = 'toolasha-plan-diff';
+    const line = document.createElement('summary');
+    line.textContent = `Since last save: ${summary}`;
+    Object.assign(line.style, { cursor: 'pointer', color: ROW_COLORS.dim, fontSize: '11px', margin: '2px 0' });
+    details.appendChild(line);
+
+    const list = document.createElement('div');
+    Object.assign(list.style, { paddingLeft: '10px', color: ROW_COLORS.dim, fontSize: '11px' });
+    for (const entry of diff.changed) list.appendChild(planChangeRow(describePlanChange(entry)));
+    for (const player of diff.added) list.appendChild(planChangeRow(`added: ${player}`));
+    for (const player of diff.removed) list.appendChild(planChangeRow(`removed: ${player}`));
+    details.appendChild(list);
+    return details;
+}
+
+/**
+ * One line of the expanded change list.
+ * @param {string} text - The change
+ * @returns {HTMLElement} The row
+ */
+function planChangeRow(text) {
+    const row = document.createElement('div');
+    row.textContent = text;
+    return row;
+}
+
+/**
  * The Plan card: the text the lead wrote, and what it says about the roster.
  *
  * Collapsed by default — the panel's job is the capture, and the plan is
@@ -884,8 +925,9 @@ function offPlanExportButton(state) {
  *
  * @param {HTMLElement} body - Panel body
  * @param {Object} state - From `guildTrialAbilities.state()`
+ * @param {Object} abilityDetailMap - Game data, so a save can diff what it changed
  */
-function drawPlan(body, state) {
+function drawPlan(body, state, abilityDetailMap) {
     // Checked before the fold check: a stale draft is wrong whether or not
     // the card happens to be collapsed on the draw that crosses the guild
     guardPlanUiGuild(state.guildName ?? null);
@@ -897,6 +939,8 @@ function drawPlan(body, state) {
     heading.appendChild(offPlanExportButton(state));
     if (collapsed) return;
     card.appendChild(panelNote(planStatusLine(state.planCompare)));
+    const changes = planChangeNote(guildTrialPlan.lastDiff());
+    if (changes) card.appendChild(changes);
 
     const details = document.createElement('details');
     details.open = planUi.open;
@@ -928,7 +972,7 @@ function drawPlan(body, state) {
     row.appendChild(
         controlButton('Save plan', 'Store this plan for the guild and compare the captures against it.', async () => {
             planUi.draft = null;
-            await guildTrialPlan.setText(box.value);
+            await guildTrialPlan.setText(box.value, abilityDetailMap);
             guildTrialAbilitiesPanel.render();
         })
     );
@@ -1331,7 +1375,7 @@ export const guildTrialAbilitiesPanel = createPanel({
         // that keep moving down are buttons you miss
         drawControls(body, state);
         drawHeader(body, state);
-        drawPlan(body, state);
+        drawPlan(body, state, abilityDetailMap);
         drawAuraCoverage(body, state, abilityDetailMap);
         drawUtilityCounts(body, state, abilityDetailMap);
         drawPlayers(body, state, abilityDetailMap);

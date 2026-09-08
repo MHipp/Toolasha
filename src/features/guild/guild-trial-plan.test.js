@@ -40,6 +40,9 @@ const {
     verdictFor,
     comparePlan,
     planStatusLine,
+    planDiff,
+    planDiffSummary,
+    describePlanChange,
 } = await import('./guild-trial-plan.js');
 
 /** A game ability map with two auras sharing no prefix and one that does */
@@ -293,5 +296,90 @@ describe('merging two devices trial plans', () => {
         expect(mergePlanRecords(null, plan)).toBe(plan);
         expect(mergePlanRecords(plan, null)).toBe(plan);
         expect(mergePlanRecords(null, null)).toBeNull();
+    });
+});
+
+describe('what a save changed', () => {
+    test('the first save ever reports nothing', () => {
+        const diff = planDiff(null, parse('Alice: Fierce Aura'));
+        expect(diff.hasPrevious).toBe(false);
+        expect(diff).toMatchObject({ added: [], removed: [], changed: [] });
+        expect(planDiffSummary(diff)).toBeNull();
+    });
+
+    test('a save that changed nothing reports nothing', () => {
+        const diff = planDiff(parse('Alice: Fierce Aura, Sweep'), parse('Alice: Fierce Aura, Sweep'));
+        expect(diff.hasPrevious).toBe(true);
+        expect(planDiffSummary(diff)).toBeNull();
+    });
+
+    test('names players added and removed', () => {
+        const diff = planDiff(parse('Alice: Sweep\nBob: Sweep'), parse('Alice: Sweep\nCara: Sweep'));
+        expect(diff.added).toEqual(['Cara']);
+        expect(diff.removed).toEqual(['Bob']);
+        expect(diff.changed).toEqual([]);
+        expect(planDiffSummary(diff)).toBe('1 added, 1 removed');
+    });
+
+    test('names the abilities that differ', () => {
+        const diff = planDiff(parse('Ana: Fierce Aura, Vampirism'), parse('Ana: Fierce Aura, Sweep'));
+        expect(diff.changed).toHaveLength(1);
+        expect(diff.changed[0]).toMatchObject({ player: 'Ana', added: ['Sweep'], removed: ['Vampirism'] });
+        expect(planDiffSummary(diff)).toBe('1 changed (Ana: +Sweep −Vampirism)');
+    });
+
+    test('reads a level-only change as a change', () => {
+        const diff = planDiff(parse('Ana: Fierce Aura 150'), parse('Ana: Fierce Aura 200'));
+        expect(diff.changed[0]).toMatchObject({
+            added: [],
+            removed: [],
+            levels: [{ name: 'Fierce Aura', from: 150, to: 200 }],
+        });
+        expect(describePlanChange(diff.changed[0])).toBe('Ana: Fierce Aura 150→200');
+    });
+
+    test('reads a level newly required, and one dropped', () => {
+        expect(planDiff(parse('Ana: Fierce Aura'), parse('Ana: Fierce Aura 200')).changed[0].levels).toEqual([
+            { name: 'Fierce Aura', from: null, to: 200 },
+        ]);
+        expect(describePlanChange(planDiff(parse('Ana: Fierce Aura 200'), parse('Ana: Fierce Aura')).changed[0])).toBe(
+            'Ana: Fierce Aura 200→any'
+        );
+    });
+
+    test('is order-insensitive on abilities and case-insensitive on names', () => {
+        const diff = planDiff(parse('Ana: Fierce Aura, Sweep, Vampirism'), parse('ANA: vampirism, sweep, fierce aura'));
+        expect(diff).toMatchObject({ added: [], removed: [], changed: [] });
+    });
+
+    test('an ability the parse could not resolve still counts as a change', () => {
+        const diff = planDiff(parse('Ana: Sweep'), parse('Ana: Sweep, Flurry'));
+        expect(diff.changed[0].added).toEqual(['Flurry']);
+    });
+
+    test('a rewritten line replaces the earlier one, as the comparison reads it', () => {
+        const diff = planDiff(parse('Ana: Sweep'), parse('Ana: Sweep\nAna: Vampirism'));
+        expect(diff.changed[0]).toMatchObject({ added: ['Vampirism'], removed: ['Sweep'] });
+    });
+
+    test('the summary names the first changed players and elides the rest', () => {
+        const before = parse('A: Sweep\nB: Sweep\nC: Sweep\nD: Sweep');
+        const after = parse('A: Vampirism\nB: Vampirism\nC: Vampirism\nD: Sweep\nE: Sweep');
+        const summary = planDiffSummary(planDiff(before, after));
+        expect(summary).toBe('3 changed (A: +Vampirism −Sweep; B: +Vampirism −Sweep; …), 1 added');
+    });
+
+    test('a save records its diff, and the first save records none', async () => {
+        disk.keys = {};
+        const plan = new GuildTrialPlan();
+        await plan.initialize('Guild');
+
+        await plan.setText('Ana: Fierce Aura', ABILITIES);
+        expect(plan.lastDiff()).toBeNull();
+
+        await plan.setText('Ana: Fierce Aura, Sweep\nBob: Sweep', ABILITIES);
+        const diff = plan.lastDiff();
+        expect(diff.added).toEqual(['Bob']);
+        expect(diff.changed[0]).toMatchObject({ player: 'Ana', added: ['Sweep'] });
     });
 });
