@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The Lab Simulator ranks upgrades by the room levels they buy, and names the floor
+
+An upgrade's worth in the labyrinth is not a percentage, it is whether it takes you a floor deeper — so the Upgrade tab can now rank by exactly that: how many room levels each upgrade adds to the deepest room you still clear at your configured rate, and which floor that reaches. A target floor can be named instead, and its requirement is the level of its own exit room, since a floor you cannot finish is a floor you have not got. Measuring a level costs a search of simulations rather than one, so the table is ranked cheaply first and only the leaders are measured properly; everything else reads as no change, and says so. Off until switched on, and the existing columns still mean what they meant.
+
+The floor the levels are read against comes from the game's own guide — floor 1 runs 20 to 40 and every floor adds 20 — and is checked against 120 rooms actually recorded in a labyrinth log rather than taken on trust. Rooms turned up on the exact top and bottom of two of those floors, which is what pins the boundaries rather than merely fitting inside them.
+
 ### A queued action now counts what it makes, and the Iron Bell panel stops quoting percentages a hundred times over
 
 Queued actions already spent what they used; now they also credit what they produce, so a queue that forages, decomposes and then coinifies the essence is costed as the chain it is rather than three strangers. A crafted intermediate is credited exactly. A gathered or alchemical yield can only ever be an expectation, so those figures carry a `~` and everything downstream of one carries it too — a projected quantity is never presented as stock in hand. An endless producer credits nothing, since it never finishes; one that merely repeats until its materials run out credits every action it performs. The alt-readiness projection takes only the exact half, on the same argument it already refuses to guess at enhancing.
