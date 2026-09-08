@@ -24,6 +24,19 @@
  * produced them or whether they help — `utils/ability-effects.js` is the index
  * that answers both, and the sprite slug a chip draws comes from there too.
  *
+ * ## Only what an ability applied
+ *
+ * The map is not a list of fight state: it is everything standing on the unit,
+ * and for a player most of it is their loadout — achievements, community
+ * buffs, house rooms, drinks, one entry per source. A real mid-dungeon map
+ * carried 27 entries of only 17 distinct types, five of them wisdom, most with
+ * `duration: 0` and the zero-time start that marks a permanent passive. None of
+ * that is decided by the fight, all of it is stated elsewhere in the game's own
+ * UI, and drawing it buried the two chips that mattered under a row of
+ * identical ones. So a chip is drawn only for an effect the ability index
+ * declares: the question the strip exists to answer is whether a
+ * damage-over-time is still ticking and how long is left on the boss's debuff.
+ *
  * ## Joined by name for players, by slot for monsters
  *
  * The same split `portrait-dps.js` makes, for the same reasons. A player's slot
@@ -65,7 +78,7 @@ import domObserver from '../../core/dom-observer.js';
 import webSocketHook from '../../core/websocket.js';
 import { createCleanupRegistry } from '../../utils/cleanup-registry.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
-import { effectForBuff, effectLabel, hridSlug } from '../../utils/ability-effects.js';
+import { effectForBuff, effectSourceLabel, hridSlug } from '../../utils/ability-effects.js';
 import { GAME } from '../../utils/selectors.js';
 
 /** Where the party's tiles live, as opposed to the monsters' */
@@ -149,28 +162,64 @@ export function liveDurationSeconds(duration) {
  */
 export function readBuffMap(combatBuffMap, now, abilityDetailMap) {
     const effects = new Map();
+    const labels = new Set();
     for (const [uniqueHrid, buff] of Object.entries(combatBuffMap || {})) {
+        // An entry the index does not declare was not applied by an ability, so
+        // it is loadout rather than fight state and gets no chip — see the
+        // module comment. Drinks go with the rest: pre-fight setup on a
+        // several-minute timer, already on screen in the consumables UI.
         const record = effectForBuff(uniqueHrid, abilityDetailMap);
-        const seconds = liveDurationSeconds(buff?.duration) ?? record?.durationSeconds ?? null;
+        if (!record) continue;
+
+        const seconds = liveDurationSeconds(buff?.duration) ?? record.durationSeconds ?? null;
         const started = Date.parse(String(buff?.startTime ?? ''));
         const startedAt = Number.isFinite(started) ? started : now;
         const expiresAt = seconds === null ? null : startedAt + seconds * 1000;
+        // This is what a permanent passive's zero-time start also lands in:
+        // `0001-01-01T00:00:00Z` parses finite and two millennia past, so such
+        // an entry reads as long expired here rather than needing a case of its
+        // own and a second chance to draw a nonsense countdown.
         if (expiresAt !== null && expiresAt <= now) continue;
 
-        // The index answers for anything an ability applies. A buff no ability
-        // declares — a community buff, a house room, a drink — still belongs on
-        // the strip, so its own `typeHrid` names it and it counts as a buff:
-        // nothing outside an ability's effects is put on a unit against them.
-        const token = hridSlug(buff?.typeHrid) || hridSlug(uniqueHrid);
+        const label = distinctLabel(effectSourceLabel(record) || '?', uniqueHrid, labels);
+        labels.add(label);
         effects.set(uniqueHrid, {
             uniqueHrid,
-            kind: record?.kind ?? 'buff',
-            slug: record?.slug ?? '',
-            label: record?.label || effectLabel(token) || '?',
+            kind: record.kind,
+            slug: record.slug,
+            label,
             expiresAt,
         });
     }
     return effects;
+}
+
+/**
+ * A label no other effect on the same unit is already using.
+ *
+ * Abbreviations name the effect rather than the stat it moves, because one unit
+ * can carry two ability effects of the same type — Fury's accuracy and an
+ * accuracy ability's are both `/buff_types/accuracy`. Where two of those names
+ * still abbreviate alike the later one lengthens, so two chips never read the
+ * same without being the same thing.
+ *
+ * @param {string} base - The abbreviation for this effect
+ * @param {string} uniqueHrid - Its unique hrid, the source of the longer forms
+ * @param {Set<string>} taken - The labels already used on this unit
+ * @returns {string}
+ */
+function distinctLabel(base, uniqueHrid, taken) {
+    const slug = hridSlug(uniqueHrid)
+        .replace(/[^a-zA-Z0-9]/g, '')
+        .toUpperCase();
+    let label = base;
+    for (let length = base.length + 1; taken.has(label) && length <= slug.length; length += 1) {
+        label = slug.slice(0, length);
+    }
+    // Two hrids differing only above their last segment abbreviate identically
+    // however far they are followed; the map tells them apart, so the strip must
+    while (taken.has(label)) label += '+';
+    return label;
 }
 
 /**
@@ -572,9 +621,10 @@ class CombatUnitBuffBars {
             icon.appendChild(use);
             chip.appendChild(icon);
         } else {
-            // No sprite resolves for an effect no ability declares, and none
-            // resolves at all before the game has drawn one ability icon on the
-            // page. The abbreviation says which effect it is either way.
+            // Every effect drawn here is one an ability declares, so a sprite
+            // exists for all of them — but none resolves before the game has
+            // drawn an ability icon for the URL to be scraped off. The
+            // abbreviation stands in until it has.
             const label = document.createElement('span');
             label.textContent = effect.label;
             chip.appendChild(label);

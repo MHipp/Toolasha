@@ -17,8 +17,15 @@ vi.mock('../core/data-manager.js', () => ({
     default: { getInitClientData: () => client.data },
 }));
 
-const { getAbilityEffectIndex, abilityEffects, effectForBuff, effectLabel, hridSlug, _resetAbilityEffectIndex } =
-    await import('./ability-effects.js');
+const {
+    getAbilityEffectIndex,
+    abilityEffects,
+    effectForBuff,
+    effectLabel,
+    effectSourceLabel,
+    hridSlug,
+    _resetAbilityEffectIndex,
+} = await import('./ability-effects.js');
 
 const SECOND = 1e9;
 
@@ -90,6 +97,17 @@ describe('token normalisation', () => {
         expect(hridSlug('/buff_types/critical_rate')).toBe('critical_rate');
         expect(hridSlug('')).toBe('');
         expect(hridSlug(null)).toBe('');
+    });
+
+    test('a source label names the effect, so two of one stat type read apart', () => {
+        // Both move `/buff_types/accuracy`, so the type label calls both 'ACC'
+        const fury = { uniqueHrid: '/buff_uniques/fury_accuracy', label: 'ACC' };
+        const precision = { uniqueHrid: '/buff_uniques/precision', label: 'ACC' };
+        expect(effectSourceLabel(fury)).toBe('FA');
+        expect(effectSourceLabel(precision)).toBe('PRE');
+        // Nothing to name it by falls back to the stat, and to nothing at all
+        expect(effectSourceLabel({ label: 'ACC' })).toBe('ACC');
+        expect(effectSourceLabel(null)).toBe('');
     });
 
     test('a label is initials for a phrase and a stem for a word', () => {

@@ -7,6 +7,8 @@
  * - the strips are seeded from the combatant list rather than waiting a tick;
  * - a tick's buff map is authoritative both ways — a new debuff appears, and an
  *   effect the map stops listing goes away;
+ * - the map is filtered to fight state: a player's standing loadout is most of
+ *   what it carries, and every chip has to be something an ability applied;
  * - the countdown is written only when its rounded second changes, which is the
  *   difference between one DOM write a second and one per observer callback in
  *   a panel that mutates at frame rate;
@@ -124,7 +126,114 @@ const ABILITY_MAP = {
             },
         ],
     },
+    // Two abilities whose buffs move the same stat: the pair that read as one
+    // chip twice while the label came from the type
+    '/abilities/elemental_affinity': {
+        abilityEffects: [
+            {
+                targetType: 'self',
+                effectType: '/ability_effect_types/buff',
+                buffs: [
+                    {
+                        uniqueHrid: '/buff_uniques/elemental_affinity_fire_amplify',
+                        typeHrid: '/buff_types/fire_amplify',
+                        duration: 30 * SECOND,
+                    },
+                ],
+            },
+        ],
+    },
+    '/abilities/firestorm': {
+        abilityEffects: [
+            {
+                targetType: 'self',
+                effectType: '/ability_effect_types/buff',
+                buffs: [
+                    {
+                        uniqueHrid: '/buff_uniques/firestorm_fire_amplify',
+                        typeHrid: '/buff_types/fire_amplify',
+                        duration: 25 * SECOND,
+                    },
+                ],
+            },
+        ],
+    },
+    // An ability effect the data states no duration for: the one case that
+    // still reaches a chip with no countdown
+    '/abilities/unending': {
+        abilityEffects: [
+            {
+                targetType: 'self',
+                effectType: '/ability_effect_types/buff',
+                buffs: [{ uniqueHrid: '/buff_uniques/unending', typeHrid: '/buff_types/armor' }],
+            },
+        ],
+    },
 };
+
+/** The Go zero-time sentinel a permanent passive carries instead of a start */
+const ZERO_TIME = '0001-01-01T00:00:00Z';
+
+/**
+ * A player's real mid-dungeon buff map: 27 entries of 17 distinct types, of
+ * which three were applied by an ability and the other 24 are their standing
+ * loadout. Trimmed only in that the repeated passives are spelled out rather
+ * than generated.
+ */
+function loadoutMap() {
+    const passive = (uniqueHrid, typeHrid) => [uniqueHrid, { uniqueHrid, typeHrid, duration: 0, startTime: ZERO_TIME }];
+    const drink = (uniqueHrid, typeHrid) => [
+        uniqueHrid,
+        { uniqueHrid, typeHrid, duration: 250 * SECOND, startTime: new Date(NOW).toISOString() },
+    ];
+    return Object.fromEntries([
+        // Five sources of one stat, which drew five chips all reading 'WIS'
+        passive('/buff_uniques/achievement_novice_experience', '/buff_types/wisdom'),
+        passive('/buff_uniques/house_observatory', '/buff_types/wisdom'),
+        passive('/buff_uniques/community_wisdom', '/buff_types/wisdom'),
+        passive('/buff_uniques/achievement_expert_experience', '/buff_types/wisdom'),
+        drink('/buff_uniques/wisdom_tea', '/buff_types/wisdom'),
+        passive('/buff_uniques/achievement_attack', '/buff_types/attack_level'),
+        drink('/buff_uniques/attack_coffee', '/buff_types/attack_level'),
+        passive('/buff_uniques/achievement_cast_speed', '/buff_types/cast_speed'),
+        drink('/buff_uniques/channeling_coffee', '/buff_types/cast_speed'),
+        passive('/buff_uniques/achievement_magic', '/buff_types/magic_level'),
+        passive('/buff_uniques/house_library', '/buff_types/magic_level'),
+        passive('/buff_uniques/community_nature', '/buff_types/nature_amplify'),
+        passive('/buff_uniques/house_garden', '/buff_types/nature_amplify'),
+        passive('/buff_uniques/community_water', '/buff_types/water_amplify'),
+        passive('/buff_uniques/house_well', '/buff_types/water_amplify'),
+        passive('/buff_uniques/house_dojo', '/buff_types/fire_amplify'),
+        // What the fight actually put on them
+        [
+            '/buff_uniques/elemental_affinity_fire_amplify',
+            {
+                uniqueHrid: '/buff_uniques/elemental_affinity_fire_amplify',
+                typeHrid: '/buff_types/fire_amplify',
+                duration: 30 * SECOND,
+                startTime: new Date(NOW).toISOString(),
+            },
+        ],
+        [
+            '/buff_uniques/firestorm_fire_amplify',
+            {
+                uniqueHrid: '/buff_uniques/firestorm_fire_amplify',
+                typeHrid: '/buff_types/fire_amplify',
+                duration: 25 * SECOND,
+                startTime: new Date(NOW).toISOString(),
+            },
+        ],
+        [
+            '/buff_uniques/toughness',
+            {
+                uniqueHrid: '/buff_uniques/toughness',
+                typeHrid: '/buff_types/armor',
+                duration: 20 * SECOND,
+                startTime: new Date(NOW).toISOString(),
+            },
+        ],
+    ]);
+}
 
 /** One live buff record, in the shape `combatBuffMap` states them */
 function live(uniqueHrid, typeHrid, seconds, startedAt = NOW) {
@@ -199,9 +308,54 @@ describe('reading a buff map', () => {
         expect(effects.get('/buff_uniques/weaken')).toMatchObject({ kind: 'debuff', slug: 'weaken' });
     });
 
-    test('an effect no ability declares still shows, as a buff with an abbreviation', () => {
+    test('a buff no ability declares is loadout, not fight state, and gets no chip', () => {
         const effects = readBuffMap(live('/buff_uniques/community', '/buff_types/experience', 60), NOW, ABILITY_MAP);
-        expect(effects.get('/buff_uniques/community')).toMatchObject({ kind: 'buff', slug: '', label: 'EXP' });
+        expect(effects.size).toBe(0);
+    });
+
+    test('a permanent passive is dropped, rather than drawn with a nonsense countdown', () => {
+        const map = {
+            '/buff_uniques/house_observatory': {
+                uniqueHrid: '/buff_uniques/house_observatory',
+                typeHrid: '/buff_types/wisdom',
+                duration: 0,
+                startTime: ZERO_TIME,
+            },
+        };
+        expect(readBuffMap(map, NOW, ABILITY_MAP).size).toBe(0);
+    });
+
+    test('a drink is pre-fight setup and gets no chip either', () => {
+        const map = {
+            '/buff_uniques/attack_coffee': {
+                uniqueHrid: '/buff_uniques/attack_coffee',
+                typeHrid: '/buff_types/attack_level',
+                duration: 250 * SECOND,
+                startTime: new Date(NOW).toISOString(),
+            },
+        };
+        expect(readBuffMap(map, NOW, ABILITY_MAP).size).toBe(0);
+    });
+
+    test("a real loadout leaves only the fight's own effects, each reading differently", () => {
+        const effects = readBuffMap(loadoutMap(), NOW, ABILITY_MAP);
+
+        expect([...effects.keys()]).toEqual([
+            '/buff_uniques/elemental_affinity_fire_amplify',
+            '/buff_uniques/firestorm_fire_amplify',
+            '/buff_uniques/toughness',
+        ]);
+        // Both fire amplifies are ability-applied and share a `typeHrid`, so a
+        // type-derived label drew two chips reading 'FA'
+        const labels = [...effects.values()].map((effect) => effect.label);
+        expect(new Set(labels).size).toBe(labels.length);
+    });
+
+    test('the whole loadout draws three chips on the tile, not twenty-seven', () => {
+        send('new_battle', { players: [{ name: 'Alice', combatBuffMap: loadoutMap() }], monsters: [] });
+        const chips = [...chipsOn('players', 0)];
+        expect(chips).toHaveLength(3);
+        expect(new Set(chips.map((chip) => chip.firstElementChild.textContent)).size).toBe(3);
     });
 
     test('an already-expired record is not drawn and removed a frame later', () => {
@@ -487,7 +641,7 @@ describe('the interval does not outlive the fight', () => {
             monsters: [
                 {
                     combatBuffMap: {
-                        '/buff_uniques/unknown': { uniqueHrid: '/buff_uniques/unknown' },
+                        '/buff_uniques/unending': { uniqueHrid: '/buff_uniques/unending' },
                     },
                 },
             ],
@@ -536,7 +690,8 @@ describe('icons', () => {
         });
         const chip = chipsOn('monsters', 0)[0];
         expect(chip.querySelector('svg')).toBeNull();
-        expect(chip.firstElementChild.textContent).toBe('DT');
+        // The effect's own name (`/buff_uniques/weaken`), not its stat type
+        expect(chip.firstElementChild.textContent).toBe('WEA');
     });
 });
 

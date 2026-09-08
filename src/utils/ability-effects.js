@@ -250,6 +250,23 @@ export function effectForBuff(uniqueHrid, abilityDetailMap) {
     return getAbilityEffectIndex(abilityDetailMap)?.byUniqueHrid.get(uniqueHrid) ?? null;
 }
 
+/**
+ * The abbreviation that names one effect, rather than the stat it moves.
+ *
+ * A record's `label` is its `typeHrid`, which is what the stat is called — and
+ * several different effects move the same stat, so a display keyed on it draws
+ * two chips that read alike without being the same thing. The unique hrid is
+ * the effect's own name (`fury_accuracy`, `elemental_affinity_fire_amplify`),
+ * so it tells those apart; the type label remains the fallback for a record
+ * whose unique hrid abbreviates to nothing.
+ *
+ * @param {Object|null} record - An effect record from {@link effectForBuff}
+ * @returns {string} Uppercase, at most three characters; '' for no record
+ */
+export function effectSourceLabel(record) {
+    return effectLabel(hridSlug(record?.uniqueHrid)) || record?.label || '';
+}
+
 /** Forget the cached index — for tests, which hand in maps of their own. */
 export function _resetAbilityEffectIndex() {
     index = null;
