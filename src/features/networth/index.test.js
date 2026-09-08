@@ -26,15 +26,15 @@ vi.mock('./networth-display.js', () => ({
 vi.mock('./networth-exclusion-popup.js', () => ({
     default: { refresh: vi.fn(), close: vi.fn() },
 }));
-vi.mock('../../core/config.js', () => ({
-    default: {
-        isFeatureEnabled: () => true,
-        getSetting: () => false,
-        getSettingValue: () => 'ask',
-        onSettingChange: vi.fn(),
-        offSettingChange: vi.fn(),
-    },
+const configMock = vi.hoisted(() => ({
+    isFeatureEnabled: () => true,
+    getSetting: () => false,
+    getSettingValue: () => 'ask',
+    onSettingChange: vi.fn(),
+    offSettingChange: vi.fn(),
 }));
+
+vi.mock('../../core/config.js', () => ({ default: configMock }));
 vi.mock('../../core/connection-state.js', () => ({
     default: { isConnected: () => true },
 }));
@@ -119,5 +119,22 @@ describe('overlapping recalculations', () => {
         await secondRun;
         expect(networthFeature.currentData.totalNetworth).toBe(222);
         expect(displayMock.header.update).toHaveBeenCalledTimes(2);
+    });
+});
+
+describe('pricing settings', () => {
+    test('the value source re-prices net worth, exactly as the pricing mode does', () => {
+        configMock.onSettingChange.mockClear();
+        networthFeature.setupEventListeners();
+
+        const keys = configMock.onSettingChange.mock.calls.map(([key]) => key);
+        expect(keys).toContain('networth_pricingMode');
+        expect(keys).toContain('networth_valueSource');
+
+        // Both are the same handler, so either one triggers a recalculation
+        const handlers = configMock.onSettingChange.mock.calls
+            .filter(([key]) => key.startsWith('networth_'))
+            .map(([, handler]) => handler);
+        expect(new Set(handlers).size).toBe(1);
     });
 });

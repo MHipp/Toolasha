@@ -26,6 +26,9 @@ import { initExclusions } from './networth-exclusions.js';
 import networthExclusionPopup from './networth-exclusion-popup.js';
 import { terminateItemValueWorkerPool } from '../../utils/networth-worker-manager.js';
 
+/** The settings that change what everything is worth, so a change re-prices the lot */
+const PRICING_SETTINGS = ['networth_pricingMode', 'networth_valueSource'];
+
 class NetworthFeature {
     constructor() {
         this.isActive = false;
@@ -116,14 +119,21 @@ class NetworthFeature {
 
         marketAPI.on(this.priceUpdateHandler);
 
-        // Listen for pricing mode changes
+        // Listen for pricing changes. Both settings decide what an item is
+        // worth — the value source picks the order book or the game's own
+        // published value, the pricing mode picks a side of that book — so a
+        // change to either has to re-price everything. Only the mode was
+        // listened for, so switching the value source left the header, the
+        // panel and the overlay tile showing figures from the source the user
+        // had just changed away from until an unrelated item or price update
+        // happened to trigger a pass.
         this.pricingModeHandler = () => {
             if (this.isActive && connectionState.isConnected()) {
                 networthCache.clear();
                 this.recalculate();
             }
         };
-        config.onSettingChange('networth_pricingMode', this.pricingModeHandler);
+        for (const key of PRICING_SETTINGS) config.onSettingChange(key, this.pricingModeHandler);
 
         // Listen for inventory changes
         this.itemsUpdateHandler = () => {
@@ -260,7 +270,7 @@ class NetworthFeature {
             }
 
             if (this.pricingModeHandler) {
-                config.offSettingChange('networth_pricingMode', this.pricingModeHandler);
+                for (const key of PRICING_SETTINGS) config.offSettingChange(key, this.pricingModeHandler);
                 this.pricingModeHandler = null;
             }
 
