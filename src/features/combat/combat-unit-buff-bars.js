@@ -57,6 +57,29 @@
  * different fights — so they keep the slot, which is stable for the length of a
  * battle.
  *
+ * ## The guild trial's fight view draws nothing
+ *
+ * A spectated trial renders the *same* `BattlePanel_playersArea` and the same
+ * `CombatUnit` tiles, inside the Guild panel — and its fight is not on this
+ * client's `new_battle`/`battle_updated` feed at all (it streams as
+ * `new_guild_battle`/`guild_battle_updated`, which nothing here reads). The
+ * watcher's own name is on a tile in both places, so the name join happily
+ * painted the *live* fight's buff map onto the trial tile, kept fresh by the
+ * watcher's own combat still running in the background. Monsters are worse
+ * again: joined by slot, so the trial's boss wore whatever slot 0 of the live
+ * fight was carrying.
+ *
+ * So a players or monsters area inside the guild panel is skipped and any strip
+ * already in it removed. Not "reset on trial start" — the live fight's own
+ * messages would re-seed the state and draw it again on the next tick; the
+ * *drawing* is what has to stand down. The discriminator is structural rather
+ * than a message-stream flag on purpose: the trial stream keeps flowing after
+ * the fight view is closed (`guild-trial-damage.js` says so outright), so a
+ * "trial is live" flag would blank the player's own bars, while
+ * `closest('[class*="GuildPanel"]')` answers the only question that matters —
+ * whose panel is this tile in — and needs no timeout in either direction.
+ * `combat-dps-panel.js` keeps its opener out of the same panel the same way.
+ *
  * The anchor discovery is `portrait-dps.js`'s: the shared `GAME` selectors, the
  * strip appended in the tile's own flow as its last child (the battle panel
  * clips its children, so anything hung outside the box is drawn and cropped
@@ -92,6 +115,22 @@ import { GAME } from '../../utils/selectors.js';
 
 /** Where the party's tiles live, as opposed to the monsters' */
 const PLAYERS_AREA = '[class*="BattlePanel_playersArea"]';
+
+/**
+ * Whether an area belongs to a spectated guild trial rather than this
+ * character's own fight.
+ *
+ * The trial's In Progress fight view renders the same battle-panel areas and
+ * the same unit tiles inside the guild panel, and nothing here has ever read
+ * the trial's own stream — see the header. `combat-dps-panel.js` fences its
+ * opener off the same way.
+ *
+ * @param {Element|null} area - A players or monsters area
+ * @returns {boolean}
+ */
+export function isTrialArea(area) {
+    return Boolean(area?.closest?.(GAME.GUILD_PANEL));
+}
 
 /** Marks a strip as ours, so a rebuild cannot leave two */
 export const STRIP_MARK = 'data-toolasha-buff-strip';
@@ -575,8 +614,8 @@ class CombatUnitBuffBars {
      */
     draw(now = Date.now()) {
         this._expire(now);
-        const players = document.querySelector(PLAYERS_AREA);
-        const monsters = document.querySelector(GAME.BATTLE_MONSTERS_AREA);
+        const players = this._ownArea(PLAYERS_AREA);
+        const monsters = this._ownArea(GAME.BATTLE_MONSTERS_AREA);
         this._drawSide(players, now, true);
         this._drawSide(monsters, now, false);
         // No panel is no countdown to write, and holding the interval open for
@@ -587,6 +626,30 @@ class CombatUnitBuffBars {
         // comes back, which is what restarts it.
         if ((players || monsters) && this._hasEffects()) this._startTicking();
         else this._stopTicking();
+    }
+
+    /**
+     * This character's own area of a kind, and no trial's.
+     *
+     * A spectated guild trial draws the same areas inside the guild panel with
+     * this fight's units nowhere in them, so one is never drawn on — and any
+     * strip left in one from before the view opened is taken out here, so
+     * nothing is left to flash on the way in or out. The first area outside the
+     * guild panel is the party's own; there is only ever one, and taking the
+     * first keeps the old `querySelector` behaviour when no trial is on screen.
+     *
+     * @param {string} selector - `PLAYERS_AREA` or the monsters area's
+     * @returns {HTMLElement|null} The party's own area, or null when only a
+     *   trial's is on screen
+     */
+    _ownArea(selector) {
+        let own = null;
+        for (const area of document.querySelectorAll(selector)) {
+            if (isTrialArea(area)) {
+                for (const strip of area.querySelectorAll(`[${STRIP_MARK}]`)) strip.remove();
+            } else if (!own) own = area;
+        }
+        return own;
     }
 
     /**

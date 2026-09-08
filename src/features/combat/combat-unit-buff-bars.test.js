@@ -322,6 +322,44 @@ function panel(playerNames = ['Alice', 'Bob'], monsterCount = 2) {
         </div>`;
 }
 
+/**
+ * The guild trial's In Progress fight view: the same battle panel, the same
+ * unit tiles, inside the guild panel. In the spectate view only the watcher's
+ * own unit is a full `CombatUnit` and the rest of the party are `MiniUnit`
+ * lines, which is why the watcher's own name is the one that collides.
+ *
+ * @param {string[]} [playerNames] - The full tiles; the watcher, in practice
+ * @param {string[]} [miniNames] - The rest of the party, drawn small
+ */
+function trialPanel(playerNames = ['Alice'], miniNames = ['Carol']) {
+    document.body.innerHTML = `
+        <div class="GuildPanel_guildPanel__9z8y7">
+            <div class="BattlePanel_battlePanel__1x2y3">
+                <div class="BattlePanel_playersArea__3a4b5">
+                    ${playerNames
+                        .map(
+                            (name) => `<div class="CombatUnit_combatUnit__1p2q3">
+                                <div class="CombatUnit_name__2r3s4">${name}</div>
+                            </div>`
+                        )
+                        .join('')}
+                    ${miniNames
+                        .map(
+                            (name) => `<div class="MiniUnit_miniUnit__4t5u6">
+                                <div class="MiniUnit_name__7v8w9">${name}</div>
+                            </div>`
+                        )
+                        .join('')}
+                </div>
+                <div class="BattlePanel_monstersArea__6c7d8">
+                    <div class="CombatUnit_combatUnit__1p2q3">
+                        <div class="CombatUnit_name__2r3s4">Trial Chameleon</div>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+}
+
 const send = (type, payload) => {
     for (const handler of opts.ws.get(type) || []) handler(payload);
 };
@@ -866,6 +904,97 @@ describe('icons', () => {
         expect(chip.querySelector('svg')).toBeNull();
         // The effect's own name (`/buff_uniques/weaken`), not its stat type
         expect(chip.firstElementChild.textContent).toBe('WEA');
+    });
+});
+
+describe('a spectated guild trial draws nothing', () => {
+    // The trial's fight view renders the same `BattlePanel_playersArea` and the
+    // same `CombatUnit` tiles, and its fight is not on this client's
+    // `new_battle`/`battle_updated` feed at all — it streams as
+    // `new_guild_battle`/`guild_battle_updated`, which nothing here reads. The
+    // watcher's own name is on a tile in both places, so the live fight's buff
+    // map was painted onto the trial tile.
+    const armLiveFight = () =>
+        send('new_battle', {
+            players: [
+                { name: 'Alice', combatBuffMap: live('/buff_uniques/toughness', '/buff_types/armor', 20) },
+                { name: 'Bob', combatBuffMap: {} },
+            ],
+            monsters: [{ combatBuffMap: live('/buff_uniques/weaken', '/buff_types/damage_taken', 15) }],
+        });
+
+    test('the watcher’s own live buffs do not land on their trial tile', () => {
+        armLiveFight();
+        expect(strips()).toHaveLength(2);
+
+        trialPanel();
+        bars.draw();
+        expect(strips()).toHaveLength(0);
+    });
+
+    test('the trial’s boss gets no monster chips either — slots join positionally', () => {
+        // Monsters are matched by slot, not name, so the live fight's slot 0
+        // debuff would land on whatever the trial happens to draw first
+        armLiveFight();
+        trialPanel();
+        bars.draw();
+        expect(document.querySelectorAll(`[${CHIP_MARK}]`)).toHaveLength(0);
+    });
+
+    test('a tick for the player’s own fight while the trial view is up stays off it', () => {
+        // The case that made it visible: the maintainer's ordinary combat was
+        // running, so `battle_updated` kept the stale map fresh
+        armLiveFight();
+        trialPanel();
+        bars.draw();
+
+        send('battle_updated', {
+            pMap: { 0: { combatBuffMap: live('/buff_uniques/toughness', '/buff_types/armor', 20) } },
+            mMap: { 0: { combatBuffMap: live('/buff_uniques/weaken', '/buff_types/damage_taken', 15) } },
+        });
+        expect(strips()).toHaveLength(0);
+    });
+
+    test('a strip already on a tile is taken out when the trial view takes over', () => {
+        // Nothing left to flash on the way in: the areas are cleared, not just
+        // skipped
+        armLiveFight();
+        const trialArea = document.querySelector('[class*="BattlePanel_playersArea"]');
+        const stale = document.createElement('div');
+        stale.setAttribute(STRIP_MARK, '1');
+        trialArea.querySelector('[class*="CombatUnit_combatUnit"]').appendChild(stale);
+        document.body.firstElementChild.className = 'GuildPanel_guildPanel__9z8y7';
+
+        bars.draw();
+        expect(strips()).toHaveLength(0);
+    });
+
+    test('coming back out, the player’s own bars work again', () => {
+        armLiveFight();
+        trialPanel();
+        bars.draw();
+        expect(strips()).toHaveLength(0);
+
+        // The trial ends, or the Combat tab is returned to: React rebuilds the
+        // panel and the class watcher draws again, from state that never left
+        panel();
+        bars.draw();
+        expect(chipsOn('players', 0)).toHaveLength(1);
+        expect(chipsOn('monsters', 0)).toHaveLength(1);
+    });
+
+    test('the party’s own panel is still drawn when a trial panel shares the page', () => {
+        armLiveFight();
+        const guild = document.createElement('div');
+        guild.className = 'GuildPanel_guildPanel__9z8y7';
+        guild.innerHTML = `<div class="BattlePanel_playersArea__3a4b5">
+            <div class="CombatUnit_combatUnit__1p2q3"><div class="CombatUnit_name__2r3s4">Alice</div></div>
+        </div>`;
+        document.body.insertBefore(guild, document.body.firstElementChild);
+
+        bars.draw();
+        expect(guild.querySelectorAll(`[${STRIP_MARK}]`)).toHaveLength(0);
+        expect(strips()).toHaveLength(2);
     });
 });
 
