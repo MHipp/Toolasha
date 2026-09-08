@@ -26,6 +26,7 @@ import {
 } from './labyrinth-outcome-log.js';
 import { createPersistedRecord } from '../../utils/persisted-record.js';
 import { registerSyncMerge } from '../../utils/sync-merge-registry.js';
+import { CLEAR_FOLD_LIMIT } from '../../utils/cleared-record.js';
 
 /**
  * Deciding a side needs far fewer fights than measuring a rate
@@ -57,6 +58,19 @@ export const DISCARD_LEGACY = { migrate: 'discard' };
  * A stored document of another version is not merged at all: the version bump
  * exists to drop it, and that drop is the one intentional overwrite here.
  *
+ * Reset is the exception to "fuller wins", and the reason for `clearedAt`. An
+ * emptied record loses that comparison every time - the peer's fuller bucket
+ * wins the pull, and the fights the user explicitly disowned come back to both
+ * devices, leaving the panel's accuracy verdict a statement about runs the user
+ * threw away. So the reset stamps a single epoch on the document, unioned as a
+ * max, and any bucket that stopped counting before it is dropped rather than
+ * weighed. Each bucket carries `updatedAt` (`stampOutcomeUpdates`), so a bucket
+ * the other device counted into *after* the reset outlives it - the ordering
+ * hazard the epoch exists to answer, and what a boolean could not.
+ *
+ * `stored` is this device's copy in both callers - the save fold reads it back,
+ * and a sync pull hands it the local base - which is what the refusal tests.
+ *
  * @param {Object|null} stored - The stored document
  * @param {Object} memory - The in-memory document
  * @returns {Object}
@@ -70,13 +84,80 @@ export function mergeOutcomeDocuments(stored, memory) {
         const theirs = totals[key];
         totals[key] = theirs && bucketWeight(theirs) > bucketWeight(bucket) ? theirs : bucket;
     }
+
+    const ourClear = Number(stored.clearedAt) || 0;
+    const theirClear = Number(mine.clearedAt) || 0;
+    let clearedAt = Math.max(ourClear, theirClear);
+    let kept = dropClearedBuckets(totals, clearedAt);
+
+    // The mass-delete refusal from custom-tabs-data.js: a fold must never be the
+    // thing that empties the record. Held back whole - the epoch is not carried
+    // either, so the next fold does not quietly finish what this one refused -
+    // and only ever against a reset from elsewhere, since a device that already
+    // holds the epoch is one that made or took the reset itself.
+    const dropped = Object.keys(totals).length - Object.keys(kept).length;
+    if (ourClear < theirClear && dropped > CLEAR_FOLD_LIMIT) {
+        console.warn(
+            `[LabyrinthClearRate] Refusing a fold that would drop ${dropped} outcome buckets at once on a reset ` +
+                'this device did not make; every bucket is kept. Reset here to clear them.'
+        );
+        clearedAt = ourClear;
+        kept = dropClearedBuckets(totals, clearedAt);
+    }
+
     const seen = mine.seen && Object.keys(mine.seen).length ? mine.seen : stored.seen || {};
-    return {
+    // A baseline marked before the reset is a mark into a record that no longer
+    // exists, and subtracting it from what has been counted since is nonsense
+    const baseline = mine.baseline ?? stored.baseline ?? null;
+    const document = {
         version: OUTCOME_STORAGE_VERSION,
-        totals,
+        totals: kept,
         seen,
-        baseline: mine.baseline ?? stored.baseline ?? null,
+        baseline: !(clearedAt > 0) || (Number(baseline?.at) || 0) > clearedAt ? baseline : null,
     };
+    // Not written unless something asked for it, so a record that has never been
+    // reset stores exactly the shape it always did
+    if (clearedAt > 0) document.clearedAt = clearedAt;
+    return document;
+}
+
+/**
+ * Drop every bucket that stopped counting before the reset.
+ *
+ * An unstamped bucket is one written before `updatedAt` existed - every fight in
+ * it predates any reset that could be pending, so it goes, which is also the
+ * bias a Reset behind a confirmation deserves.
+ * @param {Object} totals - The merged buckets
+ * @param {number} clearedAt - The reset epoch, 0 for a record never reset
+ * @returns {Object} The buckets that outlived it
+ */
+function dropClearedBuckets(totals, clearedAt) {
+    if (!(clearedAt > 0)) return totals;
+    const kept = {};
+    for (const [key, bucket] of Object.entries(totals)) {
+        if ((Number(bucket?.updatedAt) || 0) > clearedAt) kept[key] = bucket;
+    }
+    return kept;
+}
+
+/**
+ * Stamp the buckets a fold just changed with the moment it changed them.
+ *
+ * The stamp is what `mergeOutcomeDocuments` compares a reset against, and it
+ * has to be per bucket rather than per document: the whole point is that a
+ * bucket counted into after the reset survives one counted into before it.
+ *
+ * @param {Object} before - The totals as they were
+ * @param {Object} after - The totals as the fold left them
+ * @param {number} [now] - The stamp to write; injectable for tests
+ * @returns {Object} `after`, with the changed buckets stamped
+ */
+export function stampOutcomeUpdates(before, after, now = Date.now()) {
+    const stamped = {};
+    for (const [key, bucket] of Object.entries(after || {})) {
+        stamped[key] = (before || {})[key] === bucket ? bucket : { ...bucket, updatedAt: Number(now) || 0 };
+    }
+    return stamped;
 }
 
 /** How many things a bucket has counted — the measure of which copy is fuller */
@@ -179,12 +260,14 @@ export const outcomeMethods = {
 
     /** The record as stored, from the singleton's fields */
     _outcomeDocument() {
-        return {
+        const document = {
             version: OUTCOME_STORAGE_VERSION,
             totals: this._outcomes || {},
             seen: this._outcomesSeen || {},
             baseline: this._baseline || null,
         };
+        if (this._outcomesClearedAt > 0) document.clearedAt = this._outcomesClearedAt;
+        return document;
     },
 
     /** Take a (merged) document back into the singleton's fields */
@@ -192,6 +275,7 @@ export const outcomeMethods = {
         this._outcomes = doc?.totals || {};
         this._outcomesSeen = doc?.seen || {};
         this._baseline = doc?.baseline || null;
+        this._outcomesClearedAt = Number(doc?.clearedAt) || 0;
     },
 
     /**
@@ -203,6 +287,7 @@ export const outcomeMethods = {
         this._outcomes = {};
         this._outcomesSeen = {};
         this._baseline = null;
+        this._outcomesClearedAt = 0;
         this._outcomesLoaded = false;
         // The record's own generation covers what it holds; this one covers the
         // singleton's copy of it. A fold that started before the switch resumes
@@ -275,7 +360,7 @@ export const outcomeMethods = {
         // else's, and folding into them files one character's room under the
         // other's record.
         if ((this._outcomeGeneration || 0) !== started) return;
-        this._outcomes = foldRoomResult(this._outcomes, result);
+        this._outcomes = stampOutcomeUpdates(this._outcomes, foldRoomResult(this._outcomes, result));
         await this.saveOutcomes();
     },
 
@@ -298,7 +383,7 @@ export const outcomeMethods = {
             scope: this.outcomeScope(labyrinth),
             predictedFor: (hrid, level, kind) => this.predictedClearChance(hrid, level, kind),
         });
-        this._outcomes = folded.totals;
+        this._outcomes = stampOutcomeUpdates(this._outcomes, folded.totals);
         this._outcomesSeen = folded.seen;
 
         if (!folded.changed && !folded.seenChanged) return;
@@ -401,6 +486,9 @@ export const outcomeMethods = {
         this._outcomesSeen = {};
         this._baseline = null;
         this._outcomesLoaded = true;
+        // Stamped, so a peer that still holds the old buckets cannot restate
+        // them on the next pull - see mergeOutcomeDocuments
+        this._outcomesClearedAt = Date.now();
         // The one write meant to lose the record
         await this.saveOutcomes({ overwrite: true });
     },

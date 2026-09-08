@@ -105,6 +105,7 @@ import { calculatePlayerStats } from '../combat-stats/combat-stats-calculator.js
 import { dungeonTracker, queueLengthEstimator } from '../../utils/bundle-bridge.js';
 import { getDrinkConcentration } from '../../utils/tea-parser.js';
 import { readScoped, writeScoped } from '../../utils/character-key.js';
+import { entriesOf } from '../../utils/cleared-record.js';
 
 const PANEL_ID = 'toolasha-consumables-panel';
 
@@ -2638,9 +2639,10 @@ ${labUnpriced} item(s) could not be priced and are not in this total.`
     /**
      * Read the recorded fight pool once, the way the ledger is read.
      *
-     * The recorder is a websocket-fed singleton in the combat bundle; its
-     * storage record is a plain array and reading it is one get, which is what
-     * the ledger above already does for the same reason.
+     * The recorder is a websocket-fed singleton in the combat bundle; reading
+     * its storage record is one get, which is what the ledger above already
+     * does for the same reason. The shape helper is a pure util rather than the
+     * recorder itself, so this does not pull the combat bundle in behind it.
      * @returns {Promise<void>}
      * @private
      */
@@ -2654,7 +2656,9 @@ ${labUnpriced} item(s) could not be priced and are not in this total.`
         try {
             const stored = await readScoped('labyrinthFightRecorder', 'labyrinth', []);
             if (currentCharacterId() !== owner) return;
-            this._labFightAttempts = Array.isArray(stored) ? stored : [];
+            // `{ clearedAt, entries }` since the pool's Reset had to survive a
+            // sync pull; still a bare array on anything written before that
+            this._labFightAttempts = entriesOf(stored);
             this._labFightAttemptsOwner = owner;
         } catch (error) {
             console.error('[ConsumablesPanel] Reading the labyrinth fight pool failed:', error);

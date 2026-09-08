@@ -212,6 +212,7 @@ import { formatRelativeTime, formatKMB } from '../../utils/formatters.js';
 import { readScoped, writeScoped } from '../../utils/character-key.js';
 import { createPersistedRecord, mergeById } from '../../utils/persisted-record.js';
 import { registerSyncMerge } from '../../utils/sync-merge-registry.js';
+import { clearRecord, clearedRecord, entriesOf, mergeClearable } from '../../utils/cleared-record.js';
 import { scriptVersion } from '../../utils/script-version.js';
 import { hashPlayerName } from './labyrinth-accuracy-export.js';
 
@@ -1646,9 +1647,21 @@ const oldestFirst = (field) => (a, b) => (Number(a?.[field]) || 0) - (Number(b?.
  * @param {Array<Object>} memory - The copy folded on top
  * @returns {Array<Object>} Union, oldest first
  */
-function mergeObservations(stored, memory) {
-    return mergeById(observationSignature, oldestFirst('recordedAt'))(stored, memory).slice(-MAX_OBSERVATIONS);
-}
+const unionObservations = (stored, memory) =>
+    mergeById(observationSignature, oldestFirst('recordedAt'))(stored, memory).slice(-MAX_OBSERVATIONS);
+
+/**
+ * The fold as stored and synced: the union above, with Forget's epoch applied.
+ *
+ * Forget empties both records, and a union cannot say so — the peer's still-full
+ * copy wins the next pull and the disowned runs come back, on both devices. The
+ * epoch is compared against each observation's own `recordedAt`, so an
+ * observation the other device recorded after the Forget survives it. See
+ * utils/cleared-record.js.
+ */
+const mergeObservations = mergeClearable(unionObservations, (entry) => entry?.recordedAt, {
+    label: 'replay check observation',
+});
 
 /**
  * Fold two copies of the check history together, newest MAX_HISTORY surviving.
@@ -1656,14 +1669,17 @@ function mergeObservations(stored, memory) {
  * @param {Array<Object>} memory - The copy folded on top
  * @returns {Array<Object>} Union, oldest first
  */
-function mergeCheckHistory(stored, memory) {
-    return pruneHistory(mergeById((entry) => entry?.at)(stored, memory));
-}
+const unionCheckHistory = (stored, memory) => pruneHistory(mergeById((entry) => entry?.at)(stored, memory));
+
+/** Same discipline, keyed on when each check ran — see {@link mergeObservations} */
+const mergeCheckHistory = mergeClearable(unionCheckHistory, (entry) => entry?.at, {
+    label: 'replay check history',
+});
 
 const observationRecord = createPersistedRecord({
     base: STORAGE_KEY,
     store: 'settings',
-    empty: () => [],
+    empty: () => clearedRecord(),
     merge: mergeObservations,
     migrate: 'discard',
     label: 'ReplayCheck',
@@ -1673,7 +1689,7 @@ const observationRecord = createPersistedRecord({
 const historyRecord = createPersistedRecord({
     base: HISTORY_KEY,
     store: 'settings',
-    empty: () => [],
+    empty: () => clearedRecord(),
     merge: mergeCheckHistory,
     migrate: 'discard',
     label: 'ReplayCheck',
@@ -1760,15 +1776,15 @@ class ReplayCheck {
         try {
             // Anything observed before the read landed is folded under what
             // is stored, and a read that could not be made keeps it as it is
-            observationRecord.set(this.observations);
+            observationRecord.set(clearedRecord(this.observations));
             await observationRecord.load();
-            this.observations = observationRecord.get();
+            this.observations = entriesOf(observationRecord.get());
             // Pruned on the way in as well as on the way out: an install left
             // alone for a month comes back to a table of checks that describe a
             // character it no longer has
-            historyRecord.set(this.history);
+            historyRecord.set(clearedRecord(this.history));
             await historyRecord.load();
-            this.history = pruneHistory(historyRecord.get());
+            this.history = pruneHistory(entriesOf(historyRecord.get()));
             // Before the in-memory recording, so a session that was interrupted
             // and then restarted keeps both halves in the order they happened
             await this.recover();
@@ -1839,9 +1855,9 @@ class ReplayCheck {
      * @returns {Promise<boolean>} Whether a write landed
      */
     async saveObservations() {
-        observationRecord.set(this.observations);
+        observationRecord.set(clearedRecord(this.observations));
         const landed = await observationRecord.save();
-        this.observations = observationRecord.get();
+        this.observations = entriesOf(observationRecord.get());
         return landed;
     }
 
@@ -1850,9 +1866,9 @@ class ReplayCheck {
      * @returns {Promise<boolean>} Whether a write landed
      */
     async saveHistory() {
-        historyRecord.set(this.history);
+        historyRecord.set(clearedRecord(this.history));
         const landed = await historyRecord.save();
-        this.history = historyRecord.get();
+        this.history = entriesOf(historyRecord.get());
         return landed;
     }
 
@@ -2216,10 +2232,13 @@ class ReplayCheck {
         this.lastSimResult = null;
         this.uptime = null;
         this.error = null;
-        // The one write meant to lose entries
-        await observationRecord.clear();
+        // The one write meant to lose entries — stamped, so it also survives
+        // the next sync pull rather than being restored by a peer that still
+        // holds what was forgotten (utils/cleared-record.js)
+        const clearedAt = Date.now();
+        await clearRecord(observationRecord, clearedAt);
         if (!this._stillOurs(owner)) return;
-        await historyRecord.clear();
+        await clearRecord(historyRecord, clearedAt);
         if (!this._stillOurs(owner)) return;
         await this.clearCheckpoint(owner);
     }

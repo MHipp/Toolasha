@@ -166,6 +166,8 @@ import recording from '../../utils/__fixtures__/combat-run.json';
 /** Where the scoped keys land, given the character the data manager is pretending to be */
 const OBSERVATIONS_KEY = 'combatReplayCheck_observations_char1';
 const HISTORY_KEY = 'combatReplayCheck_history_char1';
+/** Both records are stored as `{ clearedAt, entries }` so Forget survives a pull */
+const storedList = (key) => store.data.get(key)?.entries;
 const CHECKPOINT_KEY = 'combatReplayCheck_recordingCheckpoint_char1';
 
 /** A character wearing something, in the shape the adapter hands the simulator */
@@ -1119,7 +1121,7 @@ describe('surviving a refresh', () => {
 
         expect(replayCheck.observations).toHaveLength(1);
         expect(replayCheck.observations[0].fights).toHaveLength(interrupted.fights.length);
-        expect(store.data.get(OBSERVATIONS_KEY)).toHaveLength(1);
+        expect(storedList(OBSERVATIONS_KEY)).toHaveLength(1);
         expect(store.data.get(CHECKPOINT_KEY)).toBe(null);
         expect(log.mock.calls[0][0]).toContain(`Recovered ${interrupted.fights.length} fights`);
         log.mockRestore();
@@ -2287,7 +2289,7 @@ describe('whether the accuracy is drifting', () => {
         await replayCheck.check();
 
         expect(replayCheck.history).toHaveLength(1);
-        expect(store.data.get(HISTORY_KEY)).toHaveLength(1);
+        expect(storedList(HISTORY_KEY)).toHaveLength(1);
     });
 
     test('a full disk keeps it in memory rather than failing the check', async () => {
@@ -2313,7 +2315,7 @@ describe('whether the accuracy is drifting', () => {
         await replayCheck.forget();
 
         expect(replayCheck.history).toEqual([]);
-        expect(store.data.get(HISTORY_KEY)).toEqual([]);
+        expect(storedList(HISTORY_KEY)).toEqual([]);
     });
 
     test('it is read back per character on load', async () => {
@@ -2677,6 +2679,8 @@ describe('observations and history survive a failed read and a second tab', () =
         expect(await replayCheck.saveObservations()).toBe(false);
         expect(await replayCheck.saveHistory()).toBe(false);
 
+        // Seeded in the pre-`clearedAt` shape and left exactly as it was: a
+        // skipped save writes nothing, so the bare array is still a bare array
         expect(store.data.get(OBSERVATIONS_KEY)).toEqual([obs(1, 10)]);
         expect(store.data.get(HISTORY_KEY)).toHaveLength(1);
         expect(replayCheck.observations).toEqual([obs(2, 20)]);
@@ -2692,9 +2696,9 @@ describe('observations and history survive a failed read and a second tab', () =
         await replayCheck.saveObservations();
         await replayCheck.saveHistory();
 
-        expect(store.data.get(OBSERVATIONS_KEY).map((o) => o.recordedAt)).toEqual([1, 2, 3]);
+        expect(storedList(OBSERVATIONS_KEY).map((o) => o.recordedAt)).toEqual([1, 2, 3]);
         expect(replayCheck.observations.map((o) => o.recordedAt)).toEqual([1, 2, 3]);
-        expect(store.data.get(HISTORY_KEY).map((e) => e.at)).toEqual([now - 3000, now - 2000]);
+        expect(storedList(HISTORY_KEY).map((e) => e.at)).toEqual([now - 3000, now - 2000]);
         expect(replayCheck.history).toHaveLength(2);
     });
 
@@ -2708,7 +2712,7 @@ describe('observations and history survive a failed read and a second tab', () =
         replayCheck.observations = [...replayCheck.observations, obs(2, 20)];
         await replayCheck.saveObservations();
 
-        expect(store.data.get(OBSERVATIONS_KEY).map((o) => o.recordedAt)).toEqual([1, 2]);
+        expect(storedList(OBSERVATIONS_KEY).map((o) => o.recordedAt)).toEqual([1, 2]);
     });
 
     test('forgetting is the one overwrite', async () => {
@@ -2717,8 +2721,11 @@ describe('observations and history survive a failed read and a second tab', () =
 
         await replayCheck.forget();
 
-        expect(store.data.get(OBSERVATIONS_KEY)).toEqual([]);
-        expect(store.data.get(HISTORY_KEY)).toEqual([]);
+        expect(storedList(OBSERVATIONS_KEY)).toEqual([]);
+        expect(storedList(HISTORY_KEY)).toEqual([]);
+        // Stamped, so the fold on the other device drops what it still holds
+        expect(store.data.get(OBSERVATIONS_KEY).clearedAt).toBeGreaterThan(0);
+        expect(store.data.get(HISTORY_KEY).clearedAt).toBeGreaterThan(0);
     });
 });
 
@@ -2836,8 +2843,44 @@ describe('a cross-device sync pull combines the replay-check records', () => {
             const local = [{ recordedAt: 10, fights: [{ damageDealt: 5 }] }];
             const incoming = [{ recordedAt: 20, fights: [{ damageDealt: 7 }, { damageDealt: 9 }] }];
 
-            expect(registration.merge(local, incoming).map((entry) => entry.recordedAt)).toEqual([10, 20]);
+            expect(registration.merge(local, incoming).entries.map((entry) => entry.recordedAt)).toEqual([10, 20]);
         }
+    });
+
+    test('Forget survives the round trip a peer would otherwise undo', async () => {
+        const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
+        const registration = mergeForKey('settings', 'combatReplayCheck_observations_char-A');
+
+        // A forgets and pushes; B pulls. Only the pulling device merges, so a
+        // Forget that loses here loses everywhere and comes back to A next pull
+        const full = [{ recordedAt: 10 }, { recordedAt: 20 }];
+        const forgotten = { clearedAt: 30, entries: [] };
+
+        const bPulled = registration.merge(full, forgotten);
+        expect(bPulled).toEqual({ clearedAt: 30, entries: [] });
+        expect(registration.merge(forgotten, bPulled)).toEqual({ clearedAt: 30, entries: [] });
+    });
+
+    test('an observation the peer recorded after the Forget survives it', async () => {
+        const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
+        const registration = mergeForKey('settings', 'combatReplayCheck_observations_char-A');
+
+        // The ordering hazard: the other device kept watching runs after the
+        // Forget, and comparing the epoch to each `recordedAt` is what keeps them
+        const peer = { clearedAt: 30, entries: [{ recordedAt: 40 }] };
+        const forgotten = { clearedAt: 30, entries: [] };
+
+        expect(registration.merge(forgotten, peer).entries.map((entry) => entry.recordedAt)).toEqual([40]);
+    });
+
+    test('a record no Forget has touched folds exactly as it did', async () => {
+        const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
+        const registration = mergeForKey('settings', 'combatReplayCheck_history_char-A');
+
+        // Bare arrays are what every stored copy was before the epoch existed
+        const now = Date.now();
+        const merged = registration.merge([{ at: now - 2_000 }], [{ at: now - 1_000 }]);
+        expect(merged).toEqual({ clearedAt: 0, entries: [{ at: now - 2_000 }, { at: now - 1_000 }] });
     });
 
     test('the check history is unioned by when the check ran', async () => {
@@ -2851,7 +2894,7 @@ describe('a cross-device sync pull combines the replay-check records', () => {
             const local = [{ at: now - 2_000, ratio: 0.9 }];
             const incoming = [{ at: now - 1_000, ratio: 1.1 }];
 
-            expect(registration.merge(local, incoming).map((entry) => entry.ratio)).toEqual([0.9, 1.1]);
+            expect(registration.merge(local, incoming).entries.map((entry) => entry.ratio)).toEqual([0.9, 1.1]);
         }
     });
 });

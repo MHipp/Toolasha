@@ -57,8 +57,14 @@ vi.mock('../../utils/adoption-consent.js', () => ({
 import recorder, { attemptIdentity, mergeAttempts, MAX_ATTEMPTS } from './labyrinth-fight-recorder.js';
 import { FINGERPRINT_VERSION } from './labyrinth-fingerprint.js';
 
-/** The pool as stored under this character's key */
-const stored = () => storageMock.storeFor('labyrinth').get('labyrinthFightRecorder_char1');
+/**
+ * The fights as stored under this character's key.
+ *
+ * The stored value is `{ clearedAt, entries }` — the epoch is what makes the
+ * Accuracy tab's Reset survive a sync pull; `raw()` is the whole record.
+ */
+const raw = () => storageMock.storeFor('labyrinth').get('labyrinthFightRecorder_char1');
+const stored = () => raw()?.entries;
 /** Write a pool straight into storage, as a previous session would have left it */
 const seedStored = (pool) => storageMock.storeFor('labyrinth').set('labyrinthFightRecorder_char1', pool);
 
@@ -427,7 +433,9 @@ describe('the pool survives a failed read and a second tab', () => {
         recorder.noteAttempt(attempt());
         await settle();
         const theirs = { ...stored()[0], recordId: 'other-tab', outcome: 'clear' };
-        storageMock.storeFor('labyrinth').set('labyrinthFightRecorder_char1', [...stored(), theirs]);
+        storageMock
+            .storeFor('labyrinth')
+            .set('labyrinthFightRecorder_char1', { clearedAt: 0, entries: [...stored(), theirs] });
 
         recorder.noteAttempt(attempt({ seconds: 50 }));
         await settle();
@@ -468,14 +476,18 @@ describe('the ring cap drops the oldest fight, not the one that arrived last', (
         // everything stored here, and they arrive on the *new* side
         const theirs = [dated('offline', 1_000)];
 
-        expect(mergeAttempts(mine, theirs).map((entry) => entry.recordId)).toEqual(['offline', 'mine-old', 'mine-new']);
+        expect(mergeAttempts(mine, theirs).entries.map((entry) => entry.recordId)).toEqual([
+            'offline',
+            'mine-old',
+            'mine-new',
+        ]);
     });
 
     test('a full pool evicts its oldest, not whichever side the entry arrived on', () => {
         const mine = Array.from({ length: MAX_ATTEMPTS }, (_, i) => dated(`mine-${i}`, 10_000 + i));
         const theirs = [dated('offline', 1)];
 
-        const merged = mergeAttempts(mine, theirs);
+        const merged = mergeAttempts(mine, theirs).entries;
 
         expect(merged).toHaveLength(MAX_ATTEMPTS);
         // The week-old fight is the oldest in the union, so it is the one that
@@ -489,9 +501,82 @@ describe('the ring cap drops the oldest fight, not the one that arrived last', (
         delete undated.resolvedAt;
         delete undated.battleStartedAt;
 
-        expect(mergeAttempts([dated('timed', 5_000)], [undated]).map((entry) => entry.recordId)).toEqual([
+        expect(mergeAttempts([dated('timed', 5_000)], [undated]).entries.map((entry) => entry.recordId)).toEqual([
             'undated',
             'timed',
         ]);
+    });
+});
+
+describe('the Accuracy tab’s Reset survives a sync pull', () => {
+    /** A stored attempt, identified and dated */
+    const dated = (recordId, resolvedAt) => ({ ...attempt(), recordId, resolvedAt });
+    const pool = (entries, clearedAt = 0) => ({ clearedAt, entries });
+
+    test('the emptied pool wins the round trip a fuller peer would otherwise win', () => {
+        // A clears and pushes; B pulls. The union has no way to say a fight was
+        // thrown away, so without the epoch B's copy restores it - and restores
+        // it to A on the next pull
+        const full = [dated('old-1', 500), dated('old-2', 600)];
+        const cleared = pool([], 1_000);
+
+        const bPulled = mergeAttempts(full, cleared);
+        expect(bPulled).toEqual(pool([], 1_000));
+        expect(mergeAttempts(cleared, bPulled)).toEqual(pool([], 1_000));
+    });
+
+    test('fights the peer recorded after the Reset survive it', () => {
+        // The ordering hazard: the epoch is compared against each fight's own
+        // clock, so a fight fought after the Reset is not swept up by it
+        const cleared = pool([], 1_000);
+        const peer = pool([dated('before', 500), dated('after', 2_000)], 1_000);
+
+        expect(mergeAttempts(cleared, peer).entries.map((entry) => entry.recordId)).toEqual(['after']);
+    });
+
+    test('a pool stored before the epoch existed loses to a stamped Reset', () => {
+        expect(mergeAttempts([dated('legacy', 500)], pool([], 1_000)).entries).toEqual([]);
+    });
+
+    test('a pool no Reset has touched folds exactly as it did', () => {
+        const merged = mergeAttempts([dated('mine', 5_000)], [dated('theirs', 6_000)]);
+        expect(merged.clearedAt).toBe(0);
+        expect(merged.entries.map((entry) => entry.recordId)).toEqual(['mine', 'theirs']);
+    });
+
+    test('a Reset from elsewhere that would drop more than a hundred fights is refused', () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const mine = Array.from({ length: 101 }, (_, i) => dated(`mine-${i}`, 100 + i));
+
+        const merged = mergeAttempts(mine, pool([], 1_000));
+
+        expect(merged.entries).toHaveLength(101);
+        // Held back with the fights, so the next fold does not finish it quietly
+        expect(merged.clearedAt).toBe(0);
+        expect(warn).toHaveBeenCalled();
+        warn.mockRestore();
+    });
+
+    test('the refusal never stands in the way of a Reset this device holds', () => {
+        const theirs = Array.from({ length: 101 }, (_, i) => dated(`theirs-${i}`, 100 + i));
+        expect(mergeAttempts(pool([], 1_000), theirs).entries).toEqual([]);
+    });
+
+    test('a hundred at once still applies', () => {
+        const mine = Array.from({ length: 100 }, (_, i) => dated(`mine-${i}`, 100 + i));
+        expect(mergeAttempts(mine, pool([], 1_000)).entries).toEqual([]);
+    });
+
+    test('clearing the pool stamps what it writes', async () => {
+        recorder.noteAttempt(attempt());
+        await settle();
+        expect(stored()).toHaveLength(1);
+
+        recorder.clearRecording();
+        await settle();
+
+        expect(stored()).toEqual([]);
+        expect(raw().clearedAt).toBeGreaterThan(0);
+        expect(recorder.recordingStatus().total).toBe(0);
     });
 });

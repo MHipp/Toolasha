@@ -4313,3 +4313,122 @@ describe('a cross-device sync pull combines the fight outcomes', () => {
         expect(merged.totals.imp).toEqual({ attempts: 40, clears: 30 });
     });
 });
+
+describe('a Reset of the fight outcomes survives a sync pull', () => {
+    /** A document as one device holds it */
+    const doc = (totals, clearedAt) => {
+        const document = { version: 2, totals, seen: {}, baseline: null };
+        if (clearedAt) document.clearedAt = clearedAt;
+        return document;
+    };
+    const bucket = (attempts, updatedAt) => ({ attempts, clears: 1, updatedAt });
+
+    test('the emptied record wins the round trip a fuller peer would otherwise win', async () => {
+        const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
+        const { merge } = mergeForKey('settings', 'labyrinthFightOutcomes_me');
+
+        // A resets and pushes; B pulls. "Fuller bucket wins" means B's copy
+        // beats an emptied one every time, so without the epoch the disowned
+        // fights come back - and come back to A on the next pull
+        const full = doc({ imp: bucket(40, 500) });
+        const afterReset = doc({}, 1_000);
+
+        const bPulled = merge(full, afterReset);
+        expect(bPulled.totals).toEqual({});
+        expect(bPulled.clearedAt).toBe(1_000);
+        expect(merge(afterReset, bPulled).totals).toEqual({});
+    });
+
+    test('rooms the peer fought after the Reset survive it', async () => {
+        const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
+        const { merge } = mergeForKey('settings', 'labyrinthFightOutcomes_me');
+
+        // The ordering hazard: comparing the epoch against each bucket's own
+        // `updatedAt` is what tells a fight from before the Reset from one after
+        const afterReset = doc({}, 1_000);
+        const peer = doc({ imp: bucket(3, 2_000), wolf: bucket(9, 500) }, 1_000);
+
+        expect(merge(afterReset, peer).totals).toEqual({ imp: bucket(3, 2_000) });
+    });
+
+    test('an unstamped bucket loses to a stamped Reset', async () => {
+        const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
+        const { merge } = mergeForKey('settings', 'labyrinthFightOutcomes_me');
+
+        // Written before `updatedAt` existed, so every fight in it predates any
+        // Reset that could be pending
+        const legacy = doc({ imp: { attempts: 40, clears: 30 } });
+        expect(merge(legacy, doc({}, 1_000)).totals).toEqual({});
+    });
+
+    test('a baseline marked before the Reset goes with it', async () => {
+        const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
+        const { merge } = mergeForKey('settings', 'labyrinthFightOutcomes_me');
+
+        const marked = { version: 2, totals: {}, seen: {}, baseline: { at: 500, totals: {} } };
+        expect(merge(marked, doc({}, 1_000)).baseline).toBe(null);
+    });
+
+    test('a record no Reset has touched folds exactly as it did', async () => {
+        const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
+        const { merge } = mergeForKey('settings', 'labyrinthFightOutcomes_me');
+
+        const merged = merge(doc({ imp: { attempts: 40, clears: 30 } }), doc({ wolf: { attempts: 5, clears: 1 } }));
+        expect(merged.totals).toEqual({ imp: { attempts: 40, clears: 30 }, wolf: { attempts: 5, clears: 1 } });
+        expect('clearedAt' in merged).toBe(false);
+    });
+
+    test('a Reset from elsewhere that would drop more than a hundred buckets is refused', async () => {
+        const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
+        const { merge } = mergeForKey('settings', 'labyrinthFightOutcomes_me');
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+        const totals = {};
+        for (let i = 0; i < 101; i += 1) totals[`room-${i}`] = bucket(5, 500);
+
+        const merged = merge(doc(totals), doc({}, 1_000));
+
+        expect(Object.keys(merged.totals)).toHaveLength(101);
+        // The epoch is held back with the buckets, so the next fold does not
+        // quietly finish what this one refused
+        expect('clearedAt' in merged).toBe(false);
+        expect(warn).toHaveBeenCalled();
+        warn.mockRestore();
+    });
+
+    test('the refusal never stands in the way of a Reset this device holds', async () => {
+        const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
+        const { merge } = mergeForKey('settings', 'labyrinthFightOutcomes_me');
+
+        const totals = {};
+        for (let i = 0; i < 101; i += 1) totals[`room-${i}`] = bucket(5, 500);
+
+        expect(merge(doc({}, 1_000), doc(totals)).totals).toEqual({});
+    });
+
+    test('a hundred at once still applies', async () => {
+        const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
+        const { merge } = mergeForKey('settings', 'labyrinthFightOutcomes_me');
+
+        const totals = {};
+        for (let i = 0; i < 100; i += 1) totals[`room-${i}`] = bucket(5, 500);
+
+        expect(merge(doc(totals), doc({}, 1_000)).totals).toEqual({});
+    });
+
+    test('Reset stamps the document it writes, and a room counted afterwards is stamped too', async () => {
+        vi.setSystemTime(new Date(5_000));
+        labyrinthClearRate._outcomes = { imp: { attempts: 4, clears: 2 } };
+        labyrinthClearRate._outcomesLoaded = true;
+
+        await labyrinthClearRate.resetOutcomes();
+        expect(db.map.get('settings:labyrinthFightOutcomes_me').clearedAt).toBe(5_000);
+
+        vi.setSystemTime(new Date(6_000));
+        await labyrinthClearRate.recordRoomResult({ subjectHrid: '/monsters/imp', roomLevel: 10, seconds: 30 });
+        const written = db.map.get('settings:labyrinthFightOutcomes_me');
+        expect(Object.values(written.totals)[0].updatedAt).toBe(6_000);
+        expect(written.clearedAt).toBe(5_000);
+        vi.useRealTimers();
+    });
+});

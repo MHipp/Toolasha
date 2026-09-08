@@ -58,6 +58,7 @@
 
 import { createPersistedRecord, mergeById } from '../../utils/persisted-record.js';
 import { registerSyncMerge } from '../../utils/sync-merge-registry.js';
+import { clearRecord, clearedRecord, entriesOf, mergeClearable } from '../../utils/cleared-record.js';
 import { scriptVersion } from '../../utils/script-version.js';
 import { FINGERPRINT_SPEC, FINGERPRINT_VERSION, isCurrentFingerprintVersion } from './labyrinth-fingerprint.js';
 
@@ -139,12 +140,26 @@ const oldestFirst = (a, b) => attemptAge(a) - attemptAge(b);
  * arrive on the new side, so the untimed cap kept them and evicted genuinely
  * newer fights instead.
  */
-export const mergeAttempts = (base, fresh) => mergeById(attemptIdentity, oldestFirst)(base, fresh).slice(-MAX_ATTEMPTS);
+const unionAttempts = (base, fresh) => mergeById(attemptIdentity, oldestFirst)(base, fresh).slice(-MAX_ATTEMPTS);
+
+/**
+ * The fold as stored and synced: the union above, with the clear's epoch applied.
+ *
+ * The Accuracy tab's Reset throws the pool away, and a union cannot say so — the
+ * peer's still-full copy wins the next pull and the disowned fights come back,
+ * on both devices. The epoch is compared against each attempt's own clock
+ * (`attemptAge`), so fights the other device recorded after the Reset survive
+ * it. The stored shape is `{ clearedAt, entries }`; a bare array is what was
+ * stored before and reads as a pool no Reset has touched. See
+ * utils/cleared-record.js.
+ * @type {Function}
+ */
+export const mergeAttempts = mergeClearable(unionAttempts, attemptAge, { label: 'labyrinth fight' });
 
 const record = createPersistedRecord({
     base: KEY,
     store: STORE,
-    empty: () => [],
+    empty: () => clearedRecord(),
     merge: mergeAttempts,
     label: 'LabyrinthFightRecorder',
 });
@@ -157,7 +172,7 @@ const record = createPersistedRecord({
  */
 registerSyncMerge({ store: STORE, base: KEY, merge: mergeAttempts, label: 'Labyrinth fights' });
 
-let attempts = record.get();
+let attempts = entriesOf(record.get());
 let loading = null;
 
 /**
@@ -187,9 +202,9 @@ export async function load() {
     if (loading) return loading;
     loading = (async () => {
         try {
-            record.set(attempts);
+            record.set(clearedRecord(attempts));
             await record.load();
-            attempts = record.get();
+            attempts = entriesOf(record.get());
         } catch (error) {
             console.error('[LabyrinthFightRecorder] Reading the fight pool failed:', error);
         }
@@ -206,7 +221,7 @@ export async function load() {
  */
 export function forget() {
     record.reset();
-    attempts = record.get();
+    attempts = entriesOf(record.get());
     loading = null;
 }
 
@@ -217,11 +232,13 @@ export function forget() {
  * @returns {Promise<boolean>} Whether a write landed
  */
 function persist() {
-    record.set(attempts);
+    // The epoch of a clear lives on the stored copy; memory carries none of its
+    // own and the fold takes the newer of the two
+    record.set(clearedRecord(attempts));
     return record
         .save()
         .then((landed) => {
-            attempts = record.get();
+            attempts = entriesOf(record.get());
             return landed;
         })
         .catch((error) => {
@@ -410,10 +427,12 @@ export function recordingStatus(fingerprint) {
     };
 }
 
-/** Throw away every accumulated fight. */
+/** Throw away every accumulated fight, stamped so a pull cannot bring them back. */
 export function clearRecording() {
     attempts = [];
-    record.clear().catch((error) => console.error('[LabyrinthFightRecorder] Clearing the fight pool failed:', error));
+    clearRecord(record).catch((error) =>
+        console.error('[LabyrinthFightRecorder] Clearing the fight pool failed:', error)
+    );
 }
 
 /**
