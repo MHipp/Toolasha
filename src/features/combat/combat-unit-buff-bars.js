@@ -186,6 +186,43 @@ export function countdownText(expiresAt, now) {
 }
 
 /**
+ * Whether a node was injected by this script, which every feature marks with a
+ * `data-toolasha-*` attribute of its own.
+ *
+ * @param {Element} node
+ * @returns {boolean}
+ */
+function isInjected(node) {
+    for (const attribute of node.attributes || []) {
+        if (attribute.name.startsWith('data-toolasha')) return true;
+    }
+    return false;
+}
+
+/**
+ * Whether a strip has to be moved to sit under the tile's own content.
+ *
+ * Last child, except that other injected nodes are allowed to sit after it.
+ * `portrait-dps.js` and `combat-unit-badges.js` both re-seat their own node as
+ * the tile's last child on every draw, so a strip that insisted on last place
+ * moved theirs and had its own moved straight back — a re-seat war that
+ * rewrote the whole strip subtree on every tick of every fight, for nothing.
+ * Yielding to them settles after one exchange; the game's own children are
+ * still moved above.
+ *
+ * @param {HTMLElement} tile - The tile the strip belongs to
+ * @param {HTMLElement} strip - The strip
+ * @returns {boolean}
+ */
+function needsSeating(tile, strip) {
+    if (strip.parentElement !== tile) return true;
+    for (let node = strip.nextElementSibling; node; node = node.nextElementSibling) {
+        if (!isInjected(node)) return true;
+    }
+    return false;
+}
+
+/**
  * The name each player slot holds, from a `new_battle` payload.
  *
  * @param {Object} payload - A `new_battle` message
@@ -469,7 +506,7 @@ class CombatUnitBuffBars {
                 padding: '1px 0',
             });
         }
-        if (tile.lastElementChild !== strip) tile.appendChild(strip);
+        if (needsSeating(tile, strip)) tile.appendChild(strip);
 
         const chips = new Map();
         for (const chip of strip.children) chips.set(chip.getAttribute(CHIP_MARK), chip);

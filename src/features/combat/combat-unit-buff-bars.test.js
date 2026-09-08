@@ -345,6 +345,53 @@ describe('drawing no more than it must', () => {
         expect(writes).toBe(1);
     });
 
+    test('another feature holding last place does not start a re-seat war', () => {
+        send('new_battle', {
+            players: [],
+            monsters: [{ combatBuffMap: live('/buff_uniques/weaken', '/buff_types/damage_taken', 15) }],
+        });
+        const tile = document.querySelectorAll(
+            '[class*="BattlePanel_monstersArea"] [class*="CombatUnit_combatUnit"]'
+        )[0];
+        const strip = tile.querySelector(`[${STRIP_MARK}]`);
+
+        // `portrait-dps.js` seats its meter as the tile's last child on every
+        // draw. A strip that insisted on last place moved it, had its own moved
+        // back, and rewrote its whole subtree once a tick for the rest of the
+        // fight.
+        const meter = document.createElement('div');
+        meter.setAttribute('data-toolasha-portrait-dps', '1');
+        tile.appendChild(meter);
+
+        const observer = new MutationObserver(() => {});
+        observer.observe(tile, { childList: true, subtree: true });
+        feature.redraw();
+        const records = observer.takeRecords().length;
+        observer.disconnect();
+
+        expect(records).toBe(0);
+        expect(tile.lastElementChild).toBe(meter);
+        expect(strip.parentElement).toBe(tile);
+    });
+
+    test('a game-owned node below the strip still moves the strip down', () => {
+        send('new_battle', {
+            players: [],
+            monsters: [{ combatBuffMap: live('/buff_uniques/weaken', '/buff_types/damage_taken', 15) }],
+        });
+        const tile = document.querySelectorAll(
+            '[class*="BattlePanel_monstersArea"] [class*="CombatUnit_combatUnit"]'
+        )[0];
+        const strip = tile.querySelector(`[${STRIP_MARK}]`);
+
+        const gameNode = document.createElement('div');
+        gameNode.className = 'CombatUnit_hpBar__z';
+        tile.appendChild(gameNode);
+
+        feature.redraw();
+        expect(tile.lastElementChild).toBe(strip);
+    });
+
     test('the chip element survives a redraw rather than being rebuilt', () => {
         send('new_battle', {
             players: [],
