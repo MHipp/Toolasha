@@ -156,14 +156,22 @@ class CombatConsumableAlerts {
             secondsLeft: soonest.secondsLeft,
             thresholdSeconds: this.thresholdSeconds(),
         });
-        this.armed = next.armed;
-        if (!next.fire) return;
+        if (!next.fire) {
+            this.armed = next.armed;
+            return;
+        }
 
-        notificationService.notify(
+        const result = notificationService.notify(
             EVENT_KEY,
             `${soonest.name} runs out in ${formatMinutes(soonest.secondsLeft)} — your fight stops when it does.`,
             { title: 'Combat consumable running low' }
         );
+
+        // Disarmed only once the notice actually reached the player. Disarming
+        // on every crossing regardless of delivery — no toast host mounted yet,
+        // most likely, right after a fresh load — left a supply that ran low
+        // into no channel un-retried until it was restocked and ran low again.
+        if (result?.fired) this.armed = next.armed;
     }
 
     /**

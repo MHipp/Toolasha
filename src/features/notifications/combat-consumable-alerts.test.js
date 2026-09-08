@@ -14,6 +14,7 @@ const game = vi.hoisted(() => ({
     wsHandlers: {},
     dmHandlers: {},
     notified: [],
+    fired: true,
 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -47,7 +48,7 @@ vi.mock('./notification-service.js', () => ({
     default: {
         notify: (key, message, options) => {
             game.notified.push({ key, message, options });
-            return { fired: true };
+            return { fired: game.fired };
         },
     },
 }));
@@ -89,6 +90,7 @@ beforeEach(() => {
     game.wsHandlers = {};
     game.dmHandlers = {};
     game.notified = [];
+    game.fired = true;
 });
 
 afterEach(() => {
@@ -156,6 +158,34 @@ describe('the crossing', () => {
         withSeconds(10 * 60);
         battleTick();
         expect(game.notified).toHaveLength(2);
+    });
+
+    test('a crossing that reached no channel is retried on the next tick, not lost until a restock', async () => {
+        game.fired = false;
+        await alerts.initialize();
+        withSeconds(3600);
+        battleTick();
+
+        withSeconds(25 * 60);
+        battleTick();
+        expect(game.notified).toHaveLength(1);
+
+        // Still under, still nothing delivered — the armed bit must not have
+        // been spent on a notice nobody saw
+        withSeconds(20 * 60);
+        battleTick();
+        expect(game.notified).toHaveLength(2);
+
+        game.fired = true;
+        withSeconds(10 * 60);
+        battleTick();
+        expect(game.notified).toHaveLength(3);
+
+        // Delivered: further ticks under the same threshold are the ordinary
+        // one-message-per-crossing case again
+        withSeconds(5 * 60);
+        battleTick();
+        expect(game.notified).toHaveLength(3);
     });
 
     test('battle ticks are throttled: a burst runs the check once, and the backstop interval still runs', async () => {
