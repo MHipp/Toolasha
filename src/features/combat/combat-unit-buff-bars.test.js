@@ -158,6 +158,33 @@ const ABILITY_MAP = {
             },
         ],
     },
+    // One cast, three effects: the live shape that drew the same icon and the
+    // same countdown three times over, told apart only by an invisible title
+    '/abilities/mystic_aura': {
+        abilityEffects: [
+            {
+                targetType: 'self',
+                effectType: '/ability_effect_types/buff',
+                buffs: [
+                    {
+                        uniqueHrid: '/buff_uniques/mystic_aura_fire_amplify',
+                        typeHrid: '/buff_types/fire_amplify',
+                        duration: 120 * SECOND,
+                    },
+                    {
+                        uniqueHrid: '/buff_uniques/mystic_aura_nature_amplify',
+                        typeHrid: '/buff_types/nature_amplify',
+                        duration: 120 * SECOND,
+                    },
+                    {
+                        uniqueHrid: '/buff_uniques/mystic_aura_water_amplify',
+                        typeHrid: '/buff_types/water_amplify',
+                        duration: 120 * SECOND,
+                    },
+                ],
+            },
+        ],
+    },
     // An ability effect the data states no duration for: the one case that
     // still reaches a chip with no countdown
     '/abilities/unending': {
@@ -245,6 +272,30 @@ function live(uniqueHrid, typeHrid, seconds, startedAt = NOW) {
             startTime: new Date(startedAt).toISOString(),
         },
     };
+}
+
+/**
+ * The live shape from the client: one Mystic Aura cast, three amplify effects,
+ * all three stamped with the same start and the same two-minute duration.
+ *
+ * @param {Object} [starts] - Per-suffix start override, for the reapplied case
+ */
+function mysticAura(starts = {}) {
+    const suffixes = ['fire', 'nature', 'water'];
+    return Object.fromEntries(
+        suffixes.map((suffix) => {
+            const uniqueHrid = `/buff_uniques/mystic_aura_${suffix}_amplify`;
+            return [
+                uniqueHrid,
+                {
+                    uniqueHrid,
+                    typeHrid: `/buff_types/${suffix}_amplify`,
+                    duration: 120 * SECOND,
+                    startTime: new Date(starts[suffix] ?? NOW).toISOString(),
+                },
+            ];
+        })
+    );
 }
 
 /** A battle panel with two player tiles and two monster tiles */
@@ -383,6 +434,129 @@ describe('reading a buff map', () => {
         expect(liveDurationSeconds(15 * SECOND)).toBe(15);
         expect(liveDurationSeconds(0)).toBeNull();
         expect(liveDurationSeconds(undefined)).toBeNull();
+    });
+});
+
+describe('one cast, one chip', () => {
+    test('three effects of one cast collapse into a single chip', () => {
+        send('new_battle', { players: [{ name: 'Alice', combatBuffMap: mysticAura() }], monsters: [] });
+
+        const chips = [...chipsOn('players', 0)];
+        expect(chips).toHaveLength(1);
+        expect(chips[0].getAttribute(CHIP_MARK)).toBe(
+            '/buff_uniques/mystic_aura_fire_amplify /buff_uniques/mystic_aura_nature_amplify' +
+                ' /buff_uniques/mystic_aura_water_amplify'
+        );
+        // Nothing is lost: the hover still names every effect the chip covers
+        expect(chips[0].title).toBe(
+            [
+                'Buff (3):',
+                '/buff_uniques/mystic_aura_fire_amplify',
+                '/buff_uniques/mystic_aura_nature_amplify',
+                '/buff_uniques/mystic_aura_water_amplify',
+            ].join('\n')
+        );
+        expect(chips[0].lastElementChild.textContent).toBe('2m');
+    });
+
+    test('a collapsed chip says how many it stands for without a hover', () => {
+        send('new_battle', { players: [{ name: 'Alice', combatBuffMap: mysticAura() }], monsters: [] });
+        const chip = chipsOn('players', 0)[0];
+
+        const count = [...chip.children].find((child) => child.textContent === '×3');
+        expect(count).toBeTruthy();
+        // Out of flow, so the chip is the size it was and the strip does not grow
+        expect(count.style.position).toBe('absolute');
+        expect(chip.style.position).toBe('relative');
+        // And the countdown is still the last child the diff writes through
+        expect(chip.lastElementChild.textContent).toBe('2m');
+    });
+
+    test('a lone effect is unchanged: its own hrid, its own title, no count', () => {
+        send('new_battle', {
+            players: [],
+            monsters: [{ combatBuffMap: live('/buff_uniques/weaken', '/buff_types/damage_taken', 15) }],
+        });
+        const chip = chipsOn('monsters', 0)[0];
+        expect(chip.getAttribute(CHIP_MARK)).toBe('/buff_uniques/weaken');
+        expect(chip.title).toBe('Debuff: /buff_uniques/weaken');
+        expect(chip.textContent).not.toContain('×');
+    });
+
+    test('one ability, two expiries a minute apart, two chips', () => {
+        // The fire amplify was applied a minute before the other two — reapplied
+        // or refreshed on its own, so it is genuinely different state
+        send('new_battle', {
+            players: [{ name: 'Alice', combatBuffMap: mysticAura({ fire: NOW - 60_000 }) }],
+            monsters: [],
+        });
+
+        const chips = [...chipsOn('players', 0)];
+        expect(chips).toHaveLength(2);
+        expect(chips.map((chip) => chip.getAttribute(CHIP_MARK))).toEqual([
+            '/buff_uniques/mystic_aura_fire_amplify',
+            '/buff_uniques/mystic_aura_nature_amplify /buff_uniques/mystic_aura_water_amplify',
+        ]);
+        expect(chips[0].lastElementChild.textContent).toBe('60');
+        expect(chips[1].lastElementChild.textContent).toBe('2m');
+    });
+
+    test('expiries inside the countdown’s own rounding still collapse', () => {
+        // A single cast the server stamped a few milliseconds apart is one cast
+        const map = mysticAura({ nature: NOW - 400, water: NOW - 900 });
+        expect(readBuffMap(map, NOW, ABILITY_MAP).size).toBe(1);
+    });
+
+    test('two abilities never collapse, however well their expiries agree', () => {
+        const map = {
+            ...live('/buff_uniques/elemental_affinity_fire_amplify', '/buff_types/fire_amplify', 30),
+            ...live('/buff_uniques/firestorm_fire_amplify', '/buff_types/fire_amplify', 30, NOW + 5000),
+        };
+        // Both expire at NOW + 30s: the same instant, from two different casts
+        const effects = readBuffMap(map, NOW, ABILITY_MAP);
+        expect(effects.size).toBe(2);
+    });
+
+    test('an effect whose record names no ability collapses with nothing', () => {
+        const nameless = {
+            '': {
+                abilityEffects: [
+                    {
+                        targetType: 'self',
+                        effectType: '/ability_effect_types/buff',
+                        buffs: [
+                            { uniqueHrid: '/buff_uniques/orphan_one', typeHrid: '/buff_types/armor', duration: SECOND },
+                            { uniqueHrid: '/buff_uniques/orphan_two', typeHrid: '/buff_types/armor', duration: SECOND },
+                        ],
+                    },
+                ],
+            },
+        };
+        const map = {
+            ...live('/buff_uniques/orphan_one', '/buff_types/armor', 30),
+            ...live('/buff_uniques/orphan_two', '/buff_types/armor', 30),
+        };
+        expect(readBuffMap(map, NOW, nameless).size).toBe(2);
+    });
+
+    test('a collapsed chip is redrawn no more than any other', () => {
+        send('new_battle', { players: [{ name: 'Alice', combatBuffMap: mysticAura() }], monsters: [] });
+        const tile = document.querySelectorAll(
+            '[class*="BattlePanel_playersArea"] [class*="CombatUnit_combatUnit"]'
+        )[0];
+        expect(tile.querySelectorAll(`[${CHIP_MARK}]`)).toHaveLength(1);
+
+        // The group is the chip's identity, so a tick that changes nothing finds
+        // the same key and touches nothing — the property `a09bcbcaa` measured
+        const observer = new MutationObserver(() => {});
+        observer.observe(tile, { childList: true, subtree: true, attributes: true, characterData: true });
+        vi.setSystemTime(NOW + 300);
+        feature.redraw();
+        feature.redraw();
+        const records = observer.takeRecords().length;
+        observer.disconnect();
+
+        expect(records).toBe(0);
     });
 });
 

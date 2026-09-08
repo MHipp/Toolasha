@@ -37,6 +37,15 @@
  * declares: the question the strip exists to answer is whether a
  * damage-over-time is still ticking and how long is left on the boss's debuff.
  *
+ * ## One cast, one chip
+ *
+ * A chip's icon is the *ability*'s, so one cast granting several effects — the
+ * three amplifies of Mystic Aura, of Elemental Affinity — drew that icon three
+ * times over the same countdown, the same complaint the filter above answers.
+ * Effects agreeing on both the ability and the expiry are collapsed into one
+ * chip, marked with the count they stand for and titled with each of their
+ * names; `readBuffMap` states the rule.
+ *
  * ## Joined by name for players, by slot for monsters
  *
  * The same split `portrait-dps.js` makes, for the same reasons. A player's slot
@@ -78,7 +87,7 @@ import domObserver from '../../core/dom-observer.js';
 import webSocketHook from '../../core/websocket.js';
 import { createCleanupRegistry } from '../../utils/cleanup-registry.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
-import { effectForBuff, effectSourceLabel, hridSlug } from '../../utils/ability-effects.js';
+import { effectForBuff, effectLabel, effectSourceLabel, hridSlug } from '../../utils/ability-effects.js';
 import { GAME } from '../../utils/selectors.js';
 
 /** Where the party's tiles live, as opposed to the monsters' */
@@ -95,6 +104,27 @@ export const REFRESH_MS = 1000;
 
 /** The engine's time unit, as `combat-simulator.js` declares it */
 const NANOSECONDS_PER_SECOND = 1e9;
+
+/**
+ * How far apart two expiries may be and still count as the same one.
+ *
+ * One second, which is the countdown's own resolution: `countdownText` ceils to
+ * whole seconds below a minute and to whole minutes above one, so two effects
+ * closer together than this cannot be told apart by the number a chip draws.
+ * A wider tolerance would merge effects a player can see running out at
+ * different times; a narrower one would split a single cast whose effects the
+ * server stamped a few milliseconds apart.
+ */
+export const EXPIRY_TOLERANCE_MS = 1000;
+
+/**
+ * The bucket prefix for an effect whose record names no ability.
+ *
+ * A space, which no hrid contains and no ability hrid can start with, so an
+ * effect parked under it can never share a bucket with a real ability's — or
+ * with another nameless effect, since the unique hrid is appended.
+ */
+const NO_ABILITY_BUCKET = ' ';
 
 /** Green for something helping the unit it is on, red for something hurting it */
 const KIND_COLORS = { buff: '#7ddc7d', debuff: '#ff8b7a' };
@@ -155,14 +185,33 @@ export function liveDurationSeconds(duration) {
  * it is genuinely on the unit, and a chip with no countdown says so honestly
  * where dropping it would claim the unit is clean.
  *
+ * ## One cast, one chip
+ *
+ * A single cast can grant several effects — Mystic Aura grants three amplifies,
+ * Elemental Affinity the same — and every one of them resolves its sprite from
+ * the *ability*, so they draw the identical icon under the identical countdown
+ * and read as the same buff three times over. So effects that agree on both the
+ * ability that applied them and the moment they expire are collapsed into one
+ * group, which is what a chip is drawn for. The group's `title` still names
+ * every effect it covers, so the detail is a hover away rather than gone.
+ *
+ * Only both together collapse: two effects of one ability with expiries further
+ * apart than {@link EXPIRY_TOLERANCE_MS} were applied or refreshed separately
+ * and are genuinely different state, so they keep their own chips and their own
+ * countdowns. An effect whose record names no ability collapses with nothing —
+ * there is no cast to attribute it to.
+ *
  * @param {Object} combatBuffMap - The unit's `combatBuffMap`, keyed by unique hrid
  * @param {number} now - `Date.now()` for this pass, taken once by the caller
  * @param {Object} [abilityDetailMap] - Passed through to the effect index
- * @returns {Map<string, {uniqueHrid: string, kind: string, slug: string, label: string, expiresAt: number|null}>}
+ * @returns {Map<string, {key: string, uniqueHrids: string[], kind: string, slug: string, label: string, expiresAt: number|null}>}
+ *   Keyed by group identity, which for the ordinary one-effect group is that
+ *   effect's own unique hrid
  */
 export function readBuffMap(combatBuffMap, now, abilityDetailMap) {
-    const effects = new Map();
-    const labels = new Set();
+    // Insertion-ordered by the ability first seen, so the output keeps the
+    // order the buff map states rather than reshuffling chips on collapse
+    const byAbility = new Map();
     for (const [uniqueHrid, buff] of Object.entries(combatBuffMap || {})) {
         // An entry the index does not declare was not applied by an ability, so
         // it is loadout rather than fight state and gets no chip — see the
@@ -181,17 +230,71 @@ export function readBuffMap(combatBuffMap, now, abilityDetailMap) {
         // own and a second chance to draw a nonsense countdown.
         if (expiresAt !== null && expiresAt <= now) continue;
 
-        const label = distinctLabel(effectSourceLabel(record) || '?', uniqueHrid, labels);
-        labels.add(label);
-        effects.set(uniqueHrid, {
-            uniqueHrid,
-            kind: record.kind,
-            slug: record.slug,
-            label,
-            expiresAt,
-        });
+        // A record naming no ability has nothing to collapse on, so it is given
+        // a bucket of its own that no other effect can land in
+        const bucket = record.abilityHrid || `${NO_ABILITY_BUCKET}${uniqueHrid}`;
+        if (!byAbility.has(bucket)) byAbility.set(bucket, []);
+        byAbility.get(bucket).push({ uniqueHrid, record, expiresAt });
+    }
+
+    const effects = new Map();
+    const labels = new Set();
+    for (const entries of byAbility.values()) {
+        for (const group of collapseByExpiry(entries)) {
+            const anchor = group[0].record;
+            const uniqueHrids = group.map((entry) => entry.uniqueHrid).sort();
+            // The group is its members, so the key changes only when the set
+            // does — a chip's identity survives every tick that changes nothing
+            const key = uniqueHrids.join(' ');
+            // A collapsed chip stands for the cast, so it abbreviates the
+            // ability; a lone effect keeps abbreviating itself, because several
+            // effects of one ability would otherwise all read alike
+            const source = group.length > 1 ? anchor.slug : hridSlug(anchor.uniqueHrid);
+            const base = (group.length > 1 ? effectLabel(anchor.slug) : effectSourceLabel(anchor)) || '?';
+            const label = distinctLabel(base, source, labels);
+            labels.add(label);
+            effects.set(key, {
+                key,
+                uniqueHrids,
+                kind: anchor.kind,
+                slug: anchor.slug,
+                label,
+                // The latest of the group, so a chip never vanishes while one
+                // of the effects it stands for is still running. A group is
+                // either all timed or all untimed, so one member decides which.
+                expiresAt: group[0].expiresAt === null ? null : Math.max(...group.map((entry) => entry.expiresAt)),
+            });
+        }
     }
     return effects;
+}
+
+/**
+ * Split one ability's effects into groups that share an expiry.
+ *
+ * Sorted by expiry and taken greedily: each group opens on the earliest effect
+ * not yet placed and takes everything within {@link EXPIRY_TOLERANCE_MS} of it.
+ * An effect with no stated expiry joins only other effects with none — "unknown"
+ * is not a time, and cannot be shown to agree with one.
+ *
+ * @param {Array<{uniqueHrid: string, record: Object, expiresAt: number|null}>} entries
+ * @returns {Array<Array<{uniqueHrid: string, record: Object, expiresAt: number|null}>>}
+ */
+function collapseByExpiry(entries) {
+    const sorted = [...entries].sort((a, b) => (a.expiresAt ?? Infinity) - (b.expiresAt ?? Infinity));
+    const groups = [];
+    for (const entry of sorted) {
+        const open = groups[groups.length - 1];
+        const anchor = open?.[0]?.expiresAt ?? null;
+        const agrees =
+            open &&
+            (entry.expiresAt === null
+                ? anchor === null
+                : anchor !== null && entry.expiresAt - anchor <= EXPIRY_TOLERANCE_MS);
+        if (agrees) open.push(entry);
+        else groups.push([entry]);
+    }
+    return groups;
 }
 
 /**
@@ -204,12 +307,12 @@ export function readBuffMap(combatBuffMap, now, abilityDetailMap) {
  * same without being the same thing.
  *
  * @param {string} base - The abbreviation for this effect
- * @param {string} uniqueHrid - Its unique hrid, the source of the longer forms
+ * @param {string} source - The name it abbreviates, the source of the longer forms
  * @param {Set<string>} taken - The labels already used on this unit
  * @returns {string}
  */
-function distinctLabel(base, uniqueHrid, taken) {
-    const slug = hridSlug(uniqueHrid)
+function distinctLabel(base, source, taken) {
+    const slug = String(source ?? '')
         .replace(/[^a-zA-Z0-9]/g, '')
         .toUpperCase();
     let label = base;
@@ -570,9 +673,9 @@ class CombatUnitBuffBars {
         const chips = new Map();
         for (const chip of strip.children) chips.set(chip.getAttribute(CHIP_MARK), chip);
 
-        for (const [uniqueHrid, effect] of effects) {
-            let chip = chips.get(uniqueHrid);
-            if (chip) chips.delete(uniqueHrid);
+        for (const [key, effect] of effects) {
+            let chip = chips.get(key);
+            if (chip) chips.delete(key);
             else {
                 chip = this._chip(effect);
                 strip.appendChild(chip);
@@ -598,8 +701,10 @@ class CombatUnitBuffBars {
      */
     _chip(effect) {
         const chip = document.createElement('span');
-        chip.setAttribute(CHIP_MARK, effect.uniqueHrid);
+        chip.setAttribute(CHIP_MARK, effect.key);
         Object.assign(chip.style, {
+            // The stack count is hung off this, so it costs the strip no room
+            position: 'relative',
             display: 'inline-flex',
             flexDirection: 'column',
             alignItems: 'center',
@@ -608,7 +713,11 @@ class CombatUnitBuffBars {
             color: KIND_COLORS[effect.kind] || KIND_COLORS.buff,
             textShadow: '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000',
         });
-        chip.title = `${effect.kind === 'debuff' ? 'Debuff' : 'Buff'}: ${effect.uniqueHrid}`;
+        const kindName = effect.kind === 'debuff' ? 'Debuff' : 'Buff';
+        chip.title =
+            effect.uniqueHrids.length > 1
+                ? [`${kindName} (${effect.uniqueHrids.length}):`, ...effect.uniqueHrids].join('\n')
+                : `${kindName}: ${effect.uniqueHrids[0]}`;
 
         const href = abilitySpriteHref(effect.slug);
         if (href) {
@@ -630,6 +739,24 @@ class CombatUnitBuffBars {
             chip.appendChild(label);
         }
 
+        // A collapsed chip says how many effects it stands for the way a stack
+        // count is drawn anywhere else — a corner mark on the icon. Out of flow,
+        // so a chip that carries one is exactly the size of a chip that does
+        // not, and the strip does not grow.
+        if (effect.uniqueHrids.length > 1) {
+            const count = document.createElement('span');
+            count.textContent = `×${effect.uniqueHrids.length}`;
+            Object.assign(count.style, {
+                position: 'absolute',
+                top: '-2px',
+                right: '-3px',
+                fontSize: '8px',
+                pointerEvents: 'none',
+            });
+            chip.appendChild(count);
+        }
+
+        // Last child by contract: the diff writes the countdown through it
         const countdown = document.createElement('span');
         chip.appendChild(countdown);
         return chip;
