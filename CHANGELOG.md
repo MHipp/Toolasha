@@ -6,6 +6,14 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Five fixes ported from upstream
+
+An offline gap could graft one dungeon run onto the next. On page load the tracker restored a parked run whenever the dungeon matched, with only a ten-minute staleness clock as the guard; waves run about thirty-five seconds, so a short reconnect could span a run boundary and the old run's waves and times were carried into the new one. Restoration now waits for the first battle message and restores only when it names the same battle, at the cost of one wave during which the card shows the dungeon rather than the run.
+
+The Crafting Plan re-expanded intermediates you already own: fifty Umbral Leather in the bag did nothing to shorten the hides on the missing list. Owned intermediates are now credited before the remainder is expanded, with one stock ledger across the plan so the same items are not credited twice. A MooPass that expired before your offline window even began was marking a trustworthy offline cap as unknown. The Enhancement Tracker could not start if you enabled it, or reloaded, after a run's first action message had already gone by; it now reads the action already running. And a combat sim import of an item the game data could not resolve guessed its equipment slot from a string; it now skips the item and says so.
+
+Checked and not needed: upstream's achievement-tier sim buffs (the fork has had them through its shared buff pipeline), its profile-score freeze fix (the fork already prices on worker threads), its profile-score provenance work (a feature the fork does not have), and its offline-attention lookahead patch (the fork's projection never stopped looking ahead in the first place).
+
 ### Leftovers: the sim's spawn-table assumption is now stated and pinned
 
 The dungeon spawn rule lets a table become eligible from the wave its key names, while the note beside it said a species from that table is first seen one wave later. Both are right: in every dungeon that wave is a fixed roster and never reaches the random draw. That fact was in the game data and nowhere else, so it is now stated in the code and pinned by a test that fails if a future dungeon breaks the shape.
