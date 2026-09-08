@@ -530,6 +530,54 @@ describe('collectMissingMaterials — owned intermediates', () => {
             { itemHrid: COWHIDE, itemName: 'Cowhide', missing: 8, required: 18, isTradeable: true },
         ]);
     });
+
+    test('a partly-owned multi-output intermediate bills only the actions the remainder needs', () => {
+        // 1 log → 3 planks; a table takes 10 planks, so the plank node is 10 units
+        // in 4 actions. Owning 7 leaves 3 planks — exactly one action, one log.
+        // Sizing the remainder from actionsNeeded / quantity reads the yield as
+        // 2.5 planks per action instead of 3, charged 2 actions, and bought a log
+        // the plan never consumes.
+        const LOG = '/items/log';
+        const PLANK = '/items/plank';
+        const TABLE = '/items/table';
+        game.itemDetails[LOG] = { name: 'Log', isTradable: true };
+        game.itemDetails[PLANK] = { name: 'Plank', isTradable: true };
+        game.itemDetails[TABLE] = { name: 'Table', isTradable: true };
+        market.prices[LOG] = 20;
+        market.prices[PLANK] = 50;
+        market.prices[TABLE] = 5000;
+        game.initClientData.actionDetailMap['/actions/crafting/plank'] = {
+            type: '/action_types/crafting',
+            category: '/action_categories/crafting/equipment',
+            inputItems: [{ itemHrid: LOG, count: 1 }],
+            outputItems: [{ itemHrid: PLANK, count: 3 }],
+        };
+        game.initClientData.actionDetailMap['/actions/crafting/table'] = {
+            type: '/action_types/crafting',
+            category: '/action_categories/crafting/equipment',
+            inputItems: [{ itemHrid: PLANK, count: 10 }],
+            outputItems: [{ itemHrid: TABLE, count: 1 }],
+        };
+
+        const plan = computeBestCraftingPlan(TABLE, 1);
+        expect(plan.children[0]).toMatchObject({ itemHrid: PLANK, quantity: 10, actionsNeeded: 4, outputCount: 3 });
+
+        expect(collectMissingMaterials(plan, [])).toEqual([
+            { itemHrid: LOG, itemName: 'Log', missing: 4, required: 4, isTradeable: true },
+        ]);
+        // 3 planks left = 1 action = 1 log
+        expect(collectMissingMaterials(plan, [{ itemHrid: PLANK, count: 7 }])).toEqual([
+            { itemHrid: LOG, itemName: 'Log', missing: 1, required: 1, isTradeable: true },
+        ]);
+        // 4 planks left = 2 actions = 2 logs — a whole-action remainder was always right
+        expect(collectMissingMaterials(plan, [{ itemHrid: PLANK, count: 6 }])).toEqual([
+            { itemHrid: LOG, itemName: 'Log', missing: 2, required: 2, isTradeable: true },
+        ]);
+        // 9 planks left = 3 actions = 3 logs
+        expect(collectMissingMaterials(plan, [{ itemHrid: PLANK, count: 1 }])).toEqual([
+            { itemHrid: LOG, itemName: 'Log', missing: 3, required: 3, isTradeable: true },
+        ]);
+    });
 });
 
 describe('missing game data', () => {

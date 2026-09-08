@@ -219,6 +219,11 @@ export function computeBestCraftingPlan(
             actionHrid: cachedUnitCost.actionHrid,
             actionsNeeded:
                 cachedUnitCost.strategy === 'craft' ? Math.ceil(quantity / (cachedUnitCost.outputCount || 1)) : 0,
+            // Units one action yields. `collectMissingMaterials` needs it to size
+            // the remainder left after an owned intermediate is credited:
+            // `actionsNeeded / quantity` is only an upper bound on `1 / outputCount`
+            // whenever the quantity is not a whole number of actions.
+            outputCount: cachedUnitCost.outputCount || 1,
             children:
                 cachedUnitCost.strategy === 'craft'
                     ? cachedUnitCost.childrenTemplate.map((c) =>
@@ -482,6 +487,9 @@ export function computeBestCraftingPlan(
         craftCost: craftCostPerUnit,
         actionHrid: strategy === 'craft' ? actionHrid : null,
         actionsNeeded: strategy === 'craft' ? Math.ceil(quantity / outputCount) : 0,
+        // See the memo branch: the remainder left after an owned intermediate is
+        // credited has to be sized against the real per-action yield.
+        outputCount,
         children,
         // Optional marker: this leg would have been bought on price, but was
         // crafted because the cheap ask cannot supply the quantity. Renders as an
@@ -555,10 +563,23 @@ export function collectMissingMaterials(plan, inventory) {
             // The children were sized per whole action, so the uncovered
             // remainder is expanded in whole actions too; the artisan reduction
             // already baked into those child quantities rides along untouched.
-            childScale =
-                node.actionsNeeded > 0
-                    ? Math.ceil(node.actionsNeeded * (remaining / node.quantity)) / node.actionsNeeded
-                    : remaining / node.quantity;
+            //
+            // How many actions the remainder costs is `ceil(remaining / outputCount)`,
+            // and only `outputCount` can say so. Deriving the yield as
+            // `quantity / actionsNeeded` understates it whenever the quantity is not a
+            // whole number of actions — 10 units of a 3-per-action intermediate reads as
+            // 2.5 per action — so the remainder was billed extra actions, and the
+            // materials under them bought for nothing. Nodes built without an
+            // `outputCount` (hand-assembled plans) keep the ratio as the upper bound it is.
+            if (node.actionsNeeded > 0) {
+                const actionsForRemainder =
+                    node.outputCount > 0
+                        ? Math.ceil(remaining / node.outputCount)
+                        : Math.ceil(node.actionsNeeded * (remaining / node.quantity));
+                childScale = actionsForRemainder / node.actionsNeeded;
+            } else {
+                childScale = remaining / node.quantity;
+            }
         }
 
         for (const child of node.children || []) walk(child, childScale, false);
