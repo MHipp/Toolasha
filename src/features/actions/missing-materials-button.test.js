@@ -498,4 +498,20 @@ describe('the open bill and the reservation ledger', () => {
             .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
         expect(ledger.released).toContain('missingMats');
     });
+
+    test('a bill opened under a caller’s own owner is never re-claimed as the tabs’ own, not even on a live update', async () => {
+        buildMarketplaceDom();
+
+        await openMaterialsList([{ itemHrid: '/items/cedar_lumber', count: 100 }], {
+            ownerId: 'craftingPlan:/items/chair',
+        });
+        expect(ledger.reserved).toEqual([]);
+
+        // The live-update path recomputes the bill on every inventory message;
+        // a second claim there would be this trip competing with itself
+        const [, handler] = state.wsOn.mock.calls.at(-1);
+        handler({ type: 'items_updated' });
+
+        expect(ledger.reserved.map((entry) => entry.ownerId)).not.toContain('missingMats');
+    });
 });

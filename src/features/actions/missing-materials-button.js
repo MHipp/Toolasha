@@ -1444,8 +1444,13 @@ function updateTabsOnInventoryChange() {
         return;
     }
 
-    // The bill has been recomputed; the claim behind it moves with it
-    claimOpenBill(updatedMaterials);
+    // The bill has been recomputed; the claim behind it moves with it — but a
+    // bill opened under a caller's own owner id is that caller's claim, made
+    // once when it opened the tabs. Restating it here under the tabs' own owner
+    // would put a second claim on one shopping trip, and since the tabs net
+    // against every owner but the caller's, the trip would then be short
+    // against itself.
+    if (!storedMaterialList?.ownerId) claimOpenBill(updatedMaterials);
 
     // Update each existing tab
     currentMaterialsTabs.forEach((tab) => {
