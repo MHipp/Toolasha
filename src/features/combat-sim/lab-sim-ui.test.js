@@ -16,6 +16,10 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+// The real module — never mocked in this file, unlike combat-sim-ui.test.js,
+// so a `guild shrine guild-allowed cap` test spies on individual exports
+// rather than replacing the whole module.
+import * as upgradeAdvisor from './upgrade-advisor.js';
 
 const geometry = vi.hoisted(() => ({ saved: null, wasOpen: false, restoreCalls: [], saveCalls: [], openCalls: [] }));
 const game = vi.hoisted(() => ({
@@ -1031,6 +1035,7 @@ describe('the Configure fight is analysed at a level that was chosen', () => {
         }
 
         expect(Object.keys(storage.written).sort()).toEqual([
+            'labSimShrineCapToGuild_me',
             'labSimSwapAuraOnly_me',
             'labSimUpgradeDimensions_me',
             'labSimUpgradeLevelSource_me',
@@ -2471,6 +2476,195 @@ describe('guild shrine targets are asked for one shrine at a time', () => {
         );
 
         expect(candidates.map((candidate) => candidate.buffHrid)).toEqual([AEGIS]);
+    });
+});
+
+/**
+ * The Guild Shrine chip's "Guild-allowed only" checkbox — Lab Sim's port of
+ * the Combat Simulator's Upgrade tab option of the same name. Lab Sim never
+ * set `guildShrineCapToGuild` before this, so every ranked shrine level was
+ * one the guild might not be able to sell; the checkbox defaults on because a
+ * level nobody can buy is not an upgrade.
+ *
+ * `runLabyrinthUpgradeAnalysis` and `runLabyrinthAllFightsAnalysis` are real
+ * (this file never mocks `upgrade-advisor.js`), so their `params` argument is
+ * captured with a spy rather than inspected through a stand-in — the same
+ * object the real advisor entry point receives.
+ */
+describe('the guild shrine guild-allowed cap', () => {
+    const checkOnlyShrine = () => {
+        for (const box of ui.panel.querySelectorAll('[data-lab-upgrade-dimension]')) {
+            box.checked = box.getAttribute('data-lab-upgrade-dimension') === 'guild_shrine';
+            box.dispatchEvent(new window.Event('change', { bubbles: true }));
+        }
+    };
+    const capBox = () => ui.panel.querySelector('#mwi-labsim-shrine-cap-guild');
+
+    let singleSpy;
+    let allSpy;
+
+    beforeEach(async () => {
+        geometry.saved = null;
+        geometry.wasOpen = false;
+        game.monsters = [
+            { hrid: '/monsters/mimic', name: 'Mimic' },
+            { hrid: '/monsters/eye_watcher', name: 'Eye Watcher' },
+        ];
+        game.skipLevels = { '/monsters/mimic': 130, '/monsters/eye_watcher': 150 };
+        game.players = [{ hrid: 'p1', equipment: {}, abilities: [], guildShrineLevels: {} }];
+
+        ui.buildPanel();
+        await settle();
+        ui._switchTab('upgrade');
+        ui.panel.querySelector('#mwi-labsim-monster').value = '/monsters/mimic';
+        await ui._restoreUpgradeSelection();
+        ui.panel.querySelector('#mwi-labsim-level-source').value = 'configure';
+
+        // Stand in for the real analyses so a single Analyze click resolves
+        // immediately with nothing to simulate — the params handed to them are
+        // what this suite is about, not a full run's results
+        singleSpy = vi
+            .spyOn(upgradeAdvisor, 'runLabyrinthUpgradeAnalysis')
+            .mockResolvedValue({ baseline: null, results: [] });
+        allSpy = vi
+            .spyOn(upgradeAdvisor, 'runLabyrinthAllFightsAnalysis')
+            .mockResolvedValue({ baseline: null, results: [] });
+    });
+
+    afterEach(() => {
+        singleSpy.mockRestore();
+        allSpy.mockRestore();
+        game.players = [];
+        ui.destroy();
+    });
+
+    test('renders in the shrine group, checked by default', () => {
+        expect(ui.panel.querySelector('[data-lab-mode-options="guild_shrine"]').contains(capBox())).toBe(true);
+        expect(capBox().checked).toBe(true);
+    });
+
+    test('reaches the single-fight analysis as guildShrineCapToGuild, both ways', async () => {
+        checkOnlyShrine();
+
+        await ui._onUpgradeAnalyze();
+        expect(singleSpy).toHaveBeenCalledTimes(1);
+        expect(singleSpy.mock.calls[0][0].guildShrineCapToGuild).toBe(true);
+
+        capBox().checked = false;
+        capBox().dispatchEvent(new window.Event('change', { bubbles: true }));
+
+        await ui._onUpgradeAnalyze();
+        expect(singleSpy).toHaveBeenCalledTimes(2);
+        expect(singleSpy.mock.calls[1][0].guildShrineCapToGuild).toBe(false);
+    });
+
+    test('reaches the single-fight analysis’s extraCandidates options too', async () => {
+        // A multi-set selection (guild_shrine plus a second set) routes
+        // guild_shrine through `_extraDimensionCandidates` instead of the
+        // analysis's own mode, since a single-fight analysis only generates
+        // from one mode directly
+        for (const box of ui.panel.querySelectorAll('[data-lab-upgrade-dimension]')) {
+            const dim = box.getAttribute('data-lab-upgrade-dimension');
+            box.checked = dim === 'guild_shrine' || dim === 'combat_level';
+            box.dispatchEvent(new window.Event('change', { bubbles: true }));
+        }
+
+        await ui._onUpgradeAnalyze();
+
+        expect(singleSpy.mock.calls[0][0].extraCandidates).toBeDefined();
+    });
+
+    test('reaches the all-fights analysis as guildShrineCapToGuild, both ways', async () => {
+        checkOnlyShrine();
+        const scope = ui.panel.querySelector('#mwi-labsim-upgrade-scope');
+        scope.value = 'all';
+        scope.dispatchEvent(new window.Event('change', { bubbles: true }));
+
+        await ui._onUpgradeAnalyze();
+        expect(allSpy).toHaveBeenCalledTimes(1);
+        expect(allSpy.mock.calls[0][0].guildShrineCapToGuild).toBe(true);
+
+        capBox().checked = false;
+        capBox().dispatchEvent(new window.Event('change', { bubbles: true }));
+
+        await ui._onUpgradeAnalyze();
+        expect(allSpy).toHaveBeenCalledTimes(2);
+        expect(allSpy.mock.calls[1][0].guildShrineCapToGuild).toBe(false);
+    });
+
+    test('and the shrine set being off leaves the flag off too', async () => {
+        // Every dimension unchecked — guild_shrine never selected, so the
+        // gate that reads guildShrineTargetLevel at the same spot reads this
+        // false regardless of the box's own state
+        for (const box of ui.panel.querySelectorAll('[data-lab-upgrade-dimension]')) {
+            box.checked = false;
+            box.dispatchEvent(new window.Event('change', { bubbles: true }));
+        }
+        // The panel refuses an empty selection, so give it one set that is not
+        // guild_shrine
+        ui.panel.querySelector('[data-lab-upgrade-dimension="combat_level"]').checked = true;
+        ui.panel
+            .querySelector('[data-lab-upgrade-dimension="combat_level"]')
+            .dispatchEvent(new window.Event('change', { bubbles: true }));
+
+        await ui._onUpgradeAnalyze();
+
+        expect(singleSpy.mock.calls[0][0].guildShrineCapToGuild).toBe(false);
+    });
+
+    test('reaches generateCandidates via _extraDimensionCandidates, both ways', () => {
+        const generateSpy = vi.spyOn(upgradeAdvisor, 'generateCandidates');
+        try {
+            ui._extraDimensionCandidates(
+                ['guild_shrine'],
+                { equipment: {}, guildShrineLevels: {} },
+                { itemDetailMap: {} },
+                {
+                    guildShrineCapToGuild: true,
+                }
+            );
+            expect(generateSpy.mock.calls[0][12].guildShrineCapToGuild).toBe(true);
+
+            ui._extraDimensionCandidates(
+                ['guild_shrine'],
+                { equipment: {}, guildShrineLevels: {} },
+                { itemDetailMap: {} },
+                {
+                    guildShrineCapToGuild: false,
+                }
+            );
+            expect(generateSpy.mock.calls[1][12].guildShrineCapToGuild).toBe(false);
+        } finally {
+            generateSpy.mockRestore();
+        }
+    });
+
+    test('unchecking it persists, and a fresh panel restores it unchecked', async () => {
+        capBox().checked = false;
+        capBox().dispatchEvent(new window.Event('change', { bubbles: true }));
+        await settle();
+
+        expect(storage.written['labSimShrineCapToGuild_me']).toBe(false);
+
+        // A fresh panel, the way a reload would build one
+        storage.values = { ...storage.written };
+        ui.destroy();
+        ui.buildPanel();
+        await settle();
+        ui._switchTab('upgrade');
+
+        expect(capBox().checked).toBe(false);
+    });
+
+    test('with no saved value, a fresh panel restores it checked — the default-on guarantee', async () => {
+        storage.values = {};
+        storage.written = {};
+        ui.destroy();
+        ui.buildPanel();
+        await settle();
+        ui._switchTab('upgrade');
+
+        expect(capBox().checked).toBe(true);
     });
 });
 

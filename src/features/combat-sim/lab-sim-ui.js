@@ -142,6 +142,14 @@ const UPGRADE_LEVEL_SOURCE_KEY = 'labSimUpgradeLevelSource';
 const UPGRADE_SWAP_AURA_KEY = 'labSimSwapAuraOnly';
 
 /**
+ * Whether the Guild Shrine set is capped to what the guild's own shrine
+ * buildings can sell. Its own key, independent of Combat Sim's — the two
+ * panels remember this choice separately. Defaults on: a shrine level the
+ * guild cannot sell is not an upgrade anyone can buy.
+ */
+const SHRINE_CAP_GUILD_KEY = 'labSimShrineCapToGuild';
+
+/**
  * Labyrinth token levels the Configure tab is simulating under.
  *
  * Only the ones typed over the live run are stored, so a character who buys the
@@ -334,6 +342,10 @@ const LAB_MODE_OPTIONS = {
                 width:48px; text-align:center; ${CHIP_INPUT_STYLE}"
                 title="Buy every shrine buff up to this level in one row, costed at every level in between. Blank means one level up. Capped at each buff's own maximum.">
             <button id="mwi-labsim-shrine-targets-toggle" title="Set a target level per shrine instead of one number for all of them" style="${CHIP_BUTTON_STYLE}">Targets</button>
+            <label id="mwi-labsim-shrine-cap-label" title="Only rank shrine levels your guild's shrine buildings can actually sell you: a shrine the guild has not built is left out entirely, and one built to Lv4 stops at Lv4. Uncheck to plan against shrines the guild would have to upgrade first — those rows say so." style="display:flex; align-items:center; gap:4px; color:#888; font-size:12px; cursor:pointer;">
+                <input type="checkbox" id="mwi-labsim-shrine-cap-guild" checked style="margin:0; cursor:pointer;">
+                Guild-allowed only
+            </label>
         </span>`,
     community_buff: `
         <span id="mwi-labsim-community-group" data-lab-mode-options="community_buff" style="display:none; align-items:center; gap:4px;">
@@ -1371,6 +1383,9 @@ class LabSimUI {
         this.panel.querySelector('#mwi-labsim-swap-aura-only')?.addEventListener('change', () => {
             void this._saveUpgradeSelection();
         });
+        this.panel.querySelector('#mwi-labsim-shrine-cap-guild')?.addEventListener('change', () => {
+            void this._saveUpgradeSelection();
+        });
         void this._restoreUpgradeSelection();
         void this._restoreTokenBuffLevels();
         void this._restoreUpgradeResults();
@@ -1869,6 +1884,14 @@ class LabSimUI {
                     Boolean(this.panel?.querySelector('#mwi-labsim-swap-aura-only')?.checked),
                     'settings'
                 ),
+                // The box's own state too — gating it on whether Guild Shrine is
+                // checked would save a stale true over an unchecking that happened
+                // while the set itself was off
+                writeScoped(
+                    SHRINE_CAP_GUILD_KEY,
+                    Boolean(this.panel?.querySelector('#mwi-labsim-shrine-cap-guild')?.checked),
+                    'settings'
+                ),
             ]);
         } catch (error) {
             console.error('[LabSimUI] Failed to save upgrade selection:', error);
@@ -1898,6 +1921,9 @@ class LabSimUI {
         let selection;
         let savedLevelSource = null;
         let savedAuraOnly = false;
+        // Defaults on: a shrine level the guild's shrine building cannot sell
+        // is not an upgrade the character can buy, however well it would rank
+        let savedShrineCapGuild = true;
         try {
             // Every key resolved before the first await, for the same reason
             // the save issues its writes together: read one at a time, a switch
@@ -1906,13 +1932,15 @@ class LabSimUI {
             // that mixture back over whichever character was current.
             let savedDimensions;
             let savedScope;
-            [savedDimensions, savedScope, savedLevelSource, savedAuraOnly] = await Promise.all([
+            [savedDimensions, savedScope, savedLevelSource, savedAuraOnly, savedShrineCapGuild] = await Promise.all([
                 readScoped(UPGRADE_DIMENSIONS_KEY, 'settings', null),
                 readScoped(UPGRADE_SCOPE_KEY, 'settings', null),
                 readScoped(UPGRADE_LEVEL_SOURCE_KEY, 'settings', null),
                 readScoped(UPGRADE_SWAP_AURA_KEY, 'settings', false),
+                readScoped(SHRINE_CAP_GUILD_KEY, 'settings', true),
             ]);
             savedAuraOnly = Boolean(savedAuraOnly);
+            savedShrineCapGuild = Boolean(savedShrineCapGuild);
             const legacyMode =
                 savedDimensions === null && savedScope === null
                     ? await readScoped(LEGACY_UPGRADE_MODE_KEY, 'settings', null)
@@ -1939,6 +1967,8 @@ class LabSimUI {
         }
         const signatureBox = this.panel.querySelector('#mwi-labsim-swap-aura-only');
         if (signatureBox) signatureBox.checked = savedAuraOnly;
+        const shrineCapBox = this.panel.querySelector('#mwi-labsim-shrine-cap-guild');
+        if (shrineCapBox) shrineCapBox.checked = savedShrineCapGuild;
         this._populateUpgradeTargets(selection.monsters);
         this._onUpgradeSelectionChanged();
     }
@@ -2754,6 +2784,11 @@ class LabSimUI {
         const houseTargets = selectedDimensions.has('house') ? this._getHouseTargets() : null;
         const guildShrineTargetLevel = selectedDimensions.has('guild_shrine') ? this._getShrineTargetLevel() : 0;
         const guildShrineTargets = selectedDimensions.has('guild_shrine') ? this._getShrineTargets() : null;
+        // Default on: a shrine level the guild's shrine building cannot sell is
+        // not an upgrade the character can buy, however well it would rank
+        const guildShrineCapToGuild = selectedDimensions.has('guild_shrine')
+            ? Boolean(this.panel.querySelector('#mwi-labsim-shrine-cap-guild')?.checked)
+            : false;
 
         if (plan.dropped.length) {
             this._setStatus(
@@ -2834,6 +2869,7 @@ class LabSimUI {
                         houseTargets,
                         guildShrineTargetLevel,
                         guildShrineTargets,
+                        guildShrineCapToGuild,
                         tokenLevels,
                     },
                     ({ current, total, description, plan: runPlan }) => {
@@ -2892,6 +2928,7 @@ class LabSimUI {
                     houseTargets,
                     guildShrineTargetLevel,
                     guildShrineTargets,
+                    guildShrineCapToGuild,
                     tokenLevels,
                     extraCandidates: this._extraDimensionCandidates(
                         plan.extraModes,
@@ -2907,6 +2944,7 @@ class LabSimUI {
                             houseTargets,
                             guildShrineTargetLevel,
                             guildShrineTargets,
+                            guildShrineCapToGuild,
                             communityBuffs,
                             communityBuffTargetLevel: this._getCommunityTargetLevel(),
                         }
@@ -2967,7 +3005,8 @@ class LabSimUI {
      * @param {Object} playerDTO - The loadout being analyzed
      * @param {Object} gameData - From `buildGameDataPayload`
      * @param {Object} options - `{ abilityTargetLevel, abilityLevelType, combatLevelTargets, abilityTargets,
-     *   auraSwapsOnly, houseTargetLevel, houseTargets, guildShrineTargetLevel, guildShrineTargets }`
+     *   auraSwapsOnly, houseTargetLevel, houseTargets, guildShrineTargetLevel, guildShrineTargets,
+     *   guildShrineCapToGuild }`
      * @returns {Array<Object>} Candidates, deduplicated by the analysis itself
      * @private
      */
@@ -2983,6 +3022,7 @@ class LabSimUI {
             houseTargets = null,
             guildShrineTargetLevel = 0,
             guildShrineTargets = null,
+            guildShrineCapToGuild = false,
             communityBuffs = null,
             communityBuffTargetLevel = 0,
         } = options;
@@ -3001,7 +3041,13 @@ class LabSimUI {
                     houseTargets,
                     communityBuffs,
                     guildShrineTargetLevel,
-                    { auraSwapsOnly, houseWinRateOnly: true, communityBuffTargetLevel, guildShrineTargets }
+                    {
+                        auraSwapsOnly,
+                        houseWinRateOnly: true,
+                        communityBuffTargetLevel,
+                        guildShrineTargets,
+                        guildShrineCapToGuild,
+                    }
                 )
             );
         } catch (error) {
