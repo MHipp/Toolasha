@@ -1173,10 +1173,13 @@ class NetworthHistoryChart {
         const currentItems = {};
         const gameData = dataManager.getInitClientData();
 
-        // Gold
+        // Gold — the counted coins, matching what the detail snapshots record:
+        // coin is an excludable item, and comparing an on-hand balance against
+        // a snapshot that excluded it would read as the whole balance arriving
+        const currentCoins = Math.round(currentData.countedCoins ?? currentData.coins);
         currentItems['/items/coin:0'] = {
-            count: Math.round(currentData.coins),
-            value: Math.round(currentData.coins),
+            count: currentCoins,
+            value: currentCoins,
             name: 'Gold',
         };
 

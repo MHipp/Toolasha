@@ -437,3 +437,29 @@ describe('the detail snapshots are visible to the per-character budget count', (
         expect(maxRecordsPerCharacter('networthHistory', keys)).toBe(5);
     });
 });
+
+describe('the recorded gold figure', () => {
+    test('is the coins on hand when nothing excludes them', async () => {
+        networthHistory.networthFeature = { currentData: fakeNetworthData() };
+
+        await networthHistory.takeSnapshot();
+
+        expect(networthHistory.history.at(-1).gold).toBe(1000);
+    });
+
+    test('is the coins that count, so the chart’s inventory-less-gold line cannot dive', async () => {
+        // Coin is an excludable item like any other: `inventory` no longer
+        // carries it, and a `gold` of the full balance made the chart draw
+        // Inventory as `inventory - gold` — the whole balance as a loss
+        const data = fakeNetworthData();
+        data.countedCoins = 0;
+
+        networthHistory.networthFeature = { currentData: data };
+        await networthHistory.takeSnapshot();
+
+        const snapshot = networthHistory.history.at(-1);
+        expect(snapshot.gold).toBe(0);
+        expect(snapshot.inventory - snapshot.gold).toBeGreaterThanOrEqual(0);
+        expect(networthHistory.detailHistory.at(-1).items['/items/coin:0']).toEqual({ count: 0, value: 0 });
+    });
+});

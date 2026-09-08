@@ -278,7 +278,11 @@ class NetworthHistory {
             t: Date.now(),
             total: Math.round(data.totalNetworth + (data.excluded?.total ?? 0)),
             nonExcluded: Math.round(data.totalNetworth),
-            gold: Math.round(data.coins),
+            // The coins that count towards net worth, not the balance on hand:
+            // coin is an excludable item, every other field here is
+            // post-exclusion, and the chart draws Inventory as `inventory -
+            // gold`
+            gold: Math.round(data.countedCoins ?? data.coins),
             inventory: Math.round(data.currentAssets.inventory.value),
             equipment: Math.round(data.currentAssets.equipped.value),
             listings: Math.round(data.currentAssets.listings.value),
@@ -346,7 +350,8 @@ class NetworthHistory {
         const items = {};
 
         // Gold
-        items['/items/coin:0'] = { count: Math.round(data.coins), value: Math.round(data.coins) };
+        const coins = Math.round(data.countedCoins ?? data.coins);
+        items['/items/coin:0'] = { count: coins, value: coins };
 
         // Inventory items
         for (const item of data.currentAssets.inventory.breakdown) {

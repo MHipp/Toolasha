@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
     marketValues: null, // { marketValuesVersion, marketItemValues } for getMarketItemValues()
     combinedData: null, // what calculateNetworth sweeps: characterItems, itemDetailMap, ...
     batchPrices: {}, // "hrid:level" -> {ask, bid}, for getPricesBatch
+    excluded: new Set(), // "type:value" pairs isExcluded() answers true for
 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -95,7 +96,14 @@ vi.mock('../../utils/market-data.js', () => ({
 vi.mock('../../utils/networth-worker-manager.js', () => ({ calculateItemValueBatch: vi.fn() }));
 vi.mock('../../utils/dungeon-keys.js', () => ({ DUNGEON_CHEST_CHEST_KEYS: {} }));
 vi.mock('../../utils/game-lookups.js', () => ({ getShopCoinCost: (hrid) => mocks.shopCosts[hrid] ?? 0 }));
-vi.mock('./networth-exclusions.js', () => ({ isExcluded: () => false, getExclusions: () => [] }));
+vi.mock('./networth-exclusions.js', () => ({
+    isExcluded: (type, value) => mocks.excluded.has(`${type}:${value}`),
+    getExclusions: () =>
+        [...mocks.excluded].map((entry) => {
+            const split = entry.indexOf(':');
+            return { type: entry.slice(0, split), value: entry.slice(split + 1) };
+        }),
+}));
 vi.mock('../combat/loadout-snapshot.js', () => ({ default: { getAllSnapshots: () => [] } }));
 // Guild credits are never listed, so their gold value comes from conversions.
 // Priced here at a flat rate so the shrine arithmetic is the only thing under test.
@@ -136,6 +144,7 @@ beforeEach(() => {
     mocks.marketValues = null;
     mocks.combinedData = null;
     mocks.batchPrices = {};
+    mocks.excluded = new Set();
     workerBatch.mockReset();
     _resetMarketValues();
 });
@@ -879,5 +888,49 @@ describe('market listings', () => {
 
         // Nothing is locked any more: the units came back and so did the coins
         expect(listings.value).toBe(50 * 100 + 50_000);
+    });
+});
+
+/**
+ * The header says what is on hand; the history says what counts. Coin is an
+ * excludable item like every other, and every field the history records beside
+ * gold is post-exclusion — so the two figures have to be reported apart.
+ */
+describe('the coins reported to the history', () => {
+    /** A sweep over an inventory holding `count` coins */
+    async function sweepCoins(count) {
+        mocks.combinedData = {
+            characterItems: [
+                {
+                    itemHrid: '/items/coin',
+                    enhancementLevel: 0,
+                    count,
+                    itemLocationHrid: '/item_locations/inventory',
+                },
+            ],
+            myMarketListings: [],
+            characterHouseRoomMap: {},
+            characterAbilities: [],
+            abilityCombatTriggersMap: {},
+            itemDetailMap: { '/items/coin': { name: 'Coin' } },
+        };
+        return calculateNetworth();
+    }
+
+    test('are the balance on hand when nothing excludes them', async () => {
+        const result = await sweepCoins(5000);
+        expect(result.coins).toBe(5000);
+        expect(result.countedCoins).toBe(5000);
+    });
+
+    test('drop to zero when the coin itself is excluded, while the header keeps the balance', async () => {
+        mocks.excluded.add('item:/items/coin');
+
+        const result = await sweepCoins(5000);
+
+        expect(result.coins).toBe(5000);
+        expect(result.countedCoins).toBe(0);
+        // …and the inventory the history records beside it no longer carries them
+        expect(result.currentAssets.inventory.value).toBe(0);
     });
 });

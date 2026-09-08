@@ -955,6 +955,12 @@ export async function calculateNetworth() {
 
     // Track gold coins separately for header display
     let coinCount = 0;
+    // And separately again, the coins that survived the exclusions. Coin is an
+    // excludable item like any other, and every other snapshot field the
+    // history records is post-exclusion — so a `gold` recorded as the full
+    // balance while `inventory` no longer carries it made the chart's
+    // inventory-less-gold line dive by the whole coin balance
+    let countedCoins = 0;
 
     const inventoryItems = characterItems.filter((item) => item.itemLocationHrid === '/item_locations/inventory');
     const inventoryValues = await calculateItemValuesParallel(inventoryItems, priceCache, gameData);
@@ -1015,6 +1021,9 @@ export async function calculateNetworth() {
             // Add to regular inventory (Current Assets)
             inventoryValue += value;
             inventoryBreakdown.push(itemData);
+            if (item.itemHrid === '/items/coin') {
+                countedCoins = item.count || 0;
+            }
 
             // Coin is always listed individually — never bucketed into a category
             if (item.itemHrid !== '/items/coin') {
@@ -1241,6 +1250,7 @@ export async function calculateNetworth() {
     return {
         totalNetworth,
         coins: coinCount,
+        countedCoins,
         excluded: { total: excludedTotal, items: excludedItems },
         currentAssets: {
             total: currentAssetsTotal,
@@ -1273,6 +1283,7 @@ function createEmptyNetworthData() {
     return {
         totalNetworth: 0,
         coins: 0,
+        countedCoins: 0,
         excluded: { total: 0, items: [] },
         currentAssets: {
             total: 0,
