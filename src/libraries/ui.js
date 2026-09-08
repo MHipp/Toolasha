@@ -163,6 +163,10 @@ import { combatLevelPanel } from '../features/ui/combat-level-panel.js';
 // living here costs this bundle nothing but the panel itself.
 import ironCowFarmPanel from '../features/ironcow/ironcow-panel.js';
 
+// Header pill for gear that contradicts the running action. Lives in this
+// bundle because the labyrinth-run predicate it suppresses on is already here.
+import equipmentMismatchWarning from '../features/equipment/equipment-mismatch-warning.js';
+
 // Export to global namespace
 const toolashaRoot = window.Toolasha || {};
 // Shared console-only debug namespace; nothing schedules these
@@ -263,6 +267,7 @@ toolashaRoot.UI = {
     consumablesPanel,
     combatLevelPanel,
     ironCowFarmPanel,
+    equipmentMismatchWarning,
     combatText,
     dpsPanel,
     deathsPanel,

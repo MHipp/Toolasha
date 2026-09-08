@@ -1436,6 +1436,13 @@ function registerFeatures() {
         },
         { key: 'externalLinks', name: 'External Links', category: 'UI', module: UI.externalLinks, async: false },
         {
+            key: 'equipmentMismatchWarning',
+            name: 'Equipment Mismatch Warning',
+            category: 'UI',
+            module: UI.equipmentMismatchWarning,
+            async: false,
+        },
+        {
             key: 'hideLabyrinthBadge',
             name: 'Hide Labyrinth Badge',
             category: 'UI',

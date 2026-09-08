@@ -2917,6 +2917,18 @@ export const settingsGroups = {
                     'to dismiss it until you switch character or reload; reopen it from the Briefing overlay row or ' +
                     'the command palette.',
             },
+            equipmentMismatchWarning: {
+                id: 'equipmentMismatchWarning',
+                label: 'Warn when the gear contradicts the action',
+                type: 'checkbox',
+                default: false,
+                help:
+                    'A pulsing pill in the header when the kit and the running action disagree: a production piece ' +
+                    'still worn in combat, or — the one that costs you hours — a cooking, gathering, crafting or ' +
+                    'enhancing action running while the piece that would speed it up sits unequipped in your bag. ' +
+                    'Each piece is checked against the game’s own item data before it is named, and the whole ' +
+                    'thing goes quiet inside a labyrinth run, where the run picks the loadout rather than you',
+            },
             overlayPanel: {
                 id: 'overlayPanel',
                 label: 'Overlay Panel: One floating panel other features add a row to',
