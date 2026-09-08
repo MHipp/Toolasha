@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Party chat stopped counting each dungeon run twice, and the average stopped counting runs it knows nothing about
+
+Run numbers could jump — 225 to 315 in one step — and the trailing average could read barely half the runs behind it, on a run that took the usual time. A pass that had already labelled a line kept its place in the numbering by writing down the time printed in chat, which is the same instant the tracker banks but rounded to the second; the next pass read that back as a _second_ run sitting beside the real one. Every run so labelled was counted twice, and the phantom carried no time, so the average divided by runs it had nothing to add for. Reloading was what made it obvious rather than what caused it: a fresh page re-labels the whole visible history at once, minting every phantom in one go.
+
+A run labelled earlier is now remembered as what it is and pairs with the tracker's own copy instead of standing next to it. The pairing is one for one, so a single stored run can no longer answer for several chat lines. And a run whose length is genuinely unknown is left out of the average rather than counted as nothing — the label says how many runs it actually averaged, and a window with nothing usable says nothing at all.
+
 ### A trial you are watching no longer wears your own fight's buffs
 
 The buff strips draw into the battle panel's unit area, and a spectated guild trial draws its fight into that same area — so with your own combat running, your live buffs were painted onto your tile in the trial, and the trial boss got whatever the monster in your fight's first slot was carrying. Nothing about it looked wrong: the durations ticked, the icons were real, they were simply somebody else's. Strips are now drawn only in your own panel, which also means they reappear the moment you go back to it.
