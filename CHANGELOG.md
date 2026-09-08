@@ -6,6 +6,16 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Sync no longer stalls on a device whose clock is wrong
+
+Whether a downloaded sync is newer than the one you last accepted was decided by comparing wall-clock timestamps from the pushing device. A device with a fast clock pushed a stamp from the future, and every other device then skipped correctly-stamped payloads as "older" until real time caught up — nothing lost, but sync silently stopped while reporting up to date. Ordering now uses a counter that only ever moves forward and that every device adopts on receipt, so no clock can stall it. The counter lives in the manifest beside the timestamp, not in the payload: an older build ignores it and keeps working exactly as before, an old gist applies exactly as before, and a mixed fleet keeps syncing indefinitely. Only a device still on the older build can stall on a fast clock, because it has no counter to consult.
+
+### Audit round: six alerts marked themselves delivered before they were
+
+The same fault as the guild trial alert two rounds ago, in six more places: the market undercut, price target, savings goal, combat consumable, empty queue and labyrinth stopped alerts all advanced their "already told you" guard the instant the condition fired, before checking whether the notice reached anything. A notice that landed nowhere — no toast host mounted yet, right after a load — was marked told and then silenced until the condition reversed and re-triggered, which for a price that never recovers or a run that is over is never. Each now retries until a delivery succeeds.
+
+A combat sim fix from a fortnight ago covered one of three revive paths. A player who died in a dungeon and was healed at the clear, or who fell in a wipe and was restored at the restart, came back with every timed buff on them made permanent for the rest of the run, so party dungeon sims read optimistic. And the tooltip's profit section could say "no market data" for an item the calculator had just priced from the game's official value, because one field bypassed the reconciliation every other price goes through.
+
 ### Audit round: a sync pull could wipe records it was meant to combine
 
 Two records the replay checker keeps — every recording you have watched and every check you have run — were missing from the list of things a pull merges rather than replaces, so a sync overwrote them with whatever the sending device had. They live in the settings store, which every sync scope carries, so this fired on the smallest sync you can configure. That is the third time a record has been forgotten this way, so there is now a test that walks the source and fails when a new one is added without being registered.
