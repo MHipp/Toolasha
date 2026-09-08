@@ -981,17 +981,62 @@ export function getCombatZones() {
 }
 
 /**
- * Get all labyrinth monsters sorted by name.
+ * The labyrinth panel's own room order, keyed by monster name.
+ *
+ * `combatMonsterDetailMap` carries no ordering field of its own — its key
+ * order is alphabetical, an artifact of how the client serializes the map,
+ * not a game-chosen order. The labyrinth's `/actions/combat/labyrinth/explore`
+ * action has an empty `combatZoneInfo`, so there is no spawn list to read one
+ * from either.
+ *
+ * `chatIconDetailMap` does carry a `sortIndex` for every labyrinth monster
+ * (each has a matching chat icon, named after it), and that order was checked
+ * live against the Labyrinth panel's own DOM: Shadow Archer, Pyre Hunter,
+ * Frost Sniper, Siren, Salamander, Dryad, Giant Scorpion, Giant Mantis,
+ * Cyclops, Mimic — sortIndex 471 through 480, in that order, matching the
+ * panel exactly. It is a real if unrelated source; do not "fix" this back to
+ * name order without re-checking the panel.
+ *
+ * Matched by name rather than hrid: a monster's hrid lives under
+ * `/combat_monsters/...` and its chat icon's under `/chat_icons/...`, so the
+ * two namespaces never line up on their own.
+ *
+ * @returns {Map<string, number>} Monster name -> chat icon sortIndex
+ */
+function labyrinthRoomOrderByName() {
+    const clientData = dataManager.getInitClientData();
+    const order = new Map();
+    for (const icon of Object.values(clientData?.chatIconDetailMap || {})) {
+        if (icon?.name && Number.isFinite(icon.sortIndex)) order.set(icon.name, icon.sortIndex);
+    }
+    return order;
+}
+
+/**
+ * Get all labyrinth monsters in the labyrinth panel's own room order.
+ *
+ * A monster with no chat-icon match (name lookup miss, or a future room the
+ * chat icons have not caught up to) falls back after every ordered monster,
+ * alphabetically among the other unordered ones — never dropped, never
+ * placed at a random position.
  * @returns {Array<{hrid: string, name: string}>}
  */
 export function getLabyrinthMonsters() {
     const clientData = dataManager.getInitClientData();
     if (!clientData?.combatMonsterDetailMap) return [];
 
+    const roomOrder = labyrinthRoomOrderByName();
     return Object.values(clientData.combatMonsterDetailMap)
         .filter((m) => m.isLabyrinthMonster === true)
         .map((m) => ({ hrid: m.hrid, name: m.name }))
-        .sort((a, b) => a.name.localeCompare(b.name));
+        .sort((a, b) => {
+            const aOrder = roomOrder.get(a.name);
+            const bOrder = roomOrder.get(b.name);
+            if (aOrder !== undefined && bOrder !== undefined) return aOrder - bOrder;
+            if (aOrder !== undefined) return -1;
+            if (bOrder !== undefined) return 1;
+            return a.name.localeCompare(b.name);
+        });
 }
 
 /**

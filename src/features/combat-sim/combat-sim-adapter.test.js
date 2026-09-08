@@ -65,6 +65,7 @@ const {
     parseShykaiImport,
     taxedDropValue,
     getCurrentCombatZone,
+    getLabyrinthMonsters,
 } = await import('./combat-sim-adapter.js');
 const { MARKET_TAX, COWBELL_BAG_TAX } = await import('../../utils/profit-constants.js');
 
@@ -652,5 +653,83 @@ describe('getCurrentCombatZone picks the running action, not the first in the ar
             characterActions: [{ actionHrid: '/actions/foraging/something', isDone: false, ordinal: 0 }],
         };
         expect(getCurrentCombatZone()).toBeNull();
+    });
+});
+
+describe('getLabyrinthMonsters orders by the labyrinth panel, not by name', () => {
+    // The panel order, checked live against the Labyrinth panel's DOM and
+    // against chatIconDetailMap's own sortIndex (471-480).
+    const PANEL_ORDER = [
+        'Shadow Archer',
+        'Pyre Hunter',
+        'Frost Sniper',
+        'Siren',
+        'Salamander',
+        'Dryad',
+        'Giant Scorpion',
+        'Giant Mantis',
+        'Cyclops',
+        'Mimic',
+    ];
+
+    function monsterEntry(name) {
+        // hrid namespace deliberately does not match the chat icon's namespace,
+        // exercising the by-name match rather than a by-hrid one.
+        return {
+            hrid: `/combat_monsters/${name.toLowerCase().replace(/ /g, '_')}`,
+            name,
+            isLabyrinthMonster: true,
+        };
+    }
+
+    function chatIconEntry(name, sortIndex) {
+        return { hrid: `/chat_icons/${name.toLowerCase().replace(/ /g, '_')}`, name, sortIndex };
+    }
+
+    beforeEach(() => {
+        mocks.clientData.combatMonsterDetailMap = Object.fromEntries(
+            PANEL_ORDER.map((name) => [monsterEntry(name).hrid, monsterEntry(name)])
+        );
+        mocks.clientData.chatIconDetailMap = Object.fromEntries(
+            PANEL_ORDER.map((name, i) => [chatIconEntry(name, 471 + i).hrid, chatIconEntry(name, 471 + i)])
+        );
+    });
+
+    test('the ten rooms come out in the panel order, not alphabetically', () => {
+        expect(getLabyrinthMonsters().map((m) => m.name)).toEqual(PANEL_ORDER);
+    });
+
+    test('a non-labyrinth monster in the map is excluded', () => {
+        mocks.clientData.combatMonsterDetailMap['/combat_monsters/rat'] = {
+            hrid: '/combat_monsters/rat',
+            name: 'Rat',
+            isLabyrinthMonster: false,
+        };
+        expect(getLabyrinthMonsters().map((m) => m.name)).not.toContain('Rat');
+    });
+
+    test('a room with no chat-icon entry sorts after every ordered room, alphabetically among the other unknowns', () => {
+        mocks.clientData.combatMonsterDetailMap['/combat_monsters/zeta_beast'] = {
+            hrid: '/combat_monsters/zeta_beast',
+            name: 'Zeta Beast',
+            isLabyrinthMonster: true,
+        };
+        mocks.clientData.combatMonsterDetailMap['/combat_monsters/apex_worm'] = {
+            hrid: '/combat_monsters/apex_worm',
+            name: 'Apex Worm',
+            isLabyrinthMonster: true,
+        };
+
+        expect(getLabyrinthMonsters().map((m) => m.name)).toEqual([...PANEL_ORDER, 'Apex Worm', 'Zeta Beast']);
+    });
+
+    test('an empty labyrinth monster map returns an empty list', () => {
+        mocks.clientData.combatMonsterDetailMap = {};
+        expect(getLabyrinthMonsters()).toEqual([]);
+    });
+
+    test('no client data at all returns an empty list', () => {
+        mocks.clientData = null;
+        expect(getLabyrinthMonsters()).toEqual([]);
     });
 });
