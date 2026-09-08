@@ -451,6 +451,112 @@ describe('the selector canary', () => {
             expect(canary()).toEqual([]);
         });
 
+        describe('the leaderboard table', () => {
+            test('a closed leaderboard is no evidence', () => {
+                allAnchorsPresent();
+                expect(canary().map((f) => f.key)).not.toContain('canaryLeaderboardTable');
+            });
+
+            test('the panel content drawn with no table in it is the alarm', () => {
+                allAnchorsPresent();
+                document.body.innerHTML += '<div class="LeaderboardPanel_content__1TsXo"></div>';
+
+                const failures = canary();
+                expect(failures).toHaveLength(1);
+                expect(failures[0].key).toBe('canaryLeaderboardTable');
+                expect(failures[0].reason).toBe('selector missing — game update?');
+            });
+
+            test('an open leaderboard with its table is healthy', () => {
+                allAnchorsPresent();
+                document.body.innerHTML +=
+                    '<div class="LeaderboardPanel_content__1TsXo">' +
+                    '<table class="LeaderboardPanel_leaderboardTable__2Kd7q"></table></div>';
+                expect(canary()).toEqual([]);
+            });
+        });
+
+        describe('the item picker', () => {
+            const alchemySlot = (inner) =>
+                `<div class="SkillActionDetail_primaryItemSelectorContainer__nrvNW">${inner}</div>`;
+
+            test('no skill action panel is no evidence', () => {
+                allAnchorsPresent();
+                expect(canary().map((f) => f.key)).not.toContain('canaryItemSelector');
+            });
+
+            test('a filled picker is healthy', () => {
+                allAnchorsPresent();
+                document.body.innerHTML += alchemySlot('<div class="ItemSelector_itemSelector__2eTV6"></div>');
+                expect(canary()).toEqual([]);
+            });
+
+            test('an empty picker is healthy too — the slot has its own class', () => {
+                // The alchemize slot before anything is put in it. Accepting only
+                // the filled shape would alarm on every freshly-opened panel.
+                allAnchorsPresent();
+                document.body.innerHTML += alchemySlot('<div class="ItemSelector_emptySlot__1ns6h"></div>');
+                expect(canary()).toEqual([]);
+            });
+
+            test('the container drawn with neither shape inside it is the alarm', () => {
+                allAnchorsPresent();
+                document.body.innerHTML += alchemySlot('<div class="SomethingElse_box__9aZ"></div>');
+
+                const failures = canary();
+                expect(failures).toHaveLength(1);
+                expect(failures[0].key).toBe('canaryItemSelector');
+            });
+
+            test('an open dropdown alone is not canaried', () => {
+                // `ItemSelector_menu` exists only while a picker is open and
+                // nothing witnesses that, so it is deliberately not an anchor —
+                // a page with one and no picker container reports nothing.
+                allAnchorsPresent();
+                document.body.innerHTML += '<div class="ItemSelector_menu__12sEM"></div>';
+                expect(canary()).toEqual([]);
+            });
+        });
+
+        describe('guild trial stats member names', () => {
+            test('no trial stats modal is no evidence', () => {
+                allAnchorsPresent();
+                expect(canary().map((f) => f.key)).not.toContain('canaryTrialStatsName');
+            });
+
+            test('the stats table drawn with no named member is the alarm', () => {
+                // A rename of CharacterName_name empties every row's name, and
+                // the scraper drops nameless rows without a word.
+                allAnchorsPresent();
+                document.body.innerHTML +=
+                    '<table class="GuildPanel_trialStatsTable__3xWq2"><tbody><tr>' +
+                    '<td><div class="Renamed_name__9aZ" data-name="Someone">Someone</div></td>' +
+                    '</tr></tbody></table>';
+
+                const failures = canary();
+                expect(failures).toHaveLength(1);
+                expect(failures[0].key).toBe('canaryTrialStatsName');
+            });
+
+            test('a named member makes it healthy', () => {
+                allAnchorsPresent();
+                document.body.innerHTML +=
+                    '<table class="GuildPanel_trialStatsTable__3xWq2"><tbody><tr>' +
+                    '<td><div class="CharacterName_name__1Ug3T" data-name="Someone">Someone</div></td>' +
+                    '</tr></tbody></table>';
+                expect(canary()).toEqual([]);
+            });
+
+            test('a name without data-name does not satisfy it — the exact name lives there', () => {
+                allAnchorsPresent();
+                document.body.innerHTML +=
+                    '<table class="GuildPanel_trialStatsTable__3xWq2"><tbody><tr>' +
+                    '<td><div class="CharacterName_name__1Ug3T">Someone…</div></td>' +
+                    '</tr></tbody></table>';
+                expect(canary().map((f) => f.key)).toEqual(['canaryTrialStatsName']);
+            });
+        });
+
         test('a cross-component gate: chat input drawn, messages unfindable', () => {
             // The chat panel (Chat_) survived while the message class
             // (ChatMessage_) renamed — exactly the wholesale-rename slice the

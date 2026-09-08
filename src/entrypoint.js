@@ -497,6 +497,16 @@ function scheduleFailedFeatureRecovery(initFailures) {
  * one, so its absence is never evidence) and `ProgressBar_text` (absent
  * whenever the action queue is empty, and only one file leans on it).
  *
+ * Left out for want of a gate: `GuildPanel_exchangeModalContent`, the guild
+ * credit exchange modal the exchange advisor hangs off. Every witness available
+ * for "that modal is open" is satisfied on screens where it is not — the guild
+ * panel is open far more often than the modal is, the shared `Modal_` wrapper
+ * belongs to every modal in the game, and the item selector inside it is drawn
+ * by other guild modals too — so any gate would alarm on a healthy screen. Its
+ * own class is the only thing that witnesses it, which is not a canary. Same
+ * reasoning for `ItemSelector_menu`, handled below by canarying the picker it
+ * belongs to rather than the dropdown itself.
+ *
  * @returns {Array<{key: string, name: string, reason: string}>} One entry per missing anchor
  */
 function checkAnchorCanaries() {
@@ -610,6 +620,45 @@ function checkAnchorCanaries() {
             name: 'Header (community buff row)',
             selector: GAME.HEADER_COMMUNITY_BUFFS,
             when: GAME.HEADER_ACTION_INFO,
+        },
+        // The leaderboard table, read by both the standalone leaderboard's XP
+        // tracker and the guild panel's. Gated on the panel's own content
+        // wrapper — a sibling class, the SkillActionDetail case: the table is
+        // reached from it with closest(), so an open leaderboard always has
+        // both, and a closed one has neither.
+        {
+            key: 'canaryLeaderboardTable',
+            name: 'Leaderboard table',
+            selector: GAME.LEADERBOARD_TABLE,
+            when: GAME.LEADERBOARD_CONTENT,
+        },
+        // The item-picker component behind alchemy's and enhancing's pins and
+        // dimming, and the guild exchange advisor's read of what is selected.
+        // `ItemSelector_menu` — the class those features actually name — is the
+        // dropdown, drawn only while the player holds one open, and nothing
+        // else on the page witnesses that; canarying it would alarm on every
+        // screen. The component is caught one level out instead: the alchemy
+        // panel's primary slot container (a SkillActionDetail_ class, so a
+        // cross-component gate) always holds a picker, drawn as an empty slot
+        // until an item is in it and as a filled selector after. Either shape
+        // satisfies it; the component renaming leaves neither.
+        {
+            key: 'canaryItemSelector',
+            name: 'Item picker (skill action slot)',
+            selector: `${GAME.ITEM_SELECTOR_SLOT}, ${GAME.ITEM_SELECTOR_EMPTY_SLOT}`,
+            when: GAME.SKILL_ACTION_PRIMARY_ITEM_SELECTOR,
+        },
+        // Character names in the post-trial stats modal — the only place this
+        // script reads the class. The name is where the exact `data-name` lives,
+        // and a rename empties every row's name, which the scraper drops
+        // silently. Gated on the modal's own table (a different component's
+        // class in the same modal): the rows are inside it, so the table on
+        // screen with no name in it is the rename.
+        {
+            key: 'canaryTrialStatsName',
+            name: 'Guild trial stats (member names)',
+            selector: GAME.CHARACTER_NAME,
+            when: GAME.GUILD_TRIAL_STATS_TABLE,
         },
     ];
 

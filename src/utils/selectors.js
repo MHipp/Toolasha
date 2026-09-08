@@ -129,6 +129,29 @@ export const GAME = {
     // Enhancement
     PROTECTION_ITEM_INPUT: '[class*="protectionItemInputContainer"]',
 
+    // Leaderboard. The table is drawn both in the standalone Leaderboard panel
+    // and inside the guild panel; `LeaderboardPanel_content` wraps it in both
+    // (leaderboard-xp-display reaches it with closest()), so it witnesses an
+    // open leaderboard without being the table itself.
+    LEADERBOARD_TABLE: 'table[class*="LeaderboardPanel_leaderboardTable"]',
+    LEADERBOARD_CONTENT: '[class*="LeaderboardPanel_content"]',
+
+    // Item pickers — alchemy's Alchemize/Consumed Item slots and the Enhance
+    // Item slot are one component. A picker is drawn as `ItemSelector_emptySlot`
+    // until something is in it and as `ItemSelector_itemSelector` afterwards, so
+    // a check that must hold on any picker screen has to accept either.
+    // `ItemSelector_menu` is the dropdown, and exists only while one is open.
+    ITEM_SELECTOR_MENU: 'div[class*="ItemSelector_menu"]',
+    ITEM_SELECTOR_SLOT: '[class*="ItemSelector_itemSelector"]',
+    ITEM_SELECTOR_EMPTY_SLOT: '[class*="ItemSelector_emptySlot"]',
+    /** The action panel's own container for the primary picker — a different component */
+    SKILL_ACTION_PRIMARY_ITEM_SELECTOR: '[class*="SkillActionDetail_primaryItemSelectorContainer"]',
+
+    // Guild trial stats modal (test server): the game's own per-member totals.
+    // Names carry the exact value in `data-name`; the visible text is truncated.
+    GUILD_TRIAL_STATS_TABLE: 'table[class*="GuildPanel_trialStatsTable"]',
+    CHARACTER_NAME: '[class*="CharacterName_name"][data-name]',
+
     // Shared profile popup (the modal another player's name opens)
     SHARABLE_PROFILE_OVERVIEW: 'div[class*="SharableProfile_overviewTab"]',
 
