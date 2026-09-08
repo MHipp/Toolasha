@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The Lab Simulator's Market button opens every piece of a multi-item upgrade
+
+An upgrade that swaps one item for two — a two-hander for a weapon and shield, or an armour pair — had a Market button that opened only the first piece. It now opens all of them through the missing-materials tabs, each at the enhancement level the upgrade names, so a +7 tab shows the +7 listings rather than the unenhanced item. Single-item upgrades open exactly as before.
+
 ### Housekeeping: one script runs every gate CI runs
 
 `scripts/gates.sh` runs ESLint, Prettier with CI's own file globs, the test suite, both builds, the bundle-sharing check and the 2 MiB delivery ceiling, in CI's order. It exists because a push went red on four files that had been committed unformatted by tooling that skips the pre-commit hook; the same check now runs locally first.
