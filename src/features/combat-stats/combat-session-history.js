@@ -25,10 +25,15 @@
  *
  * The snapshot stored is the last one seen of that session, which is its final
  * state, since the loot totals only ever grow.
+ *
+ * That holds for one observer. Two devices can each hold a different stretch of
+ * the same run under the same key, and neither snapshot is the whole of it, so
+ * two copies of one session are combined field by field rather than one winning
+ * whole — see `mergeSessionRecords`.
  */
 
 import dataManager from '../../core/data-manager.js';
-import { createPersistedRecord, mergeById } from '../../utils/persisted-record.js';
+import { createPersistedRecord } from '../../utils/persisted-record.js';
 import { registerSyncMerge } from '../../utils/sync-merge-registry.js';
 
 /**
@@ -68,14 +73,196 @@ function startedAt(session) {
     return Number.isFinite(ms) ? ms : 0;
 }
 
+/** When a session was last observed — the instant the stored snapshot was taken */
+function lastSeenAt(session) {
+    const ms = Number(session?.timestamp);
+    return Number.isFinite(ms) ? ms : 0;
+}
+
+/** The larger of two counters; a side that is not a number defers to the other */
+function larger(a, b) {
+    if (typeof a !== 'number') return b;
+    if (typeof b !== 'number') return a;
+    return Math.max(a, b);
+}
+
+/** A map of `hrid → count`, each key the larger of the two counts */
+function mergeCounterMap(a, b) {
+    const merged = { ...(a && typeof a === 'object' ? a : {}) };
+    for (const [key, value] of Object.entries(b && typeof b === 'object' ? b : {})) {
+        merged[key] = larger(merged[key], value);
+    }
+    return merged;
+}
+
+/**
+ * A `totalLootMap`, keyed by the game's own slot key.
+ *
+ * The slot keys are the server's and identical in both copies of one run, so
+ * the union cannot split an item across two rows; each slot's `count` is a
+ * running total and takes the larger.
+ */
+function mergeLoot(a, b) {
+    const merged = { ...(a && typeof a === 'object' ? a : {}) };
+    for (const [slot, entry] of Object.entries(b && typeof b === 'object' ? b : {})) {
+        const held = merged[slot];
+        merged[slot] =
+            held && entry && typeof entry === 'object'
+                ? { ...held, ...entry, count: larger(held.count, entry.count) }
+                : entry;
+    }
+    return merged;
+}
+
+/**
+ * One consumable line, as two observers of the same run saw it.
+ *
+ * `actualConsumed` and `elapsedSeconds` are counters and take the larger. The
+ * rates (`consumptionRate`, `consumedPerDay`, `timeToZeroSeconds`) and the
+ * inventory readings (`currentCount`, `inventoryAmount`, which fall as the
+ * stack is drunk) are the later observer's — a max of a rate is meaningless
+ * and a max of a stack size is the older reading. `consumed` is a rate times a
+ * span, so it is recomputed from the merged duration rather than carried over.
+ */
+function mergeConsumable(early, late, durationSeconds) {
+    const rate = late.consumptionRate;
+    return {
+        ...early,
+        ...late,
+        actualConsumed: larger(early.actualConsumed, late.actualConsumed),
+        elapsedSeconds: larger(early.elapsedSeconds, late.elapsedSeconds),
+        consumed: typeof rate === 'number' ? rate * durationSeconds : late.consumed,
+    };
+}
+
+/** The consumable lines of one player, keyed by item, the later copy's order first */
+function mergeConsumables(early, late, durationSeconds) {
+    const byItem = new Map();
+    for (const line of Array.isArray(early) ? early : []) {
+        if (line?.itemHrid) byItem.set(line.itemHrid, line);
+    }
+
+    const merged = [];
+    const taken = new Set();
+    for (const line of Array.isArray(late) ? late : []) {
+        if (!line?.itemHrid) continue;
+        taken.add(line.itemHrid);
+        const held = byItem.get(line.itemHrid);
+        merged.push(held ? mergeConsumable(held, line, durationSeconds) : line);
+    }
+    for (const [itemHrid, line] of byItem) {
+        if (!taken.has(itemHrid)) merged.push(line);
+    }
+    return merged;
+}
+
+/** One player of a run, as the two observers saw them */
+function mergePlayer(early, late, durationSeconds) {
+    return {
+        ...early,
+        ...late,
+        loot: mergeLoot(early.loot, late.loot),
+        experience: mergeCounterMap(early.experience, late.experience),
+        deathCount: larger(early.deathCount, late.deathCount),
+        consumables: mergeConsumables(early.consumables, late.consumables, durationSeconds),
+    };
+}
+
+/**
+ * Two observations of the *same* run, combined field by field.
+ *
+ * Two devices can each hold a different stretch of one run — one watched its
+ * first hour, the other its last five minutes — and both archive it under the
+ * same `roster|combatStartTime` key. Letting either copy win whole throws away
+ * whatever only the other saw. Every field is resolved on what it means:
+ *
+ * | Field | How |
+ * | --- | --- |
+ * | `combatStartTime` | the earlier of the two — a run begins once |
+ * | `timestamp` (last seen) | the later of the two |
+ * | `durationSeconds` | start to last-seen, never shorter than either observation |
+ * | `players[].loot[slot].count` | counter — the larger |
+ * | `players[].experience[skill]` | counter — the larger |
+ * | `players[].deathCount` | counter — the larger |
+ * | `players[].consumables[].actualConsumed` | counter — the larger |
+ * | `players[].consumables[].elapsedSeconds` | counter — the larger |
+ * | `players[].consumables[].consumed` | recomputed: merged rate times merged duration |
+ * | `players[].consumables[]` rates and stack counts | the later observer's |
+ * | `players[].combatStats` | a reading, not a total — the later observer's |
+ * | everything else (`battleId`, `actionHrid`, `key`, names) | the later observer's |
+ *
+ * A player, or a consumable line, that only one side has passes through whole.
+ * Symmetric in its arguments for every counter and timestamp; where both were
+ * last seen at the same instant the second argument counts as the later.
+ *
+ * @param {Object} a - One stored session
+ * @param {Object} b - Another copy of the same session
+ * @returns {Object} The two combined
+ */
+export function mergeSessionRecords(a, b) {
+    if (!a || typeof a !== 'object') return b;
+    if (!b || typeof b !== 'object') return a;
+
+    const [early, late] = lastSeenAt(a) <= lastSeenAt(b) ? [a, b] : [b, a];
+    const startMs = Math.min(startedAt(a) || Infinity, startedAt(b) || Infinity);
+    const earlierStart = startedAt(a) && startedAt(a) <= (startedAt(b) || Infinity) ? a : b;
+    const combatStartTime = Number.isFinite(startMs) ? earlierStart.combatStartTime : late.combatStartTime;
+
+    const timestamp = Math.max(lastSeenAt(a), lastSeenAt(b));
+    // The span the run covered, floored by what each device measured: a copy
+    // with no `timestamp` contributes no end, and must not shorten a duration
+    // the other side already recorded
+    const spanSeconds = timestamp && Number.isFinite(startMs) ? (timestamp - startMs) / 1000 : 0;
+    const durationSeconds = Math.max(spanSeconds, a.durationSeconds || 0, b.durationSeconds || 0);
+
+    const byName = new Map();
+    for (const player of early.players || []) {
+        if (player?.name) byName.set(player.name, player);
+    }
+    const players = [];
+    const taken = new Set();
+    for (const player of late.players || []) {
+        if (!player?.name) {
+            players.push(player);
+            continue;
+        }
+        taken.add(player.name);
+        const held = byName.get(player.name);
+        players.push(held ? mergePlayer(held, player, durationSeconds) : player);
+    }
+    for (const [name, player] of byName) {
+        if (!taken.has(name)) players.push(player);
+    }
+
+    const merged = { ...early, ...late, durationSeconds, players };
+    if (combatStartTime !== undefined) merged.combatStartTime = combatStartTime;
+    if (timestamp) merged.timestamp = timestamp;
+    return merged;
+}
+
 /**
  * The list on disk, kept through the shared load/save discipline: a read that
  * could not be made keeps the list in memory rather than writing one session
- * over all of them, and a save folds in runs another tab archived. Merged by
- * session key, newest first, capped at MAX_SESSIONS.
+ * over all of them, and a save folds in runs another tab archived. Keyed by
+ * session key, with two copies of one run combined by `mergeSessionRecords`
+ * rather than one replacing the other, newest first, capped at MAX_SESSIONS.
+ *
+ * @param {Array<Object>} base - The list as stored
+ * @param {Array<Object>} fresh - The list to fold on top
+ * @returns {Array<Object>} A new list
  */
-const mergeSessions = (base, fresh) =>
-    mergeById(sessionIdentity, (a, b) => startedAt(b) - startedAt(a))(base, fresh).slice(0, MAX_SESSIONS);
+export function mergeSessions(base, fresh) {
+    const byId = new Map();
+    for (const list of [base, fresh]) {
+        for (const entry of Array.isArray(list) ? list : []) {
+            const id = entry == null ? null : sessionIdentity(entry);
+            if (id === null || id === undefined) continue;
+            const held = byId.get(id);
+            byId.set(id, held ? mergeSessionRecords(held, entry) : entry);
+        }
+    }
+    return [...byId.values()].sort((a, b) => startedAt(b) - startedAt(a)).slice(0, MAX_SESSIONS);
+}
 
 const sessionRecord = createPersistedRecord({
     base: STORE_KEY,

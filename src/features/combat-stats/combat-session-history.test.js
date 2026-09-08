@@ -61,6 +61,8 @@ vi.mock('../../utils/adoption-consent.js', () => ({
 const {
     sessionKey,
     withSession,
+    mergeSessionRecords,
+    mergeSessions,
     combineSessions,
     describeSession,
     MAX_SESSIONS,
@@ -299,5 +301,104 @@ describe('the list survives a failed read and a second tab', () => {
             '2026-08-03T09:00:00Z',
         ]);
         expect(starts(stored())).toEqual(['2026-08-03T01:00:00Z']);
+    });
+});
+
+describe('two observers of one run', () => {
+    // The same run seen from two devices: one watched its first hour, the other
+    // only its last five minutes. Both archive it under the same key.
+    const START = '2026-08-03T01:00:00Z';
+    const startMs = new Date(START).getTime();
+
+    const observation = ({ seenAt, coins, xp, deaths, consumed, rate, stack }) => ({
+        combatStartTime: START,
+        timestamp: startMs + seenAt * 1000,
+        durationSeconds: seenAt,
+        battleId: `battle-${seenAt}`,
+        players: [
+            {
+                name: 'Millennium44',
+                loot: { 7: { itemHrid: '/items/coin', count: coins } },
+                experience: { '/skills/attack': xp },
+                deathCount: deaths,
+                consumables: [
+                    {
+                        itemHrid: '/items/coffee',
+                        actualConsumed: consumed,
+                        elapsedSeconds: seenAt,
+                        consumptionRate: rate,
+                        currentCount: stack,
+                        inventoryAmount: stack,
+                        consumed: rate * seenAt,
+                    },
+                ],
+                combatStats: { combatDropQuantity: stack },
+            },
+        ],
+    });
+
+    const early = observation({ seenAt: 3600, coins: 900, xp: 400, deaths: 2, consumed: 6, rate: 0.002, stack: 90 });
+    const late = observation({ seenAt: 7200, coins: 120, xp: 30, deaths: 1, consumed: 3, rate: 0.001, stack: 40 });
+
+    const expectUnion = (merged) => {
+        expect(merged.combatStartTime).toBe(START);
+        expect(merged.timestamp).toBe(startMs + 7200 * 1000);
+        expect(merged.durationSeconds).toBe(7200);
+
+        const player = merged.players[0];
+        expect(player.loot[7].count).toBe(900);
+        expect(player.experience['/skills/attack']).toBe(400);
+        expect(player.deathCount).toBe(2);
+
+        const coffee = player.consumables[0];
+        expect(coffee.actualConsumed).toBe(6);
+        expect(coffee.elapsedSeconds).toBe(7200);
+        // A rate is not a counter: the later observer's, and `consumed` follows
+        // from it and the merged duration rather than being max'd
+        expect(coffee.consumptionRate).toBe(0.001);
+        expect(coffee.consumed).toBeCloseTo(7.2, 6);
+        // A stack falls as it is drunk, so the later reading is the true one
+        expect(coffee.currentCount).toBe(40);
+        expect(player.combatStats.combatDropQuantity).toBe(40);
+        expect(merged.battleId).toBe('battle-7200');
+    };
+
+    test('the counters are the max and the span is start to last seen', () => {
+        expectUnion(mergeSessionRecords(early, late));
+    });
+
+    test('the argument order does not change the result', () => {
+        expectUnion(mergeSessionRecords(late, early));
+    });
+
+    test('merging the lists combines the shared run instead of replacing it', () => {
+        const merged = mergeSessions([{ ...early, key: sessionKey(early) }], [{ ...late, key: sessionKey(late) }]);
+
+        expect(merged).toHaveLength(1);
+        expectUnion(merged[0]);
+    });
+
+    test('a run only one side has passes through unchanged', () => {
+        const other = { ...observation({ seenAt: 60, coins: 5, xp: 1, deaths: 0, consumed: 0, rate: 0, stack: 9 }) };
+        other.combatStartTime = '2026-08-03T05:00:00Z';
+
+        const merged = mergeSessions([{ ...early, key: sessionKey(early) }], [{ ...other, key: sessionKey(other) }]);
+
+        expect(merged).toHaveLength(2);
+        expect(merged.find((entry) => entry.combatStartTime === '2026-08-03T05:00:00Z')).toEqual({
+            ...other,
+            key: sessionKey(other),
+        });
+    });
+
+    test('a player who only one device saw is kept', () => {
+        const pair = {
+            ...late,
+            players: [...late.players, { name: 'Guest', loot: {}, experience: {}, deathCount: 0 }],
+        };
+
+        const merged = mergeSessionRecords(early, pair);
+
+        expect(merged.players.map((player) => player.name).sort()).toEqual(['Guest', 'Millennium44']);
     });
 });
