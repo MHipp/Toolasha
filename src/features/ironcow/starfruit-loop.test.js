@@ -566,8 +566,14 @@ describe('a bulk decompose is shared out over the fruit it swallows', () => {
         expect(decomposeSeconds(loop)).toBeCloseTo(10, 6);
         // 10s forage + 10s decompose + (6 essence / bulk 10) / 180 actions/hr = 12s coinify
         expect(loop.hoursPerFruit * 3600).toBeCloseTo(32, 6);
-        // 0.6 coinify actions × 15,000 × 0.7 = 6,300 in, less the 750 action fee
-        expect(loop.goldPerHour).toBeCloseTo((6300 - 750) / (32 / 3600), 3);
+        // The decompose fee is (10 + 65) × 5 × bulk = 750 for the ACTION, which
+        // covers two fruit — so a fruit carries 375, not the whole 750. Charging
+        // the action fee to one fruit used to cancel against the decompose time
+        // being inflated by the same factor; with the time leg corrected above,
+        // this leg has to be corrected too or the fee is simply doubled.
+        expect(loop.goldOutPerFruit).toBe(375);
+        // 0.6 coinify actions × 15,000 × 0.7 = 6,300 in, less the 375 a fruit owes
+        expect(loop.goldPerHour).toBeCloseTo((6300 - 375) / (32 / 3600), 3);
     });
 
     test('the essence leg is untouched: a bulk-2 fruit still becomes six essence', async () => {

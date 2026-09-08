@@ -250,7 +250,13 @@ export async function calculateStarfruitLoop() {
         const coinifyHours = coinifyActionsPerFruit / coinifyActionsPerHour;
 
         const goldInPerFruit = coinifyActionsPerFruit * coinsPerSuccess * coinifyRate;
-        const goldOutPerFruit = decomposeFee;
+        // `getAlchemyCoinCost` returns the fee for one ACTION with the bulk
+        // multiplier already folded in, so charging it whole to a single fruit
+        // bills a bulk-2 item twice over. This used to cancel out by accident:
+        // `decomposeHours` was inflated by the same factor, so the fee-per-hour
+        // came out right for the wrong reason. Now that the time leg divides by
+        // bulk, this one has to as well or the fee rate is overstated instead.
+        const goldOutPerFruit = decomposeBulk > 0 ? decomposeFee / decomposeBulk : decomposeFee;
         const netPerFruit = goldInPerFruit - goldOutPerFruit;
 
         const hoursPerFruit = forageHours + decomposeHours + coinifyHours;
