@@ -23,6 +23,9 @@ vi.mock('./websocket.js', () => ({
 
 const settingsStorageMock = vi.hoisted(() => ({
     lastLoadReadable: true,
+    // The real module hangs this off the singleton so it crosses a bundle
+    // boundary; the reset-to-defaults path is identified by it
+    SAVE_ALL_KEYS: Symbol('settings.saveAllKeys'),
     saveSettings: vi.fn(() => Promise.resolve()),
     saveSettingsKeepingStored: vi.fn(() => Promise.resolve(true)),
     loadSettings: vi.fn(() => Promise.resolve({})),
@@ -56,6 +59,7 @@ beforeEach(() => {
     config._pendingValues = Object.create(null);
     config._loadGeneration = 0;
     config.settingsMap = {};
+    config._dirtyKeys = new Set();
     config.settingsOwner = null;
     config.characterSettingsLoaded = false;
     config.settingChangeCallbacks = {};
@@ -902,5 +906,84 @@ describe('Config — two settings loads in flight across a character switch', ()
             warn.mockRestore();
             vi.useRealTimers();
         }
+    });
+});
+
+describe('a save carries the keys this client changed', () => {
+    beforeEach(() => {
+        config.settingsMap = {
+            checkboxOn: { id: 'checkboxOn', isTrue: true },
+            pricingMode: { id: 'pricingMode', value: 'optimistic' },
+            featureBacked: { id: 'featureBacked', isTrue: true },
+        };
+        config.characterSettingsLoaded = true;
+    });
+
+    /** The dirty set handed to the storage layer on the Nth save */
+    const dirtyOnCall = (n = 0) => [...settingsStorageMock.saveSettings.mock.calls[n][1]];
+
+    test('setSetting names the key it wrote', () => {
+        config.setSetting('checkboxOn', false);
+        expect(dirtyOnCall()).toEqual(['checkboxOn']);
+    });
+
+    test('setSettingValue names the key it wrote', () => {
+        config.setSettingValue('pricingMode', 'pessimistic');
+        expect(dirtyOnCall()).toEqual(['pricingMode']);
+    });
+
+    test('the feature toggle names the setting it wrote', async () => {
+        config.features = { someFeature: { settingKey: 'featureBacked', enabled: true } };
+        await config.setFeatureEnabled('someFeature', false);
+        expect(dirtyOnCall()).toEqual(['featureBacked']);
+        expect(config.settingsMap.featureBacked.isTrue).toBe(false);
+    });
+
+    test('the reset to defaults says outright that it writes everything', async () => {
+        settingsStorageMock.buildDefaults.mockImplementation(() => ({ checkboxOn: { isTrue: true } }));
+        config.setSetting('checkboxOn', false);
+        await config.resetToDefaults();
+
+        const last = settingsStorageMock.saveSettings.mock.calls.at(-1);
+        expect(last[1]).toBe(settingsStorageMock.SAVE_ALL_KEYS);
+    });
+
+    test('a write made while a save is in flight is carried by its own save', async () => {
+        let release;
+        settingsStorageMock.saveSettings.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+
+        config.setSetting('checkboxOn', false);
+        // Lands during the first save, so clearing on completion must not eat it
+        config.setSettingValue('pricingMode', 'pessimistic');
+        release();
+        await Promise.resolve();
+
+        expect(dirtyOnCall(0)).toEqual(['checkboxOn']);
+        expect(dirtyOnCall(1)).toEqual(['pricingMode']);
+    });
+
+    test('a failed write leaves its keys dirty for the next save to carry', async () => {
+        settingsStorageMock.saveSettings.mockImplementationOnce(() => Promise.reject(new Error('store is gone')));
+
+        await config.saveSettings().catch(() => {});
+        config._markDirty('checkboxOn');
+
+        expect([...config._dirtyKeys]).toContain('checkboxOn');
+    });
+
+    test('a character switch drops the dirty keys with the map they named', () => {
+        config.setSetting('checkboxOn', false);
+        config._markDirty('pricingMode');
+        config.clearSettingsCache();
+
+        expect([...config._dirtyKeys]).toEqual([]);
+    });
+
+    test('a map that was never read back still goes through the careful save', () => {
+        config.characterSettingsLoaded = false;
+        config.setSetting('checkboxOn', false);
+
+        expect(settingsStorageMock.saveSettings).not.toHaveBeenCalled();
+        expect(settingsStorageMock.saveSettingsKeepingStored).toHaveBeenCalled();
     });
 });

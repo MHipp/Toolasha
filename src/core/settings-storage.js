@@ -53,6 +53,21 @@ const DEFAULT_REWRITES = [
     { id: 'labyrinthPathUnknownMode', field: 'value', from: 'clearable', to: 'shroud' },
 ];
 
+/**
+ * Pass as `saveSettings`' second argument to write the whole map, every id of
+ * it, over what is stored — the deliberate reset to defaults. Named rather than
+ * implied by omission so a caller that simply forgot to say what it changed
+ * cannot silently get the destructive write. See `saveSettings`.
+ *
+ * Reached as `settingsStorage.SAVE_ALL_KEYS` rather than as a named export:
+ * rollup maps this module to the `Toolasha.Core.settingsStorage` global, so a
+ * caller in another bundle gets the singleton and nothing else — a named import
+ * would compile to `undefined` there and quietly fall through to the scoped
+ * write. Hanging it off the singleton means every bundle reads the one symbol.
+ * @type {symbol}
+ */
+const SAVE_ALL_KEYS = Symbol('settings.saveAllKeys');
+
 /** Bump the suffix when a new batch is added to DEFAULT_REWRITES */
 const DEFAULT_REWRITE_FLAG_KEY = 'settings_default_rewrites_v1';
 
@@ -77,6 +92,8 @@ class SettingsStorage {
          * standing in for settings that could not be read, not settings.
          */
         this.lastLoadReadable = true;
+        /** See SAVE_ALL_KEYS — carried on the instance so it crosses bundles */
+        this.SAVE_ALL_KEYS = SAVE_ALL_KEYS;
     }
 
     /**
@@ -352,10 +369,21 @@ class SettingsStorage {
      * player just made is a worse answer than losing ids this build cannot show
      * them anyway.
      *
+     * `dirtyKeys` narrows the write to the ids the caller actually changed.
+     * Without it this method writes the caller's whole map, which means a client
+     * holding a map it loaded ten minutes ago reverts every setting another
+     * client has changed since — a second tab or a second browser on the same
+     * character is enough, and neither shows any sign of it. With it, what is
+     * stored is the base and only the named ids (plus any id stored does not
+     * have at all, so a genuinely new setting still lands) are written over it.
+     *
      * @param {Object} settings - Settings map
+     * @param {Iterable<string>|symbol|null} [dirtyKeys=null] - The ids this
+     *   caller changed, `settingsStorage.SAVE_ALL_KEYS` to write the map whole,
+     *   or null for a caller with no dirty tracking (writes whole, as it always did)
      * @returns {Promise<void>}
      */
-    async saveSettings(settings) {
+    async saveSettings(settings, dirtyKeys = null) {
         const characterKey = this.getCharacterStorageKey();
         const probed = await storage.tryGet(characterKey, this.storageArea);
 
@@ -370,10 +398,23 @@ class SettingsStorage {
 
         let toWrite = settings;
         if (stored && typeof stored === 'object') {
-            const foreign = Object.keys(stored).filter((id) => !(id in (settings || {})));
-            if (foreign.length > 0) {
-                toWrite = { ...settings };
-                for (const id of foreign) toWrite[id] = stored[id];
+            const scoped = dirtyKeys !== null && dirtyKeys !== undefined && dirtyKeys !== SAVE_ALL_KEYS;
+            if (scoped) {
+                // Stored is the base, so every id this client did not touch keeps
+                // whatever another client last wrote for it — including ids this
+                // build has no schema entry for, which fall out of the loop below
+                // and are therefore carried for free.
+                const dirty = dirtyKeys instanceof Set ? dirtyKeys : new Set(dirtyKeys);
+                toWrite = { ...stored };
+                for (const [id, entry] of Object.entries(settings || {})) {
+                    if (dirty.has(id) || !(id in stored)) toWrite[id] = entry;
+                }
+            } else {
+                const foreign = Object.keys(stored).filter((id) => !(id in (settings || {})));
+                if (foreign.length > 0) {
+                    toWrite = { ...settings };
+                    for (const id of foreign) toWrite[id] = stored[id];
+                }
             }
         }
 
@@ -700,7 +741,10 @@ class SettingsStorage {
             settings[settingId].value = value;
         }
 
-        await this.saveSettings(settings);
+        // Freshly loaded a few lines up, so a whole-map write would be correct
+        // here too — but naming the one id it changed costs nothing and keeps a
+        // concurrent client's change made during that gap.
+        await this.saveSettings(settings, [settingId]);
     }
 
     /**

@@ -36,8 +36,19 @@ vi.mock('./storage.js', () => ({
     },
 }));
 
+vi.mock('./data-manager.js', () => ({
+    default: {
+        getCurrentCharacterId: () => 'alice',
+        getCurrentCharacterName: () => 'Alice',
+    },
+}));
+
 const { default: settingsStorage } = await import('./settings-storage.js');
 const { default: storage } = await import('./storage.js');
+// The real config, over the real settings storage: the two-client regression
+// below is only a regression end to end, where config decides what it changed
+// and storage decides what it writes.
+const { default: config } = await import('./config.js');
 
 describe('SettingsStorage.importSettings known-character matching', () => {
     beforeEach(() => {
@@ -521,5 +532,145 @@ describe('a saved boolean entry that carries both fields', () => {
         expect(map.actionQueue_valueMode.value).toBe('estimated_value');
         // The stray boolean rides along exactly as it did before
         expect(map.actionQueue_valueMode.isTrue).toBe(true);
+    });
+});
+
+describe('a save carries only what this client changed', () => {
+    const KEY = 'script_settingsMap_alice';
+
+    beforeEach(() => {
+        stored.clear();
+        outage.on = false;
+        settingsStorage.currentCharacterId = 'alice';
+        settingsStorage.currentCharacterName = 'Alice';
+    });
+
+    test("another client's change to an untouched id survives", async () => {
+        stored.set(`json:${KEY}`, {
+            chatCommands: { isTrue: true },
+            xpTracker: { isTrue: true },
+        });
+
+        // A stale map: loaded before the other client wrote xpTracker
+        const stale = { chatCommands: { isTrue: false }, xpTracker: { isTrue: false } };
+        await settingsStorage.saveSettings(stale, ['chatCommands']);
+
+        const written = stored.get(`json:${KEY}`);
+        expect(written.chatCommands).toEqual({ isTrue: false });
+        expect(written.xpTracker).toEqual({ isTrue: true });
+    });
+
+    test('an id the store does not have at all still lands', async () => {
+        stored.set(`json:${KEY}`, { chatCommands: { isTrue: true } });
+
+        await settingsStorage.saveSettings({ chatCommands: { isTrue: true }, brandNewSetting: { isTrue: true } }, [
+            'chatCommands',
+        ]);
+
+        expect(stored.get(`json:${KEY}`).brandNewSetting).toEqual({ isTrue: true });
+    });
+
+    test('SAVE_ALL_KEYS writes every setting, as the reset to defaults needs', async () => {
+        stored.set(`json:${KEY}`, { chatCommands: { isTrue: true }, xpTracker: { isTrue: true } });
+
+        const defaults = { chatCommands: { isTrue: false }, xpTracker: { isTrue: false } };
+        await settingsStorage.saveSettings(defaults, settingsStorage.SAVE_ALL_KEYS);
+
+        expect(stored.get(`json:${KEY}`)).toEqual(defaults);
+    });
+
+    test('a scoped save still keeps ids this build does not know', async () => {
+        stored.set(`json:${KEY}`, {
+            chatCommands: { isTrue: true },
+            futureFeature_enabled: { isTrue: false },
+        });
+
+        await settingsStorage.saveSettings({ chatCommands: { isTrue: false } }, ['chatCommands']);
+
+        expect(stored.get(`json:${KEY}`).futureFeature_enabled).toEqual({ isTrue: false });
+    });
+
+    test('a store that cannot be read still takes a scoped write', async () => {
+        outage.on = true;
+        await settingsStorage.saveSettings({ chatCommands: { isTrue: false } }, ['chatCommands']);
+        outage.on = false;
+
+        expect(storage.setJSON).toHaveBeenCalledWith(
+            'script_settingsMap_alice',
+            { chatCommands: { isTrue: false } },
+            expect.anything(),
+            true
+        );
+    });
+});
+
+describe('two clients on one character', () => {
+    const KEY = 'script_settingsMap_alice';
+    /** Let the setters' fire-and-forget save reach storage */
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    beforeEach(() => {
+        stored.clear();
+        outage.on = false;
+        settingsStorage.currentCharacterId = 'alice';
+        settingsStorage.currentCharacterName = 'Alice';
+        config._dirtyKeys = new Set();
+        config.settingsMap = {};
+        config.characterSettingsLoaded = false;
+        config.settingChangeCallbacks = {};
+        config.settingsLoadedCallbacks = [];
+    });
+
+    /**
+     * One config singleton stands in for two clients: each "client" is the map
+     * and dirty set it loaded, swapped in around its own writes. That is exactly
+     * what a second tab holds — its own snapshot of the same store.
+     */
+    const asClient = (client) => {
+        config.settingsMap = client.map;
+        config._dirtyKeys = client.dirty;
+        config.characterSettingsLoaded = true;
+    };
+    const loadClient = async () => {
+        config.settingsMap = {};
+        config._dirtyKeys = new Set();
+        config.characterSettingsLoaded = false;
+        await config.loadSettings();
+        return { map: config.settingsMap, dirty: config._dirtyKeys };
+    };
+
+    test("a stale client's save does not revert the setting the other client changed", async () => {
+        const a = await loadClient();
+        const b = await loadClient();
+
+        asClient(a);
+        const xWanted = !config.getSetting('chatCommands');
+        config.setSetting('chatCommands', xWanted);
+        await settle();
+
+        // B has been holding its map since before A's write, and knows nothing
+        // about it — the whole-map save used to put B's stale copy of X back
+        asClient(b);
+        const yWanted = !config.getSetting('xpTracker');
+        config.setSetting('xpTracker', yWanted);
+        await settle();
+
+        const written = stored.get(`json:${KEY}`);
+        expect(written.chatCommands.isTrue).toBe(xWanted);
+        expect(written.xpTracker.isTrue).toBe(yWanted);
+    });
+
+    test('a reset to defaults still writes every setting', async () => {
+        const a = await loadClient();
+        asClient(a);
+        config.setSetting('chatCommands', !config.getSetting('chatCommands'));
+        await settle();
+
+        await config.resetToDefaults();
+
+        const written = stored.get(`json:${KEY}`);
+        const defaults = settingsStorage.buildDefaults();
+        expect(Object.keys(written).length).toBe(Object.keys(defaults).length);
+        expect(written.chatCommands.isTrue).toBe(defaults.chatCommands.isTrue);
     });
 });

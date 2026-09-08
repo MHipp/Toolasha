@@ -118,6 +118,18 @@ class Config {
          */
         this._pendingValues = Object.create(null);
 
+        /**
+         * Setting ids this client has changed and not yet written out.
+         *
+         * `settingsMap` is a snapshot taken at load; writing it whole reverts
+         * every setting another client (a second tab, a second browser on the
+         * same character) has changed since that load. So a save carries only
+         * what this client actually touched, and every path that mutates
+         * `settingsMap` and then saves has to record its keys here. See
+         * `_markDirty()` and `saveSettings()`.
+         */
+        this._dirtyKeys = new Set();
+
         /** Timer that reloads a map left empty by a clear nobody followed — see _armReloadWatchdog() */
         this._reloadWatchdog = null;
 
@@ -625,6 +637,12 @@ class Config {
      */
     clearSettingsCache() {
         this.settingsMap = {};
+        // The keys named a map that no longer exists. Keeping them would aim the
+        // next save at the ARRIVING character's store (this fires on
+        // `character_switching`) and write the departing character's values there.
+        // A write made from here on is queued in `_pendingWrites` and marked dirty
+        // when the load replays it through the setters.
+        this._dirtyKeys = new Set();
         this.characterSettingsLoaded = false;
         this._armReloadWatchdog();
     }
@@ -677,8 +695,34 @@ class Config {
      * @returns {Promise<void|boolean>} Resolves when the write completes
      */
     saveSettings() {
-        if (this.characterSettingsLoaded) return settingsStorage.saveSettings(this.settingsMap);
-        return settingsStorage.saveSettingsKeepingStored(this.settingsMap);
+        if (!this.characterSettingsLoaded) return settingsStorage.saveSettingsKeepingStored(this.settingsMap);
+
+        // Swapped for an empty set BEFORE the first await, not cleared after the
+        // write lands: a setter running while this save is in flight marks its
+        // key on the NEW set, so the landing save cannot clear a key it never
+        // carried, and that write is picked up by the save the setter makes for
+        // itself. On a failed write the keys are folded back in, since they are
+        // still unwritten and the next save should carry them.
+        const dirty = this._dirtyKeys;
+        this._dirtyKeys = new Set();
+        return settingsStorage.saveSettings(this.settingsMap, dirty).catch((error) => {
+            for (const key of dirty) this._dirtyKeys.add(key);
+            throw error;
+        });
+    }
+
+    /**
+     * Record that this client changed `key`, so the next save carries it.
+     *
+     * Every write into `settingsMap` that is followed by a save must call this;
+     * a path that does not keeps the whole-map write's bug, silently reverting
+     * other clients' changes for that one setting.
+     * @param {string} key - Setting key that was written
+     * @returns {void}
+     * @private
+     */
+    _markDirty(key) {
+        this._dirtyKeys.add(key);
     }
 
     /**
@@ -829,6 +873,7 @@ class Config {
         const setting = this.settingsMap[key];
         if (setting) {
             this._writeSettingField(setting, value);
+            this._markDirty(key);
             this.saveSettings();
 
             // Re-apply colors if color setting changed
@@ -850,6 +895,7 @@ class Config {
         if (this._deferWriteDuringReload('setSettingValue', key, value)) return;
         if (this.settingsMap[key]) {
             this._writeSettingField(this.settingsMap[key], value);
+            this._markDirty(key);
             this.saveSettings();
 
             // Re-apply color settings if this is a color setting
@@ -1074,7 +1120,12 @@ class Config {
      */
     async resetToDefaults() {
         this.settingsMap = settingsStorage.buildDefaults();
-        await settingsStorage.saveSettings(this.settingsMap);
+        // Says so explicitly: this map is not a snapshot with a few edits on it,
+        // it is every setting deliberately put back to its default, so it must
+        // land whole rather than through the dirty-key merge. Anything the dirty
+        // set was holding is now moot — the reset covers those ids too.
+        this._dirtyKeys = new Set();
+        await settingsStorage.saveSettings(this.settingsMap, settingsStorage.SAVE_ALL_KEYS);
         this.applyColorSettings();
     }
 
@@ -1234,6 +1285,7 @@ class Config {
         // Update legacy setting if it exists
         if (feature.settingKey && this.settingsMap[feature.settingKey]) {
             this.settingsMap[feature.settingKey].isTrue = enabled;
+            this._markDirty(feature.settingKey);
         }
 
         // Update feature registry
