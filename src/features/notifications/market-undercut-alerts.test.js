@@ -30,6 +30,9 @@ const game = vi.hoisted(() => ({
     // How a forced refresh behaves; default just re-notifies subscribers, as the
     // real fetch() does on success. Tests override this to reshape the snapshot.
     fetchImpl: null,
+    // What the mocked notify() reports back; a test overrides this to simulate
+    // a notice that reached no channel.
+    notifyResult: { fired: true, channels: ['toast'] },
 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -72,7 +75,7 @@ vi.mock('./notification-service.js', () => ({
     default: {
         notify: (key, message, options) => {
             game.notified.push({ key, message, options });
-            return { fired: true, channels: ['toast'] };
+            return game.notifyResult;
         },
     },
 }));
@@ -120,6 +123,7 @@ describe('market undercut alerts', () => {
         game.priceListeners = [];
         game.notified = [];
         game.mooketRows = {};
+        game.notifyResult = { fired: true, channels: ['toast'] };
         // A forced refresh, by default, just re-notifies subscribers — the real
         // fetch() calls notifyListeners() on success. Runs synchronously so a
         // faked-timer tick fully re-runs the undercut check before returning.
@@ -270,6 +274,29 @@ describe('market undercut alerts', () => {
         check();
 
         expect(game.notified).toHaveLength(1);
+    });
+
+    test('an undercut that reached no channel is retried on the next read, not lost until a reprice', () => {
+        game.notifyResult = { fired: false, channels: [], reason: 'no channel available' };
+        game.listings = [listing()];
+        setPrice('/items/cheese', 0, 274000, 270000);
+
+        check();
+        expect(game.notified).toHaveLength(1);
+
+        // Still undercut, still nothing delivered — the listing's armed bit
+        // must not have been spent on a notice nobody saw
+        check();
+        expect(game.notified).toHaveLength(2);
+
+        game.notifyResult = { fired: true, channels: ['toast'] };
+        check();
+        expect(game.notified).toHaveLength(3);
+
+        // Delivered: further re-reads of the same state are the ordinary
+        // one-message-per-undercut case again
+        check();
+        expect(game.notified).toHaveLength(3);
     });
 
     test('a buy order below the best bid is outbid', () => {

@@ -343,10 +343,12 @@ class MarketUndercutAlerts {
             priceAgeMs,
             maxPriceAgeMs: marketAPI.CACHE_DURATION,
         });
-        state.armed = armed;
-        if (!fire) return;
+        if (!fire) {
+            state.armed = armed;
+            return;
+        }
 
-        notificationService.notify(
+        const result = notificationService.notify(
             `market-undercut-${listing.id}:${state.generation}`,
             this.buildMessage(listing, bestPrice, priceAgeMs),
             {
@@ -357,6 +359,13 @@ class MarketUndercutAlerts {
                 subject: this.itemLabel(listing),
             }
         );
+
+        // Disarmed only once the notice actually reached the player. Disarming
+        // on every crossing regardless of delivery — no toast host mounted yet,
+        // most likely, right after a fresh load — left an undercut that fired
+        // into no channel un-retried until the listing resolved and was beaten
+        // again, which for a price that never recovers is never.
+        if (result?.fired) state.armed = armed;
     }
 
     /**
