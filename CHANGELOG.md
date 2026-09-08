@@ -6,6 +6,14 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Bulk Sell has its own Confirm button, so your cursor stays in one place
+
+A run of fifty items meant moving between the assistant's strip and the game's confirm button on every one. The strip now carries its own Confirm, and the game's button keeps working exactly as before — both routes take the same path, so a sale advances the walk the same way whichever you use.
+
+It only ever presses once per click, and it refuses unless the open modal really is the sale the assistant queued: the right item, the right enhancement level, the right quantity. When it refuses it says which of those is wrong rather than doing nothing. Confirming a step twice sells once. Vendor sales, which use a menu rather than a modal, are unchanged and still ask for the game's own control.
+
+This does mean the assistant now presses a button on your behalf, which it previously never did. One click of yours is still exactly one sale — that has not changed — and the note in the code that claimed otherwise has been rewritten to say what it actually does.
+
 ### The room tooltips agree with each other, and say how many tries a room takes
 
 A labyrinth room's forecast — how long it takes, and now how many entries it takes — sits in the same place on both the combat and the skilling tooltip, instead of third on one and seventh on the other. The new figure is the expected number of entries before a clear, which is the same quantity the time estimate is already built from, said in tries rather than seconds.

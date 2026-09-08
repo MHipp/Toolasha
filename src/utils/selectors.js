@@ -170,6 +170,14 @@ export const GAME = {
     GUILD_PANEL: '[class*="GuildPanel"]',
     MARKETPLACE_MY_LISTINGS_TABLE: '[class*="MarketplacePanel_myListingsTable"]',
     MARKETPLACE_HEADER: '[class*="MarketplacePanel_header"]',
+
+    // The game's own confirm button inside a sell modal. Registered here so the
+    // selector audit reports a rename: the Bulk Sell Assistant's Confirm button
+    // presses this, and its guard fails CLOSED — on a rename the button would
+    // simply refuse for every item with "the modal's own confirm button was not
+    // found", which is safe but silent. The game's own button keeps working
+    // either way, so a rename costs the shortcut, not the sale.
+    MARKETPLACE_SELL_BUTTON: '[class*="Button_sell"]',
     BATTLE_PLAYERS_AREA: '[class*="BattlePanel_playersArea"]',
     SKILL_ACTION_DETAIL_ALCHEMY: '[class*="SkillActionDetail_alchemyComponent"]',
     ENHANCING_PANEL: '[class*="EnhancingPanel_enhancingPanel"]',
