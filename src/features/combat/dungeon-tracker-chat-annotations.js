@@ -34,6 +34,12 @@ class DungeonTrackerChatAnnotations {
         // purpose: a chat run written in there reads back as a second, separate
         // stored run for the same real run - see the merge in annotateAllMessages.
         this.annotatedChatRuns = {};
+        // statsKey -> Set<chatTimestamp> of chat runs whose duration is inside
+        // the cumulative totals below. It is cleared with those totals, never
+        // apart from them, so whether a run has been counted is decided by the
+        // totals that exist now rather than by a decision frozen in
+        // processedMessages on the pass that first labelled it.
+        this.chatRunsInCumulative = {};
         this.averageBaselines = {}; // statsKey → epoch ms the average is asked to start after
         this.processedMessages = new Map(); // Track processed messages to prevent duplicate counting
         this.initComplete = false; // Flag to ensure storage loads before annotation
@@ -93,6 +99,10 @@ class DungeonTrackerChatAnnotations {
                 // the individual runs, which the cumulative totals below have
                 // already added together and cannot give back
                 this.storedRunDurations[key] = {};
+                // The seed below is storage's runs and nothing else, so no chat
+                // run is in it yet - whatever an earlier pass added is gone with
+                // the totals it was added to
+                this.chatRunsInCumulative[key] = new Set();
                 this.cumulativeStatsByDungeon[key] = {
                     runCount: runs.length,
                     totalTime: 0,
@@ -153,6 +163,7 @@ class DungeonTrackerChatAnnotations {
      */
     resetAnnotationState() {
         this.cumulativeStatsByDungeon = {};
+        this.chatRunsInCumulative = {};
         this.storedRunNumbers = {};
         this.storedRunDurations = {};
         this.processedMessages.clear();
@@ -418,6 +429,21 @@ class DungeonTrackerChatAnnotations {
             }
             precomputedRunNumbers[pStatsKey] = numMap;
             chatRunsMatchedStorage[pStatsKey] = matchedChatSet;
+
+            // A run an earlier pass labelled is marked data-processed and never
+            // extracted again, so the annotation loop below cannot reach it -
+            // but it is still a run and its duration still belongs in the
+            // lifetime total. Storage may have learned of it since, or may
+            // never; either way it counts once. Which is why the ledger, and
+            // not processedMessages, decides: a reseed from storage rebuilds
+            // the totals and clears the ledger with them, and every remembered
+            // run is then weighed against the seed that exists now.
+            const visibleNow = new Set(chatTsList);
+            for (const run of merged) {
+                if (!run.isChatRun || visibleNow.has(run.ts)) continue;
+                if (matchedChatSet.has(run.ts)) continue; // storage's seed already holds it
+                this.addChatRunToCumulative(pStatsKey, run.ts, run.duration);
+            }
             precomputedAverages[pStatsKey] = this.buildWindowedAverages(
                 merged,
                 averageWindow,
@@ -567,10 +593,11 @@ class DungeonTrackerChatAnnotations {
                         // Storage-matched runs are already counted in the seed from
                         // loadRunCountsFromStorage — adding their time again would cause
                         // the average to climb on every annotation pass regardless of
-                        // actual run performance.
+                        // actual run performance. The ledger inside the helper keeps
+                        // the other half of that: the merge above may already have
+                        // added this run back after a reseed, and it is one run.
                         if (!chatRunsMatchedStorage[statsKey]?.has(msgTs)) {
-                            dungeonStats.runCount++;
-                            dungeonStats.totalTime += diff;
+                            this.addChatRunToCumulative(statsKey, msgTs, diff);
                         }
 
                         if (diff < dungeonStats.fastestTime) dungeonStats.fastestTime = diff;
@@ -1171,6 +1198,43 @@ class DungeonTrackerChatAnnotations {
      *   run timestamp, or null when neither limit is in force (the caller then
      *   keeps the lifetime figure it has always printed)
      */
+    /**
+     * Add one chat run's duration to a dungeon's lifetime totals, at most once.
+     *
+     * "Once" has to hold whichever source learned about the run first: chat
+     * labels a run the moment the next key count lands, the tracker banks it
+     * separately, and a reseed from storage rebuilds these totals underneath
+     * both. So the ledger of what is already in the totals lives and dies with
+     * the totals themselves - see `chatRunsInCumulative`.
+     *
+     * @param {string} statsKey - `teamKey::dungeonName`
+     * @param {number} ts - The run's chat timestamp, in epoch ms
+     * @param {number|null} duration - Run length in ms; nothing is added for a
+     *   duration no source knows
+     * @returns {boolean} True when this call was the one that added it
+     */
+    addChatRunToCumulative(statsKey, ts, duration) {
+        if (!Number.isFinite(duration) || duration <= 0) return false;
+        if (!this.chatRunsInCumulative[statsKey]) this.chatRunsInCumulative[statsKey] = new Set();
+        if (this.chatRunsInCumulative[statsKey].has(ts)) return false;
+
+        if (!this.cumulativeStatsByDungeon[statsKey]) {
+            this.cumulativeStatsByDungeon[statsKey] = {
+                runCount: 0,
+                totalTime: 0,
+                fastestTime: Infinity,
+                slowestTime: 0,
+            };
+        }
+        const stats = this.cumulativeStatsByDungeon[statsKey];
+        stats.runCount++;
+        stats.totalTime += duration;
+        if (duration < stats.fastestTime) stats.fastestTime = duration;
+        if (duration > stats.slowestTime) stats.slowestTime = duration;
+        this.chatRunsInCumulative[statsKey].add(ts);
+        return true;
+    }
+
     buildWindowedAverages(merged, windowSize, baselineAt) {
         if (windowSize <= 0 && !(baselineAt > 0)) return null;
 
@@ -1259,6 +1323,7 @@ class DungeonTrackerChatAnnotations {
         // Clear cached state
         this.lastSeenDungeonName = null;
         this.cumulativeStatsByDungeon = {}; // Reset cumulative counters
+        this.chatRunsInCumulative = {}; // ...and the note of what went into them
         this.storedRunNumbers = {}; // Reset storage lookup map
         this.storedRunDurations = {}; // ...and the durations beside it
         this.annotatedChatRuns = {}; // Nothing on screen counts as labelled any more

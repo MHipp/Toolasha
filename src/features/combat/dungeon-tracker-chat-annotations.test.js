@@ -139,6 +139,7 @@ beforeEach(() => {
     annotations.averageBaselines = {};
     annotations.storedRunNumbers = {};
     annotations.annotatedChatRuns = {};
+    annotations.chatRunsInCumulative = {};
     annotations.processedMessages.clear();
     annotations.lastSeenDungeonName = null;
     annotations._annotatedWithoutDungeonName = false;
@@ -1260,6 +1261,53 @@ describe('a run seen from both sides is still one run', () => {
         await annotations.annotateAllMessages();
 
         expect(labelOn(relaid.nodes[3])).toBe('[Run #4: 4m 0s]');
+    });
+
+    test('a run labelled before it was banked is in the lifetime average exactly once', async () => {
+        // Storage learns about a run only after the pass that labelled it -
+        // the tracker banks it a moment later, at the server's own millisecond
+        // stamp for the same key count the chat line shows truncated.
+        message('[08/04 09:59:00 AM]', 'Battle started: Chimerical Den');
+        const { nodes, times } = chatRuns(aug4(10, 0, 0), [600_000, 300_000]);
+
+        await annotations.loadRunCountsFromStorage();
+        await annotations.annotateAllMessages();
+        expect(averageOn(nodes[1])).toBe('[Average: 7m 30s]');
+
+        game.allRuns = [
+            storedRun({ timestamp: new Date(times[0].getTime() + 431).toISOString(), duration: 600_000 }),
+            storedRun({ timestamp: new Date(times[1].getTime() + 431).toISOString(), duration: 300_000 }),
+        ];
+        await annotations.refreshRunCounts();
+
+        // Both sources now hold both runs; the average is still of two runs
+        expect(averageOn(nodes[1])).toBe('[Average: 7m 30s]');
+        expect(annotations.cumulativeStatsByDungeon['Alice::Chimerical Den'].runCount).toBe(2);
+    });
+
+    test('a labelled run nothing banked still counts once the lines scroll away', async () => {
+        // Party chat keeps only the last hundred or so lines. Two runs are
+        // labelled; nothing banks them (the tracker was not watching); their
+        // lines scroll off; then a backfill rebuilds the counters from storage.
+        message('[08/04 09:59:00 AM]', 'Battle started: Chimerical Den');
+        const { nodes, times } = chatRuns(aug4(10, 0, 0), [600_000, 600_000]);
+
+        await annotations.loadRunCountsFromStorage();
+        await annotations.annotateAllMessages();
+        expect(averageOn(nodes[1])).toBe('[Average: 10m 0s]');
+
+        for (const node of nodes) node.remove();
+        message('[08/04 09:59:00 AM]', 'Battle started: Chimerical Den');
+        const third = message(stamp(times[2]), 'Key counts: [Alice - 397]');
+        message(stamp(new Date(times[2].getTime() + 300_000)), 'Key counts: [Alice - 396]');
+
+        await annotations.refreshRunCounts();
+
+        // Three runs at 10m, 10m and 5m: 8m 20s. Reading 5m 0s would mean the
+        // two the pass remembers well enough to number were dropped from the
+        // total the moment it was rebuilt.
+        expect(labelOn(third)).toBe('[Run #3: 5m 0s]');
+        expect(averageOn(third)).toBe('[Average: 8m 20s]');
     });
 
     test('a run whose duration is unknown is left out of the average, not counted as zero', async () => {
