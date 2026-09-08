@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Leftovers: two devices that watched one fight now combine what they saw
+
+A combat session archived by two devices — one that saw the first hour, one that took over for the last five minutes — was stored under one key, and a sync pull let whichever copy arrived second replace the other. The two are combined now: every running total takes the larger reading, the start the earlier, the end the later, and anything that is a rate or a falling stack size is recomputed or taken from the later copy rather than maxed. And the labyrinth ledger no longer opens a run from a sighting that carries no start stamp; a real run always has one, and inventing an identity for one that does not is how phantom runs and double counts happen.
+
 ### Audit round: the performance panel is back in the palette, and a guild trial no longer inherits the last one's damage
 
 Ctrl+K lost the PFormance panel when the palette moved to feature-registered entries: the panel's registration was written but nothing ever ran it. It is registered by the palette itself now, unconditionally like the health report, and a test pins every entry the palette has always had. A new guild trial carried the previous trial's banked damage, deaths and support forward — a fix two rounds ago cleared the reported figures and boss sheets but not the banked history — so a fresh trial could open showing hundreds of thousands of damage already done.
