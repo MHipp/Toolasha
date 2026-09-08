@@ -41,7 +41,15 @@ function getPerformanceMonitor() {
     return performanceMonitor();
 }
 
-/** Store key counts from the last `refreshStorageFacts()`, or null before one */
+/**
+ * Sentinel for `lastBudgetRows`: the last refresh threw, so the previous
+ * numbers are stale and must not be redrawn as if they were current. Reuses
+ * the 'unreadable' word a per-store row already prints for the same reason —
+ * a store the browser refused to list — rather than inventing a second one.
+ */
+const BUDGET_ROWS_UNREADABLE = 'unreadable';
+
+/** Store key counts from the last `refreshStorageFacts()`, null before one, or {@link BUDGET_ROWS_UNREADABLE} */
 let lastBudgetRows = null;
 
 /**
@@ -81,6 +89,10 @@ export async function refreshStorageFacts() {
         lastBudgetRows = await storage.budgetReport(undefined, maxRecordsPerCharacter);
     } catch (error) {
         console.error('[HealthStatus] Reading storage facts failed:', error);
+        // A failed refresh must not leave the previous refresh's rows on
+        // screen looking current — the panel should say it does not know,
+        // not silently show a stale moment as the present one.
+        lastBudgetRows = BUDGET_ROWS_UNREADABLE;
     }
 }
 
@@ -147,7 +159,9 @@ function storageLines() {
 
     lines.push(`pending writes: ${diag.pendingWrites ?? 0} (timers: ${diag.activeTimers ?? 0})`);
 
-    if (lastBudgetRows?.length) {
+    if (lastBudgetRows === BUDGET_ROWS_UNREADABLE) {
+        lines.push('store key counts: unreadable (last refresh failed)');
+    } else if (lastBudgetRows?.length) {
         const over = lastBudgetRows.filter((row) => row.over);
         if (over.length) {
             lines.push(`stores over their soft budget (${over.length}):`);
@@ -320,6 +334,14 @@ class HealthStatusPanel {
                 'or free disk space, then reload.';
             Object.assign(warning.style, { color: COLORS.accent, fontSize: '12px', marginTop: '4px' });
             block.appendChild(warning);
+        }
+
+        if (lastBudgetRows === BUDGET_ROWS_UNREADABLE) {
+            const line = document.createElement('div');
+            line.textContent = 'Store key counts: unreadable (last refresh failed)';
+            Object.assign(line.style, { color: COLORS.textDim, fontSize: '12px', marginTop: '4px' });
+            block.appendChild(line);
+            return;
         }
 
         const over = (lastBudgetRows || []).filter((row) => row.over);

@@ -25,6 +25,7 @@ vi.mock('../../utils/panel-z-index.js', () => ({
 const storageMock = vi.hoisted(() => ({
     diag: {},
     budgets: [],
+    throwOnBudgetReport: false,
     listener: null,
     default: null,
 }));
@@ -33,7 +34,10 @@ vi.mock('../../core/storage.js', () => ({
     default: {
         diagnostics: () => storageMock.diag,
         estimate: async () => storageMock.diag.estimate,
-        budgetReport: async () => storageMock.budgets,
+        budgetReport: async () => {
+            if (storageMock.throwOnBudgetReport) throw new Error('boom');
+            return storageMock.budgets;
+        },
         onQuotaExceeded: (fn) => {
             storageMock.listener = fn;
             return () => {};
@@ -71,6 +75,7 @@ beforeEach(() => {
         { storeName: 'lootLogHistory', keys: 41, unknown: false, perCharacter: false, budget: 40, over: true },
         { storeName: 'settings', keys: 120, unknown: false, perCharacter: false, budget: 500, over: false },
     ];
+    storageMock.throwOnBudgetReport = false;
     window.Toolasha = {
         version: '2.88.0',
         fork: 'Millennium44/Toolasha',
@@ -234,6 +239,21 @@ describe('what the report says about storage', () => {
         await refreshStorageFacts();
 
         expect(buildDiagnosticReport([])).not.toContain('could not be listed');
+    });
+
+    test('a refresh that throws does not leave the previous refresh on screen', async () => {
+        await refreshStorageFacts();
+        let report = buildDiagnosticReport([]);
+        expect(report).toContain('stores over their soft budget (1)');
+        expect(report).toContain('- lootLogHistory: 41 keys (budget 40)');
+
+        storageMock.throwOnBudgetReport = true;
+        await refreshStorageFacts();
+        storageMock.throwOnBudgetReport = false;
+
+        report = buildDiagnosticReport([]);
+        expect(report).not.toContain('lootLogHistory');
+        expect(report).toContain('store key counts: unreadable (last refresh failed)');
     });
 
     test('the machine-readable copy carries the same storage facts', async () => {
