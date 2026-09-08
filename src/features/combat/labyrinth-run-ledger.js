@@ -343,6 +343,10 @@ export function sparkText(values) {
 /**
  * Fold one labyrinth sighting into the tracker's state, pure.
  *
+ * An active sighting with no `startedAt` and no run in hand opens nothing: a
+ * genuine run always carries the server's stamp, and that is the only name a
+ * run may be known by.
+ *
  * @param {Object} state - `{phase, run, endedKey}` where run is
  *   `{key, floor, left: {torch, shroud, beacon}, itemHrids}` and `endedKey`
  *   names the last run seen to end, which no re-send may re-open
@@ -357,7 +361,19 @@ export function foldSighting(state, labyrinth, nowMs) {
     if (phase === 'unknown') return { state, ended: null };
 
     if (phase === 'active') {
-        const key = labyrinth?.startedAt ? String(labyrinth.startedAt) : (state.run?.key ?? `run-${nowMs}`);
+        // A run is named by the server's `startedAt`, which every genuine
+        // labyrinth payload carries and three modules key the run on. An
+        // active sighting with no stamp and no run in hand is therefore not a
+        // run beginning — it is the post-run re-send, which still carries the
+        // grid and so reads as active. Minting a synthetic key for it opened a
+        // phantom run that neither ending guard could catch: `endedKey` names
+        // the real run's key and the ring holds that key, so a made-up one
+        // matches nothing, and it banked the restocked supply pile as a run's
+        // spend. The same invention duplicated a run across a reload, since
+        // the second load minted a different name for the same run. No run is
+        // the safe answer: a stamped payload that follows opens it properly.
+        const key = labyrinth?.startedAt ? String(labyrinth.startedAt) : (state.run?.key ?? null);
+        if (!key) return { state, ended: null };
         // The run that just ended is not a new run. The server re-sends
         // labyrinth messages after a run ends, and a re-send that omits
         // `isActive` still carries the grid and the queued path — which is

@@ -257,6 +257,46 @@ describe('foldSighting', () => {
         expect(foldSighting(next.state, { isActive: false }, 7000).ended.left.torch).toBe(400);
     });
 
+    test('an unstamped active sighting after a run has ended opens nothing', () => {
+        // The post-run re-send with the stamp stripped: it still carries the
+        // grid, so it reads as active, and there is no run in hand to key it
+        // on. Naming it after the clock invented a run neither ending guard
+        // could see — `endedKey` and the ring both hold the real run's key.
+        let s = foldSighting(start, active({ currentFloor: 1, torchCount: 400 }), 1000).state;
+        s = foldSighting(s, active({ currentFloor: 7, torchCount: 43 }), 2000).state;
+        const ended = foldSighting(s, { isActive: false }, 3000);
+
+        const resend = foldSighting(ended.state, { currentFloor: 7, torchCount: 400, roomData: [[{}]] }, 4000);
+
+        expect(resend.ended).toBeNull();
+        expect(resend.state).toBe(ended.state);
+        expect(resend.state.run).toBeNull();
+        expect(resend.state.phase).toBe('ended');
+        // …and no ending falls out of it later either
+        expect(foldSighting(resend.state, { isActive: false }, 5000).ended).toBeNull();
+    });
+
+    test('an unstamped sighting mid-run keeps the run it is already following', () => {
+        const s = foldSighting(start, active({ currentFloor: 1, torchCount: 400 }), 1000).state;
+
+        const next = foldSighting(s, { currentFloor: 4, torchCount: 210, roomData: [[{}]] }, 2000);
+
+        expect(next.state.run.key).toBe('2026-08-18T00:00:00Z');
+        expect(next.state.run.left.torch).toBe(210);
+        expect(next.ended).toBeNull();
+    });
+
+    test('a stamped payload after an unstamped one opens the run under its stamp', () => {
+        const ignored = foldSighting(start, { currentFloor: 1, torchCount: 400, roomData: [[{}]] }, 1000);
+        expect(ignored.state.run).toBeNull();
+
+        const opened = foldSighting(ignored.state, active({ startedAt: 'S9', currentFloor: 1, torchCount: 400 }), 2000);
+
+        expect(opened.state.run.key).toBe('S9');
+        expect(opened.state.run.startTrusted).toBe(true);
+        expect(foldSighting(opened.state, { isActive: false }, 3000).ended.key).toBe('S9');
+    });
+
     test('a payload that says nothing about the run is not the run ending', () => {
         const s = foldSighting(start, active(), 1000).state;
         expect(foldSighting(s, {}, 2000).ended).toBeNull();
