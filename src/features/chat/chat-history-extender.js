@@ -9,6 +9,12 @@ import config from '../../core/config.js';
 import domObserver from '../../core/dom-observer.js';
 import { addStyles, removeStyles } from '../../utils/dom.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
+import chatHistoryPersistence, {
+    handleRestoredClick,
+    parseStoredMessage,
+    rewireRestoredMessage,
+    serializeMessage,
+} from './chat-history-persistence.js';
 
 const STYLE_ID = 'mwi-chat-history-extender-css';
 const CSS = `
@@ -23,7 +29,42 @@ const CSS = `
     .mwi-history-buffer > div { opacity: 0.9; position: relative; }
     .mwi-history-buffer > div:hover { opacity: 1; background-color: rgba(255, 255, 255, 0.05); }
     .mwi-interactive { cursor: pointer; }
+    .mwi-history-restore-anchor { display: none; }
 `;
+
+/**
+ * A stable-ish identity for one chat tab's message container.
+ *
+ * The game gives these containers nothing to be named by, so the tab strip is
+ * used instead: containers and tab buttons are rendered in the same order, so
+ * the button at the container's index names it. Whispers get their own tabs and
+ * so their own keys, which is the point — every tab is persisted, private ones
+ * included.
+ *
+ * The index fallback is what makes this safe when the tab strip has not
+ * rendered yet or has been restyled: history keyed by position is history in
+ * the wrong tab at worst, never a throw.
+ *
+ * @param {Element} containerEl - A `ChatHistory_chatHistory` element
+ * @returns {string|null} Tab key, or null when the container is not in the document
+ */
+export function chatTabKey(containerEl) {
+    try {
+        const containers = [...document.querySelectorAll('[class*="ChatHistory_chatHistory"]')];
+        const index = containers.indexOf(containerEl);
+        if (index < 0) return null;
+
+        const buttons = [...document.querySelectorAll('[class*="Chat_tabsComponentContainer"] button[role="tab"]')];
+        const button = buttons[index];
+        const label =
+            button?.getAttribute('data-mention-channel') ||
+            button?.textContent?.trim().replace(/\d+$/, '').trim() ||
+            '';
+        return label ? `tab:${label}` : `idx:${index}`;
+    } catch {
+        return null;
+    }
+}
 
 /**
  * Read React props for a batch of DOM nodes via the fiber tree.
@@ -68,21 +109,108 @@ class ChatTabHandler {
      * @param {Element} containerEl - The ChatHistory_chatHistory element
      * @param {Map} interactionCache - Shared cache of UID → React handlers
      * @param {() => number} getMaxHistory - Returns current max history setting
+     * @param {string|null} tabKey - Persistence key for this tab, from {@link chatTabKey}
      */
-    constructor(containerEl, interactionCache, getMaxHistory) {
+    constructor(containerEl, interactionCache, getMaxHistory, tabKey = null) {
         this.container = containerEl;
         this.interactionCache = interactionCache;
         this.getMaxHistory = getMaxHistory;
+        this.tabKey = tabKey;
 
         this.bufferEl = document.createElement('div');
         this.bufferEl.className = 'mwi-history-buffer';
         this.container.insertBefore(this.bufferEl, this.container.firstChild);
 
+        /**
+         * Where restored messages end and this session's evictions begin.
+         *
+         * Inserted synchronously; the restore that fills above it is async, so
+         * without an anchor a message evicted in the first second would sit
+         * above history older than itself. Hidden, and skipped by every count
+         * and trim below, which look for message nodes rather than children.
+         */
+        this.restoreAnchor = document.createElement('div');
+        this.restoreAnchor.className = 'mwi-history-restore-anchor';
+        this.bufferEl.appendChild(this.restoreAnchor);
+
         const events = ['click', 'contextmenu', 'dblclick', 'mousedown', 'mouseup', 'mouseover', 'mouseout'];
         events.forEach((evt) => this.bufferEl.addEventListener(evt, this._handleEmulatedEvent.bind(this), true));
+        // Restored links carry no captured React callback, so they are served by
+        // this script's own navigation instead — see chat-history-persistence.js.
+        this.bufferEl.addEventListener('click', handleRestoredClick, true);
 
         this.observer = new MutationObserver(this._onMutation.bind(this));
         this.observer.observe(this.container, { childList: true });
+    }
+
+    /**
+     * The message nodes in the buffer, in order. Not `children`: the restore
+     * anchor is a child too and must never be counted or trimmed.
+     * @returns {Array<Element>} Buffered message elements, oldest first
+     */
+    _messageNodes() {
+        return [...this.bufferEl.children].filter((el) => el.className?.includes?.('ChatMessage_chatMessage'));
+    }
+
+    /**
+     * Put this tab's stored history back above the anchor.
+     *
+     * Off the critical path on purpose: the caller does not await it, so chat
+     * is usable the moment the buffer exists and history arrives when the read
+     * does. Any single message that will not parse or re-wire is skipped; the
+     * rest still render.
+     *
+     * @param {string} tabKey - From {@link chatTabKey}
+     * @returns {Promise<number>} How many messages were restored
+     */
+    async restore(tabKey) {
+        if (!tabKey) return 0;
+
+        let stored;
+        try {
+            stored = (await chatHistoryPersistence.load())[tabKey];
+        } catch (error) {
+            console.error('[ChatHistoryExtender] Could not load stored history:', error);
+            return 0;
+        }
+        if (!Array.isArray(stored) || !stored.length) return 0;
+        // The container may have been torn down while the read was in flight
+        if (!this.bufferEl.isConnected) return 0;
+
+        let restored = 0;
+        for (const html of stored) {
+            try {
+                const el = parseStoredMessage(html);
+                if (!el) continue;
+                rewireRestoredMessage(el);
+                el.dataset.mwiRestored = '1';
+                this.bufferEl.insertBefore(el, this.restoreAnchor);
+                restored += 1;
+            } catch (error) {
+                console.error('[ChatHistoryExtender] Skipped an unrestorable message:', error);
+            }
+        }
+
+        this._trim(this.getMaxHistory());
+        return restored;
+    }
+
+    /**
+     * Trim the buffer to `maxHistory` messages, oldest first.
+     * @param {number} maxHistory
+     */
+    _trim(maxHistory) {
+        const nodes = this._messageNodes();
+        while (nodes.length > maxHistory) {
+            const oldNode = nodes.shift();
+            oldNode.querySelectorAll('[data-mwi-uid]').forEach((u) => {
+                this.interactionCache.delete(u.getAttribute('data-mwi-uid'));
+            });
+            if (oldNode.hasAttribute('data-mwi-uid')) {
+                this.interactionCache.delete(oldNode.getAttribute('data-mwi-uid'));
+            }
+            oldNode.remove();
+        }
     }
 
     /**
@@ -220,16 +348,13 @@ class ChatTabHandler {
                     const clone = node.cloneNode(true);
                     this.bufferEl.appendChild(clone);
 
-                    while (this.bufferEl.childElementCount > maxHistory) {
-                        const oldNode = this.bufferEl.firstChild;
-                        oldNode.querySelectorAll('[data-mwi-uid]').forEach((u) => {
-                            this.interactionCache.delete(u.getAttribute('data-mwi-uid'));
-                        });
-                        if (oldNode.hasAttribute('data-mwi-uid')) {
-                            this.interactionCache.delete(oldNode.getAttribute('data-mwi-uid'));
-                        }
-                        oldNode.remove();
-                    }
+                    // Serialized from the clone, before the trim below can take
+                    // it away again: the record is capped separately from the
+                    // buffer, so a message can leave the screen and stay stored.
+                    const html = serializeMessage(clone);
+                    if (html) chatHistoryPersistence.record(this.tabKey, html);
+
+                    this._trim(maxHistory);
                 }
             });
 
@@ -277,13 +402,25 @@ class ChatHistoryExtender {
             return isFinite(raw) && raw > 0 ? raw : 150;
         };
 
+        chatHistoryPersistence.enable(getMaxHistory);
+
         const attachHandler = (containerEl) => {
             if (this.tabHandlers.has(containerEl)) return;
-            const handler = new ChatTabHandler(containerEl, this.interactionCache, getMaxHistory);
+            const handler = new ChatTabHandler(
+                containerEl,
+                this.interactionCache,
+                getMaxHistory,
+                chatTabKey(containerEl)
+            );
             this.tabHandlers.set(containerEl, handler);
             this.activeHandlers.add(handler);
             containerEl.querySelectorAll('[class*="ChatMessage_chatMessage"]').forEach((msg) => {
                 handler.hydrateMessage(msg);
+            });
+            // Deliberately not awaited: the read is IndexedDB and chat must be
+            // usable before it lands. A failure inside is logged, not thrown.
+            handler.restore(handler.tabKey).catch((error) => {
+                console.error('[ChatHistoryExtender] Restore failed:', error);
             });
         };
 
@@ -329,6 +466,10 @@ class ChatHistoryExtender {
 
     disable() {
         try {
+            // Land what the session recorded before the state goes; a disable
+            // is not a wipe, and the record on disk is left where it is.
+            chatHistoryPersistence.flush()?.catch?.(() => {});
+            chatHistoryPersistence.reset();
             for (const handler of this.activeHandlers) {
                 handler.destroy();
             }

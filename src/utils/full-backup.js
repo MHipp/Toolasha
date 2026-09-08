@@ -27,6 +27,14 @@ const FORMAT_VERSION = 1;
  */
 export const EXCLUDED_STORE_KEY_PREFIXES = {
     guildHistory: ['trialTraceManifest', 'trialTraceChunk_'],
+    // Device-local by construction. `toolasha_local_` currently holds the
+    // preserved chat history (`features/chat/chat-history-persistence.js`),
+    // which is every chat tab's markup — whispers and private messages
+    // included. The maintainer chose to keep that on disk; a backup file is the
+    // thing people paste into a Discord thread when they want help, so it is
+    // kept out of one. `features/sync/sync-payload.js` keeps the same prefix out
+    // of an upload and out of an import, by the same reasoning.
+    settings: ['toolasha_local_'],
 };
 
 /**

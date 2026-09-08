@@ -48,8 +48,20 @@ export const REDACTED_SETTING_IDS = ['sync_token', 'sync_passphrase'];
  * device, not about the account. Syncing them would have each pull overwrite the
  * receiving device's idea of what it had already seen, which is exactly the
  * state conflict detection depends on.
+ *
+ * `toolasha_local_` is a different kind of never: not bookkeeping that would
+ * confuse another device, but data that must not be published at all. The
+ * preserved chat history under it
+ * (`features/chat/chat-history-persistence.js`) is every tab's markup,
+ * whispers and private messages included — stored on disk by the maintainer's
+ * explicit choice, and a gist is not disk. Anything else that must stay on the
+ * machine that wrote it belongs under this prefix too.
+ *
+ * Both prefixes are honoured on the way out (`redactSettingsStore`) and on the
+ * way in (`applyPayload`), so a payload written by an older build that did not
+ * strip them cannot plant one either.
  */
-export const LOCAL_ONLY_KEY_PREFIXES = ['toolasha_sync_'];
+export const LOCAL_ONLY_KEY_PREFIXES = ['toolasha_sync_', 'toolasha_local_'];
 
 /**
  * Strip credentials and device-local bookkeeping from a settings-store dump.
