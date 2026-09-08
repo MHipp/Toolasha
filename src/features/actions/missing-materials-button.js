@@ -755,7 +755,10 @@ function makeMaterialClickHandler(tabRef) {
             () => parseInt(tabRef.tab?.getAttribute('data-missing-quantity') || '0', 10),
             { itemHrid: mat.itemHrid }
         );
-        navigateToMarketplace(mat.itemHrid, 0);
+        // A material is the unenhanced item; a bill line may name a level — a
+        // piece of gear the Upgrade tab wants at +7 — and the listing to open
+        // is that level's, not the +0 one underneath it
+        navigateToMarketplace(mat.itemHrid, mat.enhancementLevel || 0);
     };
 }
 
@@ -1514,7 +1517,15 @@ function handleMarketplaceCleanup() {
  * enhanced piece is not what a house level or a recipe consumes. Nothing is
  * reserved for the action queue here: a house level is not an action.
  *
- * @param {Array<{itemHrid: string, count: number}>} lines - What is needed, in total
+ * A line may name an enhancement level, which is how the simulators' Upgrade
+ * tab asks for a piece of gear rather than a material: the tab then opens that
+ * level's listing, and only copies already at that level count as held. The
+ * field is carried only where it means something, so a plain bill's line is
+ * the object it has always been. `unclaimedBoughtCount` is +0-only, so a
+ * levelled line does not consult it — a buy order for the unenhanced item is
+ * not progress towards a +7.
+ *
+ * @param {Array<{itemHrid: string, count: number, enhancementLevel?: number}>} lines - What is needed, in total
  * @returns {Array<Object>} Material objects for `createMaterialTab`
  */
 export function materialsFromList(lines) {
@@ -1525,17 +1536,19 @@ export function materialsFromList(lines) {
         const required = Math.max(0, Math.floor(Number(line?.count) || 0));
         if (!line?.itemHrid || required <= 0) continue;
         const details = itemDetailMap[line.itemHrid];
+        const level = Math.max(0, Math.floor(Number(line.enhancementLevel) || 0));
         // Bought-but-unclaimed units on the player's own buy orders count as
         // held — it is what makes the Missing figure fall while the order
         // fills instead of only after a trip to My Listings
         const have =
-            unclaimedBoughtCount(line.itemHrid) +
+            (level > 0 ? 0 : unclaimedBoughtCount(line.itemHrid)) +
             inventory
-                .filter((i) => i.itemHrid === line.itemHrid && !i.enhancementLevel)
+                .filter((i) => i.itemHrid === line.itemHrid && (i.enhancementLevel || 0) === level)
                 .reduce((sum, i) => sum + (i.count || 0), 0);
         out.push({
             itemHrid: line.itemHrid,
             itemName: details?.name || line.itemHrid.split('/').pop().replace(/_/g, ' '),
+            ...(level > 0 ? { enhancementLevel: level } : {}),
             required,
             have,
             queued: 0,
@@ -1550,12 +1563,13 @@ export function materialsFromList(lines) {
 
 /**
  * Open the marketplace on a bill of materials that is not an action's — a
- * house level's, from the simulators' Upgrade tab — one tab per item, each
- * arming the buy box with what is still missing, kept live as the inventory
- * changes. The same tabs the action panel button builds, from a list instead
- * of a recipe.
+ * house level's materials, or the two pieces a cross-slot gear swap buys, from
+ * the simulators' Upgrade tab — one tab per item, each arming the buy box with
+ * what is still missing, kept live as the inventory changes. The same tabs the
+ * action panel button builds, from a list instead of a recipe. A line that
+ * names an enhancement level opens that level's listing.
  *
- * @param {Array<{itemHrid: string, count: number}>} lines - Totals needed
+ * @param {Array<{itemHrid: string, count: number, enhancementLevel?: number}>} lines - Totals needed
  * @returns {Promise<boolean>} Whether the marketplace opened and the tabs were drawn
  */
 export async function openMaterialsList(lines) {

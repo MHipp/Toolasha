@@ -1,11 +1,13 @@
 /** @vitest-environment happy-dom
  *
- * A bill of materials that is not an action's — a house level's — opened as
- * the same marketplace tabs the action-panel button builds.
+ * A bill of materials that is not an action's — a house level's, or the pieces
+ * a cross-slot gear swap buys — opened as the same marketplace tabs the
+ * action-panel button builds.
  *
  * What is worth asserting is the mapping: totals against what the inventory
- * holds (unenhanced copies only), nothing reserved for the queue, a line the
- * game does not know still named from its hrid.
+ * holds (unenhanced copies only, unless the line names a level), nothing
+ * reserved for the queue, a line the game does not know still named from its
+ * hrid.
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
@@ -155,6 +157,33 @@ describe('a bill of materials against the inventory', () => {
         expect(mystery.isTradeable).toBe(false);
     });
 
+    test('a line that names an enhancement level is counted at that level alone', () => {
+        state.items = { '/items/manticore_shield': { name: 'Manticore Shield', isTradable: true } };
+        state.inventory = [
+            { itemHrid: '/items/manticore_shield', enhancementLevel: 0, count: 3 },
+            { itemHrid: '/items/manticore_shield', enhancementLevel: 7, count: 1 },
+        ];
+        // A buy order for the unenhanced item is not progress towards a +7
+        state.unclaimed = { '/items/manticore_shield': 5 };
+
+        const [line] = materialsFromList([{ itemHrid: '/items/manticore_shield', count: 1, enhancementLevel: 7 }]);
+
+        expect(line.enhancementLevel).toBe(7);
+        expect(line.have).toBe(1);
+        expect(line.missing).toBe(0);
+        state.unclaimed = {};
+    });
+
+    test('a line without one is the object it has always been', () => {
+        state.items = { '/items/cedar_lumber': { name: 'Cedar Lumber', isTradable: true } };
+        state.inventory = [{ itemHrid: '/items/cedar_lumber', enhancementLevel: 0, count: 10 }];
+
+        const [line] = materialsFromList([{ itemHrid: '/items/cedar_lumber', count: 30 }]);
+
+        expect('enhancementLevel' in line).toBe(false);
+        expect(line.have).toBe(10);
+    });
+
     test('empty or zero lines are dropped, and an empty bill opens nothing', async () => {
         expect(materialsFromList([{ itemHrid: '/items/x', count: 0 }, { count: 3 }, null])).toEqual([]);
         expect(await openMaterialsList([])).toBe(false);
@@ -249,6 +278,53 @@ describe('the marketplace clear-all control', () => {
         expect(state.autofill.clearQuantity).toHaveBeenCalled();
         expect(state.wsOff).toHaveBeenCalledWith('*', expect.any(Function));
         expect(onMarketListingsClick).toHaveBeenCalledTimes(1);
+    });
+
+    test('a bill line’s enhancement level is the listing its tab opens', async () => {
+        const { container } = buildMarketplaceDom();
+        const handleGoToMarketplace = vi.fn();
+        const root = document.createElement('div');
+        root.id = 'root';
+        root._reactRootContainer = {
+            current: { stateNode: { handleGoToMarketplace }, child: null, sibling: null },
+        };
+        document.body.appendChild(root);
+        state.items = {
+            '/items/sundering_crossbow': { name: 'Sundering Crossbow', isTradable: true },
+            '/items/manticore_shield': { name: 'Manticore Shield', isTradable: true },
+        };
+        state.inventory = [];
+
+        await openMaterialsList([
+            { itemHrid: '/items/sundering_crossbow', count: 1, enhancementLevel: 7 },
+            { itemHrid: '/items/manticore_shield', count: 1, enhancementLevel: 7 },
+        ]);
+
+        const tabs = container.querySelectorAll('[data-item-hrid]');
+        expect(tabs.length).toBe(2);
+        tabs[1].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+        expect(handleGoToMarketplace).toHaveBeenCalledWith('/items/manticore_shield', 7);
+    });
+
+    test('a line with no level still opens the unenhanced listing', async () => {
+        const { container } = buildMarketplaceDom();
+        const handleGoToMarketplace = vi.fn();
+        const root = document.createElement('div');
+        root.id = 'root';
+        root._reactRootContainer = {
+            current: { stateNode: { handleGoToMarketplace }, child: null, sibling: null },
+        };
+        document.body.appendChild(root);
+        state.items = { '/items/cedar_lumber': { name: 'Cedar Lumber', isTradable: true } };
+        state.inventory = [];
+
+        await openMaterialsList([{ itemHrid: '/items/cedar_lumber', count: 300 }]);
+        container
+            .querySelector('[data-item-hrid]')
+            .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+        expect(handleGoToMarketplace).toHaveBeenCalledWith('/items/cedar_lumber', 0);
     });
 
     test('a single tab can still be dismissed on its own, leaving the rest (including the clear-all control) in place', async () => {

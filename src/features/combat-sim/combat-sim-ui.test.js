@@ -2308,6 +2308,89 @@ describe('upgrade row handoff', () => {
         }
     });
 
+    /** A two-hander swapped for a main hand plus an off hand, both at +7 */
+    function crossSlotRow() {
+        return {
+            candidate: {
+                description: 'Cursed Bow +7 → Sundering Crossbow +7 + Manticore Shield +7',
+                slot: '/equipment_types/two_hand',
+                currentHrid: '/items/cursed_bow',
+                currentLevel: 7,
+                upgradeHrid: '/items/sundering_crossbow',
+                upgradeLevel: 7,
+                addedSlots: {
+                    '/equipment_types/main_hand': { hrid: '/items/sundering_crossbow', enhancementLevel: 7 },
+                    '/equipment_types/off_hand': { hrid: '/items/manticore_shield', enhancementLevel: 7 },
+                },
+                clearedSlots: ['/equipment_types/two_hand'],
+                removedItems: [{ hrid: '/items/cursed_bow', enhancementLevel: 7 }],
+                type: 'cross_slot',
+            },
+            cost: 40_000_000,
+        };
+    }
+
+    test('a cross-slot swap opens both pieces it buys, each at the level it buys them', () => {
+        const opened = [];
+        mocks.bridgeMissingMats = { openMaterialsList: (lines) => opened.push(lines) };
+        try {
+            const container = document.createElement('div');
+            container.innerHTML = upgradeRowActionsHtml(crossSlotRow());
+            const button = container.querySelector('[data-buy-action="market"]');
+            wireUpgradeRowActions(container);
+            button.click();
+
+            expect(opened).toEqual([
+                [
+                    { itemHrid: '/items/sundering_crossbow', count: 1, enhancementLevel: 7 },
+                    { itemHrid: '/items/manticore_shield', count: 1, enhancementLevel: 7 },
+                ],
+            ]);
+            // The tabs are the open: the row must not also navigate to the
+            // first item on its own and leave the shield behind
+            expect(mocks.marketOpened).toEqual([]);
+            expect(button.title).toContain('manticore shield +7');
+        } finally {
+            mocks.bridgeMissingMats = null;
+        }
+    });
+
+    test('and without that module it still opens the piece it can, as before', () => {
+        const container = document.createElement('div');
+        container.innerHTML = upgradeRowActionsHtml(crossSlotRow());
+        wireUpgradeRowActions(container);
+        container.querySelector('[data-buy-action="market"]').click();
+
+        expect(mocks.marketOpened).toEqual([{ itemHrid: '/items/sundering_crossbow', enhancementLevel: 7 }]);
+    });
+
+    test('a single-piece gear row keeps the plain open, with no bill at all', () => {
+        const opened = [];
+        mocks.bridgeMissingMats = { openMaterialsList: (lines) => opened.push(lines) };
+        try {
+            const container = document.createElement('div');
+            container.innerHTML = upgradeRowActionsHtml(
+                candidate({
+                    upgradeHrid: '/items/plate',
+                    upgradeLevel: 7,
+                    type: 'cross_slot',
+                    addedSlots: { '/equipment_types/body': { hrid: '/items/plate', enhancementLevel: 7 } },
+                })
+            );
+            const button = container.querySelector('[data-buy-action="market"]');
+            expect(button.hasAttribute('data-buy-materials')).toBe(false);
+            expect(button.getAttribute('data-buy-level')).toBe('7');
+
+            wireUpgradeRowActions(container);
+            button.click();
+
+            expect(opened).toEqual([]);
+            expect(mocks.marketOpened).toEqual([{ itemHrid: '/items/plate', enhancementLevel: 7 }]);
+        } finally {
+            mocks.bridgeMissingMats = null;
+        }
+    });
+
     /** An ability row costed at 39.2 books, i.e. 40 to buy */
     function abilityRow() {
         return {

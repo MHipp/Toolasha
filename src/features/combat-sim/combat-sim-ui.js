@@ -950,8 +950,16 @@ export { saveAllZonesSnapshot, loadAllZonesSnapshot };
  * is the same book count the cost was computed from, rounded up, because there
  * is no such thing as buying four-fifths of a book.
  *
+ * `items` is every item the row buys, and only exists where that is more than
+ * one: a cross-slot swap replaces a two-hander with a main hand *and* an off
+ * hand, and an armour pair buys both pieces. It is read off the candidate's
+ * `addedSlots`, which is also what `explainUpgradeCost` prices, so the list
+ * cannot name something the row was not costed for. The single-item fields
+ * stay as they are — the savings list reserves one slot and the watchlist
+ * watches one item, and neither is being asked to grow a second here.
+ *
  * @param {Object} result - A row from the upgrade analysis, or a budget pick
- * @returns {Object|null} `{itemHrid, enhancementLevel, name, quantity, savable, ability}`, or null
+ * @returns {Object|null} `{itemHrid, enhancementLevel, name, quantity, items, savable, ability}`, or null
  */
 export function upgradeRowPurchase(result) {
     const candidate = result?.candidate;
@@ -1005,6 +1013,7 @@ export function upgradeRowPurchase(result) {
         enhancementLevel,
         name: enhancementLevel > 0 ? `${baseName} +${enhancementLevel}` : baseName,
         quantity: isBook ? abilityBookCount(result) : 1,
+        items: isBook ? null : multiItemPurchase(candidate),
         savable: !isBook && !isConsumable,
         // The gear side's equivalent of `ability.cost`: the price this row was
         // costed at, so the savings list shows the figure that was on screen
@@ -1021,6 +1030,35 @@ export function upgradeRowPurchase(result) {
               }
             : null,
     };
+}
+
+/**
+ * Every item a candidate puts on, when that is more than one.
+ *
+ * `addedSlots` is how the advisor states a swap that fills several slots at
+ * once — the two_hand → main_hand + off_hand case, and the armour pairs — and
+ * every entry in it is a purchase, since `explainUpgradeCost` prices exactly
+ * those entries. One slot is an ordinary single-item row and gets null, so
+ * nothing downstream has to tell "a list of one" from "no list".
+ *
+ * @param {Object} candidate - An equipment candidate
+ * @returns {Array<{itemHrid: string, enhancementLevel: number, count: number, name: string}>|null}
+ */
+function multiItemPurchase(candidate) {
+    const added = candidate?.addedSlots ? Object.values(candidate.addedSlots) : [];
+    if (added.length < 2) return null;
+    return added.map((item) => {
+        const level = Math.max(0, Math.floor(Number(item.enhancementLevel) || 0));
+        const base =
+            dataManager.getItemDetails?.(item.hrid)?.name || String(item.hrid).split('/').pop().replace(/_/g, ' ');
+        return {
+            itemHrid: item.hrid,
+            enhancementLevel: level,
+            // One of each: a slot holds one piece, however many slots the swap fills
+            count: 1,
+            name: level > 0 ? `${base} +${level}` : base,
+        };
+    });
 }
 
 /**
@@ -1174,8 +1212,9 @@ const ROW_ACTION_STYLE =
  * slot in Equipment Savings, an ability book records a level goal. Market opens
  * whatever the row actually buys — for an ability that is the book, which is an
  * ordinary marketplace item — so it is offered by anything that buys at all. A
- * row that buys a *stack* carries its count as a one-line bill and goes through
- * the missing-materials tabs, the same machinery a house level's bill uses.
+ * row that buys a *stack*, or more than one item, carries what it buys as a
+ * bill and goes through the missing-materials tabs, the same machinery a house
+ * level's bill uses.
  *
  * @param {Object} result - A row from the upgrade analysis, or a budget pick
  * @returns {string} HTML, empty for rows that buy nothing
@@ -1230,17 +1269,27 @@ export function upgradeRowActionsHtml(result) {
     // A row that buys a stack — an ability's books — is a one-line bill, and
     // goes through the same missing-materials tabs a house level does: a tab
     // that arms the buy box with what is still short of the stack and stands
-    // down when you leave the marketplace. Gear is one of a thing at a
-    // specific enhancement level, which those tabs cannot express (they open
-    // every item at +0), so it keeps the plain open.
-    const bill =
-        buy.quantity > 1 && buy.enhancementLevel === 0
-            ? ` data-buy-materials="${escapeAttribute(JSON.stringify([{ itemHrid: buy.itemHrid, count: buy.quantity }]))}"`
-            : '';
-    const marketTitle = bill
-        ? `Opens the marketplace with a tab for this, arming the buy box with what you are still short of the ` +
-          `${buy.quantity.toLocaleString()} this upgrade needs`
-        : 'Open this in the marketplace';
+    // down when you leave the marketplace. A cross-slot swap buys two pieces
+    // and takes the same road for the other reason: one click has to end at
+    // both of them, and a bill line carries its enhancement level, so a +7
+    // pair opens as two +7 tabs. A single piece is one item at one level and
+    // keeps the plain open, which needs no module loaded to work.
+    const lines = buy.items?.length
+        ? buy.items.map((item) => ({
+              itemHrid: item.itemHrid,
+              count: item.count,
+              enhancementLevel: item.enhancementLevel,
+          }))
+        : buy.quantity > 1 && buy.enhancementLevel === 0
+          ? [{ itemHrid: buy.itemHrid, count: buy.quantity }]
+          : null;
+    const bill = lines ? ` data-buy-materials="${escapeAttribute(JSON.stringify(lines))}"` : '';
+    const marketTitle = buy.items?.length
+        ? `Opens the marketplace with a tab for each of ${buy.items.map((item) => item.name).join(' and ')}`
+        : bill
+          ? `Opens the marketplace with a tab for this, arming the buy box with what you are still short of the ` +
+            `${buy.quantity.toLocaleString()} this upgrade needs`
+          : 'Open this in the marketplace';
 
     // A costed price rides the Watch button as well as the Save one: watching
     // an item you have just been quoted a price for almost always means "tell
