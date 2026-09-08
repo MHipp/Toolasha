@@ -59,7 +59,8 @@ vi.mock('../../utils/bundle-bridge.js', async (importOriginal) => {
     return { ...actual, philoCalculator: () => philo.instance };
 });
 
-const { registerCommand, unregisterCommand, resetCommands } = await import('../../utils/command-registry.js');
+const { registerCommand, unregisterCommand, resetCommands, registeredCommands } =
+    await import('../../utils/command-registry.js');
 
 const {
     default: palette,
@@ -685,6 +686,104 @@ describe('the Health report entry', () => {
 
         expect(await openHealthReport()).toBe(false);
         expect(toasts.said.join(' ')).toContain('not available yet');
+    });
+});
+
+/**
+ * PFormance has no settings gate and, unlike every other panel, no entry of its
+ * own in the entrypoint's feature list — nothing else ever calls its
+ * `initialize()`. The palette calls it directly (it shares this file's bundle,
+ * so a direct import is safe), and this is the entry that regressed: commit
+ * 37519cc94 moved `registerCommand({ name: 'PFormance', ... })` into
+ * `pformance-panel.js`'s own `initialize()` without adding anything that would
+ * ever call it, so the command silently stopped being offered.
+ */
+describe('the PFormance entry', () => {
+    test('is offered regardless of settings', async () => {
+        palette.initialize();
+        palette.open();
+        await vi.waitFor(() => expect(overlay.listLayouts).toHaveBeenCalled());
+
+        expect(drawnLabels()).toContain('PFormance');
+    });
+
+    test('initialize() only registers the command; it does not open the panel', () => {
+        palette.initialize();
+        expect(document.getElementById('toolasha-pformance-panel')).toBeNull();
+    });
+
+    test('cleanup withdraws it and closes an open panel', () => {
+        palette.initialize();
+        expect(registeredCommands().map((c) => c.name)).toContain('PFormance');
+
+        palette.cleanup();
+        expect(registeredCommands().map((c) => c.name)).not.toContain('PFormance');
+        expect(document.getElementById('toolasha-pformance-panel')).toBeNull();
+    });
+});
+
+/**
+ * The pre-`37519cc94` palette held these fifteen entries in a hand-written
+ * array; the commit that replaced it with the registry moved each one into the
+ * feature that owns it, and the fix here is for the one owner (PFormance's)
+ * that nothing ever calls. This list is that original fifteen, unchanged —
+ * nothing has been added to it since — and it exists so that a future refactor
+ * which repeats the mistake (moving a registration into an `initialize()` that
+ * the entrypoint's feature list, or the palette's own setup, does not reach)
+ * fails a test instead of just quietly trimming the palette.
+ *
+ * Everything but the four the palette itself owns (Settings, Guild Trials,
+ * Health report, PFormance) is registered by another feature module, so this
+ * test does not boot the whole entrypoint to reach them — it stands in for
+ * "the feature list initialized this" the same way `beforeEach` already stands
+ * in for Overlay above. Only the palette's own four commands are exercised for
+ * real, through `palette.initialize()`, and PFormance is exactly the one this
+ * would have caught: without the fix in `command-palette.js`, it is missing
+ * from `registeredCommands()` and this test fails.
+ */
+describe('the commands the palette has always had', () => {
+    const PRE_REGISTRY_COMMANDS = [
+        'Overlay',
+        'Goal Planner',
+        'Iron Bell Farming',
+        'Treasure Tracker',
+        'PFormance',
+        'Combat Simulator',
+        'Enhancement Tracker',
+        'Lab Simulator',
+        'Guild Trials',
+        'Trial Damage',
+        'Philo Gamba',
+        'Settings',
+        'Sync push',
+        'Sync pull',
+        'Health report',
+    ];
+
+    // Registered directly by the palette itself (see `registerOwnCommands` /
+    // `OWN_COMMANDS` in command-palette.js) rather than by another feature's
+    // `initialize()` — these are exercised for real below, never stood in for.
+    const PALETTE_OWNED = ['Settings', 'Guild Trials', 'Health report', 'PFormance'];
+
+    test('every one is still present once the palette and the feature list have run', () => {
+        // Stand-ins for the feature-list registrations this file cannot cheaply
+        // boot for real (each is a different bundle's module). 'Overlay' is
+        // already registered by beforeEach above.
+        for (const name of PRE_REGISTRY_COMMANDS) {
+            if (PALETTE_OWNED.includes(name)) continue;
+            if (registeredCommands().some((c) => c.name === name)) continue;
+            registerCommand({ name, hint: '', run: () => {} });
+        }
+
+        // The palette's own commands are the real thing, not stand-ins: this is
+        // what actually catches an entry that stopped being reachable, and it
+        // is what regressed for PFormance.
+        palette.initialize();
+
+        const names = registeredCommands().map((c) => c.name);
+        for (const name of PRE_REGISTRY_COMMANDS) {
+            expect(names).toContain(name);
+        }
     });
 });
 

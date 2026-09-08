@@ -55,6 +55,7 @@ import { showToast } from '../../utils/toast.js';
 import { clickThroughReact } from '../../utils/react-click.js';
 import { isTypingTarget } from '../../utils/dom.js';
 import overlayPanel from './overlay-panel.js';
+import pformancePanel from '../dev/pformance-panel.js';
 
 const PALETTE_ID = 'toolasha-command-palette';
 
@@ -223,17 +224,21 @@ export function oneLineReason(error) {
  * ---------------------------------------------------------------------- */
 
 /**
- * The palette's own three entries, registered when it starts.
+ * The palette's own entries, registered when it starts.
  *
  * Everything else in the Panel section is registered by the feature that owns
- * it — see `utils/command-registry.js` — and these three are here because the
- * palette is what owns them. None is a panel with a toggle: two are navigation
- * walks written in this file, and the third calls a diagnostic published by the
- * entrypoint.
+ * it — see `utils/command-registry.js` — and these are here because the
+ * palette is what owns them, or because nothing else initializes the owner.
+ * None is a panel with a toggle: two are navigation walks written in this
+ * file, and the other two call diagnostics.
  *
- * `Health report` is deliberately unconditional. A diagnostic is most wanted
- * when something is wrong, which is exactly the state in which a feature-gated
- * entry would be missing.
+ * `Health report` and `PFormance` are deliberately unconditional. A
+ * diagnostic is most wanted when something is wrong, which is exactly the
+ * state in which a feature-gated entry would be missing. PFormance has no
+ * settings gate of its own and, unlike every other panel, is not in the
+ * entrypoint's feature list — nothing else ever calls its `initialize()`, so
+ * without this call its command never registers at all. `initialize()` only
+ * registers the command below; the panel itself still opens on demand.
  */
 function registerOwnCommands() {
     registerCommand({ name: 'Settings', hint: "Toolasha's settings tab", run: () => openSettings() });
@@ -252,9 +257,13 @@ function registerOwnCommands() {
         hint: 'What did not start, and the storage and startup facts',
         run: () => openHealthReport(),
     });
+    // Same `ui.js` bundle as this file, so imported directly rather than
+    // through the bridge — see the module comment on cross-bundle targets.
+    pformancePanel.initialize();
 }
 
-/** The names {@link registerOwnCommands} puts up, withdrawn together */
+/** The names {@link registerOwnCommands} puts up directly, withdrawn together. PFormance is
+ * withdrawn separately, through its own `disable()`, so an open panel closes with it. */
 const OWN_COMMANDS = ['Settings', 'Guild Trials', 'Health report'];
 
 /**
@@ -557,6 +566,7 @@ class CommandPalette {
     cleanup() {
         try {
             for (const name of OWN_COMMANDS) unregisterCommand(name);
+            pformancePanel.disable();
             document.removeEventListener('keydown', this.onKeyDown, true);
             this.close();
             this.initialized = false;
