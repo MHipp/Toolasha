@@ -230,6 +230,33 @@ describe('foldSighting', () => {
         expect(foldSighting(state, { isActive: false }, 3000).ended).toBeNull();
     });
 
+    test('the post-run re-sends do not bank the finished run a second time at full capacity', () => {
+        // The run ends with 43 torches left. The server then re-sends the
+        // labyrinth: the grid and the path are still in hand and `isActive` is
+        // absent, so the payload reads as active — on the restocked pile, not
+        // on the run's own stock. That re-opened the finished run and recorded
+        // it again with a whole capacity left unspent, which is the "left over
+        // 400 of 400" line the Consumables panel showed.
+        let s = foldSighting(start, active({ currentFloor: 1, torchCount: 400 }), 1000).state;
+        s = foldSighting(s, active({ currentFloor: 7, torchCount: 43 }), 2000).state;
+        const first = foldSighting(s, { isActive: false }, 3000);
+        expect(first.ended.left.torch).toBe(43);
+
+        const resend = foldSighting(
+            first.state,
+            { startedAt: '2026-08-18T00:00:00Z', currentFloor: 7, torchCount: 400, roomData: [[{}]] },
+            4000
+        );
+        expect(resend.ended).toBeNull();
+        expect(resend.state.phase).toBe('ended');
+        expect(foldSighting(resend.state, { isActive: false }, 5000).ended).toBeNull();
+
+        // …and the next real run is still followed
+        const next = foldSighting(resend.state, active({ startedAt: 'S2', currentFloor: 1, torchCount: 400 }), 6000);
+        expect(next.state.run.key).toBe('S2');
+        expect(foldSighting(next.state, { isActive: false }, 7000).ended.left.torch).toBe(400);
+    });
+
     test('a payload that says nothing about the run is not the run ending', () => {
         const s = foldSighting(start, active(), 1000).state;
         expect(foldSighting(s, {}, 2000).ended).toBeNull();
@@ -295,6 +322,20 @@ describe('the ring survives a failed read and a second tab', () => {
         await labyrinthRunLedger._append(ending('3'));
 
         expect(stored().map((run) => run.key)).toEqual(['3', '2', '1']);
+    });
+
+    test('a run already in the ring is not appended over by a second ending', async () => {
+        // A reload between the ending and the server's post-run re-sends has no
+        // `recorded` set to consult, and the merge lets memory win over what is
+        // stored — so the re-derived ending replaced the true leftovers with the
+        // restocked counts instead of being ignored.
+        await labyrinthRunLedger._append({ ...ending('1'), left: { torch: 43 } });
+        labyrinthRunLedger.recorded.clear();
+
+        expect(await labyrinthRunLedger._append({ ...ending('1', 9999), left: { torch: 400 } })).toBe(false);
+
+        expect(stored()).toHaveLength(1);
+        expect(stored()[0].left.torch).toBe(43);
     });
 
     test('a character switch forgets the departing character’s endings', async () => {

@@ -18,6 +18,19 @@
  * ended, and the server re-sends labyrinth messages after a run ends, so each
  * ending is keyed by the run's own start stamp and recorded once.
  *
+ * ## The run that ended twice
+ *
+ * "Recorded once" has to hold across a reload as well as within a session. A
+ * post-run re-send that omits `isActive` still carries the grid and the queued
+ * path, which is exactly what the active test falls back on, so it reads as a
+ * live run — and the supply figures on it are no longer the run's own stock but
+ * the restocked pile (the trap `labyrinth-supplies` documents from the other
+ * side). Re-opening the finished run on those counts banked it a second time
+ * with a whole capacity left unspent, and the ring's merge lets the newer
+ * record win: the run's true leftovers were replaced by its capacity. So a key
+ * seen to end is never re-opened, and an ending already in the ring is never
+ * appended over.
+ *
  * ## Endings nobody watched
  *
  * A socket that drops mid-run and reconnects after the next run has started
@@ -330,8 +343,9 @@ export function sparkText(values) {
 /**
  * Fold one labyrinth sighting into the tracker's state, pure.
  *
- * @param {Object} state - `{phase, run}` where run is
- *   `{key, floor, left: {torch, shroud, beacon}, itemHrids}`
+ * @param {Object} state - `{phase, run, endedKey}` where run is
+ *   `{key, floor, left: {torch, shroud, beacon}, itemHrids}` and `endedKey`
+ *   names the last run seen to end, which no re-send may re-open
  * @param {Object|null} labyrinth - A payload's labyrinth object
  * @param {number} nowMs - Clock
  * @returns {{state: Object, ended: Object|null}} The next state, and a
@@ -344,6 +358,16 @@ export function foldSighting(state, labyrinth, nowMs) {
 
     if (phase === 'active') {
         const key = labyrinth?.startedAt ? String(labyrinth.startedAt) : (state.run?.key ?? `run-${nowMs}`);
+        // The run that just ended is not a new run. The server re-sends
+        // labyrinth messages after a run ends, and a re-send that omits
+        // `isActive` still carries the grid and the queued path — which is
+        // what `labyrinthRunState` falls back on, so it reads as active. That
+        // re-opened the finished run on counts that are no longer the run's:
+        // once it is over the payload's supply figures are the restocked pile,
+        // so the run was banked a second time with a whole capacity left
+        // unspent. Remembered by key, so a genuinely new `startedAt` is
+        // followed as normal.
+        if (!state.run && state.endedKey && state.endedKey === key) return { state, ended: null };
         const previous = state.run?.key === key ? state.run : null;
         // A different run arriving with no `ended` sighting between them — the
         // socket dropped mid-run and reconnected after the next run had begun.
@@ -393,6 +417,7 @@ export function foldSighting(state, labyrinth, nowMs) {
         return {
             state: {
                 phase: 'active',
+                endedKey: state.endedKey ?? null,
                 run: {
                     key,
                     startTrusted,
@@ -413,10 +438,10 @@ export function foldSighting(state, labyrinth, nowMs) {
 
     // phase === 'ended': only an active→ended edge with a run in hand records
     if (state.phase !== 'active' || !state.run) {
-        return { state: { phase: 'ended', run: null }, ended: null };
+        return { state: { phase: 'ended', run: null, endedKey: state.endedKey ?? null }, ended: null };
     }
     return {
-        state: { phase: 'ended', run: null },
+        state: { phase: 'ended', run: null, endedKey: state.run.key },
         ended: { ...state.run, endedAt: nowMs },
     };
 }
@@ -520,6 +545,12 @@ class LabyrinthRunLedger {
     async _append(ended) {
         const ledger = this._ledger();
         await ledger.load();
+        // A run's first ending stands. `recorded` only knows this session, and
+        // the ring's merge lets what is in memory win over what is stored — so
+        // a run re-recorded after a reload (the server's post-run re-sends land
+        // with no memory of what was already banked) would replace its true
+        // leftovers with a post-run snapshot rather than sit beside it.
+        if (ledger.get().some((run) => run?.key === ended.key)) return false;
         return ledger.update((runs) => [ended, ...runs].slice(0, MAX_RUNS));
     }
 
