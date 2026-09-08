@@ -19,6 +19,7 @@ const game = vi.hoisted(() => ({
     featureEnabled: true,
     allRuns: [],
     currentRun: null,
+    pendingDungeon: null,
 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -39,7 +40,7 @@ vi.mock('../../utils/dom-observer-helpers.js', () => ({
 }));
 
 vi.mock('./dungeon-tracker.js', () => ({
-    default: { getCurrentRun: () => game.currentRun },
+    default: { getCurrentRun: () => game.currentRun, getPendingDungeon: () => game.pendingDungeon },
 }));
 
 // The real markAsProfileLink lives in chat-profile-link.js with its own tests;
@@ -124,11 +125,13 @@ beforeEach(() => {
     game.featureEnabled = true;
     game.allRuns = [];
     game.currentRun = null;
+    game.pendingDungeon = null;
 
     annotations.cumulativeStatsByDungeon = {};
     annotations.storedRunNumbers = {};
     annotations.processedMessages.clear();
     annotations.lastSeenDungeonName = null;
+    annotations._annotatedWithoutDungeonName = false;
     annotations.enabled = true;
     annotations.initComplete = true;
     annotations.timerRegistry.clearAll();
@@ -389,6 +392,19 @@ describe('deciding which dungeon a run was', () => {
 
     test('an unnamed run under way does not count as an answer', () => {
         game.currentRun = { dungeonName: 'Unknown' };
+        annotations.lastSeenDungeonName = 'Pirate Cove';
+        expect(annotations.getDungeonNameWithFallback([keyEvent], 0)).toBe('Pirate Cove');
+    });
+
+    test('the dungeon the tracker is only armed for counts too', () => {
+        // Page load arms the tracker and leaves restoring the run to the next
+        // battle, so for up to a wave there is no currentRun to ask.
+        game.pendingDungeon = { dungeonName: 'Sinister Circus', pending: true };
+        expect(annotations.getDungeonNameWithFallback([keyEvent], 0)).toBe('Sinister Circus');
+    });
+
+    test('an unnamed pending dungeon does not count as an answer', () => {
+        game.pendingDungeon = { dungeonName: 'Unknown', pending: true };
         annotations.lastSeenDungeonName = 'Pirate Cove';
         expect(annotations.getDungeonNameWithFallback([keyEvent], 0)).toBe('Pirate Cove');
     });
@@ -752,6 +768,58 @@ describe('annotating a chat log', () => {
 
         expect(labelOn(key)).toBe('[4m 32s]');
         expect(labels()).toEqual(['[4m 32s]']); // no average without a dungeon to average over
+        warn.mockRestore();
+    });
+
+    test('a log annotated before anything could name the dungeon is redone once something can', async () => {
+        // The window after a mid-run reload: "Battle started:" scrolled out of
+        // chat long ago and the tracker holds no run until a battle verifies the
+        // one it is restoring. That first pass names nothing, and because it
+        // marks the messages processed the average would otherwise stay missing
+        // for the rest of the session.
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const first = message('[08/04 10:00:00 AM]', 'Key counts: [Alice - 12]');
+        const second = message('[08/04 10:04:00 AM]', 'Key counts: [Alice - 11]');
+        message('[08/04 10:10:00 AM]', 'Key counts: [Alice - 10]');
+
+        await annotations.annotateAllMessages();
+        expect(labels()).toEqual(['[4m 0s]', '[6m 0s]']);
+        warn.mockRestore();
+
+        game.currentRun = { dungeonName: 'Chimerical Den' };
+        await annotations.annotateAllMessages();
+
+        expect(labelOn(first)).toBe('[Run #1: 4m 0s]');
+        expect(labelOn(second)).toBe('[Run #2: 6m 0s]');
+        expect(labels()).toEqual(['[Run #1: 4m 0s]', '[Average: 4m 0s]', '[Run #2: 6m 0s]', '[Average: 5m 0s]']);
+        expect(annotations.cumulativeStatsByDungeon['Alice::Chimerical Den'].runCount).toBe(2);
+    });
+
+    test('the dungeon the tracker is merely armed for is enough to redo it', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const first = message('[08/04 10:00:00 AM]', 'Key counts: [Alice - 12]');
+        message('[08/04 10:04:32 AM]', 'Key counts: [Alice - 11]');
+
+        await annotations.annotateAllMessages();
+        warn.mockRestore();
+
+        game.pendingDungeon = { dungeonName: 'Chimerical Den', pending: true };
+        await annotations.annotateAllMessages();
+
+        expect(labelOn(first)).toBe('[Run #1: 4m 32s]');
+    });
+
+    test('a log that stays unnameable is not redone on every pass', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const first = message('[08/04 10:00:00 AM]', 'Key counts: [Alice - 12]');
+        message('[08/04 10:04:32 AM]', 'Key counts: [Alice - 11]');
+
+        await annotations.annotateAllMessages();
+        await annotations.annotateAllMessages();
+        await annotations.annotateAllMessages();
+
+        expect(labelOn(first)).toBe('[4m 32s]');
+        expect(labels()).toEqual(['[4m 32s]']);
         warn.mockRestore();
     });
 

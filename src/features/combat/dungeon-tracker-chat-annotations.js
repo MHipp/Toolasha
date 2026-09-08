@@ -31,6 +31,7 @@ class DungeonTrackerChatAnnotations {
         this.timerRegistry = createTimerRegistry();
         this.tabClickHandlers = new Map(); // Store tab click handlers for cleanup
         this._pendingAnnotateTimeout = null; // Debounce timer for annotateAllMessages
+        this._annotatedWithoutDungeonName = false; // A pass labelled runs no source could name
     }
 
     /**
@@ -114,10 +115,29 @@ class DungeonTrackerChatAnnotations {
      * Resets all in-memory state and DOM annotation state, then re-annotates from scratch
      */
     async refreshRunCounts() {
+        this.resetAnnotationState();
+        this.initComplete = false;
+
+        // Reload run numbers from storage before re-annotating
+        await this.loadRunCountsFromStorage();
+        await this.annotateAllMessages();
+    }
+
+    /**
+     * Drop every annotation and the counters derived from it, so the next pass
+     * rebuilds the whole log from scratch.
+     *
+     * Whole log, never part of one: a run's number comes from merging stored
+     * history with every run visible in chat, and its duration from the next
+     * key count still being in the event list. Re-opening a subset would pair
+     * its last run with whatever survived the subset rather than its real
+     * successor.
+     */
+    resetAnnotationState() {
         this.cumulativeStatsByDungeon = {};
         this.storedRunNumbers = {};
         this.processedMessages.clear();
-        this.initComplete = false;
+        this._annotatedWithoutDungeonName = false;
 
         // Remove existing annotation spans and reset DOM flags so messages can be re-annotated
         document.querySelectorAll('[class*="ChatMessage_chatMessage"]').forEach((msg) => {
@@ -126,10 +146,6 @@ class DungeonTrackerChatAnnotations {
             delete msg.dataset.avgAppended;
             delete msg.dataset.processed;
         });
-
-        // Reload run numbers from storage before re-annotating
-        await this.loadRunCountsFromStorage();
-        await this.annotateAllMessages();
     }
 
     /**
@@ -258,6 +274,18 @@ class DungeonTrackerChatAnnotations {
                 }, 5000);
                 this.timerRegistry.registerTimeout(initTimeout);
             });
+        }
+
+        // A pass can run before anything is able to name the dungeon: on a reload
+        // mid-run the "Battle started:" line scrolled out of chat long ago, and the
+        // tracker holds no run until a battle verifies the one it is restoring.
+        // Every run then reads as `Unknown`, which carries no run number and no
+        // `Average` line, and the messages are marked processed — so without this
+        // the average would stay missing for the rest of the session. Once a
+        // source can name the dungeon, throw that pass away and redo the log.
+        if (this._annotatedWithoutDungeonName && this.hasDungeonNameSource()) {
+            this.resetAnnotationState();
+            await this.loadRunCountsFromStorage();
         }
 
         const events = this.extractChatEvents();
@@ -416,6 +444,15 @@ class DungeonTrackerChatAnnotations {
 
             if (label) {
                 const isSuccessfulRun = diff && dungeonName && dungeonName !== 'Unknown';
+
+                // A completed run nothing could name still gets its bare timer, but
+                // it is worth redoing later. Only flag it when no source could have
+                // answered at all — a run that is `Unknown` while the tracker does
+                // know a dungeon is one chat genuinely cannot place, and redoing it
+                // would change nothing.
+                if (diff && !isSuccessfulRun && !this.hasDungeonNameSource()) {
+                    this._annotatedWithoutDungeonName = true;
+                }
 
                 if (isSuccessfulRun) {
                     // Create unique message ID to prevent duplicate annotation on re-runs
@@ -721,10 +758,12 @@ class DungeonTrackerChatAnnotations {
             return battleStart.dungeonName;
         }
 
-        // 2nd priority: Currently active dungeon run
-        const currentRun = dungeonTracker.getCurrentRun();
-        if (currentRun?.dungeonName && currentRun.dungeonName !== 'Unknown') {
-            return currentRun.dungeonName;
+        // 2nd priority: whatever the tracker can name — the run under way, or,
+        // while it waits for a battle to verify a run it is restoring, the dungeon
+        // the character is provably running
+        const trackedName = this.trackedDungeonName();
+        if (trackedName) {
+            return trackedName;
         }
 
         // 3rd priority: Cached last seen dungeon name
@@ -735,6 +774,45 @@ class DungeonTrackerChatAnnotations {
         // Final fallback
         console.warn('[Dungeon Tracker Debug] ALL PRIORITIES FAILED for index', currentIndex, '-> Unknown');
         return 'Unknown';
+    }
+
+    /**
+     * The dungeon the tracker can name, independently of any chat message.
+     *
+     * `getPendingDungeon()` matters as much as the live run: page load only arms
+     * the tracker and leaves restoration to the next battle, so for up to a wave
+     * there is no `currentRun` even though the character is demonstrably in a
+     * dungeon.
+     *
+     * @returns {string|null} Dungeon name, or null when the tracker cannot say
+     */
+    trackedDungeonName() {
+        const currentRun = dungeonTracker.getCurrentRun();
+        if (currentRun?.dungeonName && currentRun.dungeonName !== 'Unknown') {
+            return currentRun.dungeonName;
+        }
+
+        const pending = dungeonTracker.getPendingDungeon?.();
+        if (pending?.dungeonName && pending.dungeonName !== 'Unknown') {
+            return pending.dungeonName;
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether anything outside the chat log can name a dungeon right now.
+     *
+     * This is the message-independent half of getDungeonNameWithFallback: a
+     * visible "Battle started:" answers for the messages below it only, so a run
+     * that comes back `Unknown` while this is false is one no pass could have
+     * placed, and a run that comes back `Unknown` while it is true is one chat
+     * genuinely cannot place.
+     *
+     * @returns {boolean} True when a dungeon name is available
+     */
+    hasDungeonNameSource() {
+        return Boolean(this.trackedDungeonName() || this.lastSeenDungeonName);
     }
 
     /**
@@ -958,6 +1036,7 @@ class DungeonTrackerChatAnnotations {
         this.cumulativeStatsByDungeon = {}; // Reset cumulative counters
         this.storedRunNumbers = {}; // Reset storage lookup map
         this.processedMessages.clear(); // Clear message deduplication map
+        this._annotatedWithoutDungeonName = false; // Nothing left to redo
         this.initComplete = false; // Reset init flag
         this.enabled = true; // Reset to default enabled state
 
