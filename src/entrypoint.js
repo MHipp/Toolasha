@@ -175,6 +175,28 @@ function warnDualInstall() {
     }
 }
 
+/**
+ * Say it once per page load, no matter how many character switches follow.
+ *
+ * MWITools does not share Toolasha's database, so this is not the settings-loss
+ * emergency the dual-install warning is — a plain once-per-session toast is
+ * enough, with no persisted mute: the two scripts still duplicate each other's
+ * task sorting, market filters, DPS panel, net worth tracking, and tooltips
+ * for as long as both stay enabled, which the user finds out about once and
+ * then acts on or ignores for the rest of the session.
+ */
+let mwiToolsWarned = false;
+function warnMwiTools() {
+    if (mwiToolsWarned) return;
+    mwiToolsWarned = true;
+    console.warn(`[Toolasha] ${dualInstallGuard.MWI_TOOLS_MESSAGE}`);
+    try {
+        showToast(dualInstallGuard.MWI_TOOLS_MESSAGE, { kind: 'error', duration: 0 });
+    } catch (error) {
+        console.error('[Toolasha] MWITools warning could not be shown:', error);
+    }
+}
+
 // Start catching our own errors before anything below can produce one. The
 // hooks only ever record and never throw, so nothing here is made riskier by
 // installing them first; a Core bundle without the module (a stale cache of an
@@ -195,6 +217,13 @@ const { GAME } = Utils.selectors;
 // every current and future `toolasha-select` from one rule, and reads
 // correctly whether the platform's native popup default is light or dark.
 addStyles('.toolasha-select option { background-color: #1a1a2e; color: #e0e0e0; }', 'toolasha-select-option-contrast');
+
+// Publishes --toolasha-visual-viewport-height/-offset-top on <html> so panel
+// CSS can size against the visible viewport rather than the layout one, which
+// does not shrink for the mobile on-screen keyboard. `<html>` exists at
+// document-start, so this needs no delay; never torn down, since it runs for
+// the life of the page the same as the select-option-contrast style above.
+Utils.visualViewport?.initVisualViewportTracking?.();
 
 /**
  * Detect if running on a supported Combat Simulator page.
@@ -2259,6 +2288,17 @@ if (isCombatSimulatorPage()) {
                     if (dualInstallClaimed || dualInstallGuard.claimLost() || missing.length > 0) warnDualInstall();
                 } catch (error) {
                     console.error('[Toolasha] Dual-install check failed:', error);
+                }
+
+                // MWITools, checked here rather than at import time for the same
+                // reason as the signals above: its own public-api and
+                // mobile-viewport-fix modules need a turn to run first, and this
+                // point — after the settings load that follows character init —
+                // is well past that.
+                try {
+                    if (dualInstallGuard.detectMwiTools()) warnMwiTools();
+                } catch (error) {
+                    console.error('[Toolasha] MWITools check failed:', error);
                 }
 
                 // Before features initialise: the conservative-defaults policy

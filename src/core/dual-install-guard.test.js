@@ -25,7 +25,7 @@ const storageMock = vi.hoisted(() => {
 
 vi.mock('./storage.js', () => ({ default: storageMock }));
 
-const { claimPage, claimLost, checkSettingsFingerprint, DUAL_INSTALL_MESSAGE } =
+const { claimPage, claimLost, checkSettingsFingerprint, detectMwiTools, DUAL_INSTALL_MESSAGE, MWI_TOOLS_MESSAGE } =
     await import('./dual-install-guard.js');
 
 const KEY = 'script_settingsMap_char1';
@@ -125,5 +125,39 @@ describe('what the user is told', () => {
     test('the message names the cause and the fix', () => {
         expect(DUAL_INSTALL_MESSAGE).toContain('Two copies of Toolasha');
         expect(DUAL_INSTALL_MESSAGE).toContain('keep exactly one');
+    });
+
+    test('the MWITools message names it and the overlapping features', () => {
+        expect(MWI_TOOLS_MESSAGE).toContain('MWITools');
+        expect(MWI_TOOLS_MESSAGE).toContain('task sorting');
+    });
+});
+
+describe('detecting MWITools', () => {
+    function fakeWindow({ api, domId } = {}) {
+        return {
+            MWIToolsAPI: api,
+            document: { getElementById: (id) => (domId && id === domId ? {} : null) },
+        };
+    }
+
+    test('the versioned API global is reported', () => {
+        expect(detectMwiTools(fakeWindow({ api: { name: 'MWITools', apiVersion: 1 } }))).toBe(true);
+    });
+
+    test('an unrelated global of the same name is not mistaken for it', () => {
+        expect(detectMwiTools(fakeWindow({ api: { name: 'SomethingElse' } }))).toBe(false);
+    });
+
+    test('the DOM fallback is reported when the API global is absent', () => {
+        expect(detectMwiTools(fakeWindow({ domId: 'mwitools-mobile-viewport-style' }))).toBe(true);
+    });
+
+    test('neither signal present is silent', () => {
+        expect(detectMwiTools(fakeWindow())).toBe(false);
+    });
+
+    test('no window at all is silent', () => {
+        expect(detectMwiTools(null)).toBe(false);
     });
 });

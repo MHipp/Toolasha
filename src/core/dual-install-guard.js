@@ -146,4 +146,59 @@ export async function checkSettingsFingerprint(characterKey, storedIds, version,
     return missing;
 }
 
-export default { claimPage, claimLost, checkSettingsFingerprint, DUAL_INSTALL_MESSAGE };
+/**
+ * MWITools exposes a versioned, non-writable API object on this key once its
+ * `public-api` module has run. It is a plain data object rather than an
+ * instance stamp, so identity is checked by shape (`name === 'MWITools'`)
+ * rather than by value.
+ */
+const MWI_TOOLS_API_KEY = 'MWIToolsAPI';
+
+/**
+ * DOM id MWITools' `mobile-viewport-fix` feature creates unconditionally at
+ * boot — it is registered with no `setting` key, so unlike most of its
+ * features it is not behind a toggle a user could have turned off. Used only
+ * as a fallback for a build where the API global has been renamed or removed;
+ * the global is the primary signal because a `<style>` id is easy to collide
+ * with by accident and says nothing about version.
+ *
+ * Adapted from MWITools src/features/mobile-viewport-fix.js, CC-BY-NC-SA-4.0,
+ * see third-party/mwitools/.
+ */
+const MWI_TOOLS_DOM_FALLBACK_ID = 'mwitools-mobile-viewport-style';
+
+/** What the user is told when MWITools is detected sharing the page */
+export const MWI_TOOLS_MESSAGE =
+    'MWITools is also running on this page. Its task sorting, market filters, DPS panel, net worth ' +
+    'tracking, and item tooltips overlap with Toolasha’s own — expect duplicate panels, duplicate ' +
+    'listeners, and numbers computed twice. Keep only one of the two enabled in your userscript manager.';
+
+/**
+ * Whether MWITools is also running on this page.
+ *
+ * Checked by the same two-signal shape as the dual-install guard above: a
+ * global MWITools itself controls (its public API), with a DOM fallback for
+ * a build that has changed the global's name. Unlike the dual-install guard,
+ * there is no fingerprint signal here — MWITools does not share Toolasha's
+ * database, so there is no settings map to watch for damage. The two scripts
+ * simply duplicate each other's UI, which is a lesser but still real problem
+ * this only needs to report once.
+ *
+ * @param {Window} [win] - Injected for tests
+ * @returns {boolean}
+ */
+export function detectMwiTools(win = typeof window === 'undefined' ? null : window) {
+    if (!win) return false;
+    const api = win[MWI_TOOLS_API_KEY];
+    if (api && typeof api === 'object' && api.name === 'MWITools') return true;
+    return Boolean(win.document?.getElementById?.(MWI_TOOLS_DOM_FALLBACK_ID));
+}
+
+export default {
+    claimPage,
+    claimLost,
+    checkSettingsFingerprint,
+    detectMwiTools,
+    DUAL_INSTALL_MESSAGE,
+    MWI_TOOLS_MESSAGE,
+};
