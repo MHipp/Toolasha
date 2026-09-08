@@ -6,6 +6,22 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Queued rows, trial tiles and the Iron Bell loop stop quoting figures they cannot back
+
+A queued action that asks for more than its materials cover now shows the time it can actually run rather than the time it was asked for, so a row no longer contradicts the very ledger it feeds — and a row that can do nothing says so. The same fault sat in the alt-readiness projection, which had been reporting a character busy long past the point its materials run out.
+
+The DPS meters and unit badges join the buff strips in staying out of a guild trial you are only watching: your own fight's figures were being painted onto the trial's tiles, and the trial's boss took whatever the first monster of your fight was carrying. The badges keep their own trial reading, which is a thing they are meant to draw — only the wrong one is turned away.
+
+The Iron Bell loop charged a whole decompose action to every fruit, when one action takes two. Time per fruit was half as long as reported, so gold per hour, gold per day and the cowbell figures were all understated. The fee had the same fault in the other direction and the two had been cancelling; both are corrected together, because fixing one alone would have left the fee rate wrong instead.
+
+And in the Lab Simulator's upgrade table, a row nobody measured is no longer printed as a confident zero — the shortlist is measured, everything else now says plainly that it was not looked at.
+
+### A dungeon run is coloured against the average its own line reports
+
+With a window set, the green-or-red on each run compared against your all-time average — the very figure the window exists to escape, so every run after a change read green for good. It now judges a run against the number printed beside it. A run behind a reset marker, which shows no average at all, is drawn neutral rather than measured against a figure it is not part of.
+
+Two more in the same area: a run that chat labelled before anything had banked it was dropped from the lifetime average the moment the history was rebuilt, and a backfilled run now matches the tracker's own copy of it exactly rather than by a tolerance.
+
 ### Party chat stopped counting each dungeon run twice, and the average stopped counting runs it knows nothing about
 
 Run numbers could jump — 225 to 315 in one step — and the trailing average could read barely half the runs behind it, on a run that took the usual time. A pass that had already labelled a line kept its place in the numbering by writing down the time printed in chat, which is the same instant the tracker banks but rounded to the second; the next pass read that back as a _second_ run sitting beside the real one. Every run so labelled was counted twice, and the phantom carried no time, so the average divided by runs it had nothing to add for. Reloading was what made it obvious rather than what caused it: a fresh page re-labels the whole visible history at once, minting every phantom in one go.
