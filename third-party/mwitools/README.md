@@ -68,8 +68,19 @@ which portions, what Toolasha does with them, and where.
   from the server's `actions_updated` naming that step's action rather than from a DOM click
   listener — the same contract the task reroll walk already keeps, and the reason nothing here is
   ever chained. The buy branch opens the marketplace, not the shop. Setting
-  `craftingPlan_guidedWalk`. MWITools' `taskTrainPlanner` merge of several tasks onto one chain
-  was not taken.
+  `craftingPlan_guidedWalk`.
+- **Walking several tasks that share a crafting chain as one.** MWITools' `taskTrainPlanner`
+  buckets the task board by chain: it takes each task's output, walks the linear upgrade chain up
+  to its root, and groups every task sharing that root so one train covers them all. Toolasha's
+  `src/features/crafting-plan/task-crafting-train.js` takes the idea and not the mechanism — a
+  Toolasha plan is a tree with several inputs per node and buy-vs-craft decided per leg, so there
+  is no single chain root to bucket on. It plans each task's target separately, merges the
+  resulting walk step lists on the step key with the counts summed, and rebuilds the order as a
+  topological sort of every plan's dependency edges, so a step feeding two tasks still precedes
+  both. Tasks are grouped as connected components over "shares at least one craft step", which
+  does not depend on which task the board lists first, and a merged walk claims its materials
+  under one owner id so a shared material is reserved once. The walk itself is reused unchanged.
+  Setting `tasks_mergedCraftingWalk`.
 
 - **The shared inventory reservation ledger.** MWITools' `procurementAssistant` keeps a cart of
   plans and answers `getEffectiveInventory(itemHrid, level, excludePlanId)` — what is held less

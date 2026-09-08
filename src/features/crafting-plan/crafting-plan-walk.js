@@ -55,12 +55,36 @@ const NAV_RETRY_LIMIT = 15;
 const IDLE_TIMEOUT_MS = 15 * 60_000;
 
 /**
- * One step's key: what identifies it across the plan tree and in the display.
+ * The one step a plan node contributes, or null when it contributes none.
+ *
+ * The rejections are the plan's, not the walk's: coins are not bought on the
+ * marketplace, a leg the plan sized at nothing is nothing to do, and a craft leg
+ * with no action behind it cannot be opened. Exported because anything that
+ * reasons about the same steps — the merge across several plans above all — must
+ * agree with the walk about which nodes are steps and what each one is called,
+ * and a second copy of this predicate is a second answer waiting to diverge.
+ *
  * @param {Object} node - A `CraftingPlanNode`
- * @returns {string}
+ * @returns {{key: string, kind: 'craft'|'buy', itemHrid: string, itemName: string,
+ *   actionHrid: string|null, count: number, actions: number}|null} The step, or null
  */
-function stepKey(node) {
-    return node.strategy === 'craft' ? `craft:${node.actionHrid}` : `buy:${node.itemHrid}`;
+export function walkStepFor(node) {
+    if (!node) return null;
+    if (node.itemHrid === '/items/coin') return null;
+    const count = Math.ceil(node.quantity);
+    if (!(count > 0)) return null;
+    const isCraft = node.strategy === 'craft';
+    if (isCraft && !node.actionHrid) return null;
+
+    return {
+        key: isCraft ? `craft:${node.actionHrid}` : `buy:${node.itemHrid}`,
+        kind: isCraft ? 'craft' : 'buy',
+        itemHrid: node.itemHrid,
+        itemName: node.itemName,
+        actionHrid: isCraft ? node.actionHrid : null,
+        count,
+        actions: isCraft ? node.actionsNeeded || 0 : 0,
+    };
 }
 
 /**
@@ -85,29 +109,17 @@ export function buildWalkSteps(plan) {
     const byKey = new Map();
 
     const emit = (node) => {
-        if (node.itemHrid === '/items/coin') return;
-        const count = Math.ceil(node.quantity);
-        if (!(count > 0)) return;
-        if (node.strategy === 'craft' && !node.actionHrid) return;
+        const step = walkStepFor(node);
+        if (!step) return;
 
-        const key = stepKey(node);
-        const existing = byKey.get(key);
+        const existing = byKey.get(step.key);
         if (existing) {
-            existing.count += count;
-            existing.actions += node.strategy === 'craft' ? node.actionsNeeded || 0 : 0;
+            existing.count += step.count;
+            existing.actions += step.actions;
             return;
         }
 
-        const step = {
-            key,
-            kind: node.strategy === 'craft' ? 'craft' : 'buy',
-            itemHrid: node.itemHrid,
-            itemName: node.itemName,
-            actionHrid: node.strategy === 'craft' ? node.actionHrid : null,
-            count,
-            actions: node.strategy === 'craft' ? node.actionsNeeded || 0 : 0,
-        };
-        byKey.set(key, step);
+        byKey.set(step.key, step);
         steps.push(step);
     };
 
@@ -165,7 +177,9 @@ class CraftingPlanWalk {
     /** Subscribe to the two messages the walk advances on, and to the switch that ends it. */
     initialize() {
         if (this.isInitialized) return;
-        if (!config.getSetting('craftingPlan_guidedWalk')) return;
+        // Two surfaces drive this one walk: the action panel's plan and the task
+        // board's merged walk. Either setting on is a reason to be listening.
+        if (!config.getSetting('craftingPlan_guidedWalk') && !config.getSetting('tasks_mergedCraftingWalk')) return;
         this.isInitialized = true;
 
         const onActions = (data) => this._onActionsUpdated(data);

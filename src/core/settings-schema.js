@@ -2916,6 +2916,19 @@ export const settingsGroups = {
                 ],
                 help: 'Cheapest values a cowbell through the Bag of 10 Cowbells and picks whichever of the two rerolls costs less in coins. Either preference falls back to the other currency when its own is blocked. A free reroll is always taken first.',
             },
+            tasks_mergedCraftingWalk: {
+                id: 'tasks_mergedCraftingWalk',
+                label: 'Tasks: walk several tasks that share a crafting chain as one',
+                type: 'checkbox',
+                default: false,
+                help:
+                    'Adds a “Merged crafting walk” button to the task panel header. It plans each ' +
+                    'production task on the board, groups the ones whose chains share a craft step, and ' +
+                    'offers one guided walk per group — naming the tasks it covers and how many steps the ' +
+                    'merge saves. A shared intermediate is then crafted once at the combined count instead ' +
+                    'of twice at two part-counts. The walk is the same one the crafting plan uses: it opens ' +
+                    'each step and fills in the count, and never presses the button.',
+            },
             tasks_rerollWalkTrashAtLimit: {
                 id: 'tasks_rerollWalkTrashAtLimit',
                 label: 'Reroll walk: discard a task once both reroll options are blocked',
