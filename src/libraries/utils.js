@@ -14,6 +14,7 @@ import * as serverGate from '../utils/server-gate.js';
 import * as scriptVersion from '../utils/script-version.js';
 import * as dom from '../utils/dom.js';
 import * as mobile from '../utils/mobile.js';
+import * as visualViewport from '../utils/visual-viewport.js';
 import * as domObserverHelpers from '../utils/dom-observer-helpers.js';
 import * as timerRegistry from '../utils/timer-registry.js';
 import * as bonusRevenueCalculator from '../utils/bonus-revenue-calculator.js';
@@ -168,6 +169,7 @@ toolashaRoot.Utils = {
     scriptVersion,
     dom,
     mobile,
+    visualViewport,
     domObserverHelpers,
     timerRegistry,
     bonusRevenueCalculator,

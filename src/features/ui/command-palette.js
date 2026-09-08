@@ -732,7 +732,13 @@ class CommandPalette {
         Object.assign(box.style, {
             marginTop: '12vh',
             width: 'min(560px, 92vw)',
-            maxHeight: '70vh',
+            // The palette opens a text input immediately, so the mobile keyboard
+            // is up for as long as it is — capped against the visible viewport
+            // rather than the layout one so the result list does not end up
+            // partly hidden behind the keyboard. Adapted from MWITools
+            // src/features/mobile-viewport-fix.js, CC-BY-NC-SA-4.0, see
+            // third-party/mwitools/.
+            maxHeight: 'calc(var(--toolasha-visual-viewport-height, 100vh) * 0.7)',
             display: 'flex',
             flexDirection: 'column',
             background: COLORS.background,

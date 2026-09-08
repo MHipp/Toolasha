@@ -632,7 +632,12 @@ class WhatsNew {
             Object.assign(dialog.style, {
                 minWidth: '300px',
                 maxWidth: '420px',
-                maxHeight: '70vh',
+                // Capped against the visible viewport rather than the layout one,
+                // so the dialog does not size as though the mobile on-screen
+                // keyboard were not covering part of the screen. Adapted from
+                // MWITools src/features/mobile-viewport-fix.js, CC-BY-NC-SA-4.0,
+                // see third-party/mwitools/.
+                maxHeight: 'calc(var(--toolasha-visual-viewport-height, 100vh) * 0.7)',
                 display: 'flex',
                 flexDirection: 'column',
                 background: COLORS.background,
@@ -773,7 +778,9 @@ class WhatsNew {
             transform: 'translate(-50%, -50%)',
             zIndex: config.Z_FLOATING_PANEL,
             width: 'min(560px, 92vw)',
-            maxHeight: '82vh',
+            // See the copy-from-character dialog above for why this is the
+            // visible viewport rather than the layout one.
+            maxHeight: 'calc(var(--toolasha-visual-viewport-height, 100vh) * 0.82)',
             display: 'flex',
             flexDirection: 'column',
             background: COLORS.background,
