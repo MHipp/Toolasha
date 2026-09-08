@@ -171,6 +171,21 @@ describe('offline cap overlay', () => {
         expect(resolved.terminalAt).toBeNull();
     });
 
+    test('a MooPass that expired before the offline window began leaves the cap trusted (TLA-025B)', () => {
+        const wentOffline = NOW;
+        const resolved = resolveDisplayProjection(
+            record({
+                endsInMs: null,
+                terminalCause: 'infinite',
+                offline: { hourCap: 24, mooPassExpireTime: wentOffline - HOUR },
+            }),
+            wentOffline
+        );
+
+        expect(resolved.terminalCause).toBe('offline');
+        expect(resolved.terminalAt).toBe(wentOffline + 24 * HOUR);
+    });
+
     test('an already-uncertain projection is never turned into a claim by the cap', () => {
         const resolved = resolveDisplayProjection(
             record({ endsInMs: null, terminalCause: 'unknown', offline: { hourCap: 8, mooPassExpireTime: null } }),

@@ -79,9 +79,12 @@ export function resolveDisplayProjection(stored, freshLastOfflineTime) {
     const mooPassExpireTime = stored.offline?.mooPassExpireTime;
     const offlineLimitAt = freshLastOfflineTime + offlineHourCap * 3600 * 1000;
 
-    if (mooPassExpireTime != null && mooPassExpireTime < offlineLimitAt) {
-        // The saved cap may include MooPass hours that will not all be honoured. Fail closed
-        // rather than assert a deadline that assumes the full cap held.
+    if (mooPassExpireTime != null && mooPassExpireTime > freshLastOfflineTime && mooPassExpireTime < offlineLimitAt) {
+        // Only a MooPass that was still active when this offline interval started (strictly after
+        // freshLastOfflineTime) and that expires before the projected cap can make the honoured
+        // hours uncertain. A pass that had already expired before the interval began was never
+        // active during it and cannot make a trustworthy cap ambiguous. Fail closed rather than
+        // assert a deadline that assumes the full cap held.
         return terminalCause === 'infinite'
             ? { segments, terminalCause: 'unknown', terminalAt: null }
             : { segments, terminalCause, terminalAt };
