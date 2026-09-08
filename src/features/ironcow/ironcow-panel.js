@@ -663,13 +663,13 @@ class IronCowFarmPanel {
                 loop.essencePerFruit.toFixed(2),
                 COLORS.text,
                 `${loop.items?.essencePerDecompose ?? 0} on a success, at ` +
-                    `${formatPercentage(loop.decomposeRate * 100)} decompose success.`
+                    `${formatPercentage(loop.decomposeRate)} decompose success.`
             ),
             line(
                 'Coins per fruit',
                 coins(loop.netPerFruit),
                 COLORS.text,
-                `${coins(loop.goldInPerFruit)} coinified at ${formatPercentage(loop.coinifyRate * 100)} success, ` +
+                `${coins(loop.goldInPerFruit)} coinified at ${formatPercentage(loop.coinifyRate)} success, ` +
                     `less ${coins(loop.goldOutPerFruit)} of decompose fee.`
             ),
             line(
@@ -680,9 +680,9 @@ class IronCowFarmPanel {
             ),
             line(
                 'Split',
-                `forage ${formatPercentage(loop.timeShare.forage * 100, 0)} · ` +
-                    `decompose ${formatPercentage(loop.timeShare.decompose * 100, 0)} · ` +
-                    `coinify ${formatPercentage(loop.timeShare.coinify * 100, 0)}`,
+                `forage ${formatPercentage(loop.timeShare.forage, 0)} · ` +
+                    `decompose ${formatPercentage(loop.timeShare.decompose, 0)} · ` +
+                    `coinify ${formatPercentage(loop.timeShare.coinify, 0)}`,
                 COLORS.textDim
             ),
             line('Alchemy fees / hour', coins(loop.alchemyFeePerHour), COLORS.bad, 'What the buffer is for.')

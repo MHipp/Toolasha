@@ -409,3 +409,22 @@ describe('lifecycle', () => {
         expect(store.snapshot).toBeNull();
     });
 });
+
+describe('percentages', () => {
+    test('the time split reads as a share of the loop, not a hundred times one', async () => {
+        ironCowFarmPanel.show();
+        await ironCowFarmPanel.refresh();
+
+        // 10/36, 20/36, 6/36 of the loop's time — a split whose three parts sum to 100%.
+        expect(text()).toContain('forage 28% · decompose 56% · coinify 17%');
+    });
+
+    test('the success rates read as rates, not as hundreds of percent', async () => {
+        ironCowFarmPanel.show();
+        await ironCowFarmPanel.refresh();
+
+        const titles = [...ironCowFarmPanel.panel.querySelectorAll('[title]')].map((element) => element.title);
+        expect(titles.some((title) => title.includes('60.0% decompose success'))).toBe(true);
+        expect(titles.some((title) => title.includes('coinified at 70.0% success'))).toBe(true);
+    });
+});
