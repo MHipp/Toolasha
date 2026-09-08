@@ -721,6 +721,16 @@ class DataManager {
             this.emit('market_item_order_books_updated', data);
         });
 
+        // Handle market_item_values_updated (the official value map refreshing
+        // mid-session). Global market data like the order books above, so it is
+        // deliberately left unguarded by the socket-ownership check. Without it
+        // the value map is only ever re-read out of localStorage on a 30-second
+        // throttle, so every consumer of the official values — networth's
+        // officialValue source, the tradable-band clamp — trails a refresh.
+        this.webSocketHook.on('market_item_values_updated', (data) => {
+            this.emit('market_item_values_updated', data);
+        });
+
         // Handle action_type_consumable_slots_updated (when user changes tea assignments)
         // updateDrinkSlotsMap clears the whole map before refilling, which is
         // only safe because this message always carries EVERY action type, not

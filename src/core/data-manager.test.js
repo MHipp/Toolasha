@@ -131,6 +131,23 @@ describe('DataManager', () => {
         expect(listener).toHaveBeenCalledWith(payload);
     });
 
+    test('forwards market item value updates unguarded by socket ownership', async () => {
+        const { default: dataManager } = await import('./data-manager.js');
+        const listener = vi.fn();
+        const payload = { marketValuesVersion: 12, marketItemValues: { '/items/log': { 0: 200 } } };
+
+        dataManager.on('market_item_values_updated', listener);
+
+        const handler = webSocketHandlers.get('market_item_values_updated');
+        expect(typeof handler).toBe('function');
+
+        handler(payload);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(listener).toHaveBeenCalledWith(payload);
+        dataManager.off('market_item_values_updated', listener);
+    });
+
     test('community_buffs_updated refreshes the levels getCommunityBuffLevel reads', async () => {
         const { default: dataManager } = await import('./data-manager.js');
         dataManager.characterData = {

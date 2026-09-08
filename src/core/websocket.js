@@ -61,6 +61,11 @@ import performanceMonitor from '../utils/performance-monitor.js';
  *   `guild_buffs_updated`): each replaces a whole action-type buff map, and two
  *   genuine consecutive updates share the type plus the first map key, so the
  *   100-character prefix hash collapses them and the second change is lost.
+ * - `market_item_values_updated`: the payload opens with the whole value map,
+ *   so two refreshes that leave the first few items unchanged share their first
+ *   100 characters and the second — carrying every value that did move — would
+ *   be dropped. Key order is the server's to choose, so this cannot be relied
+ *   on to put the changing version field inside the window.
  * - `guild_updated`: guild updates open with the same guild id and name every
  *   time; what changed (xp, level, member counts) sits past the hash window,
  *   so a quick pair would drop the second and leave the guild panels a step
@@ -75,6 +80,7 @@ const SKIP_DEDUP_TYPES = new Set([
     'actions_updated',
     'items_updated',
     'market_item_order_books_updated',
+    'market_item_values_updated',
     'market_listings_updated',
     'profile_shared',
     'battle_consumable_ability_updated',

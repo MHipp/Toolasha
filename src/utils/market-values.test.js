@@ -1,6 +1,6 @@
 import { describe, test, expect, vi, afterEach } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ patchLive: true, payload: null, throws: false, calls: 0 }));
+const mocks = vi.hoisted(() => ({ patchLive: true, payload: null, throws: false, calls: 0, handlers: new Map() }));
 
 vi.mock('../core/data-manager.js', () => ({
     default: {
@@ -9,6 +9,7 @@ vi.mock('../core/data-manager.js', () => ({
             if (mocks.throws) throw new Error('localStorage exploded');
             return mocks.payload;
         },
+        on: (event, handler) => mocks.handlers.set(event, handler),
     },
 }));
 vi.mock('./server-gate.js', () => ({ isMarketplacePatchLive: () => mocks.patchLive }));
@@ -20,6 +21,7 @@ import {
     priceIncrement,
     reconcileBook,
     clampToBand,
+    applyMarketValuesMessage,
     _resetMarketValues,
 } from './market-values.js';
 
@@ -271,5 +273,46 @@ describe('band memo', () => {
         expect(clampToBand(1, '/items/cheese', 0)).toBe(next.min);
         // And a level the new map no longer prices is a pass-through again
         expect(clampToBand(1, '/items/cheese', 2)).toBe(1);
+    });
+});
+
+describe('applyMarketValuesMessage', () => {
+    test('a pushed payload swaps the map without a localStorage read', () => {
+        expect(applyMarketValuesMessage(payload(7, { '/items/log': { 0: 200 } }))).toBe(true);
+        expect(marketValueFor('/items/log')).toBe(200);
+        expect(mocks.calls).toBe(0);
+    });
+
+    test('the pushed version wins over an identical stale one in localStorage', () => {
+        // A localStorage map still on version 7 must not overwrite the pushed
+        // one: the guard is by version, so re-reading has to be a no-op.
+        applyMarketValuesMessage(payload(7, { '/items/log': { 0: 200 } }));
+        mocks.payload = payload(7, { '/items/log': { 0: 1 } });
+        refreshMarketValues(Date.now() + 60_000);
+        expect(marketValueFor('/items/log')).toBe(200);
+    });
+
+    test('a consumer memoised on the old version recomputes', () => {
+        applyMarketValuesMessage(payload(1, { '/items/log': { 0: 1000 } }));
+        const before = clampToBand(5000, '/items/log');
+        expect(before).toBeLessThan(5000); // clamped into the ~1000 band
+        applyMarketValuesMessage(payload(2, { '/items/log': { 0: 5000 } }));
+        // The band cache is derived from the map, so it must have been dropped
+        expect(clampToBand(5000, '/items/log')).toBe(5000);
+    });
+
+    test('a payload with no map is ignored rather than blanking the cache', () => {
+        applyMarketValuesMessage(payload(1, { '/items/log': { 0: 1000 } }));
+        expect(applyMarketValuesMessage({ marketValuesVersion: 2 })).toBe(false);
+        expect(applyMarketValuesMessage(undefined)).toBe(false);
+        expect(applyMarketValuesMessage({ marketValuesVersion: 2, marketItemValues: 'nope' })).toBe(false);
+        expect(marketValueFor('/items/log')).toBe(1000);
+    });
+
+    test('the module subscribes to the pushed message', () => {
+        const handler = mocks.handlers.get('market_item_values_updated');
+        expect(typeof handler).toBe('function');
+        handler(payload(3, { '/items/log': { 0: 42 } }));
+        expect(marketValueFor('/items/log')).toBe(42);
     });
 });

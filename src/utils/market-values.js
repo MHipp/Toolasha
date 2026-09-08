@@ -28,6 +28,9 @@
  * raw yields compressed bytes. The dev's advice was to cache it rather than
  * re-fetch, so the util is called at most once per refresh interval and the map
  * is swapped only when its version changes; everything else reads the cache.
+ * A pushed `market_item_values_updated` message swaps the cache directly —
+ * see {@link applyMarketValuesMessage} — so a mid-session refresh does not wait
+ * out the interval.
  *
  * All of this is gated behind {@link isMarketplacePatchLive}: the util does not
  * exist on the live server until the patch lands, so before then every helper
@@ -220,6 +223,44 @@ export function reconcileBook(ask, bid, itemHrid, enhancementLevel = 0) {
         askSource: askIsBook ? 'book' : 'value',
         bidSource: bidIsBook ? 'book' : 'value',
     };
+}
+
+/**
+ * Apply a pushed `market_item_values_updated` payload.
+ *
+ * The map is otherwise only re-read out of localStorage on the throttle above,
+ * so between a value refresh and the next read every price this module produces
+ * is stale — for the whole session if the game writes the compressed blob once
+ * and then only pushes. Handling the message closes that window: the map is
+ * swapped, the version bumped, and the derived band cache — the only thing here
+ * memoised across a map — dropped so it recomputes against the new values.
+ *
+ * Both fields are required. A payload carrying no map is ignored rather than
+ * clearing the cache, so a partial or malformed push cannot blank out pricing.
+ *
+ * The message and its payload shape were learnt from MWITools (CC-BY-NC-SA-4.0)
+ * — see `third-party/mwitools/`.
+ *
+ * @param {{marketValuesVersion?: number, marketItemValues?: Object}} payload - Message payload
+ * @returns {boolean} True when the cache was swapped
+ */
+export function applyMarketValuesMessage(payload) {
+    const values = payload?.marketItemValues;
+    if (!values || typeof values !== 'object') return false;
+    cache = { version: payload.marketValuesVersion ?? null, values };
+    bandCache = new Map();
+    // The pushed map is newer than anything localStorage holds, so restart the
+    // throttle window rather than letting the next price query re-read over it.
+    lastRefresh = Date.now();
+    return true;
+}
+
+// Global market data, not one character's, so this is not re-armed on a switch.
+// This module sits under market-data.js and so under nearly every pricing path;
+// the typeof guard keeps a suite that mocks dataManager with only the two
+// methods its own subject calls from failing at import time.
+if (typeof dataManager?.on === 'function') {
+    dataManager.on('market_item_values_updated', (payload) => applyMarketValuesMessage(payload));
 }
 
 /** Reset the cache and refresh throttle. Tests only. */
