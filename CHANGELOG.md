@@ -6,6 +6,14 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### A frame the game sent that was not text could stop the game reading it
+
+The script reads every message on its way past by replacing the property the game reads it from, and it did its own work inside that read. A binary frame reached a line that assumed text, and the error that raised came out of the game's own read rather than ours. It survived in practice only because a second, safer path screens those frames first — and that path does not exist on a page where another script has replaced the socket, which is exactly the case where two scripts are installed together. Non-text frames are now turned away before anything touches them, and nothing the script does inside that read can cost the game a message again.
+
+The guild credit exchange advisor priced a whole conversion at the best price on the book, and the Max button beside it fills the box with everything you hold — so the routine case quoted thousands of units at a price that covers the first few. It walks the book now, and where the book is too thin to cover the batch it says so and declines to rank rather than quoting units that are not there.
+
+The Lab Simulator lists labyrinth rooms in the order the game lists them rather than alphabetically, in both the Configure dropdown and the Upgrade tab's room checkboxes. And three more of the game's own anchors are watched for renames: the leaderboard table, the item picker, and the names in the trial stats table.
+
 ### A sync pull no longer overwrites your dungeon run history, or undoes what you deleted
 
 The dungeon tracker wrote every run to a store nothing had claimed for syncing, so a pull took whichever device's copy it found and discarded the other — not only when something was deleted, but on every pull, and the pace figures and chat averages are computed from what survived. It has a merge now: two devices that each watched different runs end with both. The check that is meant to catch an unclaimed store only knew how to inspect one kind of record, so a whole store could go unclaimed unseen; it now requires every store to be claimed or to name a reason.
