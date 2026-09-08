@@ -35,11 +35,30 @@ which portions, what Toolasha does with them, and where.
   language setting and the browser's need not agree, and the game formats its numbers by the
   former. Toolasha had been stripping separators with a hardcoded `replace(/,/g, '')`, which
   silently mis-parses every comma-decimal locale (`1,5` reads back as 15). The detection is
-  adapted in `parseGameNumber` / `gameNumberSeparators` in `src/utils/formatters.js`, with an
+  adapted in `parseGameNumber` / `gameNumberSeparators` in `src/utils/number-parser.js`, with an
   attribution line in the JSDoc; the parsing built on top of it, and the call sites, are
   Toolasha's. `formatters.js` was the obvious home but the wrong one: `number-parser.js`
   already exists for exactly this — reading a number back out of text the game drew — and
   `parseGameNumber` is the locale-driven sibling of the `parseItemCount` heuristic there.
+
+- **The ability→effect index and the buff/debuff bars.** MWITools' `battleBuffs` builds an
+  index at boot of which buffs and debuffs each ability applies and to whom, seeds per-unit
+  state from the combatant list on `new_battle`, and reconciles it against the buff maps on
+  `battle_updated`, drawing an icon strip with countdowns beneath every unit. Toolasha's version
+  is `src/utils/ability-effects.js` (the index, identity-cached like its other boot-time
+  indexes) and `src/features/combat/combat-unit-buff-bars.js` (the strips, seated in the unit
+  tile the way `portrait-dps.js` already does). Two deliberate departures: buff-versus-debuff
+  is decided by the effect's target, not its type, because a debuff arrives as a damage effect
+  whose buffs land on the target; and MWITools' HP-delta inference of pending effects was not
+  taken, since it would paint a debuff on a monster that resisted. Setting `combatUnitBuffBars`.
+- **The equipment mismatch warning.** MWITools' `checkEquipment` shows a header pill when
+  skilling gear is worn into combat or a production action runs while its efficiency piece sits
+  unequipped, checking four pieces against their action families and suppressing itself during
+  a labyrinth run. Toolasha's `src/features/equipment/equipment-mismatch-warning.js` keeps the
+  four rules but verifies each against the item's own `equipmentDetail` at runtime and skips a
+  rule the data does not confirm — which is how the enchanted gloves' enhancing bonus turned out
+  to be speed, not efficiency. The running action comes from `runningAction()`, never from the
+  queue's first entry. Setting `equipmentMismatchWarning`.
 
 ## What was not adapted
 

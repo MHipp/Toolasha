@@ -6,6 +6,16 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Buff bars under combat units, a wrong-gear warning, and live market values — adapted from MWITools
+
+Three features adapted from the MWITools userscript (CC-BY-NC-SA-4.0, the same licence as this script; attribution in `third-party/mwitools/`), each re-implemented in this script's own idiom and off by default:
+
+- **Buff and debuff bars.** An icon strip beneath every combat unit — you, your party, each monster — with a live countdown on each effect, read from the game's own buff maps rather than inferred, so a resisted debuff is never painted. Whether an effect is a buff or a debuff is decided by who it lands on, not by its type, because a debuff arrives as a damage effect whose buffs land on the target.
+- **Wrong-gear warning.** A pill in the header when your kit contradicts what you are doing: skilling gear worn into combat, or a production action running while its efficiency piece sits unequipped in your bag. Every rule is checked against the item data at runtime and skipped if the data does not confirm it — which is how it was noticed that the enchanted gloves' enhancing bonus is speed, not efficiency.
+- **Live market values.** The game pushes an update when its published item values refresh; this script never listened for it, so official-value pricing was stale until reload. It is applied now.
+
+Also from the same review: the header's current-action anchors join the canary list so a game refactor there is reported, and every number read back out of game-drawn text now parses by the game's locale instead of assuming English separators, with the remaining hardcoded capture patterns noted for a later pass.
+
 ### Audit round: excluding your coins made the net worth chart's Inventory line dive by that amount
 
 Coin can be excluded from net worth, and the total honoured that — but the history kept writing the full coin balance into its gold field, and the chart draws Inventory as everything minus gold. Anyone who excluded coins got an Inventory line and rate that dropped by their whole balance. Three more in net worth: switching the value source (order book or the game's published value) never re-priced anything until an unrelated update happened; a recalculation still running when you switched character could paint the departing character's total under the arriving one; and offline production income could be filed under the wrong character on a fast switch.
