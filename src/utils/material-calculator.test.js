@@ -443,6 +443,20 @@ describe('material requirements and the reservation ledger', () => {
         expect(plank(materials).reservedNote).toBeUndefined();
     });
 
+    test('a bag that holds exactly what is needed, all of it claimed, says so', () => {
+        // The commonest shape the note exists for: nothing is missing from the
+        // bag, and the whole shortfall is somebody else's claim
+        ledger.claims = { 'goal:a': { '/items/plank': 100 } };
+        const materials = calculateMaterialRequirements('/actions/crafting/table', 25, false, {
+            ownerId: 'missingMats',
+        });
+
+        expect(plank(materials).required).toBe(100);
+        expect(plank(materials).have).toBe(100);
+        expect(plank(materials).missing).toBe(100);
+        expect(plank(materials).reservedNote).toBe('100 short — reserved elsewhere (/items/plank)');
+    });
+
     test('a claim and the action queue both come off, and neither twice', () => {
         state.currentActions = [
             { actionHrid: '/actions/crafting/table', hasMaxCount: true, maxCount: 5, currentCount: 0 },

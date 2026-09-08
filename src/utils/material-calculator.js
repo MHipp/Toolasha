@@ -196,17 +196,22 @@ export function unclaimedBoughtCount(itemHrid) {
  *
  * @param {number} missing - The shortfall as computed
  * @param {string} itemHrid - The material
+ * @param {number} required - Units the action needs in total
  * @param {number} have - Units held (including bought-but-unclaimed)
  * @param {number} queued - Units the action queue has spoken for
  * @param {number} reserved - Units other owners have claimed
  * @param {string|null} ownerId - Who is asking
  * @returns {{reserved?: number, reservedNote?: string}} Fields to spread onto the line
  */
-function reservationFields(missing, itemHrid, have, queued, reserved, ownerId) {
+function reservationFields(missing, itemHrid, required, have, queued, reserved, ownerId) {
     if (!(reserved > 0) || !(missing > 0)) return {};
     // Only when the claim is what made it short: a player who is simply out of
-    // logs needs no explanation, and a note that fires either way explains nothing
-    if (Math.max(0, have - queued) < missing + reserved) return { reserved };
+    // logs needs no explanation, and a note that fires either way explains
+    // nothing. That is exactly "the bag, less the queue, covers the whole
+    // requirement" — the same test the two sibling notes use. `missing +
+    // reserved` is not that number and suppressed the commonest case of all: a
+    // bag holding precisely what the action needs, every unit of it claimed.
+    if (Math.max(0, have - queued) < required) return { reserved };
     const reservedNote = shortfallNote(missing, itemHrid, 0, { excludeOwner: ownerId });
     return reservedNote ? { reserved, reservedNote } : { reserved };
 }
@@ -276,7 +281,7 @@ export function calculateMaterialRequirements(
                 missing: missingAmount,
                 isTradeable: itemDetails.isTradable === true, // British spelling
                 isUpgradeItem: false,
-                ...reservationFields(missingAmount, input.itemHrid, have, queued, reserved, ownerId),
+                ...reservationFields(missingAmount, input.itemHrid, totalRequired, have, queued, reserved, ownerId),
             });
         }
     }
@@ -310,7 +315,15 @@ export function calculateMaterialRequirements(
                 missing: missingAmount,
                 isTradeable: itemDetails.isTradable === true, // British spelling
                 isUpgradeItem: true, // Flag to identify upgrade items
-                ...reservationFields(missingAmount, actionDetails.upgradeItemHrid, have, queued, reserved, ownerId),
+                ...reservationFields(
+                    missingAmount,
+                    actionDetails.upgradeItemHrid,
+                    totalRequired,
+                    have,
+                    queued,
+                    reserved,
+                    ownerId
+                ),
             });
         }
     }
