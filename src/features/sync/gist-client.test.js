@@ -273,6 +273,30 @@ describe('readSyncGist', () => {
         expect(manifest.exportedAt).toBe('T');
     });
 
+    test('a manifest field this build does not know is passed through, not rejected', async () => {
+        // The compatibility guarantee the ordering counter rests on: the gate
+        // below is `toolashaSync` and `chunks`, and everything else in the
+        // manifest is handed to the caller as it came. A build that predates a
+        // field reads the gist exactly as it always did — which is why the
+        // counter lives here rather than in the payload
+        responses.push({
+            status: 200,
+            body: {
+                files: {
+                    [MANIFEST_FILE]: {
+                        content: JSON.stringify({ toolashaSync: 1, chunks: 1, exportedAt: 'T', somethingNew: 9 }),
+                    },
+                    [chunkFileName(0)]: { content: '{"a":1}' },
+                },
+            },
+        });
+
+        const { payload, manifest } = await readSyncGist('tok', 'abc');
+        expect(payload).toBe('{"a":1}');
+        expect(manifest.exportedAt).toBe('T');
+        expect(manifest.somethingNew).toBe(9);
+    });
+
     test('follows raw_url for a file the API truncated', async () => {
         responses.push({
             status: 200,

@@ -84,6 +84,7 @@ beforeEach(() => {
         settings: {
             script_settingsMap_abc: { sync_token: { value: 'ghp_secret' }, chatCommands: { isTrue: true } },
             toolasha_sync_gistId: 'deadbeef',
+            toolasha_sync_lastSyncedSeq: 4,
             some_other_key: 42,
         },
         dungeonRuns: { run1: { kills: 3 } },
@@ -100,6 +101,10 @@ describe('redaction', () => {
     test('strips device-local sync bookkeeping', () => {
         const safe = redactSettingsStore(storeState.stores.settings);
         expect(safe.toolasha_sync_gistId).toBeUndefined();
+        // The ordering counter is one device's clock, not the account's: sent
+        // up, every device would adopt every other device's position and the
+        // counter would stop ordering anything
+        expect(safe.toolasha_sync_lastSyncedSeq).toBeUndefined();
         expect(safe.some_other_key).toBe(42);
     });
 
