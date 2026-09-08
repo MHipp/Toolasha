@@ -101,7 +101,11 @@ export function queueTimeLeft() {
         // unit is in progress. Scoped to (id, currentCount) so a queued action — which has
         // no boundary recorded for it — is never affected.
         if (action === current) {
-            const elapsed = dataManager.getElapsedSecondsInCurrentUnit(action.id, action.currentCount, stats.actionTime);
+            const elapsed = dataManager.getElapsedSecondsInCurrentUnit(
+                action.id,
+                action.currentCount,
+                stats.actionTime
+            );
             actionSeconds = Math.max(0, actionSeconds - elapsed);
         }
 
