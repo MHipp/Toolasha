@@ -134,7 +134,7 @@ describe('calculateMaterialLimit — alchemy coin fee', () => {
             { primaryItemHash: hashFor(CHEESE) }
         );
 
-        expect(limit).toEqual({ maxActions: 5, limitType: 'gold' });
+        expect(limit).toEqual({ maxActions: 5, limitType: 'gold', isEstimated: false });
     });
 
     test('transmute prices the fee off the sell price, not the item level', () => {
@@ -148,7 +148,7 @@ describe('calculateMaterialLimit — alchemy coin fee', () => {
             { primaryItemHash: hashFor(CHEESE) }
         );
 
-        expect(limit).toEqual({ maxActions: 5, limitType: 'gold' });
+        expect(limit).toEqual({ maxActions: 5, limitType: 'gold', isEstimated: false });
     });
 
     test('the fee scales with the bulk multiplier', () => {
@@ -164,7 +164,7 @@ describe('calculateMaterialLimit — alchemy coin fee', () => {
             { primaryItemHash: hashFor(CHEESE) }
         );
 
-        expect(limit).toEqual({ maxActions: 3, limitType: 'gold' });
+        expect(limit).toEqual({ maxActions: 3, limitType: 'gold', isEstimated: false });
     });
 
     test('the material still wins when it is scarcer than the gold', () => {
@@ -177,7 +177,7 @@ describe('calculateMaterialLimit — alchemy coin fee', () => {
             { primaryItemHash: hashFor(CHEESE) }
         );
 
-        expect(limit).toEqual({ maxActions: 4, limitType: `material:${CHEESE}` });
+        expect(limit).toEqual({ maxActions: 4, limitType: `material:${CHEESE}`, isEstimated: false });
     });
 
     test('coinify charges no derived fee, so only the item limits it', () => {
@@ -190,7 +190,7 @@ describe('calculateMaterialLimit — alchemy coin fee', () => {
             { primaryItemHash: hashFor(CHEESE) }
         );
 
-        expect(limit).toEqual({ maxActions: 7, limitType: `material:${CHEESE}` });
+        expect(limit).toEqual({ maxActions: 7, limitType: `material:${CHEESE}`, isEstimated: false });
     });
 
     test('an enhanced stack only counts at its own enhancement level', () => {
@@ -203,7 +203,7 @@ describe('calculateMaterialLimit — alchemy coin fee', () => {
             { primaryItemHash: hashFor(CHEESE, 3) }
         );
 
-        expect(limit).toEqual({ maxActions: 6, limitType: `material:${CHEESE}` });
+        expect(limit).toEqual({ maxActions: 6, limitType: `material:${CHEESE}`, isEstimated: false });
     });
 });
 
@@ -335,7 +335,7 @@ describe('calculateMaterialLimit — non-alchemy actions', () => {
             null
         );
 
-        expect(limit).toEqual({ maxActions: 2, limitType: 'gold' });
+        expect(limit).toEqual({ maxActions: 2, limitType: 'gold', isEstimated: false });
     });
 
     test('an action with no inputs and no cost is unlimited', () => {

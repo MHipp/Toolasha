@@ -112,7 +112,14 @@ export function computeLiveProjection(now = Date.now()) {
         // action's inputs are gone before the next one is costed. Without the ledger every
         // queued action was priced against the full starting inventory and the projection
         // reported an idle time hours later than the truth.
-        actionTimeDisplay.deductQueueActionMaterials(inventoryLookup, actionDetails, actionObj, timing);
+        //
+        // Deterministic outputs only. A crafted intermediate is as good as stock in hand, so
+        // the row that consumes it is projected honestly; an expected drop or alchemy yield
+        // is a projection, and this feature is deliberately stricter than the tooltip — a
+        // false early warning beats telling the player an alt is safe when it might not be.
+        actionTimeDisplay.deductQueueActionMaterials(inventoryLookup, actionDetails, actionObj, timing, {
+            creditStochastic: false,
+        });
 
         if (timing.isTrulyInfinite || !Number.isFinite(timing.totalTime)) {
             segments.push(

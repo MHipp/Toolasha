@@ -409,6 +409,9 @@ class ActionTimeDisplay {
 
             let accumulatedTime = 0;
             let hasInfinite = false;
+            // Sticky: once a row's figure rests on credited expected yield, every clock built
+            // on the running total after it does too.
+            let hasEstimate = false;
 
             // Include current action time in total (same as edit menu)
             const currentActionTime = this.calculateCurrentActionTime(currentActions, inventoryLookup);
@@ -447,6 +450,7 @@ class ActionTimeDisplay {
                 } else {
                     accumulatedTime += result.actionTimeSeconds;
                 }
+                if (result.materialLimitIsEstimated) hasEstimate = true;
 
                 // Format time text
                 let timeText;
@@ -454,7 +458,8 @@ class ActionTimeDisplay {
                     timeText = '[∞]';
                 } else if (result.isInfinite && result.materialLimit !== null) {
                     const timeStr = timeReadable(result.totalTime);
-                    timeText = `[${timeStr} · ${result.limitLabel}: ${this.formatLargeNumber(result.materialLimit)}]`;
+                    const mark = result.materialLimitIsEstimated ? '~' : '';
+                    timeText = `[${timeStr} · ${result.limitLabel}: ${mark}${this.formatLargeNumber(result.materialLimit)}]`;
                 } else {
                     const timeStr = timeReadable(result.totalTime);
                     timeText = `[${timeStr}]`;
@@ -465,7 +470,8 @@ class ActionTimeDisplay {
                     const completionDate = new Date();
                     completionDate.setSeconds(completionDate.getSeconds() + accumulatedTime);
                     const isToday = completionDate.toDateString() === new Date().toDateString();
-                    timeText += ` Complete at ${formatCompletionTime(completionDate, !isToday)}`;
+                    const mark = hasEstimate ? '~' : '';
+                    timeText += ` Complete at ${mark}${formatCompletionTime(completionDate, !isToday)}`;
                 }
 
                 this.appendTimeToActionDiv(actionDiv, timeText);
@@ -487,10 +493,14 @@ class ActionTimeDisplay {
                 `;
 
                 let totalText;
+                const totalMark = hasEstimate ? '~' : '';
                 if (hasInfinite) {
-                    totalText = accumulatedTime > 0 ? `Total: ${timeReadable(accumulatedTime)} + [∞]` : 'Total: [∞]';
+                    totalText =
+                        accumulatedTime > 0
+                            ? `Total: ${totalMark}${timeReadable(accumulatedTime)} + [∞]`
+                            : 'Total: [∞]';
                 } else {
-                    totalText = `Total: ${timeReadable(accumulatedTime)}`;
+                    totalText = `Total: ${totalMark}${timeReadable(accumulatedTime)}`;
                 }
                 totalDiv.textContent = totalText;
                 actionsContainer.appendChild(totalDiv);
@@ -560,7 +570,8 @@ class ActionTimeDisplay {
      * @param {Object} actionObj - Action object from dataManager cache
      * @param {Object} actionDetails - Action details from dataManager
      * @param {Object} inventoryLookup - Inventory lookup map
-     * @returns {Object} { totalTime, actionTimeSeconds, count, baseActionsNeeded, isTrulyInfinite, isInfinite, materialLimit, limitType, limitLabel, isEnhancing }
+     * @returns {Object} { totalTime, actionTimeSeconds, count, baseActionsNeeded, isTrulyInfinite,
+     *      isInfinite, materialLimit, limitType, limitLabel, materialLimitIsEstimated, isEnhancing }
      */
     calculateSingleQueueActionTime(actionObj, actionDetails, inventoryLookup) {
         const isEnhancing = actionDetails.type === '/action_types/enhancing';
@@ -574,6 +585,7 @@ class ActionTimeDisplay {
         let materialLimit = null;
         let limitType = null;
         let limitLabel = '';
+        let materialLimitIsEstimated = false;
 
         if (isEnhancing) {
             const enhancingTime = this.calculateEnhancingQueueTime(actionObj, actionDetails, inventoryLookup);
@@ -598,6 +610,7 @@ class ActionTimeDisplay {
                     materialLimit: null,
                     limitType: null,
                     limitLabel: '',
+                    materialLimitIsEstimated: false,
                     isEnhancing,
                 };
             }
@@ -620,6 +633,7 @@ class ActionTimeDisplay {
                 if (limitResult) {
                     materialLimit = limitResult.maxActions;
                     limitType = limitResult.limitType;
+                    materialLimitIsEstimated = limitResult.isEstimated === true;
                 }
             }
 
@@ -669,6 +683,7 @@ class ActionTimeDisplay {
             materialLimit,
             limitType,
             limitLabel,
+            materialLimitIsEstimated,
             isEnhancing,
         };
     }
@@ -1954,8 +1969,13 @@ class ActionTimeDisplay {
         const byHrid = {};
         const byEnhancedKey = {};
 
+        // Provenance: item hrids whose balance has an estimated component, credited from
+        // an earlier row's expected yield rather than counted in the bag. A figure resting
+        // on one of these has to say so; a figure resting only on stock in hand must not.
+        const estimatedHrids = new Set();
+
         if (!Array.isArray(inventory)) {
-            return { byHrid, byEnhancedKey };
+            return { byHrid, byEnhancedKey, estimatedHrids };
         }
 
         for (const item of inventory) {
@@ -1975,7 +1995,7 @@ class ActionTimeDisplay {
             byEnhancedKey[enhancedKey] = (byEnhancedKey[enhancedKey] || 0) + count;
         }
 
-        return { byHrid, byEnhancedKey };
+        return { byHrid, byEnhancedKey, estimatedHrids };
     }
 
     /**
@@ -1984,7 +2004,7 @@ class ActionTimeDisplay {
      * @param {Object|Array} inventoryLookup - Inventory lookup maps or raw inventory array
      * @param {number} artisanBonus - Artisan material reduction (0-1 decimal)
      * @param {Object} actionObj - Character action object (for primaryItemHash)
-     * @returns {Object|null} {maxActions: number, limitType: string} or null if unlimited
+     * @returns {Object|null} {maxActions: number, limitType: string, isEstimated: boolean} or null if unlimited
      */
     calculateMaterialLimit(actionDetails, inventoryLookup, artisanBonus, actionObj = null) {
         if (!actionDetails || !inventoryLookup) {
@@ -1996,6 +2016,15 @@ class ActionTimeDisplay {
         const lookup = Array.isArray(inventoryLookup) ? this.buildInventoryLookup(inventoryLookup) : inventoryLookup;
         const byHrid = lookup?.byHrid || {};
         const byEnhancedKey = lookup?.byEnhancedKey || {};
+
+        // A limit is an estimate when any channel it is costed against carries credited
+        // expected yield — not only the binding one. An estimate that turns out low could
+        // bind after all, so the answer is only as certain as its weakest input.
+        const estimatedHrids = lookup?.estimatedHrids;
+        let usedEstimate = false;
+        const noteProvenance = (itemHrid) => {
+            if (estimatedHrids?.has(itemHrid)) usedEstimate = true;
+        };
 
         // Check for primaryItemHash (ONLY for Alchemy actions: Coinify, Decompose, Transmute)
         // Crafting actions also have primaryItemHash but should use the standard input/upgrade logic
@@ -2010,6 +2039,7 @@ class ActionTimeDisplay {
                     let minLimit = Infinity;
                     let limitingType = 'unknown';
                     for (const cost of costs) {
+                        noteProvenance(cost.itemHrid);
                         const available = byHrid[cost.itemHrid] || 0;
                         const maxFromThis = Math.floor(available / cost.count);
                         if (maxFromThis < minLimit) {
@@ -2018,7 +2048,7 @@ class ActionTimeDisplay {
                         }
                     }
                     if (minLimit !== Infinity) {
-                        return { maxActions: minLimit, limitType: limitingType };
+                        return { maxActions: minLimit, limitType: limitingType, isEstimated: usedEstimate };
                     }
                 }
             }
@@ -2031,6 +2061,7 @@ class ActionTimeDisplay {
                 let minLimit = Infinity;
                 let limitType = 'unknown';
 
+                noteProvenance(alchItemHrid);
                 const enhancedKey = `${alchItemHrid}::${enhancementLevel}`;
                 const availableCount = byEnhancedKey[enhancedKey] || 0;
                 const alchItemDetails = dataManager.getItemDetails(alchItemHrid);
@@ -2049,6 +2080,7 @@ class ActionTimeDisplay {
                     alchemyType && alchemyType !== 'coinify' ? getAlchemyCoinCost(alchItemDetails, alchemyType) : 0;
 
                 if (alchemyCoinCost > 0) {
+                    noteProvenance('/items/coin');
                     const availableGold = byHrid['/items/coin'] || 0;
                     const maxFromGold = Math.floor(availableGold / alchemyCoinCost);
                     if (maxFromGold < minLimit) {
@@ -2060,6 +2092,7 @@ class ActionTimeDisplay {
                 if (actionObj.secondaryItemHash) {
                     const { itemHrid: catalystHrid } = this.parseItemHash(actionObj.secondaryItemHash);
                     if (catalystHrid) {
+                        noteProvenance(catalystHrid);
                         const availableCatalyst = byHrid[catalystHrid] || 0;
                         const baseSuccessRate = this.getAlchemyCatalystRate(actionDetails, alchItemDetails);
                         if (baseSuccessRate > 0) {
@@ -2073,7 +2106,7 @@ class ActionTimeDisplay {
                 }
 
                 if (minLimit === Infinity) return null;
-                return { maxActions: minLimit, limitType };
+                return { maxActions: minLimit, limitType, isEstimated: usedEstimate };
             }
         }
 
@@ -2091,6 +2124,7 @@ class ActionTimeDisplay {
 
         // Check gold/coin constraint (if action has a coin cost)
         if (hasCoinCost) {
+            noteProvenance('/items/coin');
             const availableGold = byHrid['/items/coin'] || 0;
             const maxActionsFromGold = Math.floor(availableGold / actionDetails.coinCost);
 
@@ -2103,6 +2137,7 @@ class ActionTimeDisplay {
         // Check input items (affected by Artisan Tea)
         if (hasInputItems) {
             for (const inputItem of actionDetails.inputItems) {
+                noteProvenance(inputItem.itemHrid);
                 const availableCount = byHrid[inputItem.itemHrid] || 0;
 
                 // Apply Artisan reduction to required materials
@@ -2120,6 +2155,7 @@ class ActionTimeDisplay {
 
         // Check upgrade item (NOT affected by Artisan Tea)
         if (hasUpgradeItem) {
+            noteProvenance(hasUpgradeItem);
             const availableCount = byHrid[hasUpgradeItem] || 0;
 
             if (availableCount < minLimit) {
@@ -2132,7 +2168,7 @@ class ActionTimeDisplay {
             return null;
         }
 
-        return { maxActions: minLimit, limitType };
+        return { maxActions: minLimit, limitType, isEstimated: usedEstimate };
     }
 
     /**
@@ -2164,7 +2200,149 @@ class ActionTimeDisplay {
     }
 
     /**
-     * Spend one queued action's materials out of a queue-walk inventory ledger.
+     * Expected quantity for one drop-table entry, whose count is a range.
+     * @param {Object} drop - Entry carrying minCount/maxCount, or a flat count
+     * @returns {number} Average quantity per drop
+     */
+    getDropAverageCount(drop) {
+        const min = Number.isFinite(drop?.minCount) ? drop.minCount : (drop?.count ?? 1);
+        const max = Number.isFinite(drop?.maxCount) ? drop.maxCount : min;
+        return (min + max) / 2;
+    }
+
+    /**
+     * What one performed action of a queued row puts back into the bag.
+     *
+     * Split by provenance, because the two tiers are trusted differently. A deterministic
+     * output (`outputItems`) is as good as stock in hand and the row resting on it stays
+     * exact. An expected value — a drop rate, a min/max range, an alchemy success roll — is
+     * a projection, and every figure downstream of it has to be marked as one.
+     *
+     * Alchemy outputs are not on the action: `/actions/alchemy/*` carries no outputItems and
+     * no drop table at all. The item being alchemized carries them, in `alchemyDetail`, which
+     * is where the profit calculator reads them from too — `decomposeItems` for decompose,
+     * `transmuteDropTable` for transmute, and for coinify the `sellPrice x bulk x 5` formula
+     * that has no table behind it. All three land only on a successful attempt, so all three
+     * are expected values. Unrefine is left uncredited: nothing in the repo establishes what
+     * it yields, and crediting nothing understates rather than overstates.
+     *
+     * Enhancing is excluded on purpose — its output is the same item at a higher level, not
+     * a material anything downstream consumes as such.
+     *
+     * Efficiency is not applied, matching the spend: the ledger costs the queued action
+     * count, not the free repeats efficiency grants.
+     *
+     * @param {Object} actionDetails - Action detail object for the row
+     * @param {Object} actionObj - Character action object (carries the item hashes)
+     * @returns {{deterministic: Array<Object>, estimated: Array<Object>}} Per one performed
+     *      action, each entry {itemHrid, count}
+     */
+    getQueueActionOutputs(actionDetails, actionObj) {
+        const outputs = { deterministic: [], estimated: [] };
+        if (!actionDetails) return outputs;
+        if (actionDetails.type === '/action_types/enhancing') return outputs;
+
+        if (actionDetails.type === '/action_types/alchemy') {
+            const { itemHrid } = this.parseItemHash(actionObj?.primaryItemHash || '');
+            if (!itemHrid) return outputs;
+            const alchItemDetails = dataManager.getItemDetails(itemHrid);
+            const alchemyDetail = alchItemDetails?.alchemyDetail;
+            if (!alchemyDetail) return outputs;
+
+            const bulkMultiplier = alchemyDetail.bulkMultiplier || 1;
+            // The same base success rate the catalyst draw is costed at, so the two sides of
+            // one attempt cannot disagree. A catalyst or tea raises it, which makes the
+            // credit an underestimate rather than an overestimate.
+            const successRate = this.getAlchemyCatalystRate(actionDetails, alchItemDetails);
+            const alchemyType = getAlchemyTypeFromActionHrid(actionDetails.hrid);
+
+            if (alchemyType === 'coinify') {
+                outputs.estimated.push({
+                    itemHrid: '/items/coin',
+                    count: (alchItemDetails.sellPrice || 0) * bulkMultiplier * 5 * successRate,
+                });
+            } else if (alchemyType === 'transmute') {
+                for (const drop of alchemyDetail.transmuteDropTable || []) {
+                    outputs.estimated.push({
+                        itemHrid: drop.itemHrid,
+                        count: (drop.dropRate ?? 1) * this.getDropAverageCount(drop) * bulkMultiplier * successRate,
+                    });
+                }
+            } else if (alchemyType === 'decompose') {
+                for (const output of alchemyDetail.decomposeItems || []) {
+                    outputs.estimated.push({
+                        itemHrid: output.itemHrid,
+                        count: (output.count || 0) * bulkMultiplier * successRate,
+                    });
+                }
+            }
+            return outputs;
+        }
+
+        for (const output of actionDetails.outputItems || []) {
+            outputs.deterministic.push({ itemHrid: output.itemHrid, count: output.count || 0 });
+        }
+        for (const table of [actionDetails.dropTable, actionDetails.essenceDropTable, actionDetails.rareDropTable]) {
+            for (const drop of table || []) {
+                outputs.estimated.push({
+                    itemHrid: drop.itemHrid,
+                    count: (drop.dropRate ?? 1) * this.getDropAverageCount(drop),
+                });
+            }
+        }
+        return outputs;
+    }
+
+    /**
+     * Credit one queued action's outputs into the queue-walk ledger.
+     *
+     * Only rows after this one can draw on them, which the walk order already gives: the
+     * callers credit a row after costing it and before costing the next.
+     *
+     * Balances may become fractional — an expected 41.6 essence is a better basis than 41 or
+     * 42 — and stay that way in the ledger. `calculateMaterialLimit` floors at the point of
+     * use, so a limit of 41.6 actions still displays as 41.
+     *
+     * @param {Object} inventoryLookup - Maps from buildInventoryLookup; mutated in place
+     * @param {Object} actionDetails - Action detail object for the row being credited
+     * @param {Object} actionObj - Character action object (carries the item hashes)
+     * @param {number} performed - Actions the row actually performs
+     * @param {boolean} creditStochastic - Whether expected yields count, or deterministic only
+     * @returns {void}
+     */
+    creditQueueActionOutputs(inventoryLookup, actionDetails, actionObj, performed, creditStochastic) {
+        if (!(performed > 0)) return;
+        const byHrid = inventoryLookup?.byHrid;
+        const byEnhancedKey = inventoryLookup?.byEnhancedKey;
+        if (!byHrid || !byEnhancedKey) return;
+        if (!(inventoryLookup.estimatedHrids instanceof Set)) {
+            inventoryLookup.estimatedHrids = new Set();
+        }
+
+        // Produced items arrive unenhanced, so the level-0 stack is the one that moves —
+        // the same key the alchemy branch of the limit reads.
+        const gain = (itemHrid, amount, isEstimated) => {
+            if (!itemHrid || !Number.isFinite(amount) || amount <= 0) return;
+            byHrid[itemHrid] = Math.max(0, (byHrid[itemHrid] || 0) + amount);
+            const key = `${itemHrid}::0`;
+            byEnhancedKey[key] = Math.max(0, (byEnhancedKey[key] || 0) + amount);
+            if (isEstimated) inventoryLookup.estimatedHrids.add(itemHrid);
+        };
+
+        const outputs = this.getQueueActionOutputs(actionDetails, actionObj);
+        for (const output of outputs.deterministic) {
+            gain(output.itemHrid, output.count * performed, false);
+        }
+        if (creditStochastic) {
+            for (const output of outputs.estimated) {
+                gain(output.itemHrid, output.count * performed, true);
+            }
+        }
+    }
+
+    /**
+     * Spend one queued action's materials out of a queue-walk inventory ledger, and credit
+     * back what it produces.
      *
      * The queue runs in order, so every action after the first can only draw on what its
      * predecessors left behind. `calculateSingleQueueActionTime` is deliberately pure with
@@ -2179,9 +2357,12 @@ class ActionTimeDisplay {
      * @param {Object} actionDetails - Action detail object for the row being spent
      * @param {Object} actionObj - Character action object (carries the item hashes)
      * @param {Object} timing - The row's timing, needing only {count, isTrulyInfinite}
+     * @param {Object} [options] - {creditStochastic} — false credits deterministic outputs only,
+     *   which is what the activity projection wants: it warns about an idle alt, so an expected
+     *   yield that may not arrive must not push its deadline out
      * @returns {number} Actions actually paid for, which is what the row performs
      */
-    deductQueueActionMaterials(inventoryLookup, actionDetails, actionObj, timing) {
+    deductQueueActionMaterials(inventoryLookup, actionDetails, actionObj, timing, options = {}) {
         const byHrid = inventoryLookup?.byHrid;
         const byEnhancedKey = inventoryLookup?.byEnhancedKey;
         if (!byHrid || !byEnhancedKey || !actionDetails || !timing) return 0;
@@ -2200,6 +2381,11 @@ class ActionTimeDisplay {
             performed = Math.min(performed, Math.max(0, limit.maxActions));
         }
         if (performed <= 0) return 0;
+        const creditStochastic = options.creditStochastic !== false;
+        const credit = () => {
+            this.creditQueueActionOutputs(inventoryLookup, actionDetails, actionObj, performed, creditStochastic);
+            return performed;
+        };
 
         // byHrid holds the total across enhancement levels and byEnhancedKey the per-level
         // stack; both have to fall or the alchemy branch and the generic branch disagree.
@@ -2238,7 +2424,7 @@ class ActionTimeDisplay {
                     const { itemHrid: catalystHrid } = this.parseItemHash(actionObj.secondaryItemHash);
                     spend(catalystHrid, performed * this.getAlchemyCatalystRate(actionDetails, alchItemDetails));
                 }
-                return performed;
+                return credit();
             }
         }
 
@@ -2252,7 +2438,7 @@ class ActionTimeDisplay {
         if (actionDetails.upgradeItemHrid) {
             spend(actionDetails.upgradeItemHrid, performed);
         }
-        return performed;
+        return credit();
     }
 
     /**
@@ -2398,6 +2584,9 @@ class ActionTimeDisplay {
 
             let accumulatedTime = 0;
             let hasInfinite = false;
+            // Sticky, as in the tooltip: a clock built on a running total that includes an
+            // estimated row is itself an estimate.
+            let hasEstimate = false;
             const actionsToCalculate = []; // Store actions for async profit calculation (with time in seconds)
 
             // Detect current action from DOM so we can avoid double-counting
@@ -2577,6 +2766,7 @@ class ActionTimeDisplay {
                 let isTrulyInfinite = false;
                 let materialLimit = null;
                 let limitType = null;
+                let materialLimitIsEstimated = false;
 
                 if (isEnhancing) {
                     // Enhancing: use enhancement-specific time calculation
@@ -2619,6 +2809,7 @@ class ActionTimeDisplay {
                         if (limitResult) {
                             materialLimit = limitResult.maxActions;
                             limitType = limitResult.limitType;
+                            materialLimitIsEstimated = limitResult.isEstimated === true;
                         }
                     }
 
@@ -2669,14 +2860,17 @@ class ActionTimeDisplay {
                     });
                 }
 
+                if (materialLimitIsEstimated) hasEstimate = true;
+
                 // Format completion time
                 let completionText = '';
                 if (!hasInfinite && !isTrulyInfinite) {
                     const completionDate = new Date();
                     completionDate.setSeconds(completionDate.getSeconds() + accumulatedTime);
                     const isToday = completionDate.toDateString() === new Date().toDateString();
+                    const mark = hasEstimate ? '~' : '';
 
-                    completionText = ` Complete at ${formatCompletionTime(completionDate, !isToday)}`;
+                    completionText = ` Complete at ${mark}${formatCompletionTime(completionDate, !isToday)}`;
                 }
 
                 // Create time display element
@@ -2703,7 +2897,8 @@ class ActionTimeDisplay {
                         limitLabel = 'max';
                     }
                     const timeStr = timeReadable(totalTime);
-                    timeDiv.textContent = `[${timeStr} · ${limitLabel}: ${this.formatLargeNumber(materialLimit)}]${completionText}`;
+                    const mark = materialLimitIsEstimated ? '~' : '';
+                    timeDiv.textContent = `[${timeStr} · ${limitLabel}: ${mark}${this.formatLargeNumber(materialLimit)}]${completionText}`;
                 } else {
                     const timeStr = timeReadable(totalTime);
                     timeDiv.textContent = `[${timeStr}]${completionText}`;

@@ -110,3 +110,91 @@ describe('computeLiveProjection material ledger', () => {
         expect(projection.terminalAt).toBe(NOW + 100_000);
     });
 });
+
+/**
+ * The projection takes deterministic credit only.
+ *
+ * Its job is telling the player when an alt goes idle, and it is deliberately stricter than
+ * the tooltip: a false early warning beats telling the player an alt is safe when it might
+ * not be. A crafted intermediate is as good as stock in hand, so it counts; an expected
+ * alchemy yield is a projection, so it does not.
+ */
+describe('computeLiveProjection output credit', () => {
+    const LOG = '/items/log';
+    const PLANK = '/items/plank';
+    const ESSENCE = '/items/foraging_essence';
+    const COIN = '/items/coin';
+    const CRAFT_PLANK = '/actions/crafting/plank';
+    const CRAFT_BOW = '/actions/crafting/bow';
+    const DECOMPOSE = '/actions/alchemy/decompose';
+
+    /** An uncounted queued action, whose length is exactly its material limit. */
+    function uncounted(id, actionHrid, primaryItemHrid = null) {
+        return {
+            id,
+            ordinal: id,
+            actionHrid,
+            primaryItemHash: primaryItemHrid ? `char1::/item_locations/inventory::${primaryItemHrid}::0` : null,
+            hasMaxCount: false,
+            maxCount: 0,
+            currentCount: 0,
+            isDone: false,
+        };
+    }
+
+    test('a crafted intermediate is credited to the row that consumes it', () => {
+        game.itemDetails[LOG] = { itemHrid: LOG, name: 'Log', itemLevel: 1 };
+        game.itemDetails[PLANK] = { itemHrid: PLANK, name: 'Plank', itemLevel: 1 };
+        game.actionDetails[CRAFT_PLANK] = {
+            hrid: CRAFT_PLANK,
+            name: 'Plank',
+            type: '/action_types/crafting',
+            coinCost: 0,
+            inputItems: [{ itemHrid: LOG, count: 2 }],
+            outputItems: [{ itemHrid: PLANK, count: 1 }],
+        };
+        game.actionDetails[CRAFT_BOW] = {
+            hrid: CRAFT_BOW,
+            name: 'Bow',
+            type: '/action_types/crafting',
+            coinCost: 0,
+            inputItems: [{ itemHrid: PLANK, count: 3 }],
+            outputItems: [{ itemHrid: '/items/bow', count: 1 }],
+        };
+        game.inventory = [stack(LOG, 60)];
+        game.currentActions = [uncounted(1, CRAFT_PLANK), uncounted(2, CRAFT_BOW)];
+
+        const projection = computeLiveProjection(NOW);
+
+        // 60 logs → 30 planks (300s) → 10 bows (100s)
+        expect(projection.segments.map((s) => s.endAt)).toEqual([NOW + 300_000, NOW + 400_000]);
+    });
+
+    test('an expected alchemy yield credits nothing, leaving the terminal estimate conservative', () => {
+        game.itemDetails[CHEESE].alchemyDetail.decomposeItems = [{ itemHrid: ESSENCE, count: 1 }];
+        game.itemDetails[ESSENCE] = {
+            itemHrid: ESSENCE,
+            name: 'Foraging Essence',
+            itemLevel: 1,
+            sellPrice: 100,
+            alchemyDetail: { bulkMultiplier: 1, isCoinifiable: true },
+        };
+        game.actionDetails[DECOMPOSE] = {
+            hrid: DECOMPOSE,
+            name: 'Decompose',
+            type: '/action_types/alchemy',
+            coinCost: 0,
+        };
+        // Decompose bills (10 + itemLevel 10) × 5 = 100 coins per action, so the purse must
+        // not be what stops it
+        game.inventory = [stack(CHEESE, 5), stack(COIN, 100_000)];
+        game.currentActions = [uncounted(1, DECOMPOSE, CHEESE), coinifyAction(2)];
+
+        const projection = computeLiveProjection(NOW);
+
+        // The 5 decomposes yield essence, but coinify runs on cheese and there is none left;
+        // either way nothing stochastic may extend the projection past the decompose
+        expect(projection.segments.map((s) => s.endAt)).toEqual([NOW + 50_000, NOW + 50_000]);
+        expect(projection.terminalAt).toBe(NOW + 50_000);
+    });
+});
