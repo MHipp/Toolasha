@@ -48,7 +48,10 @@ vi.mock('../market/expected-value-calculator.js', () => ({
     },
 }));
 
-const alchemyProfit = (await import('./alchemy-profit.js')).default;
+const alchemyProfitModule = await import('./alchemy-profit.js');
+const alchemyProfit = alchemyProfitModule.default;
+const { parseRequirementCount, parseDropCountAndRate } = alchemyProfitModule;
+const { _resetGameNumberSeparators } = await import('../../utils/number-parser.js');
 
 const COIN = '/items/coin';
 const CHEESE = '/items/cheese';
@@ -137,5 +140,47 @@ describe('calculateEnhancementCost', () => {
 
         game.initClientData = null;
         expect(alchemyProfit.calculateEnhancementCost(CHEESE, 3, 'ask')).toBe(0);
+    });
+});
+
+describe('parseRequirementCount / parseDropCountAndRate — locale-grouped DOM text', () => {
+    const asLocale = (value) => {
+        localStorage.setItem('i18nextLng', value);
+        _resetGameNumberSeparators();
+    };
+
+    afterEach(() => {
+        localStorage.removeItem('i18nextLng');
+        _resetGameNumberSeparators();
+    });
+
+    describe('en-US', () => {
+        beforeEach(() => asLocale('en-US'));
+
+        test('parseRequirementCount reads comma grouping', () => {
+            expect(parseRequirementCount('/ 1,450')).toBe(1450);
+        });
+
+        test('parseDropCountAndRate reads comma and period', () => {
+            expect(parseDropCountAndRate('1,200 Item ~7.29%', null)).toEqual({ count: 1200, dropRate: 0.0729 });
+        });
+
+        test('parseDropCountAndRate prefers game data over the DOM rate', () => {
+            expect(parseDropCountAndRate('12 Item 7.29%', 0.5)).toEqual({ count: 12, dropRate: 0.5 });
+        });
+    });
+
+    describe('de-DE (period grouping) — the bug this replaces', () => {
+        beforeEach(() => asLocale('de-DE'));
+
+        test('parseRequirementCount reads period grouping instead of stopping at the first group', () => {
+            // A hardcoded `[\d,]+` reads "/ 1.450" as "/ 1": the period isn't in
+            // the class, so the match stops at the first group boundary.
+            expect(parseRequirementCount('/ 1.450')).toBe(1450);
+        });
+
+        test('parseDropCountAndRate reads a period-grouped count and a comma decimal rate', () => {
+            expect(parseDropCountAndRate('1.200 Item ~7,29%', null)).toEqual({ count: 1200, dropRate: 0.0729 });
+        });
     });
 });

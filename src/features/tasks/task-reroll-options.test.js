@@ -15,7 +15,8 @@
  * there is nothing left to press.
  */
 
-import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+import { _resetGameNumberSeparators } from '../../utils/number-parser.js';
 
 const character = vi.hoisted(() => ({ mooPassBuffs: [] }));
 
@@ -218,6 +219,31 @@ describe('label parsing', () => {
         expect(parseRerollCost('Pay 320K')).toBe(320000);
         expect(parseRerollCost('1')).toBe(1);
         expect(parseRerollCost('Back')).toBe(null);
+    });
+
+    describe('locale-grouped costs', () => {
+        const asLocale = (value) => {
+            localStorage.setItem('i18nextLng', value);
+            _resetGameNumberSeparators();
+        };
+
+        afterEach(() => {
+            localStorage.removeItem('i18nextLng');
+            _resetGameNumberSeparators();
+        });
+
+        test('en-US comma grouping', () => {
+            asLocale('en-US');
+            expect(parseRerollCost('10,000')).toBe(10000);
+        });
+
+        test('de-DE period grouping — the bug this replaces', () => {
+            // A hardcoded `[\d,]+(?:\.\d+)?` reads "10.000" as decimal 10, not
+            // as ten thousand: the period isn't in the class, so the digit run
+            // stops there and the leftover ".000" is misread as a decimal tail.
+            asLocale('de-DE');
+            expect(parseRerollCost('10.000')).toBe(10000);
+        });
     });
 });
 

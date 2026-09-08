@@ -1,13 +1,18 @@
 /**
+ * @vitest-environment happy-dom
+ *
  * Each game-text constant against the real message its JSDoc quotes.
  *
  * The point is not that a string contains itself — it is that the fixture
  * messages here are copied from what the game actually rendered (the same
  * fixtures the consumers' own tests parse), so a constant that drifts from the
  * game's wording fails here first, with the expected message in the diff.
+ *
+ * happy-dom rather than the default node environment: {@link trialPointsPattern}
+ * reads the game's locale from `localStorage`.
  */
 
-import { describe, test, expect } from 'vitest';
+import { describe, test, expect, afterEach } from 'vitest';
 
 import {
     DUNGEON_BATTLE_STARTED,
@@ -28,11 +33,12 @@ import {
     TRIAL_KIND_SKILLING_RE,
     TRIAL_KIND_COMBAT_RE,
     TRIAL_LEVEL_RE,
-    TRIAL_POINTS_RE,
+    trialPointsPattern,
     TRIAL_TIER_RE,
     TRIAL_CLOCK_LABEL_RE,
     GUILD_EXP_TO_LEVEL,
 } from './game-text.js';
+import { _resetGameNumberSeparators } from './number-parser.js';
 
 describe('dungeon party chat', () => {
     test('battle start, as the party chat writes it', () => {
@@ -97,9 +103,33 @@ describe('guild trial tabs', () => {
 
     test('level, points and tier as the cards write them', () => {
         expect('Milking Lv.130'.match(TRIAL_LEVEL_RE)?.[1]).toBe('130');
-        expect('600 pts'.match(TRIAL_POINTS_RE)?.[1]).toBe('600');
+        expect('600 pts'.match(trialPointsPattern())?.[1]).toBe('600');
         expect('T6'.match(TRIAL_TIER_RE)?.[1]).toBe('6');
         expect('Tier 6'.match(TRIAL_TIER_RE)?.[1]).toBe('6');
+    });
+
+    describe('trialPointsPattern, locale-grouped', () => {
+        const asLocale = (value) => {
+            localStorage.setItem('i18nextLng', value);
+            _resetGameNumberSeparators();
+        };
+
+        afterEach(() => {
+            localStorage.removeItem('i18nextLng');
+            _resetGameNumberSeparators();
+        });
+
+        test('en-US comma grouping', () => {
+            asLocale('en-US');
+            expect('1,600 pts'.match(trialPointsPattern())?.[1]).toBe('1,600');
+        });
+
+        test('de-DE period grouping — the bug this replaces', () => {
+            // A hardcoded `[\d,]*` captures "1.600 pts" as just "1": the period
+            // isn't in the class, so the match stops at the first group boundary.
+            asLocale('de-DE');
+            expect('1.600 pts'.match(trialPointsPattern())?.[1]).toBe('1.600');
+        });
     });
 
     test('a countdown that says what it is', () => {

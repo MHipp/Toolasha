@@ -21,7 +21,47 @@ import { coinFormatter, formatKMB, formatRelativeTime } from '../../utils/format
 import { calculatePriceAfterTax } from '../../utils/profit-helpers.js';
 import { createCleanupRegistry } from '../../utils/cleanup-registry.js';
 import { clampToBand } from '../../utils/market-values.js';
-import { parseGameNumber } from '../../utils/number-parser.js';
+import { parseGameNumber, gameDigitsSource } from '../../utils/number-parser.js';
+
+/**
+ * The filled and order quantities from a listing row's quantity cell, e.g.
+ * "62075 / 405K" or "0 / 1" (an enhancement-level prefix like "+7" is stripped
+ * by the caller first).
+ *
+ * Built from {@link gameDigitsSource} rather than a hardcoded `[0-9,.]+`,
+ * which assumed the separator is always a comma or a period — wrong in a
+ * space-grouping locale, where the whole cell would fail to match at all.
+ *
+ * @param {string} text - The quantity cell's text, already stripped of any
+ *   enhancement-level prefix
+ * @returns {{filledQuantity: number, orderQuantity: number,
+ *   filledSuffixMultiplier: number, orderSuffixMultiplier: number}|null} The two
+ *   quantities and the abbreviation multiplier each was read with — the
+ *   multiplier is what the caller compares a live quantity against with
+ *   rounding tolerance — or null when the cell is not in the expected shape
+ */
+export function parseQuantityCell(text) {
+    const digits = gameDigitsSource();
+    const match = String(text || '').match(
+        new RegExp(`(${digits})\\s*([KMB]?)\\s*\\/\\s*(${digits})\\s*([KMB]?)`, 'i')
+    );
+    if (!match) return null;
+
+    const suffixMultiplier = (suffix) => {
+        if (!suffix) return 1;
+        const upper = suffix.toUpperCase();
+        return upper === 'K' ? 1000 : upper === 'M' ? 1000000 : upper === 'B' ? 1000000000 : 1;
+    };
+
+    const filledSuffixMultiplier = suffixMultiplier(match[2]);
+    const orderSuffixMultiplier = suffixMultiplier(match[4]);
+    return {
+        filledQuantity: Math.round(parseGameNumber(match[1]) * filledSuffixMultiplier),
+        orderQuantity: Math.round(parseGameNumber(match[3]) * orderSuffixMultiplier),
+        filledSuffixMultiplier,
+        orderSuffixMultiplier,
+    };
+}
 
 /**
  * Create a styled table cell for the listings table.
@@ -832,17 +872,12 @@ class ListingPriceDisplay {
             let text = quantityCell.textContent.trim();
             // Strip leading enhancement level prefix (e.g., "+7" from "+70 / 1")
             text = text.replace(/^\+\d+\s*/, '');
-            const match = text.match(/([0-9,.]+)\s*([KMB]?)\s*\/\s*([0-9,.]+)\s*([KMB]?)/i);
-            if (match) {
-                const getSuffixMultiplier = (s) => {
-                    if (!s) return 1;
-                    const c = s.toUpperCase();
-                    return c === 'K' ? 1000 : c === 'M' ? 1000000 : c === 'B' ? 1000000000 : 1;
-                };
-                filledSuffixMultiplier = getSuffixMultiplier(match[2]);
-                orderSuffixMultiplier = getSuffixMultiplier(match[4]);
-                filledQuantity = Math.round(parseGameNumber(match[1]) * filledSuffixMultiplier);
-                orderQuantity = Math.round(parseGameNumber(match[3]) * orderSuffixMultiplier);
+            const parsed = parseQuantityCell(text);
+            if (parsed) {
+                filledQuantity = parsed.filledQuantity;
+                orderQuantity = parsed.orderQuantity;
+                filledSuffixMultiplier = parsed.filledSuffixMultiplier;
+                orderSuffixMultiplier = parsed.orderSuffixMultiplier;
             }
         }
 

@@ -11,7 +11,7 @@
  * is the boss must be decided by which one *falls*, never by which comes first.
  */
 
-import { describe, test, expect } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 
 import {
     classifyReadings,
@@ -38,6 +38,7 @@ import {
     textLines,
 } from './guild-trials-scrape.js';
 import { NOTICE_BOARD_NAME } from './guild-notice-board.fixture.js';
+import { _resetGameNumberSeparators } from '../../utils/number-parser.js';
 
 /** An hour, which is how long a trial runs */
 const HOUR_MS = 60 * 60 * 1000;
@@ -1010,5 +1011,82 @@ describe('parsePoints', () => {
     test('a number with no points on it is not a points figure', () => {
         expect(parsePoints('Lv.130')).toBeNull();
         expect(parsePoints('20m 53s')).toBeNull();
+    });
+});
+
+describe('locale-grouped captures', () => {
+    const asLocale = (value) => {
+        localStorage.setItem('i18nextLng', value);
+        _resetGameNumberSeparators();
+    };
+
+    /**
+     * A tab built from lines of text, one element each.
+     * @param {string[]} lines - What the tab says
+     * @returns {Element} The root
+     */
+    function tab(lines) {
+        document.body.innerHTML = `<div class="GuildPanel_guildPanel__r">${lines
+            .map((line) => `<div>${line}</div>`)
+            .join('')}</div>`;
+        return document.querySelector('[class*="GuildPanel_guildPanel"]');
+    }
+
+    afterEach(() => {
+        localStorage.removeItem('i18nextLng');
+        _resetGameNumberSeparators();
+    });
+
+    describe('en-US', () => {
+        beforeEach(() => asLocale('en-US'));
+
+        test('parseAmount reads comma grouping', () => expect(parseAmount('618,000')).toBe(618_000));
+
+        test('parseBarReadings reads comma grouping', () => {
+            expect(parseBarReadings('30,857 / 618,000')).toEqual([{ current: 30_857, max: 618_000 }]);
+        });
+
+        test('parseSignups reads comma grouping', () => {
+            expect(parseSignups('1,028/2,800 signed up')).toEqual({ signed: 1028, total: 2800 });
+        });
+
+        test('readPersonalStats reads a comma-grouped value', () => {
+            const stats = readPersonalStats(tab(['Total Rerolls', '1,234']));
+            expect(stats['Total Rerolls']).toBe('1,234');
+        });
+    });
+
+    describe('de-DE (period grouping) — the bug this replaces', () => {
+        beforeEach(() => asLocale('de-DE'));
+
+        test('parseAmount reads period grouping instead of stopping at the first group', () => {
+            // A hardcoded `[\d,]*\.?\d+` reads "618.000" as decimal 618 point 000,
+            // i.e. 618. The fix reads the period as this locale's group separator.
+            expect(parseAmount('618.000')).toBe(618_000);
+        });
+
+        test('parseBarReadings reads period grouping', () => {
+            expect(parseBarReadings('30.857 / 618.000')).toEqual([{ current: 30_857, max: 618_000 }]);
+        });
+
+        test('parseSignups reads period grouping — the named regression', () => {
+            // A hardcoded `\d[\d,]*` captures "1.028/2.800" as "1/2": the period
+            // is not in the class, so the match stops at the first group boundary.
+            expect(parseSignups('1.028/2.800 signed up')).toEqual({ signed: 1028, total: 2800 });
+        });
+
+        test('readPersonalStats reads a period-grouped value', () => {
+            const stats = readPersonalStats(tab(['Total Rerolls', '1.234']));
+            expect(stats['Total Rerolls']).toBe('1.234');
+        });
+
+        test('findTrialsRoot still recognises a period-grouped bar reading', () => {
+            const scope = document.createElement('div');
+            const panel = document.createElement('div');
+            panel.className = 'GuildPanel_root';
+            panel.innerHTML = '<div>Alchemy 18.850 / 65.280</div>';
+            scope.appendChild(panel);
+            expect(findTrialsRoot(scope)).toBe(panel);
+        });
     });
 });

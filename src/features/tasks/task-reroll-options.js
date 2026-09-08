@@ -28,7 +28,7 @@
 
 import dataManager from '../../core/data-manager.js';
 import { formatKMB } from '../../utils/formatters.js';
-import { parseGameNumber } from '../../utils/number-parser.js';
+import { parseGameNumber, gameDigitsSource } from '../../utils/number-parser.js';
 
 /**
  * Buttons that live on a task card and are never a reroll option.
@@ -104,11 +104,17 @@ export function freeRerollsLeftIn(text) {
 /**
  * The number in a reroll option's label, in whole units.
  *
+ * Built from {@link gameDigitsSource} rather than the hardcoded
+ * `[\d,]+(?:\.\d+)?`, which assumed comma grouping and a period decimal —
+ * both wrong in a period-grouping locale (de-DE, fr-FR...), where the old
+ * pattern stopped at the first group boundary and then read a stray digit run
+ * left over from the group separator as a decimal tail.
+ *
  * @param {string} text - The button's label
  * @returns {number|null} Cost, or null when the label carries no number
  */
 export function parseRerollCost(text) {
-    const match = /([\d,]+(?:\.\d+)?)\s*([KMB])?/i.exec(text || '');
+    const match = new RegExp(`(${gameDigitsSource()})\\s*([KMB])?`, 'i').exec(text || '');
     if (!match) return null;
     const raw = parseGameNumber(match[1]);
     if (!Number.isFinite(raw)) return null;

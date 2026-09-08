@@ -6,6 +6,7 @@
  * own modules and are mocked away here.
  */
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+import { _resetGameNumberSeparators } from '../../utils/number-parser.js';
 
 const observerState = vi.hoisted(() => ({ handler: null }));
 const settings = vi.hoisted(() => ({ hideInEnhanceSelector: false }));
@@ -161,6 +162,34 @@ describe('routing by classification', () => {
         await settle();
         expect(el.querySelector('.mwi-ability-fresh')?.textContent).toContain('Fresh to Lv 42');
         expect(el.dataset.pricesProcessedItem).toBeUndefined();
+    });
+
+    describe('_abilityTooltipLevel — locale-grouped level', () => {
+        afterEach(() => {
+            localStorage.removeItem('i18nextLng');
+            _resetGameNumberSeparators();
+        });
+
+        const tooltipWithLevel = (levelText) =>
+            popper(
+                `<div class="Ability_abilityTooltip__1"><div class="Ability_name__2">Berserk</div>` +
+                    `<div>Level: ${levelText}</div></div>`
+            );
+
+        test('en-US comma grouping', () => {
+            localStorage.setItem('i18nextLng', 'en-US');
+            _resetGameNumberSeparators();
+            expect(tooltipPrices._abilityTooltipLevel(tooltipWithLevel('1,042'))).toBe(1042);
+        });
+
+        test('de-DE period grouping — the bug this replaces', () => {
+            // A hardcoded `[\d,]+` reads "Level: 1.042" as "Level: 1": the
+            // period isn't in the class, so the match stops at the first group
+            // boundary.
+            localStorage.setItem('i18nextLng', 'de-DE');
+            _resetGameNumberSeparators();
+            expect(tooltipPrices._abilityTooltipLevel(tooltipWithLevel('1.042'))).toBe(1042);
+        });
     });
 
     test('a tooltip that is neither is left alone', async () => {

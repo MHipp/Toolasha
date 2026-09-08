@@ -7,7 +7,7 @@
  * queue just claims more actions than the character can pay for.
  */
 
-import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const game = vi.hoisted(() => ({
     itemDetails: {},
@@ -74,7 +74,8 @@ vi.mock('../market/alchemy-profit-calculator.js', () => ({ default: { calculate:
 
 const actionTimeDisplayModule = await import('./action-time-display.js');
 const actionTimeDisplay = actionTimeDisplayModule.default;
-const { partialProgressNote } = actionTimeDisplayModule;
+const { partialProgressNote, parseInventoryCountFromActionName } = actionTimeDisplayModule;
+const { _resetGameNumberSeparators } = await import('../../utils/number-parser.js');
 
 const CHEESE = '/items/cheese';
 const COIN = '/items/coin';
@@ -290,6 +291,36 @@ describe('partialProgressNote — the ETA tooltip naming the boundary it subtrac
 
         expect(html).toContain('ⓘ');
         expect(html).toContain('8.2s already spent');
+    });
+});
+
+describe('parseInventoryCountFromActionName — locale-grouped counts', () => {
+    /** Point the game's language key at one locale for the duration of a test. */
+    const asLocale = (value) => {
+        vi.stubGlobal('localStorage', { getItem: (key) => (key === 'i18nextLng' ? value : null) });
+        _resetGameNumberSeparators();
+    };
+
+    beforeEach(() => asLocale('en-US'));
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        _resetGameNumberSeparators();
+    });
+
+    test('en-US comma grouping', () => {
+        expect(parseInventoryCountFromActionName('Coinify: Item (4,312)')).toBe(4312);
+    });
+
+    test('de-DE period grouping — the bug this replaces', () => {
+        // A hardcoded `[\d,]+` reads "(4.312)" as "(4)": the period isn't in
+        // the class, so the match stops at the first group boundary.
+        asLocale('de-DE');
+        expect(parseInventoryCountFromActionName('Coinify: Item (4.312)')).toBe(4312);
+    });
+
+    test('no trailing count is null, not zero', () => {
+        expect(parseInventoryCountFromActionName('Coinify: Item')).toBeNull();
     });
 });
 

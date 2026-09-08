@@ -12,8 +12,9 @@
  * a tile whose shape has changed. Every one of them has to produce nothing.
  */
 
-import { describe, test, expect } from 'vitest';
+import { describe, test, expect, afterEach } from 'vitest';
 import { parseUnitTexts, readMonsterUnits, matchMonsterNames, recoverMonsterNames } from './battle-panel-monsters.js';
+import { _resetGameNumberSeparators } from './number-parser.js';
 
 /**
  * The battle panel, with one tile per monster.
@@ -74,6 +75,36 @@ describe('reading one tile', () => {
     test('a bar with no name beside it is nothing', () => {
         // Rather than an empty name, which would become an enemy called ""
         expect(parseUnitTexts(['1185/1420'])).toBeNull();
+    });
+});
+
+describe('locale-grouped health bars', () => {
+    const asLocale = (value) => {
+        localStorage.setItem('i18nextLng', value);
+        _resetGameNumberSeparators();
+    };
+
+    afterEach(() => {
+        localStorage.removeItem('i18nextLng');
+        _resetGameNumberSeparators();
+    });
+
+    test('en-US comma grouping', () => {
+        asLocale('en-US');
+        expect(parseUnitTexts(['Giant Eye', '12,480/40,000'])).toEqual({ name: 'Giant Eye', hp: 12480 });
+    });
+
+    test('de-DE period grouping — the bug this replaces', () => {
+        // A hardcoded `\d[\d,]*` captures "1.348/2.035" as just "1": the period
+        // isn't in the class, so the match stops at the first group boundary.
+        asLocale('de-DE');
+        expect(parseUnitTexts(['Eye', '1.348/2.035'])).toEqual({ name: 'Eye', hp: 1348 });
+        expect(parseUnitTexts(['Giant Eye', '12.480/40.000'])).toEqual({ name: 'Giant Eye', hp: 12480 });
+    });
+
+    test('de-DE period grouping via the loose fallback (bars not their own parts)', () => {
+        asLocale('de-DE');
+        expect(parseUnitTexts(['Eyes', '2.215/2.2152.215/2.215'])).toEqual({ name: 'Eyes', hp: 2215 });
     });
 });
 

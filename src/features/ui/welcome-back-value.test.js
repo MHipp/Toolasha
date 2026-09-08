@@ -10,7 +10,8 @@
  * priceable must produce no row at all rather than a confident "Net 0".
  */
 
-import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import { _resetGameNumberSeparators } from '../../utils/number-parser.js';
 
 const settings = vi.hoisted(() => ({ values: { welcomeBackValue: true } }));
 vi.mock('../../core/config.js', () => ({
@@ -111,6 +112,30 @@ describe('experience', () => {
 
     test('is zero when the modal names none', () => {
         expect(parseExperience('nothing here')).toBe(0);
+    });
+
+    describe('locale-grouped figures', () => {
+        const asLocale = (value) => {
+            localStorage.setItem('i18nextLng', value);
+            _resetGameNumberSeparators();
+        };
+
+        afterEach(() => {
+            localStorage.removeItem('i18nextLng');
+            _resetGameNumberSeparators();
+        });
+
+        test('en-US comma grouping', () => {
+            asLocale('en-US');
+            expect(parseExperience('Milking 12,000 XP')).toBe(12_000);
+        });
+
+        test('fr-FR space grouping — the bug this replaces', () => {
+            // A hardcoded comma/period union captures nothing at all for a
+            // space-grouped figure, since a space is in neither character class.
+            asLocale('fr-FR');
+            expect(parseExperience('Milking 12 000 XP')).toBe(12_000);
+        });
     });
 });
 

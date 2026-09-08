@@ -85,23 +85,31 @@ import {
     TRIAL_KIND_SKILLING_RE,
     TRIAL_KIND_COMBAT_RE,
     TRIAL_LEVEL_RE,
-    TRIAL_POINTS_RE,
+    trialPointsPattern,
     TRIAL_TIER_RE,
     TRIAL_CLOCK_LABEL_RE,
 } from '../../utils/game-text.js';
-import { parseGameNumber } from '../../utils/number-parser.js';
+import { parseGameNumber, gameDigitsSource } from '../../utils/number-parser.js';
 
 /** Suffix multipliers on abbreviated numbers the game renders in bars */
 const SUFFIXES = { k: 1e3, m: 1e6, b: 1e9, t: 1e12 };
 
 /**
- * A number as the game writes it: `618000`, `618,000`, `618K`, `1.2M`.
+ * A number as the game writes it: `618000`, `618,000`, `618K`, `1.2M` — and,
+ * in a period-grouping locale, `618.000` or `1,2M`.
+ *
+ * Built from {@link gameDigitsSource} rather than a hardcoded `[\d,]*\.?\d+`,
+ * which only recognises a comma-grouped number; in de-DE or fr-FR the group
+ * character is a period or a space, and the old pattern either mis-split the
+ * figure at the first group boundary or, worse, read the group separator as
+ * this locale's decimal point.
+ *
  * @param {string} raw - Text
  * @returns {number|null} The number, or null when it is not one
  */
 export function parseAmount(raw) {
     if (typeof raw !== 'string') return null;
-    const match = raw.trim().match(/^([\d,]*\.?\d+)\s*([kmbt])?$/i);
+    const match = raw.trim().match(new RegExp(`^(${gameDigitsSource()})\\s*([kmbt])?$`, 'i'));
     if (!match) return null;
 
     const value = parseGameNumber(match[1]);
@@ -125,7 +133,8 @@ export function parseBarReadings(text) {
     if (typeof text !== 'string') return [];
 
     const readings = [];
-    const pattern = /([\d,]*\.?\d+\s*[kmbt]?)\s*\/\s*([\d,]*\.?\d+\s*[kmbt]?)/gi;
+    const amount = `${gameDigitsSource()}\\s*[kmbt]?`;
+    const pattern = new RegExp(`(${amount})\\s*\\/\\s*(${amount})`, 'gi');
     let match = pattern.exec(text);
     while (match) {
         const current = parseAmount(match[1]);
@@ -202,7 +211,11 @@ const COMPLETED_PATTERN = TRIAL_CARD_COMPLETED_RE;
 export function parseSignups(text) {
     if (typeof text !== 'string' || !SIGNUP_PATTERN.test(text)) return null;
 
-    const match = text.match(/(\d[\d,]*)\s*\/\s*(\d[\d,]*)/);
+    // Sign-up counts are always whole numbers, so no decimal tail — a
+    // hardcoded `\d[\d,]*` only recognises comma grouping, which reads
+    // "1.234/5.000" as "1/5" in a period-grouping locale.
+    const digits = gameDigitsSource({ decimal: false });
+    const match = text.match(new RegExp(`(${digits})\\s*\\/\\s*(${digits})`));
     if (!match) return null;
 
     const signed = parseGameNumber(match[1]);
@@ -216,7 +229,7 @@ export function parseSignups(text) {
  * @returns {number|null} Points, or null when the line does not carry any
  */
 export function parsePoints(text) {
-    const match = typeof text === 'string' ? text.match(TRIAL_POINTS_RE) : null;
+    const match = typeof text === 'string' ? text.match(trialPointsPattern()) : null;
     if (!match) return null;
     const points = parseGameNumber(match[1]);
     return Number.isFinite(points) ? points : null;
@@ -469,7 +482,7 @@ export function findTrialsRoot(scope = typeof document === 'undefined' ? null : 
     // depend on which element holds it, and the cards themselves are read line
     // by line further down
     const hasSummary = Boolean(panel.querySelector('[class*="GuildPanel_tileSummary"]'));
-    const hasReading = /\d[\d,.]*\s*\/\s*\d/.test(panel.textContent || '');
+    const hasReading = new RegExp(`${gameDigitsSource()}\\s*\\/\\s*\\d`).test(panel.textContent || '');
     return hasSummary || hasReading ? panel : null;
 }
 
@@ -651,8 +664,9 @@ export function readPersonalStats(root, allLines = null) {
     if (!root || typeof root.querySelectorAll !== 'function') return stats;
 
     const lines = allLines || textLines(root);
-    const value = /^[+-]?[\d,]*\.?\d+\s*(%|s|ms|x)?$/i;
-    const inline = /^(.+?)[:\s]\s*([+-]?[\d,]*\.?\d+\s*(?:%|s|ms|x)?)$/i;
+    const digits = gameDigitsSource();
+    const value = new RegExp(`^[+-]?(?:${digits})\\s*(%|s|ms|x)?$`, 'i');
+    const inline = new RegExp(`^(.+?)[:\\s]\\s*([+-]?(?:${digits})\\s*(?:%|s|ms|x)?)$`, 'i');
 
     for (let index = 0; index < lines.length; index += 1) {
         const line = lines[index];
@@ -684,8 +698,16 @@ export function readPersonalStats(root, allLines = null) {
  */
 const NON_STAT_LABELS = /^(time|total|elapsed|duration|remaining|left|now)$/i;
 
-/** A label that is a number with an optional unit — `59m`, `12`, `3ms` */
-const NUMERIC_LABEL = /^[\d,.]+\s*[a-z]{0,2}$/i;
+/**
+ * A label that is a number with an optional unit — `59m`, `12`, `3ms`.
+ * Rebuilt from {@link gameDigitsSource} on every call, not a frozen constant,
+ * so a period-grouped "1.234m" is recognised as numeric (and therefore
+ * excluded from stats) under a period-grouping locale too.
+ * @returns {RegExp}
+ */
+function numericLabelPattern() {
+    return new RegExp(`^(?:${gameDigitsSource()})\\s*[a-z]{0,2}$`, 'i');
+}
 
 /**
  * Whether a run of text is the name of a stat rather than something beside one.
@@ -711,7 +733,7 @@ export function isStatLabel(label) {
         .replace(/[:\s]+$/, '')
         .trim();
     if (!text) return false;
-    if (NUMERIC_LABEL.test(text)) return false;
+    if (numericLabelPattern().test(text)) return false;
     if (NON_STAT_LABELS.test(text)) return false;
 
     // A letter-word of three, which "Lv.100" and "T3" do not have

@@ -18,6 +18,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import { _resetGameNumberSeparators } from '../../utils/number-parser.js';
 
 const game = vi.hoisted(() => ({
     characterId: 'market123',
@@ -798,6 +799,31 @@ describe('reading key counts out of party chat', () => {
 
     test('zero is a count like any other', () => {
         expect(tracker.parseKeyCountsFromMessage('[Alice - 0]')).toEqual({ Alice: 0 });
+    });
+
+    describe('locale-grouped counts', () => {
+        const asLocale = (value) => {
+            localStorage.setItem('i18nextLng', value);
+            _resetGameNumberSeparators();
+        };
+
+        afterEach(() => {
+            localStorage.removeItem('i18nextLng');
+            _resetGameNumberSeparators();
+        });
+
+        test('en-US comma grouping', () => {
+            asLocale('en-US');
+            expect(tracker.parseKeyCountsFromMessage('Key counts: [Bob - 1,234]')).toEqual({ Bob: 1234 });
+        });
+
+        test('de-DE period grouping — the bug this replaces', () => {
+            // A hardcoded `[\d,]+` fails the whole bracket in a period-grouping
+            // locale (the period stops the digit run before the closing "]"),
+            // dropping the count AND the player name together.
+            asLocale('de-DE');
+            expect(tracker.parseKeyCountsFromMessage('Key counts: [Bob - 1.234]')).toEqual({ Bob: 1234 });
+        });
     });
 });
 

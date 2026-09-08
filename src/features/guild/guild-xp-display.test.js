@@ -15,6 +15,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import { _resetGameNumberSeparators } from '../../utils/number-parser.js';
 
 const game = vi.hoisted(() => ({
     settings: {},
@@ -316,5 +317,28 @@ describe('the trial sign-up block', () => {
         game.observers['GuildPanel_tileSummary']();
 
         expect(block()).toBeNull();
+    });
+});
+
+describe('_parseWeeklyXP — locale-grouped figures', () => {
+    afterEach(() => {
+        localStorage.removeItem('i18nextLng');
+        _resetGameNumberSeparators();
+    });
+
+    test('en-US comma grouping, with K/M suffixes', () => {
+        localStorage.setItem('i18nextLng', 'en-US');
+        _resetGameNumberSeparators();
+        expect(guildXPDisplay._parseWeeklyXP('1,234')).toBe(1234);
+        expect(guildXPDisplay._parseWeeklyXP('12K')).toBe(12_000);
+    });
+
+    test('de-DE period grouping — the bug this replaces', () => {
+        // A hardcoded `[\d,.]+` already tolerates comma/period swapped roles
+        // (both are in the class either way), so this pins that the fix keeps
+        // it working, not that it was broken.
+        localStorage.setItem('i18nextLng', 'de-DE');
+        _resetGameNumberSeparators();
+        expect(guildXPDisplay._parseWeeklyXP('1.234')).toBe(1234);
     });
 });

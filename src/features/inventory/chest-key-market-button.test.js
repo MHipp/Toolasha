@@ -1,5 +1,6 @@
 /** @vitest-environment happy-dom */
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { _resetGameNumberSeparators } from '../../utils/number-parser.js';
 
 const game = vi.hoisted(() => ({
     clientData: {
@@ -58,6 +59,8 @@ afterEach(() => {
     document.body.innerHTML = '';
     game.navigated.length = 0;
     game.settings.chestKeyMarketButton = true;
+    localStorage.removeItem('i18nextLng');
+    _resetGameNumberSeparators();
 });
 
 describe('chestKeyFor', () => {
@@ -91,6 +94,26 @@ describe('the button in the chest popup', () => {
 
     it('reads the name past a leading count', () => {
         const menu = menuFor('3 Chimerical Chest');
+        chestKeyMarketButton.initialize();
+
+        expect(menu.querySelector('.mwi-chest-key-market-btn')).not.toBeNull();
+    });
+
+    it('reads the name past a comma-grouped leading count (en-US)', () => {
+        localStorage.setItem('i18nextLng', 'en-US');
+        _resetGameNumberSeparators();
+        const menu = menuFor('1,234 Chimerical Chest');
+        chestKeyMarketButton.initialize();
+
+        expect(menu.querySelector('.mwi-chest-key-market-btn')).not.toBeNull();
+    });
+
+    it('reads the name past a period-grouped leading count (de-DE) — the bug this replaces', () => {
+        // A hardcoded `[\d,]+\s+` leaves the leftover ".234 Chimerical Chest"
+        // glued onto the name in a period-grouping locale, and the lookup misses.
+        localStorage.setItem('i18nextLng', 'de-DE');
+        _resetGameNumberSeparators();
+        const menu = menuFor('1.234 Chimerical Chest');
         chestKeyMarketButton.initialize();
 
         expect(menu.querySelector('.mwi-chest-key-market-btn')).not.toBeNull();

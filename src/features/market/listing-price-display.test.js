@@ -9,7 +9,7 @@
  * of showing your own listing or downgrading a fresher book.
  */
 
-import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const { marketMock, ageMock } = vi.hoisted(() => ({
     marketMock: {
@@ -41,7 +41,8 @@ vi.mock('../../api/marketplace.js', () => ({ default: marketMock }));
 vi.mock('./estimated-listing-age.js', () => ({ default: ageMock }));
 vi.mock('./listing-markers.js', () => ({ default: { all: () => [] }, markerStateFor: () => ({}) }));
 
-import listingPriceDisplay from './listing-price-display.js';
+import listingPriceDisplay, { parseQuantityCell } from './listing-price-display.js';
+import { _resetGameNumberSeparators } from '../../utils/number-parser.js';
 
 const ITEM = '/items/bag';
 
@@ -179,5 +180,61 @@ describe('a processed table is left alone on the next order-book message', () =>
         const node = table();
         listingPriceDisplay.updateTable(node);
         expect(node.classList.contains('mwi-listing-prices-set')).toBe(false);
+    });
+});
+
+describe('parseQuantityCell', () => {
+    test('plain and abbreviated quantities', () => {
+        expect(parseQuantityCell('62075 / 405K')).toEqual({
+            filledQuantity: 62075,
+            orderQuantity: 405000,
+            filledSuffixMultiplier: 1,
+            orderSuffixMultiplier: 1000,
+        });
+        expect(parseQuantityCell('0 / 1')).toMatchObject({ filledQuantity: 0, orderQuantity: 1 });
+    });
+
+    test('a cell not shaped like a ratio is null', () => {
+        expect(parseQuantityCell('nothing here')).toBeNull();
+    });
+
+    describe('locale-grouped quantities', () => {
+        const asLocale = (value) => {
+            localStorage.setItem('i18nextLng', value);
+            _resetGameNumberSeparators();
+        };
+
+        afterEach(() => {
+            localStorage.removeItem('i18nextLng');
+            _resetGameNumberSeparators();
+        });
+
+        test('en-US comma grouping', () => {
+            asLocale('en-US');
+            expect(parseQuantityCell('1,234 / 5,678')).toMatchObject({
+                filledQuantity: 1234,
+                orderQuantity: 5678,
+            });
+        });
+
+        test('de-DE period grouping — the bug this replaces', () => {
+            // A hardcoded `[0-9,.]+` already tolerates comma/period swapped
+            // roles by coincidence (both characters are in the class either
+            // way); a space-grouping locale is the case it cannot handle at
+            // all — the whole cell fails to match. This pins the de-DE case too.
+            asLocale('de-DE');
+            expect(parseQuantityCell('1.234 / 5.678')).toMatchObject({
+                filledQuantity: 1234,
+                orderQuantity: 5678,
+            });
+        });
+
+        test('fr-FR space grouping — the case a comma/period union cannot reach', () => {
+            asLocale('fr-FR');
+            expect(parseQuantityCell('1 234 / 5 678')).toMatchObject({
+                filledQuantity: 1234,
+                orderQuantity: 5678,
+            });
+        });
     });
 });

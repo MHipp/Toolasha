@@ -12,7 +12,15 @@
  * constants preserve exactly the pattern their consumer matched with before the
  * literal moved here (word boundaries, optional spacing, case-insensitivity).
  * None carry the `g` flag, so sharing one instance across modules is safe.
+ *
+ * One exception: a pattern that captures a locale-grouped number is a
+ * function, not a frozen `RegExp` constant, because its digit-group character
+ * depends on the game's current language and a constant compiled once at
+ * import time would freeze whatever locale happened to be active on first
+ * load — see {@link gameDigitsSource}.
  */
+
+import { gameDigitsSource } from './number-parser.js';
 
 /* ------------------------------------------------------------------------- *
  * Dungeon party chat (dungeon-tracker.js, dungeon-tracker-chat-annotations.js)
@@ -84,8 +92,20 @@ export const TRIAL_KIND_COMBAT_RE = /\bcombat\b/i;
 /** Seen in: "Milking Lv.130" on a trial card's summary line */
 export const TRIAL_LEVEL_RE = /Lv\.?\s*(\d+)/i;
 
-/** Seen in: "600 pts" — what a card says clearing the trial is worth */
-export const TRIAL_POINTS_RE = /(\d[\d,]*)\s*(?:pts?|points?)\b/i;
+/**
+ * Seen in: "600 pts" — what a card says clearing the trial is worth.
+ *
+ * A function rather than a constant: the points figure is grouped by the
+ * game's current locale, and a hardcoded `[\d,]*` only matches an en-US
+ * comma-grouped number — in a period-grouping locale (de-DE, fr-FR...) it
+ * stops at the first group boundary, so a card worth "1.600 pts" would have
+ * captured as "1" pts.
+ *
+ * @returns {RegExp} Matches the points figure, current locale
+ */
+export function trialPointsPattern() {
+    return new RegExp(`(${gameDigitsSource({ decimal: false })})\\s*(?:pts?|points?)\\b`, 'i');
+}
 
 /** Seen in: "T6" (also written "Tier 6") on a card that states its tier */
 export const TRIAL_TIER_RE = /\b(?:tier\s*|T)(\d{1,2})\b/i;

@@ -18,7 +18,7 @@ import storage from '../../core/storage.js';
 
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { fNum, rankBadge, addColumn, makeColumnSortable } from '../../utils/table-columns.js';
-import { parseGameNumber } from '../../utils/number-parser.js';
+import { parseGameNumber, gameDigitsSource } from '../../utils/number-parser.js';
 
 /** Whether the trial-signups block is folded; hydrated from storage, survives redraws */
 let trialSignupsCollapsed = false;
@@ -1017,7 +1017,7 @@ class GuildXPDisplay {
      * @returns {number}
      */
     _parseWeeklyXP(raw) {
-        const m = raw.match(/^([\d,.]+)(K|M)?$/i);
+        const m = raw.match(new RegExp(`^(${gameDigitsSource()})(K|M)?$`, 'i'));
         if (!m) return 0;
         const num = parseGameNumber(m[1]);
         const mult = m[2]?.toUpperCase() === 'M' ? 1_000_000 : m[2]?.toUpperCase() === 'K' ? 1_000 : 1;

@@ -18,6 +18,7 @@ import config from '../../core/config.js';
 import dataManager from '../../core/data-manager.js';
 import domObserver from '../../core/dom-observer.js';
 import { navigateToMarketplace } from '../../utils/marketplace-tabs.js';
+import { gameDigitsSource } from '../../utils/number-parser.js';
 
 const BTN_CLASS = 'mwi-chest-key-market-btn';
 
@@ -111,10 +112,14 @@ class ChestKeyMarketButton {
         if (!nameNode) return null;
 
         // The heading may carry a count — "3 Chimerical Chest" — so the bare
-        // name is tried first and the count stripped as the fallback
+        // name is tried first and the count stripped as the fallback. Grouped
+        // by the game's current locale rather than a hardcoded comma: in a
+        // period-grouping locale a count above 999 leaves a leftover ".234"
+        // glued to the name, and the lookup misses.
         const text = (nameNode.textContent || '').trim();
         const map = this._getItemNameMap();
-        return map.get(text.toLowerCase()) || map.get(text.replace(/^[\d,]+\s+/, '').toLowerCase()) || null;
+        const stripLeadingCount = new RegExp(`^(?:${gameDigitsSource({ decimal: false })})\\s+`);
+        return map.get(text.toLowerCase()) || map.get(text.replace(stripLeadingCount, '').toLowerCase()) || null;
     }
 
     /**

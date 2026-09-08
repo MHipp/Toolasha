@@ -35,6 +35,7 @@ import domObserver from '../../core/dom-observer.js';
 import webSocketHook from '../../core/websocket.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { textLines } from './guild-trials-scrape.js';
+import { gameDigitsSource } from '../../utils/number-parser.js';
 import {
     extractLoadout,
     extractPartyLoadouts,
@@ -62,8 +63,20 @@ export const MIN_POPUP_ROWS = 4;
 /** Writes are batched: a party of five arrives as five messages in one frame */
 const SAVE_DEBOUNCE_MS = 1000;
 
-/** A value as the sheet writes one: `1,240`, `12.5%`, `+3` */
-const VALUE_PATTERN = /^[+-]?[\d,]+(?:\.\d+)?\s*%?$/;
+/**
+ * A value as the sheet writes one: `1,240`, `12.5%`, `+3` (or, in a
+ * period-grouping locale, `1.240`).
+ *
+ * Built fresh from {@link gameDigitsSource} on every call rather than a
+ * frozen `[\d,]+(?:\.\d+)?` constant, which only recognised comma grouping
+ * and read a period as the decimal point unconditionally — wrong the moment
+ * the game's language is not en-US.
+ *
+ * @returns {RegExp}
+ */
+function valuePattern() {
+    return new RegExp(`^[+-]?(?:${gameDigitsSource()})\\s*%?$`);
+}
 
 /** A name with its level beside it: `Tib - Lv.150`, or `Lv.150` under a name */
 const HEADER_PATTERN = /^(.*?)[\s-–—]*Lv\.?\s*(\d+)\s*$/i;
@@ -122,8 +135,9 @@ export function readUnitPopup(root, at = Date.now()) {
     for (let index = 0; index < lines.length - 1; index += 1) {
         const label = lines[index];
         const value = lines[index + 1];
-        if (!VALUE_PATTERN.test(value)) continue;
-        if (VALUE_PATTERN.test(label) || !/[a-z]/i.test(label)) continue;
+        const isValue = valuePattern();
+        if (!isValue.test(value)) continue;
+        if (isValue.test(label) || !/[a-z]/i.test(label)) continue;
 
         rows.push({ label: label.replace(/[:\s]+$/, ''), value });
         index += 1;

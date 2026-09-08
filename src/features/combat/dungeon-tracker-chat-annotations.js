@@ -17,6 +17,7 @@ import {
 } from '../../utils/game-text.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { createMutationWatcher } from '../../utils/dom-observer-helpers.js';
+import { gameDigitsSource } from '../../utils/number-parser.js';
 
 class DungeonTrackerChatAnnotations {
     constructor() {
@@ -831,8 +832,17 @@ class DungeonTrackerChatAnnotations {
             let node;
             while ((node = walker.nextNode())) textNodes.push(node);
 
+            // Digits only, no decimal — a key count is always a whole number —
+            // and grouped by the game's current locale: a hardcoded `[\d,]+`
+            // fails the whole bracket in a period-grouping locale (the period
+            // stops the digit run before the closing "]"), which loses the
+            // player name along with the count.
+            const keyCountBracket = new RegExp(
+                `\\[([A-Za-z0-9_]+)\\s*-\\s*(?:${gameDigitsSource({ decimal: false })})\\]`,
+                'g'
+            );
             for (const textNode of textNodes) {
-                const matches = [...textNode.textContent.matchAll(/\[([A-Za-z0-9_]+)\s*-\s*[\d,]+\]/g)];
+                const matches = [...textNode.textContent.matchAll(keyCountBracket)];
                 // Wrapped back to front, so earlier match offsets stay valid
                 // while surroundContents splits the text node
                 for (const match of matches.reverse()) {
@@ -859,7 +869,8 @@ class DungeonTrackerChatAnnotations {
      */
     getTeamFromMessage(msg) {
         const text = msg.textContent.trim();
-        const matches = [...text.matchAll(/\[([^[\]-]+?)\s*-\s*[\d,]+\]/g)];
+        const pattern = new RegExp(`\\[([^[\\]-]+?)\\s*-\\s*(?:${gameDigitsSource({ decimal: false })})\\]`, 'g');
+        const matches = [...text.matchAll(pattern)];
         return matches.map((m) => m[1].trim()).sort();
     }
 

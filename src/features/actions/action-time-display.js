@@ -45,6 +45,7 @@ import {
 } from '../../utils/profit-helpers.js';
 import { calculateEnhancementPredictions } from '../enhancement/enhancement-xp.js';
 import { BASE_SUCCESS_RATES } from '../../utils/enhancement-calculator.js';
+import { parseGameNumber, gameDigitsSource } from '../../utils/number-parser.js';
 
 /**
  * Format a completion Date as a clock string, respecting user's time/date format settings.
@@ -133,6 +134,24 @@ export function partialProgressNote(elapsedInCurrentUnit) {
         ` <span title="Counts only what's left: ${seconds}s already spent on the action in progress is not ` +
         `charged again" style="cursor:help; opacity:0.6;">ⓘ</span>`
     );
+}
+
+/**
+ * The inventory count trailing an action name, e.g. "Coinify: Item (4,312)" → 4312.
+ *
+ * Digits only, no decimal — an inventory count is always a whole number — and
+ * grouped by the game's current locale, not always a comma: a hardcoded
+ * `[\d,]+` reads "(4.312)" as "(4)" in a period-grouping locale, long before
+ * the value is even parsed.
+ *
+ * @param {string} actionNameText - The action name, with any appended stats already stripped
+ * @returns {number|null} The count, or null when the text carries none
+ */
+export function parseInventoryCountFromActionName(actionNameText) {
+    const match = String(actionNameText || '').match(new RegExp(`\\((${gameDigitsSource({ decimal: false })})\\)$`));
+    if (!match) return null;
+    const count = Math.trunc(parseGameNumber(match[1]));
+    return Number.isFinite(count) ? count : null;
 }
 
 class ActionTimeDisplay {
@@ -926,8 +945,7 @@ class ActionTimeDisplay {
         }
 
         // Extract inventory count from parentheses (e.g., "Coinify: Item (4312)" -> 4312)
-        const inventoryCountMatch = actionNameText.match(/\(([\d,]+)\)$/);
-        const inventoryCount = inventoryCountMatch ? parseInt(inventoryCountMatch[1].replace(/,/g, ''), 10) : null;
+        const inventoryCount = parseInventoryCountFromActionName(actionNameText);
 
         // Find the matching action in cache
         const cachedActions = dataManager.getCurrentActions();

@@ -17,6 +17,7 @@ import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { characterKey, readScoped, writeScoped } from '../../utils/character-key.js';
 import { runningCombatAction } from '../../utils/combat-actions.js';
 import { assessRecoveredStart } from './dungeon-pace.js';
+import { parseGameNumber, gameDigitsSource } from '../../utils/number-parser.js';
 
 /**
  * The party the server says is in this fight, from a `new_battle` message.
@@ -1066,18 +1067,25 @@ class DungeonTracker {
     parseKeyCountsFromMessage(messageText) {
         const keyCountsMap = {};
 
-        // Regex to match [PlayerName - KeyCount] pattern (with optional comma separators).
+        // Regex to match [PlayerName - KeyCount] pattern (with optional grouping
+        // separators, whatever the game's current locale uses).
         // The name may itself contain a dash ("[Moo-Deng - 12]"): the count is anchored to
         // the closing bracket and the name is lazy, so the LAST " - <digits>]" separates
         // them. Brackets still bound the name, which keeps a display timestamp
         // ("[08/04 10:00:00 AM]") from being read as a player.
-        const regex = /\[([^[\]]+?)\s*-\s*([\d,]+)\]/g;
+        //
+        // Digits only, no decimal — a key count is always a whole number — and
+        // built fresh from gameDigitsSource rather than a hardcoded `[\d,]+`,
+        // which only recognises comma grouping: in a period-grouping locale it
+        // stops at the first group boundary, so the whole bracket fails to
+        // match at all (no closing "]" right after the truncated digit run) and
+        // the player's name is lost along with the count.
+        const regex = new RegExp(`\\[([^[\\]]+?)\\s*-\\s*(${gameDigitsSource({ decimal: false })})\\]`, 'g');
         let match;
 
         while ((match = regex.exec(messageText)) !== null) {
             const playerName = match[1].trim();
-            // Remove commas before parsing
-            const keyCount = parseInt(match[2].replace(/,/g, ''), 10);
+            const keyCount = Math.trunc(parseGameNumber(match[2]));
             keyCountsMap[playerName] = keyCount;
         }
 

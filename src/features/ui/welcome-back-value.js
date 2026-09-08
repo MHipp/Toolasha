@@ -35,7 +35,7 @@ import config from '../../core/config.js';
 import domObserver from '../../core/dom-observer.js';
 import marketAPI from '../../api/marketplace.js';
 import { coinFormatter, formatKMB } from '../../utils/formatters.js';
-import { parseItemCount } from '../../utils/number-parser.js';
+import { parseItemCount, gameDigitsSource } from '../../utils/number-parser.js';
 import { selectPrice } from '../../utils/pricing-helper.js';
 
 /** The mark this feature leaves, so a redraw does not stack a second line */
@@ -112,7 +112,13 @@ export function parseExperience(text) {
     if (typeof text !== 'string') return 0;
 
     let total = 0;
-    const pattern = /([\d,.]+\s*[KMB]?)\s*(?:XP|EXP|experience)\b/gi;
+    // Grouped by the game's current locale rather than a hardcoded comma/period
+    // union — a plain union already tolerates en-US/de-DE, but not a
+    // space-grouping locale such as fr-FR. parseItemCount is still what parses
+    // the match: it is the heuristic parser (see number-parser.js), used
+    // deliberately here since the group/decimal roles still need disambiguating
+    // per figure, not just captured.
+    const pattern = new RegExp(`(${gameDigitsSource()}\\s*[KMB]?)\\s*(?:XP|EXP|experience)\\b`, 'gi');
     for (const match of text.matchAll(pattern)) {
         const value = parseItemCount(match[1], 0);
         if (Number.isFinite(value) && value > 0) total += value;

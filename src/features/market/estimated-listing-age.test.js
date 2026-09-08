@@ -8,7 +8,8 @@
 
 /** @vitest-environment happy-dom */
 
-import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import { _resetGameNumberSeparators } from '../../utils/number-parser.js';
 
 /**
  * A real little store rather than a stub returning fallbacks: the listing log
@@ -205,6 +206,48 @@ describe('parseQuantity', () => {
 
     test('an empty numeric remainder is zero, not NaN', () => {
         expect(estimatedListingAge.parseQuantity('K')).toBe(0);
+    });
+});
+
+describe('parsePrice / parseQuantity — locale-grouped figures', () => {
+    const asLocale = (value) => {
+        localStorage.setItem('i18nextLng', value);
+        _resetGameNumberSeparators();
+    };
+
+    afterEach(() => {
+        localStorage.removeItem('i18nextLng');
+        _resetGameNumberSeparators();
+    });
+
+    describe('en-US', () => {
+        beforeEach(() => asLocale('en-US'));
+
+        test('parsePrice reads comma grouping', () => expect(estimatedListingAge.parsePrice('12,345')).toBe(12345));
+
+        test('parseQuantity reads a comma-grouped quantity', () => {
+            expect(estimatedListingAge.parseQuantity('1,234')).toBe(1234);
+        });
+    });
+
+    describe('de-DE (period grouping, comma decimal) — the bug this replaces', () => {
+        beforeEach(() => asLocale('de-DE'));
+
+        test('parsePrice reads period grouping instead of stopping at the first group', () => {
+            // A hardcoded `[\d,.]+` already tolerates comma/period swapped roles
+            // for parsePrice (both characters are in the class), but relied on
+            // parseGameNumber to sort out which is which — this pins that path.
+            expect(estimatedListingAge.parsePrice('12.345')).toBe(12345);
+            expect(estimatedListingAge.parsePrice('1,5K')).toBe(1500);
+        });
+
+        test('parseQuantity reads period grouping and a comma decimal', () => {
+            // A hardcoded `[^0-9.]` strip kept every period (reading "1.234" as
+            // 1234000 once the K/M multiplier was applied) and discarded every
+            // comma outright, silently dropping the decimal tail of "1,5K".
+            expect(estimatedListingAge.parseQuantity('1.234')).toBe(1234);
+            expect(estimatedListingAge.parseQuantity('1,5K')).toBe(1500);
+        });
     });
 });
 

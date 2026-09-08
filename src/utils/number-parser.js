@@ -192,7 +192,77 @@ export function parseGameNumber(text, defaultValue = NaN) {
     return Number.isFinite(parsed) ? parsed : defaultValue;
 }
 
-/** Drop the resolved separators. Tests only. */
+/**
+ * Escape a single character for literal use inside a RegExp (character class
+ * or not).
+ * @param {string} char - One character
+ * @returns {string} The character, escaped if it is a regex metacharacter
+ */
+function escapeRegExpChar(char) {
+    return char.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');
+}
+
+/** Regex fragments for the current locale, cached the same way {@link gameNumberSeparators} is. */
+let patternCache = null;
+
+/**
+ * The game's group and decimal separators, as ready-to-embed regex fragments.
+ *
+ * This is the shared source of truth every capture regex in the codebase
+ * should be built from, instead of hardcoding `,` as the grouping character
+ * (which only matches an en-US-grouped number — in a period-grouping locale
+ * such as de-DE or fr-FR, `[\d,]*` stops at the first group boundary, so
+ * "1.234.567" captures as just "1", long before {@link parseGameNumber} ever
+ * sees the rest).
+ *
+ * `group` is ready to sit inside a `[...]` character class: the locale's own
+ * group character, escaped, or `\s` when the locale groups with any
+ * whitespace variant — several locales (fr-FR among them) group with a narrow
+ * or non-breaking space that the DOM may round-trip as a different code
+ * point, the same reasoning {@link SPACING_SEPARATORS} exists for. Empty
+ * string when the locale does not group at all. `decimal` is the locale's
+ * decimal character, escaped, ready to use outside a character class.
+ *
+ * Re-resolved whenever the game's language changes, mirroring
+ * {@link gameNumberSeparators}'s own cache: this is not frozen at module
+ * load, so a pattern built from it stays correct across a mid-session
+ * language switch, the same way {@link parseGameNumber} does.
+ *
+ * @returns {{group: string, decimal: string}} Regex-ready fragments
+ */
+export function gameNumberPattern() {
+    const { locale, group, decimal } = gameNumberSeparators();
+    if (patternCache && patternCache.locale === locale) return patternCache.fragments;
+    const fragments = {
+        group: !group ? '' : /\s/.test(group) ? '\\s' : escapeRegExpChar(group),
+        decimal: escapeRegExpChar(decimal || '.'),
+    };
+    patternCache = { locale, fragments };
+    return fragments;
+}
+
+/**
+ * A digit run as the game draws it in the current locale, as a regex source
+ * string ready for `new RegExp(...)`.
+ *
+ * Built fresh from {@link gameNumberPattern} on every call rather than
+ * compiled once into a module-level constant — a capture regex that pins the
+ * separators at import time freezes whatever locale happened to be active on
+ * first load, which is wrong the moment the game's language changes and wrong
+ * from the start for anyone whose game language isn't en-US.
+ *
+ * @param {Object} [options]
+ * @param {boolean} [options.decimal=true] - Allow an optional decimal tail
+ * @returns {string} A regex source fragment, e.g. `\d[\d,]*(?:\.\d+)?`
+ */
+export function gameDigitsSource({ decimal = true } = {}) {
+    const { group, decimal: decimalChar } = gameNumberPattern();
+    const base = `\\d[\\d${group}]*`;
+    return decimal ? `${base}(?:${decimalChar}\\d+)?` : base;
+}
+
+/** Drop the resolved separators and any regex fragments built from them. Tests only. */
 export function _resetGameNumberSeparators() {
     separatorCache = null;
+    patternCache = null;
 }

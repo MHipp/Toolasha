@@ -20,7 +20,52 @@ import marketAPI from '../../api/marketplace.js';
 import dataManager from '../../core/data-manager.js';
 import { runningAction } from '../../utils/combat-actions.js';
 import expectedValueCalculator from '../market/expected-value-calculator.js';
-import { parseGameNumber } from '../../utils/number-parser.js';
+import { parseGameNumber, gameDigitsSource } from '../../utils/number-parser.js';
+
+/**
+ * The count in a requirement row's "/ N" text, e.g. "/ 2" or "/ 450".
+ *
+ * Built from {@link gameDigitsSource} rather than a hardcoded `[\d,]+`, which
+ * only recognised comma grouping — in a period-grouping locale a required
+ * count above 999 would have its group boundary read as the end of the number.
+ *
+ * @param {string} text - The requirement row's text
+ * @returns {number} The count, or 1 when the text carries none
+ */
+export function parseRequirementCount(text) {
+    const match = String(text || '').match(new RegExp(`\\/\\s*(${gameDigitsSource({ decimal: false })})`));
+    if (!match) return 1;
+    return parseGameNumber(match[1]) || 1;
+}
+
+/**
+ * The count and, failing game data, the drop-rate percentage from a drop row's
+ * text — "12 Item 7.29%" or "~5 Item ~7.29%".
+ *
+ * Both built from {@link gameDigitsSource} rather than a hardcoded
+ * `[\d\s,.]+` / `[\d,.]+`, which assumed the grouping separator is always one
+ * of comma, period or space rather than reading whichever one the game's
+ * current locale actually uses.
+ *
+ * @param {string} text - The drop row's text
+ * @param {number|null} dropRateFromGameData - The rate from game data, when known
+ * @returns {{count: number, dropRate: number}}
+ */
+export function parseDropCountAndRate(text, dropRateFromGameData) {
+    const raw = String(text || '');
+    const countMatch = raw.match(new RegExp(`^(${gameDigitsSource()})`));
+    const count = countMatch ? parseGameNumber(countMatch[1]) || 1 : 1;
+
+    let dropRate;
+    if (dropRateFromGameData !== null && dropRateFromGameData !== undefined) {
+        dropRate = dropRateFromGameData;
+    } else {
+        const rateMatch = raw.match(new RegExp(`~?(${gameDigitsSource()})%`));
+        dropRate = rateMatch ? parseGameNumber(rateMatch[1]) / 100 || 1 : 1;
+    }
+
+    return { count, dropRate };
+}
 
 class AlchemyProfit {
     /**
@@ -223,16 +268,8 @@ class AlchemyProfit {
                 );
 
                 if (countElements[index]) {
-                    const text = countElements[index].textContent.trim();
                     // Extract number after the "/" character (format: "/ 2" or "/ 450")
-                    const match = text.match(/\/\s*([\d,]+)/);
-                    let parsedCount = 1;
-
-                    if (match) {
-                        parsedCount = parseGameNumber(match[1]);
-                    }
-
-                    result.count = parsedCount || 1;
+                    result.count = parseRequirementCount(countElements[index].textContent.trim());
                 } else {
                     result.count = 1;
                 }
@@ -262,29 +299,12 @@ class AlchemyProfit {
                         const dropItemHrid = dropItemId ? `/items/${dropItemId}` : null;
 
                         if (dropItemHrid === itemHrid) {
-                            // Found the matching drop element
-                            const text = dropElement.textContent.trim();
-
-                            // Extract count (at start of text)
-                            const countMatch = text.match(/^([\d\s,.]+)/);
-                            if (countMatch) {
-                                result.count = parseGameNumber(countMatch[1]) || 1;
-                            } else {
-                                result.count = 1;
-                            }
-
-                            // Use drop rate from game data if available, otherwise try DOM
-                            if (dropRateFromGameData !== null) {
-                                result.dropRate = dropRateFromGameData;
-                            } else {
-                                // Extract drop rate percentage from DOM (handles both "7.29%" and "~7.29%")
-                                const rateMatch = text.match(/~?([\d,.]+)%/);
-                                if (rateMatch) {
-                                    result.dropRate = parseGameNumber(rateMatch[1]) / 100 || 1;
-                                } else {
-                                    result.dropRate = 1;
-                                }
-                            }
+                            // Found the matching drop element. Count at the start of the
+                            // text; drop rate from game data if available, otherwise "N%"
+                            // (handles both "7.29%" and "~7.29%")
+                            const parsed = parseDropCountAndRate(dropElement.textContent.trim(), dropRateFromGameData);
+                            result.count = parsed.count;
+                            result.dropRate = parsed.dropRate;
 
                             break; // Found it, stop searching
                         }

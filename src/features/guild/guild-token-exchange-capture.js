@@ -46,7 +46,7 @@
 
 import storage from '../../core/storage.js';
 import { itemHridFromIcon } from '../../utils/item-icon.js';
-import { parseGameNumber } from '../../utils/number-parser.js';
+import { parseGameNumber, gameDigitsSource } from '../../utils/number-parser.js';
 
 /** Object store the record lives in — shared with guild XP and trial history */
 const STORE_NAME = 'guildHistory';
@@ -60,8 +60,20 @@ const TOKEN_PATTERN = /guild_token/;
 /** How an hrid spells a guild credit */
 const CREDIT_PATTERN = /guild_credit/;
 
-/** Arrows the game and this script both use to mean "becomes" */
-const ARROW = /(\d[\d,]*)\s*(?:→|->|➔|=>)\s*(\d[\d,]*)/;
+/**
+ * Arrows the game and this script both use to mean "becomes".
+ *
+ * Built fresh on every call from {@link gameDigitsSource} rather than a
+ * frozen `\d[\d,]*` constant: the tile counts either side of the arrow are
+ * grouped by the game's current locale, and a hardcoded comma only matches an
+ * en-US-grouped number.
+ *
+ * @returns {RegExp}
+ */
+function arrowPattern() {
+    const digits = gameDigitsSource({ decimal: false });
+    return new RegExp(`(${digits})\\s*(?:→|->|➔|=>)\\s*(${digits})`);
+}
 
 /** Nodes this script injected, which must not be read back as if the game wrote them */
 const OWN_MARKUP = ['.mwi-guild-credit-value', '.mwi-exchange-advisor', '.mwi-shrine-planner', '.mwi-shrine-cost'];
@@ -123,7 +135,7 @@ function readArrow(modalEl) {
         text = modalEl.textContent || '';
     }
 
-    const match = text.match(ARROW);
+    const match = text.match(arrowPattern());
     if (!match) return null;
 
     return { tokens: parseCount(match[1]), credits: parseCount(match[2]) };

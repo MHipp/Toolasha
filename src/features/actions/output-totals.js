@@ -20,6 +20,7 @@ import {
     resolveDetailPanel,
 } from '../../utils/action-panel-helper.js';
 import { calculateExperienceMultiplier } from '../../utils/experience-parser.js';
+import { parseGameNumber, gameDigitsSource } from '../../utils/number-parser.js';
 
 class OutputTotals {
     constructor() {
@@ -103,9 +104,14 @@ class OutputTotals {
             '[class*="SkillActionDetail_successRate"] [class*="SkillActionDetail_value"]'
         );
         if (!el) return 1;
-        const match = el.textContent.trim().match(/([\d,.]+)%/);
+        // Grouped and decimal-pointed by the game's current locale — a
+        // hardcoded `[\d,.]+` plus an unconditional comma→period swap read
+        // "1,234%" (a grouped number, unrealistic here but not impossible) as
+        // 1.234%, and got a comma-decimal locale's "7,29%" right only by luck.
+        const match = el.textContent.trim().match(new RegExp(`(${gameDigitsSource()})%`));
         if (!match) return 1;
-        return parseFloat(match[1].replace(',', '.')) / 100;
+        const rate = parseGameNumber(match[1]);
+        return Number.isFinite(rate) ? rate / 100 : 1;
     }
 
     /**

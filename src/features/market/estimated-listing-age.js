@@ -16,7 +16,7 @@ import marketAPI from '../../api/marketplace.js';
 import { formatRelativeTime, formatDateTime } from '../../utils/formatters.js';
 import { readScoped } from '../../utils/character-key.js';
 import { GAME } from '../../utils/selectors.js';
-import { parseGameNumber } from '../../utils/number-parser.js';
+import { parseGameNumber, gameDigitsSource } from '../../utils/number-parser.js';
 
 /** Store both halves of the old shared key live in */
 const LISTINGS_STORE = 'marketListings';
@@ -1476,11 +1476,11 @@ class EstimatedListingAge {
         // whose original limit price differs from its resting boundary price with
         // a "*". The $-anchored regex below would otherwise reject the whole cell.
         const normalized = priceText.trim().toUpperCase().replace(/\*+$/, '').trim();
-        const match = normalized.match(/^([\d,.]+)([KMBT])?$/);
+        const match = normalized.match(new RegExp(`^(${gameDigitsSource()})([KMBT])?$`));
 
         if (!match) return null;
 
-        // Remove commas from number
+        // Grouped and decimal-pointed by the game's current locale
         const value = parseGameNumber(match[1]);
         const suffix = match[2];
 
@@ -1793,8 +1793,14 @@ class EstimatedListingAge {
             multiplier = 1000000;
             text = text.replace(/M/gi, '');
         }
-        const numStr = text.replace(/[^0-9.]/g, '');
-        return numStr ? Number(numStr) * multiplier : 0;
+        // Grouped and decimal-pointed by the game's current locale. The
+        // hardcoded `[^0-9.]` this replaces kept every period and dropped
+        // every comma unconditionally — right for en-US, but in a
+        // period-grouping locale it kept the group separators as if they were
+        // part of the number (turning "1.234" into 1234000 rather than 1234)
+        // and silently discarded the decimal comma outright.
+        const value = parseGameNumber(text, 0);
+        return Number.isFinite(value) ? value * multiplier : 0;
     }
 
     /**

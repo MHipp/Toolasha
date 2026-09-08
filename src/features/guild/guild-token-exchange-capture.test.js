@@ -10,7 +10,8 @@
  * game had written them.
  */
 
-import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import { _resetGameNumberSeparators } from '../../utils/number-parser.js';
 
 const store = vi.hoisted(() => ({ data: {}, writes: 0, failWrite: false, failRead: false }));
 
@@ -117,6 +118,32 @@ describe('reading the dialog', () => {
         const el = modal('<div>100 → 1,000</div>');
 
         expect(readTokenExchangeFromModal(el, greenContext).creditsPerToken).toBe(10);
+    });
+
+    describe('locale-grouped tile counts', () => {
+        const asLocale = (value) => {
+            localStorage.setItem('i18nextLng', value);
+            _resetGameNumberSeparators();
+        };
+
+        afterEach(() => {
+            localStorage.removeItem('i18nextLng');
+            _resetGameNumberSeparators();
+        });
+
+        test('en-US comma grouping', () => {
+            asLocale('en-US');
+            const el = modal('<div>100 → 1,000</div>');
+            expect(readTokenExchangeFromModal(el, greenContext).creditsPerToken).toBe(10);
+        });
+
+        test('de-DE period grouping — the bug this replaces', () => {
+            // A hardcoded `\d[\d,]*` reads "100 → 1.000" as "100 → 1": the
+            // period isn't in the class, so the digit run stops there.
+            asLocale('de-DE');
+            const el = modal('<div>100 → 1.000</div>');
+            expect(readTokenExchangeFromModal(el, greenContext).creditsPerToken).toBe(10);
+        });
     });
 
     test('with no arrow, the two item tiles say it instead', () => {

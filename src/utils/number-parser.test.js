@@ -1,5 +1,12 @@
 /** @vitest-environment happy-dom */
-import { parseItemCount, parseGameNumber, gameNumberSeparators, _resetGameNumberSeparators } from './number-parser.js';
+import {
+    parseItemCount,
+    parseGameNumber,
+    gameNumberSeparators,
+    gameNumberPattern,
+    gameDigitsSource,
+    _resetGameNumberSeparators,
+} from './number-parser.js';
 
 describe('parseItemCount', () => {
     describe('plain numbers', () => {
@@ -139,5 +146,82 @@ describe('parseGameNumber', () => {
         expect(parseGameNumber('1,5')).toBe(15);
         localStorage.setItem('i18nextLng', 'de-DE'); // no cache reset — the getter must notice
         expect(parseGameNumber('1,5')).toBe(1.5);
+    });
+});
+
+describe('gameNumberPattern / gameDigitsSource', () => {
+    const asLocale = (value) => {
+        if (value === null) localStorage.removeItem('i18nextLng');
+        else localStorage.setItem('i18nextLng', value);
+        _resetGameNumberSeparators();
+    };
+
+    afterEach(() => {
+        localStorage.removeItem('i18nextLng');
+        _resetGameNumberSeparators();
+    });
+
+    describe('en-US', () => {
+        beforeEach(() => asLocale('en-US'));
+
+        test('fragments are the comma group and the period decimal', () => {
+            expect(gameNumberPattern()).toEqual({ group: ',', decimal: '\\.' });
+        });
+
+        test('captures a fully-grouped number whole', () => {
+            const re = new RegExp(`^${gameDigitsSource()}$`);
+            expect('1,234,567'.match(re)?.[0]).toBe('1,234,567');
+        });
+
+        test('captures a decimal tail', () => {
+            const re = new RegExp(`^${gameDigitsSource()}$`);
+            expect('1,234.5'.match(re)?.[0]).toBe('1,234.5');
+        });
+
+        test('decimal:false stops at the group boundary only, not at a period', () => {
+            const re = new RegExp(`^${gameDigitsSource({ decimal: false })}`);
+            expect('1,234'.match(re)?.[0]).toBe('1,234');
+        });
+    });
+
+    describe('de-DE (period grouping, comma decimal)', () => {
+        beforeEach(() => asLocale('de-DE'));
+
+        test('fragments are the period group and the comma decimal', () => {
+            expect(gameNumberPattern()).toEqual({ group: '\\.', decimal: ',' });
+        });
+
+        test('captures a period-grouped number whole — the bug this replaces', () => {
+            // The hardcoded `\d[\d,]*` this replaces stopped at the first ".",
+            // so "1.234.567" captured as just "1".
+            const re = new RegExp(`^${gameDigitsSource()}$`);
+            expect('1.234.567'.match(re)?.[0]).toBe('1.234.567');
+        });
+
+        test('captures a comma decimal tail', () => {
+            const re = new RegExp(`^${gameDigitsSource()}$`);
+            expect('1.234,5'.match(re)?.[0]).toBe('1.234,5');
+        });
+    });
+
+    describe('fr-FR (space grouping)', () => {
+        beforeEach(() => asLocale('fr-FR'));
+
+        test('groups with \\s so any whitespace variant is caught', () => {
+            expect(gameNumberPattern().group).toBe('\\s');
+        });
+
+        test('captures a space-grouped number whole, narrow-nbsp or plain space alike', () => {
+            const re = new RegExp(`^${gameDigitsSource()}$`);
+            expect('1 234 567'.match(re)?.[0]).toBe('1 234 567');
+            expect('1 234 567'.match(re)?.[0]).toBe('1 234 567');
+        });
+    });
+
+    test('re-resolves when the game language changes mid-session', () => {
+        asLocale('en-US');
+        expect(gameNumberPattern().group).toBe(',');
+        localStorage.setItem('i18nextLng', 'de-DE'); // no cache reset — the getter must notice
+        expect(gameNumberPattern().group).toBe('\\.');
     });
 });

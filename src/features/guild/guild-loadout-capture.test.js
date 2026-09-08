@@ -11,6 +11,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import { _resetGameNumberSeparators } from '../../utils/number-parser.js';
 
 const game = vi.hoisted(() => ({
     clientData: {},
@@ -147,6 +148,45 @@ describe('readUnitPopup', () => {
     test('nothing at all is null rather than a throw', () => {
         expect(readUnitPopup(null)).toBeNull();
         expect(readUnitPopup({})).toBeNull();
+    });
+
+    describe('locale-grouped values', () => {
+        const asLocale = (value) => {
+            localStorage.setItem('i18nextLng', value);
+            _resetGameNumberSeparators();
+        };
+
+        afterEach(() => {
+            localStorage.removeItem('i18nextLng');
+            _resetGameNumberSeparators();
+        });
+
+        test('en-US comma grouping', () => {
+            asLocale('en-US');
+            const popup = modal([
+                ['Tib - Lv.150'],
+                ['Armor', '62'],
+                ['Magic Evasion', '1,240'],
+                ['Rare Find', '12.0%'],
+                ['HP Regen', '3.0%'],
+            ]);
+            expect(readUnitPopup(popup).rows).toContainEqual({ label: 'Magic Evasion', value: '1,240' });
+        });
+
+        test('de-DE period grouping — the bug this replaces', () => {
+            // A hardcoded `[\d,]+(?:\.\d+)?` reads "1.240" as decimal 1.24, so
+            // the value cell no longer matches the whole-string value pattern
+            // and the row is dropped from the sheet entirely.
+            asLocale('de-DE');
+            const popup = modal([
+                ['Tib - Lv.150'],
+                ['Armor', '62'],
+                ['Magic Evasion', '1.240'],
+                ['Rare Find', '12,0%'],
+                ['HP Regen', '3,0%'],
+            ]);
+            expect(readUnitPopup(popup).rows).toContainEqual({ label: 'Magic Evasion', value: '1.240' });
+        });
     });
 });
 

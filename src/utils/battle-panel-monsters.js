@@ -33,16 +33,35 @@
  * name where there was previously a right one.
  */
 
-import { parseGameNumber } from './number-parser.js';
+import { parseGameNumber, gameDigitsSource } from './number-parser.js';
 
 const MONSTER_AREA = '[class*="BattlePanel_monstersArea"]';
 const UNIT_GRID = '[class*="BattlePanel_combatUnitGrid"]';
 
-/** A health bar, alone in its own element: `1,348/2,035` */
-const BAR = /^(\d[\d,]*)\s*\/\s*(\d[\d,]*)$/;
+/**
+ * A health bar, alone in its own element: `1,348/2,035` (or, in a
+ * period-grouping locale, `1.348/2.035`).
+ *
+ * Built fresh on every call rather than compiled once into a module-level
+ * constant: a health value carries no decimal, but its grouping character is
+ * whatever the game's current locale uses, and a `RegExp` frozen at import
+ * time would stay on whatever locale happened to be active on first load.
+ *
+ * @returns {RegExp} Matches a bare "current/max" reading
+ */
+function barPattern() {
+    const digits = gameDigitsSource({ decimal: false });
+    return new RegExp(`^(${digits})\\s*\\/\\s*(${digits})$`);
+}
 
-/** Any health bar, for the fallback when the bars are not their own elements */
-const LOOSE_BAR = /(\d[\d,]*)\s*\/\s*(\d[\d,]*)/;
+/**
+ * Any health bar, for the fallback when the bars are not their own elements.
+ * @returns {RegExp} Matches a "current/max" reading anywhere in the text
+ */
+function looseBarPattern() {
+    const digits = gameDigitsSource({ decimal: false });
+    return new RegExp(`(${digits})\\s*\\/\\s*(${digits})`);
+}
 
 /**
  * @param {string} text - A number with separators
@@ -96,8 +115,8 @@ export function parseUnitTexts(texts) {
     const name = parts.find((text) => !/\d/.test(text));
     if (!name) return null;
 
-    const exact = parts.map((text) => text.match(BAR)).find(Boolean);
-    const bar = exact || parts.join(' ').match(LOOSE_BAR);
+    const exact = parts.map((text) => text.match(barPattern())).find(Boolean);
+    const bar = exact || parts.join(' ').match(looseBarPattern());
     if (!bar) return null;
 
     const hp = toNumber(bar[1]);

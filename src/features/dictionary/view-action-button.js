@@ -9,7 +9,38 @@ import { setReactInputValue } from '../../utils/react-input.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { calculateMaterialRequirements } from '../../utils/material-calculator.js';
 import { getActionHridFromName, getItemHridFromName } from '../../utils/game-lookups.js';
-import { parseGameNumber } from '../../utils/number-parser.js';
+import { parseGameNumber, gameDigitsSource } from '../../utils/number-parser.js';
+
+/**
+ * How many more of an item are still needed, from a "have" cell and a
+ * "/ need" cell read off the requirements row.
+ *
+ * Built from {@link gameDigitsSource} rather than a hardcoded `[\d,]+(?:\.\d+)?`,
+ * which only recognises comma grouping — in a period-grouping locale
+ * (de-DE, fr-FR...) the old pattern stopped at the first group boundary and
+ * then read the leftover digits as a decimal tail, so "1.234" (one thousand,
+ * two hundred thirty-four) was read as 1.234.
+ *
+ * @param {string} haveText - The left cell, e.g. "12" or "1,234"
+ * @param {string} needText - The right cell, e.g. "/ 20" or "/ 1,234"
+ * @returns {{matched: boolean, missing: number|null}} `matched` is true once the
+ *   cells fit the "X" / "/ Y" shape, whether or not anything is still missing —
+ *   the caller stops searching either way, the same as it did before this was
+ *   pulled out into its own function
+ */
+export function parseHaveNeedCount(haveText, needText) {
+    const digits = gameDigitsSource();
+    const haveMatch = String(haveText || '').match(new RegExp(`^(?:${digits})$`));
+    const needMatch = String(needText || '').match(new RegExp(`^\\/\\s*(${digits})$`));
+    if (!haveMatch || !needMatch) return { matched: false, missing: null };
+
+    const have = parseGameNumber(haveText);
+    const need = parseGameNumber(needMatch[1]);
+    if (isNaN(have) || isNaN(need) || need <= 0) return { matched: false, missing: null };
+
+    const missing = Math.ceil(need - have);
+    return { matched: true, missing: missing > 0 ? missing : null };
+}
 
 /**
  * ViewActionButton class manages action button in Item Dictionary
@@ -232,16 +263,8 @@ class ViewActionButton {
                 const haveText = children[i].textContent.trim();
                 const needText = children[i + 1]?.textContent.trim();
                 if (!needText) continue;
-                const haveMatch = haveText.match(/^[\d,]+(?:\.\d+)?$/);
-                const needMatch = needText.match(/^\/\s*([\d,]+(?:\.\d+)?)$/);
-                if (haveMatch && needMatch) {
-                    const have = parseGameNumber(haveText);
-                    const need = parseGameNumber(needMatch[1]);
-                    if (!isNaN(have) && !isNaN(need) && need > 0) {
-                        const missing = Math.ceil(need - have);
-                        return missing > 0 ? missing : null;
-                    }
-                }
+                const result = parseHaveNeedCount(haveText, needText);
+                if (result.matched) return result.missing;
             }
         }
         return null;

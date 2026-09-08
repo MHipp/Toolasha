@@ -11,7 +11,8 @@
  * history plus what is visible on screen) can be set up exactly.
  */
 
-import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import { _resetGameNumberSeparators } from '../../utils/number-parser.js';
 
 const game = vi.hoisted(() => ({
     settings: { dungeonTrackerChatAnnotations: true },
@@ -194,6 +195,32 @@ describe('reading the team off a message', () => {
     test('nothing bracketed is nobody', () => {
         const node = message('[08/04 10:00:00 AM]', 'Key counts:');
         expect(annotations.getTeamFromMessage(node)).toEqual([]);
+    });
+
+    describe('locale-grouped counts', () => {
+        const asLocale = (value) => {
+            localStorage.setItem('i18nextLng', value);
+            _resetGameNumberSeparators();
+        };
+
+        afterEach(() => {
+            localStorage.removeItem('i18nextLng');
+            _resetGameNumberSeparators();
+        });
+
+        test('en-US comma grouping', () => {
+            asLocale('en-US');
+            const node = message('[08/04 10:00:00 AM]', 'Key counts: [Bob - 1,234]');
+            expect(annotations.getTeamFromMessage(node)).toEqual(['Bob']);
+        });
+
+        test('de-DE period grouping — the bug this replaces', () => {
+            // A hardcoded `[\d,]+` fails the whole bracket in a period-grouping
+            // locale, which drops the player name along with the count.
+            asLocale('de-DE');
+            const node = message('[08/04 10:00:00 AM]', 'Key counts: [Bob - 1.234]');
+            expect(annotations.getTeamFromMessage(node)).toEqual(['Bob']);
+        });
     });
 });
 
