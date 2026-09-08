@@ -197,6 +197,52 @@ function warnMwiTools() {
     }
 }
 
+/**
+ * Delays (ms) after the first check at which {@link checkMwiToolsWithRetries}
+ * tries again, for as long as MWITools still has not been seen.
+ */
+const MWI_TOOLS_RETRY_DELAYS_MS = [1000, 3000, 7000];
+
+/**
+ * Check for MWITools now, then again a few times over the following seconds
+ * if the first check found nothing.
+ *
+ * The call site below runs once, from the settled block of startup — already
+ * well past where both scripts' own boot code normally lands, per its own
+ * comment. "Normally" is not a guarantee, though: a userscript manager does
+ * not order two independent scripts against each other, and MWITools' own
+ * public-api module can just as easily sit behind an async chain gated on the
+ * same kind of game-ready signal this startup block is. If that chain happens
+ * to settle after this point, a single check finding nothing is
+ * indistinguishable from MWITools not being installed — and since the caller
+ * only ever calls this once per page load, that miss would otherwise last the
+ * whole session. Retrying a few times over the following seconds closes that
+ * window without turning this into an open-ended poll.
+ * @returns {void}
+ */
+function checkMwiToolsWithRetries() {
+    const check = () => {
+        try {
+            if (dualInstallGuard.detectMwiTools()) {
+                warnMwiTools();
+                return true;
+            }
+        } catch (error) {
+            console.error('[Toolasha] MWITools check failed:', error);
+        }
+        return false;
+    };
+
+    if (check()) return;
+    const retry = () => {
+        if (mwiToolsWarned) return;
+        check();
+    };
+    for (const delay of MWI_TOOLS_RETRY_DELAYS_MS) {
+        setTimeout(retry, delay);
+    }
+}
+
 // Start catching our own errors before anything below can produce one. The
 // hooks only ever record and never throw, so nothing here is made riskier by
 // installing them first; a Core bundle without the module (a stale cache of an
@@ -2294,12 +2340,10 @@ if (isCombatSimulatorPage()) {
                 // reason as the signals above: its own public-api and
                 // mobile-viewport-fix modules need a turn to run first, and this
                 // point — after the settings load that follows character init —
-                // is well past that.
-                try {
-                    if (dualInstallGuard.detectMwiTools()) warnMwiTools();
-                } catch (error) {
-                    console.error('[Toolasha] MWITools check failed:', error);
-                }
+                // is well past that in the common case. checkMwiToolsWithRetries
+                // covers the uncommon one, where MWITools' own boot is gated
+                // behind a similar async chain and has not settled yet.
+                checkMwiToolsWithRetries();
 
                 // Before features initialise: the conservative-defaults policy
                 // has to turn a new switch off before anything reads it — a
@@ -2466,3 +2510,14 @@ if (isCombatSimulatorPage()) {
         },
     };
 }
+
+/**
+ * Test-only. `entrypoint.js` otherwise has no exports — it is a boot script run
+ * for its side effects — but `checkMwiToolsWithRetries` schedules real timers
+ * from deep inside a one-shot, hard-to-re-trigger startup sequence
+ * (`startupBegun` in the `character_initialized` handler below), which makes it
+ * impractical to exercise through that path alone. Exported so a test can call
+ * it directly against the same module-scoped `dualInstallGuard`/`mwiToolsWarned`
+ * state the real call site uses.
+ */
+export { checkMwiToolsWithRetries as _checkMwiToolsWithRetries };

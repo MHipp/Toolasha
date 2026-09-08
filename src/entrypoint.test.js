@@ -17,7 +17,7 @@
  * believed the first time it is wrong.
  */
 
-import { describe, test, expect, beforeAll, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { GAME } from './utils/selectors.js';
 
 /** Settings the fake config answers with; mutated per test */
@@ -34,6 +34,15 @@ const dataManagerHandlers = new Map();
 
 /** How many times the entrypoint asked the registry to bring the feature layer up */
 let initializeFeaturesCalls = 0;
+
+/** The entrypoint module's own exports, once it has loaded */
+let entrypointModule;
+
+/** What `dualInstallGuard.detectMwiTools()` answers; mutated per test */
+let mwiToolsDetected = false;
+
+/** `(message, options)` pairs passed to `Utils.toast.showToast` while the entrypoint loaded */
+const toastCalls = [];
 
 /** A library stand-in: every property is a callable that returns another one */
 function makeStub() {
@@ -89,13 +98,21 @@ beforeAll(async () => {
             performanceMonitor: { mark: () => {} },
             marketAPI: { fetch: async () => null },
             errorLog: { install: () => true, getEntries: () => [], clear: () => {} },
+            dualInstallGuard: {
+                claimPage: () => false,
+                claimLost: () => false,
+                checkSettingsFingerprint: async () => [],
+                detectMwiTools: () => mwiToolsDetected,
+                DUAL_INSTALL_MESSAGE: 'dual-install stand-in message',
+                MWI_TOOLS_MESSAGE: 'MWITools stand-in message',
+            },
         },
         Utils: {
             dom: {
                 setupScrollTooltipDismissal: () => {},
                 addStyles: (css, id) => styleCalls.push({ css, id }),
             },
-            toast: { showToast: () => null },
+            toast: { showToast: (message, options) => toastCalls.push({ message, options }) },
             selectors: { GAME },
         },
         Market: makeStub(),
@@ -104,7 +121,7 @@ beforeAll(async () => {
         UI: makeStub(),
     };
 
-    await import('./entrypoint.js');
+    entrypointModule = await import('./entrypoint.js');
 });
 
 /**
@@ -553,5 +570,51 @@ describe('the character_initialized startup block', () => {
 
         await fireCharacterInitialized({ character: { id: 'char-2', name: 'Two' }, _isCharacterSwitch: true });
         expect(initializeFeaturesCalls).toBe(0);
+    });
+});
+
+describe('checkMwiToolsWithRetries', () => {
+    /**
+     * Exercised directly rather than through `character_initialized`: the real
+     * call site sits inside a startup block that runs at most once for the
+     * life of this module (see `startupBegun` above), so a second attempt at
+     * firing it from a later test would be a silent no-op. The exported
+     * `_checkMwiToolsWithRetries` reaches the same module-scoped
+     * `dualInstallGuard`/`mwiToolsWarned` state without that restriction.
+     */
+    beforeEach(() => {
+        mwiToolsDetected = false;
+        toastCalls.length = 0;
+        vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    const mwiToastShown = () => toastCalls.some((call) => call.message === 'MWITools stand-in message');
+
+    // Order matters within this describe: `mwiToolsWarned` is a one-shot flag
+    // on the module, by design ("say it once per page load") — once a test
+    // makes it warn, no later test in this file can observe a fresh warning.
+    // This one stays negative throughout, so it is safe regardless of order.
+    test('MWITools genuinely absent stays silent once every retry has run', async () => {
+        entrypointModule._checkMwiToolsWithRetries();
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        expect(mwiToastShown()).toBe(false);
+    });
+
+    test('an immediate miss is not the last word — a later retry still catches it', async () => {
+        entrypointModule._checkMwiToolsWithRetries();
+        expect(mwiToastShown()).toBe(false); // nothing detected yet
+
+        // MWITools finishes its own boot in the gap between the immediate
+        // check and the first retry.
+        mwiToolsDetected = true;
+        await vi.advanceTimersByTimeAsync(10_000);
+
+        expect(mwiToastShown()).toBe(true);
     });
 });
