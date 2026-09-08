@@ -235,8 +235,16 @@ export function reconcileBook(ask, bid, itemHrid, enhancementLevel = 0) {
  * swapped, the version bumped, and the derived band cache — the only thing here
  * memoised across a map — dropped so it recomputes against the new values.
  *
- * Both fields are required. A payload carrying no map is ignored rather than
- * clearing the cache, so a partial or malformed push cannot blank out pricing.
+ * Both fields are required, the map must carry at least one entry, and — once
+ * a version is already cached — the payload's version must not be older than
+ * it. Each of the three is a shape the game is never expected to send but a
+ * malformed or reordered push could: an empty `marketItemValues` (`{}` is a
+ * truthy object, so it slips past a plain `!values` check) would otherwise
+ * swap in a cache that prices nothing; an array or string equally passes
+ * `typeof === 'object'`/`'string'` naively but carries nothing keyed by item
+ * hrid either. A payload failing any of these is ignored rather than applied,
+ * so a partial, malformed, or out-of-order push cannot blank out or downgrade
+ * pricing.
  *
  * The message and its payload shape were learnt from MWITools (CC-BY-NC-SA-4.0)
  * — see `third-party/mwitools/`.
@@ -246,8 +254,11 @@ export function reconcileBook(ask, bid, itemHrid, enhancementLevel = 0) {
  */
 export function applyMarketValuesMessage(payload) {
     const values = payload?.marketItemValues;
-    if (!values || typeof values !== 'object') return false;
-    cache = { version: payload.marketValuesVersion ?? null, values };
+    if (!values || typeof values !== 'object' || Array.isArray(values)) return false;
+    if (Object.keys(values).length === 0) return false;
+    const version = payload.marketValuesVersion ?? null;
+    if (version !== null && cache.version !== null && version < cache.version) return false;
+    cache = { version, values };
     bandCache = new Map();
     // The pushed map is newer than anything localStorage holds, so restart the
     // throttle window rather than letting the next price query re-read over it.

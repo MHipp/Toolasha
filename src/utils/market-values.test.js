@@ -309,6 +309,32 @@ describe('applyMarketValuesMessage', () => {
         expect(marketValueFor('/items/log')).toBe(1000);
     });
 
+    test('an empty map is ignored rather than blanking every official value', () => {
+        // {} is truthy and typeof 'object', so a naive `!values` guard lets it
+        // through — exactly the payload that would blank the whole cache.
+        applyMarketValuesMessage(payload(1, { '/items/log': { 0: 1000 } }));
+        expect(applyMarketValuesMessage(payload(2, {}))).toBe(false);
+        expect(marketValueFor('/items/log')).toBe(1000);
+    });
+
+    test('an array payload is ignored rather than accepted as a map', () => {
+        // Arrays are typeof 'object' too, so this also slips past a naive guard.
+        applyMarketValuesMessage(payload(1, { '/items/log': { 0: 1000 } }));
+        expect(applyMarketValuesMessage(payload(2, []))).toBe(false);
+        expect(marketValueFor('/items/log')).toBe(1000);
+    });
+
+    test('a payload older than the cached version does not downgrade it', () => {
+        applyMarketValuesMessage(payload(5, { '/items/log': { 0: 1000 } }));
+        expect(applyMarketValuesMessage(payload(3, { '/items/log': { 0: 1 } }))).toBe(false);
+        expect(marketValueFor('/items/log')).toBe(1000);
+    });
+
+    test('the very first push applies even with no cached version to compare against', () => {
+        expect(applyMarketValuesMessage(payload(1, { '/items/log': { 0: 42 } }))).toBe(true);
+        expect(marketValueFor('/items/log')).toBe(42);
+    });
+
     test('the module subscribes to the pushed message', () => {
         const handler = mocks.handlers.get('market_item_values_updated');
         expect(typeof handler).toBe('function');
