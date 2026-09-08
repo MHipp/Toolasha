@@ -1291,6 +1291,13 @@ function registerFeatures() {
             async: false,
         },
         {
+            key: 'combatUnitBuffBars',
+            name: 'Combat Unit Buff Bars',
+            category: 'Combat',
+            module: Combat.combatUnitBuffBars,
+            async: false,
+        },
+        {
             key: 'combatConsumableRunway',
             name: 'Combat Consumable Runway',
             category: 'Combat',

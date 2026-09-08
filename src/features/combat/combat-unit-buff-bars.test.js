@@ -1,0 +1,437 @@
+/** @vitest-environment happy-dom
+ *
+ * Buff and debuff bars under combat units.
+ *
+ * Four things are worth asserting and none of them is arithmetic:
+ *
+ * - the strips are seeded from the combatant list rather than waiting a tick;
+ * - a tick's buff map is authoritative both ways — a new debuff appears, and an
+ *   effect the map stops listing goes away;
+ * - the countdown is written only when its rounded second changes, which is the
+ *   difference between one DOM write a second and one per observer callback in
+ *   a panel that mutates at frame rate;
+ * - teardown leaves nothing — no elements and no interval — and a character
+ *   switch mid-battle is a teardown of the fight.
+ */
+
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+
+const opts = vi.hoisted(() => ({
+    enabled: true,
+    clientData: null,
+    handlers: [],
+    readyHandlers: [],
+    domReady: true,
+    intervals: [],
+    ws: new Map(),
+    dm: new Map(),
+}));
+
+vi.mock('../../core/config.js', () => ({
+    default: { getSetting: () => opts.enabled, getSettingValue: (_key, fallback) => fallback },
+}));
+vi.mock('../../core/data-manager.js', () => ({
+    default: {
+        getInitClientData: () => opts.clientData,
+        on: (event, handler) => opts.dm.set(event, [...(opts.dm.get(event) || []), handler]),
+        off: (event, handler) =>
+            opts.dm.set(
+                event,
+                (opts.dm.get(event) || []).filter((entry) => entry !== handler)
+            ),
+    },
+}));
+vi.mock('../../core/websocket.js', () => ({
+    default: {
+        on: (type, handler) => opts.ws.set(type, [...(opts.ws.get(type) || []), handler]),
+        off: (type, handler) =>
+            opts.ws.set(
+                type,
+                (opts.ws.get(type) || []).filter((entry) => entry !== handler)
+            ),
+    },
+}));
+vi.mock('../../core/dom-observer.js', () => ({
+    default: {
+        onClass: (name, classNames, callback) => {
+            const handler = { name, classNames, callback };
+            opts.handlers.push(handler);
+            return () => {
+                opts.handlers = opts.handlers.filter((entry) => entry !== handler);
+            };
+        },
+        onReady: (name, callback) => {
+            const handler = { name, callback };
+            opts.readyHandlers.push(handler);
+            if (opts.domReady) callback();
+            return () => {
+                opts.readyHandlers = opts.readyHandlers.filter((entry) => entry !== handler);
+            };
+        },
+    },
+}));
+vi.mock('../../utils/timer-registry.js', () => ({
+    createTimerRegistry: () => ({
+        registerInterval: (id) => opts.intervals.push(id),
+        registerTimeout: (id) => opts.intervals.push(id),
+        clearAll: () => {
+            for (const id of opts.intervals.splice(0)) clearInterval(id);
+        },
+    }),
+}));
+
+const {
+    STRIP_MARK,
+    CHIP_MARK,
+    readBuffMap,
+    countdownText,
+    slotNames,
+    liveDurationSeconds,
+    abilitySpriteHref,
+    _resetSpriteUrl,
+    _instance: bars,
+    default: feature,
+} = await import('./combat-unit-buff-bars.js');
+
+const SECOND = 1e9;
+const NOW = Date.UTC(2026, 0, 1, 12, 0, 0);
+
+/** The ability map the effect index is built from */
+const ABILITY_MAP = {
+    '/abilities/toughness': {
+        abilityEffects: [
+            {
+                targetType: 'self',
+                effectType: '/ability_effect_types/buff',
+                buffs: [
+                    { uniqueHrid: '/buff_uniques/toughness', typeHrid: '/buff_types/armor', duration: 20 * SECOND },
+                ],
+            },
+        ],
+    },
+    '/abilities/weaken': {
+        abilityEffects: [
+            {
+                targetType: 'allEnemies',
+                effectType: '/ability_effect_types/damage',
+                buffs: [
+                    {
+                        uniqueHrid: '/buff_uniques/weaken',
+                        typeHrid: '/buff_types/damage_taken',
+                        duration: 15 * SECOND,
+                    },
+                ],
+            },
+        ],
+    },
+};
+
+/** One live buff record, in the shape `combatBuffMap` states them */
+function live(uniqueHrid, typeHrid, seconds, startedAt = NOW) {
+    return {
+        [uniqueHrid]: {
+            uniqueHrid,
+            typeHrid,
+            duration: seconds * SECOND,
+            startTime: new Date(startedAt).toISOString(),
+        },
+    };
+}
+
+/** A battle panel with two player tiles and two monster tiles */
+function panel(playerNames = ['Alice', 'Bob'], monsterCount = 2) {
+    document.body.innerHTML = `
+        <div class="BattlePanel_battlePanel__1x2y3">
+            <div class="BattlePanel_playersArea__3a4b5">
+                ${playerNames
+                    .map(
+                        (name) => `<div class="CombatUnit_combatUnit__1p2q3">
+                            <div class="CombatUnit_name__2r3s4">${name}</div>
+                        </div>`
+                    )
+                    .join('')}
+            </div>
+            <div class="BattlePanel_monstersArea__6c7d8">
+                ${Array.from(
+                    { length: monsterCount },
+                    (_, index) => `<div class="CombatUnit_combatUnit__1p2q3">
+                        <div class="CombatUnit_name__2r3s4">Rat ${index}</div>
+                    </div>`
+                ).join('')}
+            </div>
+        </div>`;
+}
+
+const send = (type, payload) => {
+    for (const handler of opts.ws.get(type) || []) handler(payload);
+};
+const strips = () => [...document.querySelectorAll(`[${STRIP_MARK}]`)];
+const chipsOn = (area, index) =>
+    [...document.querySelectorAll(`[class*="BattlePanel_${area}Area"] [class*="CombatUnit_combatUnit"]`)][
+        index
+    ].querySelectorAll(`[${CHIP_MARK}]`);
+
+beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    opts.enabled = true;
+    opts.domReady = true;
+    opts.handlers = [];
+    opts.readyHandlers = [];
+    opts.ws = new Map();
+    opts.dm = new Map();
+    for (const id of opts.intervals.splice(0)) clearInterval(id);
+    opts.clientData = { abilityDetailMap: ABILITY_MAP };
+    _resetSpriteUrl();
+    panel();
+    feature.initialize();
+});
+
+afterEach(() => {
+    feature.cleanup();
+    vi.useRealTimers();
+    document.body.innerHTML = '';
+});
+
+describe('reading a buff map', () => {
+    test('the ability index names the effect and its sign', () => {
+        const effects = readBuffMap(live('/buff_uniques/weaken', '/buff_types/damage_taken', 15), NOW, ABILITY_MAP);
+        expect(effects.get('/buff_uniques/weaken')).toMatchObject({ kind: 'debuff', slug: 'weaken' });
+    });
+
+    test('an effect no ability declares still shows, as a buff with an abbreviation', () => {
+        const effects = readBuffMap(live('/buff_uniques/community', '/buff_types/experience', 60), NOW, ABILITY_MAP);
+        expect(effects.get('/buff_uniques/community')).toMatchObject({ kind: 'buff', slug: '', label: 'EXP' });
+    });
+
+    test('an already-expired record is not drawn and removed a frame later', () => {
+        const map = live('/buff_uniques/toughness', '/buff_types/armor', 5, NOW - 10_000);
+        expect(readBuffMap(map, NOW, ABILITY_MAP).size).toBe(0);
+    });
+
+    test('a duration nothing states falls back to the ability index', () => {
+        const map = { '/buff_uniques/toughness': { uniqueHrid: '/buff_uniques/toughness', duration: 0 } };
+        const effect = readBuffMap(map, NOW, ABILITY_MAP).get('/buff_uniques/toughness');
+        expect(effect.expiresAt).toBe(NOW + 20_000);
+    });
+
+    test('durations are nanoseconds', () => {
+        expect(liveDurationSeconds(15 * SECOND)).toBe(15);
+        expect(liveDurationSeconds(0)).toBeNull();
+        expect(liveDurationSeconds(undefined)).toBeNull();
+    });
+});
+
+describe('countdown text', () => {
+    test('whole seconds, minutes over a minute, nothing without an expiry', () => {
+        expect(countdownText(NOW + 4200, NOW)).toBe('5');
+        expect(countdownText(NOW + 95_000, NOW)).toBe('2m');
+        expect(countdownText(NOW - 5000, NOW)).toBe('0');
+        expect(countdownText(null, NOW)).toBe('');
+    });
+});
+
+describe('seeding and reconciling', () => {
+    test('a new battle seeds a strip for every unit that carries something', () => {
+        send('new_battle', {
+            players: [
+                { name: 'Alice', combatBuffMap: live('/buff_uniques/toughness', '/buff_types/armor', 20) },
+                { name: 'Bob', combatBuffMap: {} },
+            ],
+            monsters: [
+                { combatBuffMap: live('/buff_uniques/weaken', '/buff_types/damage_taken', 15) },
+                { combatBuffMap: {} },
+            ],
+        });
+
+        expect(strips()).toHaveLength(2);
+        expect(chipsOn('players', 0)).toHaveLength(1);
+        expect(chipsOn('players', 1)).toHaveLength(0);
+        expect(chipsOn('monsters', 0)).toHaveLength(1);
+    });
+
+    test('the join for a player is the name, never the slot', () => {
+        // Bob is in slot 0 of this fight; a strip matched by position would put
+        // his effects on Alice, whose tile is first in the DOM
+        send('new_battle', {
+            players: [{ name: 'Bob', combatBuffMap: live('/buff_uniques/toughness', '/buff_types/armor', 20) }],
+            monsters: [],
+        });
+        expect(chipsOn('players', 0)).toHaveLength(0);
+        expect(chipsOn('players', 1)).toHaveLength(1);
+    });
+
+    test('slot names are read off the combatant list', () => {
+        expect(slotNames({ players: [{ name: 'Alice' }, { character: { name: 'Bob' } }, {}] })).toEqual({
+            0: 'Alice',
+            1: 'Bob',
+        });
+    });
+
+    test('a tick carrying a new debuff on a monster adds it', () => {
+        send('new_battle', { players: [{ name: 'Alice' }], monsters: [{ combatBuffMap: {} }] });
+        expect(chipsOn('monsters', 0)).toHaveLength(0);
+
+        send('battle_updated', {
+            mMap: { 0: { combatBuffMap: live('/buff_uniques/weaken', '/buff_types/damage_taken', 15) } },
+        });
+        const chips = chipsOn('monsters', 0);
+        expect(chips).toHaveLength(1);
+        expect(chips[0].getAttribute(CHIP_MARK)).toBe('/buff_uniques/weaken');
+    });
+
+    test('a tick that stops listing an effect removes it', () => {
+        send('new_battle', {
+            players: [],
+            monsters: [{ combatBuffMap: live('/buff_uniques/weaken', '/buff_types/damage_taken', 15) }],
+        });
+        expect(chipsOn('monsters', 0)).toHaveLength(1);
+
+        send('battle_updated', { mMap: { 0: { combatBuffMap: {} } } });
+        expect(chipsOn('monsters', 0)).toHaveLength(0);
+        // And the strip itself goes with the last chip, rather than sitting
+        // there as an empty box holding the tile taller
+        expect(strips()).toHaveLength(0);
+    });
+
+    test('an effect expires on the clock, without a message saying so', () => {
+        send('new_battle', {
+            players: [],
+            monsters: [{ combatBuffMap: live('/buff_uniques/weaken', '/buff_types/damage_taken', 15) }],
+        });
+        expect(chipsOn('monsters', 0)).toHaveLength(1);
+
+        vi.setSystemTime(NOW + 16_000);
+        feature.redraw();
+        expect(chipsOn('monsters', 0)).toHaveLength(0);
+    });
+});
+
+describe('drawing no more than it must', () => {
+    test('the countdown is written only when the rounded second changes', () => {
+        send('new_battle', {
+            players: [],
+            monsters: [{ combatBuffMap: live('/buff_uniques/weaken', '/buff_types/damage_taken', 15) }],
+        });
+        const chip = chipsOn('monsters', 0)[0];
+        const countdown = chip.lastElementChild;
+        expect(countdown.textContent).toBe('15');
+
+        let writes = 0;
+        const node = countdown.firstChild;
+        Object.defineProperty(countdown, 'textContent', {
+            configurable: true,
+            get: () => node?.data ?? '',
+            set: (value) => {
+                writes += 1;
+                if (node) node.data = value;
+            },
+        });
+
+        // Four draws inside the same second write nothing
+        vi.setSystemTime(NOW + 100);
+        feature.redraw();
+        feature.redraw();
+        vi.setSystemTime(NOW + 300);
+        feature.redraw();
+        expect(writes).toBe(0);
+
+        // Crossing into the next rounded second writes once
+        vi.setSystemTime(NOW + 1200);
+        feature.redraw();
+        expect(writes).toBe(1);
+        expect(countdown.textContent).toBe('14');
+        feature.redraw();
+        expect(writes).toBe(1);
+    });
+
+    test('the chip element survives a redraw rather than being rebuilt', () => {
+        send('new_battle', {
+            players: [],
+            monsters: [{ combatBuffMap: live('/buff_uniques/weaken', '/buff_types/damage_taken', 15) }],
+        });
+        const chip = chipsOn('monsters', 0)[0];
+        vi.setSystemTime(NOW + 3000);
+        feature.redraw();
+        expect(chipsOn('monsters', 0)[0]).toBe(chip);
+    });
+
+    test('one interval for every unit, and none once the fight is clean', () => {
+        send('new_battle', {
+            players: [{ name: 'Alice', combatBuffMap: live('/buff_uniques/toughness', '/buff_types/armor', 20) }],
+            monsters: [{ combatBuffMap: live('/buff_uniques/weaken', '/buff_types/damage_taken', 15) }],
+        });
+        expect(opts.intervals).toHaveLength(1);
+        expect(bars.ticking).toBe(true);
+
+        vi.setSystemTime(NOW + 30_000);
+        feature.redraw();
+        expect(bars.ticking).toBe(false);
+        expect(opts.intervals).toHaveLength(0);
+    });
+});
+
+describe('icons', () => {
+    test('the sprite is scraped from an icon the game already drew', () => {
+        document.body.insertAdjacentHTML(
+            'afterbegin',
+            '<svg><use href="/static/media/abilities_sprite.a1b2.svg#fireball"></use></svg>'
+        );
+        expect(abilitySpriteHref('weaken')).toBe('/static/media/abilities_sprite.a1b2.svg#weaken');
+    });
+
+    test('an effect with no sprite falls back to its abbreviation', () => {
+        // No ability icon on the page, so nothing resolves
+        send('new_battle', {
+            players: [],
+            monsters: [{ combatBuffMap: live('/buff_uniques/weaken', '/buff_types/damage_taken', 15) }],
+        });
+        const chip = chipsOn('monsters', 0)[0];
+        expect(chip.querySelector('svg')).toBeNull();
+        expect(chip.firstElementChild.textContent).toBe('DT');
+    });
+});
+
+describe('lifecycle', () => {
+    test('cleanup leaves no elements and no interval', () => {
+        send('new_battle', {
+            players: [{ name: 'Alice', combatBuffMap: live('/buff_uniques/toughness', '/buff_types/armor', 20) }],
+            monsters: [{ combatBuffMap: live('/buff_uniques/weaken', '/buff_types/damage_taken', 15) }],
+        });
+        expect(strips()).toHaveLength(2);
+
+        feature.cleanup();
+        expect(strips()).toHaveLength(0);
+        expect(opts.intervals).toHaveLength(0);
+        expect(opts.handlers).toHaveLength(0);
+        expect(opts.ws.get('battle_updated')).toHaveLength(0);
+        expect(opts.dm.get('character_switching')).toHaveLength(0);
+    });
+
+    test('a character switch mid-battle clears everything', () => {
+        send('new_battle', {
+            players: [{ name: 'Alice', combatBuffMap: live('/buff_uniques/toughness', '/buff_types/armor', 20) }],
+            monsters: [{ combatBuffMap: live('/buff_uniques/weaken', '/buff_types/damage_taken', 15) }],
+        });
+        expect(strips()).toHaveLength(2);
+
+        for (const handler of opts.dm.get('character_switching') || []) handler();
+        expect(strips()).toHaveLength(0);
+        expect(bars.ticking).toBe(false);
+
+        // And the departing character's fight is not carried over: a tick for a
+        // slot whose name is gone lands nowhere
+        send('battle_updated', {
+            pMap: { 0: { combatBuffMap: live('/buff_uniques/toughness', '/buff_types/armor', 20) } },
+        });
+        expect(strips()).toHaveLength(0);
+    });
+
+    test('the setting being off means nothing is subscribed at all', () => {
+        feature.cleanup();
+        opts.enabled = false;
+        feature.initialize();
+        expect(opts.ws.get('new_battle') || []).toHaveLength(0);
+        expect(opts.handlers).toHaveLength(0);
+    });
+});

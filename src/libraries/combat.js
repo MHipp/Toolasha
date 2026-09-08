@@ -28,6 +28,7 @@ import { partyLuckPanel } from '../features/combat/party-luck-panel.js';
 import combatDPS from '../features/combat/combat-dps.js';
 import portraitDps from '../features/combat/portrait-dps.js';
 import combatUnitBadges from '../features/combat/combat-unit-badges.js';
+import combatUnitBuffBars from '../features/combat/combat-unit-buff-bars.js';
 import combatConsumableRunway from '../features/combat/combat-consumable-runway.js';
 import combatDpsPanel from '../features/combat/combat-dps-panel.js';
 import partyProfileButton from '../features/combat/party-profile-button.js';
@@ -134,6 +135,7 @@ toolashaRoot.Combat = {
     combatDPS,
     portraitDps,
     combatUnitBadges,
+    combatUnitBuffBars,
     combatConsumableRunway,
     combatDpsPanel,
     partyProfileButton,

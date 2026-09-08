@@ -2395,6 +2395,13 @@ export const settingsGroups = {
                 default: false,
                 help: "A small “1,240/s · 22%” on every party tile, matched by name. The narrow mini units get a compact “1,240/s” pinned to the bottom edge instead, so nothing lands on the name along their top. During a guild trial it reads the spectated trial split instead of this client's own fight. With Portrait DPS also on, the badge leaves the full cards to it and covers the mini units it never reaches — the two never state the same run twice. Off by default because the portraits are already busy",
             },
+            combatUnitBuffBars: {
+                id: 'combatUnitBuffBars',
+                label: 'Buff bars: Show the buffs and debuffs on every combat unit',
+                type: 'checkbox',
+                default: false,
+                help: "A strip of the game's own ability icons under each tile — yours, every party member's and every monster's — counting down what is on them. Read from the buff maps the server states each tick, so nothing is inferred from a cast: a debuff that was resisted never appears. Effects no ability declares (community buffs, drinks) show an abbreviation instead of an icon. Off by default because the tiles are already busy",
+            },
             combatConsumableRunway: {
                 id: 'combatConsumableRunway',
                 label: 'Consumable runway: Show how long each food and drink lasts on the battle grid',
