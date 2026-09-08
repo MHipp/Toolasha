@@ -6,6 +6,14 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Every queued action was costed as if it had the whole bag to itself
+
+The queue tooltip, the queue edit menu and the alt-readiness projection each worked out what a queued action could do against the inventory as it stands now, and then did the same for the next one, and the next — so three actions drawing on one stack of materials each reported that whole stack as theirs. Everything downstream inherited it: the "Complete at" clock ran late by whatever the earlier rows would really have consumed, and the projection that says when a character goes idle said hours later than the truth. Alchemy was the same story against the coin balance, one fee charged three times over from the same purse.
+
+The queue is now walked as a queue: each action spends what it actually performs — materials net of Artisan, upgrade pieces, catalysts, coin costs and alchemy fees — and the next one is costed against what is left. A row with nothing left to work with says so, with a zero rather than a number it cannot back. A single action on its own is unchanged: it still prices against the full bag, which is the right basis when nothing is queued ahead of it.
+
+Also here: an empty bag showed the edit menu's current action as never-ending rather than as stalled, because a real limit of zero was being read as no limit at all.
+
 ### A frame the game sent that was not text could stop the game reading it
 
 The script reads every message on its way past by replacing the property the game reads it from, and it did its own work inside that read. A binary frame reached a line that assumed text, and the error that raised came out of the game's own read rather than ours. It survived in practice only because a second, safer path screens those frames first — and that path does not exist on a page where another script has replaced the socket, which is exactly the case where two scripts are installed together. Non-text frames are now turned away before anything touches them, and nothing the script does inside that read can cost the game a message again.
