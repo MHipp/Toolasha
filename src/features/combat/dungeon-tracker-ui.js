@@ -12,7 +12,15 @@ import DungeonTrackerUIHistory from './dungeon-tracker-ui-history.js';
 import DungeonTrackerUIInteractions from './dungeon-tracker-ui-interactions.js';
 import DungeonRoiBoardUI from './dungeon-roi-board-ui.js';
 import dungeonTrackerStorage, { filterRunsForCharacter, currentCharacter } from './dungeon-tracker-storage.js';
-import { historyAvgWaveMs, historyCumulativeProfile, splitPacePercent, pacePercent, paceChip } from './dungeon-pace.js';
+import {
+    historyAvgWaveMs,
+    historyCumulativeProfile,
+    limitToAverageWindow,
+    normalizeAverageWindow,
+    splitPacePercent,
+    pacePercent,
+    paceChip,
+} from './dungeon-pace.js';
 import dataManager from '../../core/data-manager.js';
 import config from '../../core/config.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
@@ -683,17 +691,34 @@ class DungeonTrackerUI {
             runHistory = runHistory.filter((r) => r.teamKey === this.state.filterTeam);
         }
 
+        // How far back an average may look, read from the one setting and the
+        // one marker map the chat annotation reads — so the panel's average and
+        // the chat line's cannot disagree about the same history. Both default
+        // to "everything", which is what these figures have always been.
+        const averageLimits = {
+            windowSize: normalizeAverageWindow(config.getSetting('dungeonTrackerAverageWindow')),
+            baselines: (await dungeonTrackerStorage.getAverageBaselines?.()) || null,
+        };
+
         // Calculate stats from filtered runs
         if (runHistory.length > 0) {
             // Sort by timestamp (descending for most recent first)
             runHistory.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
             const durations = runHistory.map((r) => r.duration || r.totalTime || 0);
-            const total = durations.reduce((sum, d) => sum + d, 0);
+
+            // Only the average is windowed. The count, the fastest and the
+            // slowest are claims about the whole list the panel is showing and
+            // stay that way; "Avg Run" is the figure the chat line prints
+            // beside every run, and the two have to agree.
+            const averaged = limitToAverageWindow(runHistory, averageLimits).map((r) => r.duration || r.totalTime || 0);
+            const total = averaged.reduce((sum, d) => sum + d, 0);
 
             stats = {
                 totalRuns: runHistory.length,
-                avgTime: Math.floor(total / runHistory.length),
+                // Nothing inside the window is no average at all, and the
+                // header blanks to '--:--' rather than claiming a run took 0s
+                avgTime: averaged.length > 0 ? Math.floor(total / averaged.length) : 0,
                 fastestTime: Math.min(...durations),
                 slowestTime: Math.max(...durations),
             };
@@ -707,8 +732,13 @@ class DungeonTrackerUI {
 
         // Pace against stored history — always your own runs for this dungeon,
         // unfiltered by the panel's history filters, since "vs your avg" is a
-        // claim about you and this dungeon whatever the list below is showing
-        this.updatePaceChip(run, allRuns);
+        // claim about you and this dungeon whatever the list below is showing.
+        //
+        // The average window and the reset marker are not history filters
+        // though: they are what "your avg" now means, the same redefinition the
+        // chat line and the header above already honour, so pace honours them
+        // too rather than measuring against a lifetime nobody else is quoting.
+        this.updatePaceChip(run, allRuns, averageLimits);
 
         // Update header stats (always visible)
         const headerLast = this.container.querySelector('#mwi-dt-header-last');
@@ -761,8 +791,10 @@ class DungeonTrackerUI {
      *
      * @param {Object} run - Current run state, from `getCurrentRun`
      * @param {Array<Object>} allRuns - Every stored run, unfiltered
+     * @param {Object} [averageLimits] - How far "your avg" may look back:
+     *   `windowSize` runs, starting after the `baselines` marker
      */
-    updatePaceChip(run, allRuns) {
+    updatePaceChip(run, allRuns, averageLimits = {}) {
         const paceElement = this.container?.querySelector('#mwi-dt-pace');
         if (!paceElement) return;
 
@@ -771,7 +803,13 @@ class DungeonTrackerUI {
         // timed at wave 50 would be compared against the first two of a whole run.
         if (config.getSetting('dungeonPace') && !run.joinedMidRun) {
             const mine = filterRunsForCharacter(allRuns, 'mine', currentCharacter());
-            const identity = { dungeonName: run.dungeonName, tier: run.tier, maxWaves: run.maxWaves };
+            const identity = {
+                dungeonName: run.dungeonName,
+                tier: run.tier,
+                maxWaves: run.maxWaves,
+                windowSize: averageLimits.windowSize,
+                baselines: averageLimits.baselines,
+            };
 
             // Split time first: cumulative so far against the stored cumulative
             // at this wave, honest at any point in a run. The plain per-wave

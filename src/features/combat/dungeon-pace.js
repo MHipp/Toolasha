@@ -31,6 +31,116 @@ export const MIN_WAVES_FOR_PACE = 3;
 export const STATED_AVG_SANITY_RATIO = 3;
 
 /**
+ * The key a stored run's reset marker is filed under.
+ *
+ * Built exactly as the chat annotations build theirs - team and dungeon
+ * together - so a reset of one team's average for a dungeon leaves another
+ * team's alone. Keying off each run rather than off the live run is what lets
+ * a mixed list be filtered honestly: every run is judged by its own marker.
+ *
+ * @param {Object} run - A stored run
+ * @returns {string} `teamKey::dungeonName`
+ */
+export function averageBaselineKey(run) {
+    return `${run?.teamKey ?? ''}::${run?.dungeonName ?? ''}`;
+}
+
+/**
+ * The `dungeonTrackerAverageWindow` setting as a window size.
+ *
+ * 0 - the shipped default - means every run there has ever been, which is the
+ * lifetime average these figures have always been. The same reading the chat
+ * annotations take, so the two surfaces cannot disagree about what the setting
+ * says.
+ *
+ * @param {*} raw - The setting's value
+ * @returns {number} A positive window, or 0 for "all runs"
+ */
+export function normalizeAverageWindow(raw) {
+    const size = Math.floor(Number(raw));
+    return Number.isFinite(size) && size > 0 ? size : 0;
+}
+
+/**
+ * A stored run's timestamp in epoch milliseconds, or NaN when it has none.
+ *
+ * @param {Object} run - A stored run
+ * @returns {number}
+ */
+function runTimeMs(run) {
+    return new Date(run?.timestamp).getTime();
+}
+
+/**
+ * Narrow a run list to what the average is allowed to cover.
+ *
+ * Two limits, and they compose the way the chat annotations compose them: the
+ * marker floors the list, the window then caps how far back it reaches. Input
+ * order is preserved - callers sort for their own display and must not be
+ * reordered underneath.
+ *
+ * With no window and no marker this hands back the list it was given, so the
+ * default configuration averages exactly what it always did.
+ *
+ * @param {Array<Object>} runs - Stored runs
+ * @param {Object} [limits] - How far the average may look
+ * @param {number} [limits.windowSize] - Runs to look back over, 0 for all
+ * @param {Object|null} [limits.baselines] - `teamKey::dungeonName` -> epoch ms
+ *   the average starts after
+ * @returns {Array<Object>} The runs that survive both limits
+ */
+export function limitToAverageWindow(runs, { windowSize = 0, baselines = null } = {}) {
+    const list = Array.isArray(runs) ? runs : [];
+    const markers = baselines && typeof baselines === 'object' ? baselines : null;
+
+    // A run at or before its own marker is one the user asked to leave behind,
+    // however far the window would otherwise reach. A run with no readable
+    // timestamp cannot be placed against a marker, so it stays.
+    const kept = markers
+        ? list.filter((run) => {
+              const at = Number(markers[averageBaselineKey(run)]) || 0;
+              if (!(at > 0)) return true;
+              const ts = runTimeMs(run);
+              return !Number.isFinite(ts) || ts > at;
+          })
+        : list;
+
+    if (!(windowSize > 0)) return kept;
+
+    // The N most recent by timestamp, handed back in the caller's order. A run
+    // with no timestamp has no place in that ordering: it is left in rather
+    // than silently dropped, and does not consume one of the N slots.
+    const dated = kept.map((run, index) => ({ index, ts: runTimeMs(run) })).filter((e) => Number.isFinite(e.ts));
+    if (dated.length <= windowSize) return kept;
+    dated.sort((a, b) => b.ts - a.ts || b.index - a.index);
+    const inWindow = new Set(dated.slice(0, windowSize).map((e) => e.index));
+    return kept.filter((run, index) => inWindow.has(index) || !Number.isFinite(runTimeMs(run)));
+}
+
+/**
+ * The stored runs of one dungeon, already narrowed by the average's limits.
+ *
+ * Dungeon and tier first, then the window - so "the last N runs" counts runs
+ * of *this* dungeon, as the chat line's window does, rather than the last N
+ * runs of anything.
+ *
+ * @param {Array<Object>} runs - Stored runs, already narrowed to the character
+ * @param {Object} current - The live run's identity and the average's limits
+ * @returns {Array<Object>} Matching runs, in the order they arrived
+ */
+function runsForAverage(runs, { dungeonName, tier, windowSize, baselines }) {
+    const matching = [];
+    for (const run of runs || []) {
+        if (!run || run.dungeonName !== dungeonName) continue;
+        if (tier !== null && tier !== undefined && run.tier !== null && run.tier !== undefined && run.tier !== tier) {
+            continue;
+        }
+        matching.push(run);
+    }
+    return limitToAverageWindow(matching, { windowSize, baselines });
+}
+
+/**
  * A stored run's average wave time.
  *
  * @param {Object} run - A stored run
@@ -67,20 +177,17 @@ export function runAvgWaveMs(run, maxWaves) {
  * @param {string|null} current.dungeonName - Which dungeon
  * @param {number|null} current.tier - Its tier, where known
  * @param {number|null} current.maxWaves - Its wave count
+ * @param {number} [current.windowSize] - Runs to look back over, 0 for all
+ * @param {Object|null} [current.baselines] - Reset markers, as stored
  * @returns {number|null} Milliseconds per wave, or null without usable history
  */
-export function historyAvgWaveMs(runs, { dungeonName, tier, maxWaves } = {}) {
+export function historyAvgWaveMs(runs, { dungeonName, tier, maxWaves, windowSize = 0, baselines = null } = {}) {
     // 'Unknown' is what a run gets when nothing named it, and matching on it
     // would average unrelated dungeons together
     if (!dungeonName || dungeonName === 'Unknown') return null;
 
     const perWave = [];
-    for (const run of runs || []) {
-        if (!run || run.dungeonName !== dungeonName) continue;
-        if (tier !== null && tier !== undefined && run.tier !== null && run.tier !== undefined && run.tier !== tier) {
-            continue;
-        }
-
+    for (const run of runsForAverage(runs, { dungeonName, tier, windowSize, baselines })) {
         const avg = runAvgWaveMs(run, maxWaves);
         if (avg !== null) perWave.push(avg);
     }
@@ -137,20 +244,21 @@ function saneWaveTimes(run, maxWaves) {
  * @param {string|null} current.dungeonName - Which dungeon
  * @param {number|null} current.tier - Its tier, where known
  * @param {number|null} current.maxWaves - Its wave count
+ * @param {number} [current.windowSize] - Runs to look back over, 0 for all
+ * @param {Object|null} [current.baselines] - Reset markers, as stored
  * @returns {Array<number>|null} `profile[k]` is the mean milliseconds elapsed
  *   after wave k (1-based; index 0 is unused). Null without any run whose
  *   per-wave times are usable — chat-backfilled runs carry none.
  */
-export function historyCumulativeProfile(runs, { dungeonName, tier, maxWaves } = {}) {
+export function historyCumulativeProfile(runs, { dungeonName, tier, maxWaves, windowSize = 0, baselines = null } = {}) {
     if (!dungeonName || dungeonName === 'Unknown') return null;
     if (!Number.isFinite(maxWaves) || maxWaves <= 0) return null;
 
     const cumulatives = [];
-    for (const run of runs || []) {
-        if (!run || run.dungeonName !== dungeonName) continue;
-        if (tier !== null && tier !== undefined && run.tier !== null && run.tier !== undefined && run.tier !== tier) {
-            continue;
-        }
+    // The window counts runs, not usable runs: it is applied first, and a run
+    // inside it whose per-wave times are unusable contributes nothing - the
+    // same as any other run the profile cannot read.
+    for (const run of runsForAverage(runs, { dungeonName, tier, windowSize, baselines })) {
         if (!saneWaveTimes(run, maxWaves)) continue;
 
         let elapsed = 0;

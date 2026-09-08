@@ -306,3 +306,95 @@ describe('the recovery plausibility bound', () => {
         ).toBe(false);
     });
 });
+
+describe('the average window and the reset marker', () => {
+    const DAY = 24 * 60 * 60 * 1000;
+
+    /** A stored run as chat backfill writes one, with a team and a timestamp */
+    const stored = (durationMs, dayIndex) => ({
+        dungeonName: 'Chimerical Den',
+        tier: null,
+        teamKey: 'Marketcow,Pal',
+        duration: durationMs,
+        timestamp: new Date(dayIndex * DAY).toISOString(),
+    });
+
+    // Five old runs then three recent ones, so the trailing window and the
+    // lifetime average disagree in a known direction
+    const slowThenFast = [
+        stored(500_000, 1),
+        stored(500_000, 2),
+        stored(500_000, 3),
+        stored(500_000, 4),
+        stored(500_000, 5),
+        stored(250_000, 6),
+        stored(250_000, 7),
+        stored(250_000, 8),
+    ];
+    const fastThenSlow = slowThenFast.map((run, i) => stored(i < 5 ? 250_000 : 500_000, i + 1));
+
+    const identity = { dungeonName: 'Chimerical Den', tier: null, maxWaves: MAX_WAVES };
+
+    test('the window averages only the last N runs', () => {
+        expect(historyAvgWaveMs(slowThenFast, identity)).toBe(8_125);
+        expect(historyAvgWaveMs(slowThenFast, { ...identity, windowSize: 3 })).toBe(5_000);
+    });
+
+    test('a run slower than the recent window but faster than all time reads as behind', () => {
+        const lifetime = historyAvgWaveMs(slowThenFast, identity);
+        const windowed = historyAvgWaveMs(slowThenFast, { ...identity, windowSize: 3 });
+
+        expect(pacePercent(6_000, lifetime, 10)).toBeGreaterThan(0);
+        expect(pacePercent(6_000, windowed, 10)).toBeLessThan(0);
+    });
+
+    test('and the converse, where the recent runs are the slow ones', () => {
+        const lifetime = historyAvgWaveMs(fastThenSlow, identity);
+        const windowed = historyAvgWaveMs(fastThenSlow, { ...identity, windowSize: 3 });
+
+        expect(pacePercent(8_000, lifetime, 10)).toBeLessThan(0);
+        expect(pacePercent(8_000, windowed, 10)).toBeGreaterThan(0);
+    });
+
+    test('the marker drops every run at or before it, for that team and dungeon', () => {
+        const baselines = { 'Marketcow,Pal::Chimerical Den': 5 * DAY };
+        expect(historyAvgWaveMs(slowThenFast, { ...identity, baselines })).toBe(5_000);
+    });
+
+    test('another team’s marker leaves this team’s runs alone', () => {
+        const baselines = { 'Someone,Else::Chimerical Den': 8 * DAY };
+        expect(historyAvgWaveMs(slowThenFast, { ...identity, baselines })).toBe(8_125);
+    });
+
+    test('a window with nothing left in it is no pace at all, not a pace of zero', () => {
+        const baselines = { 'Marketcow,Pal::Chimerical Den': 9 * DAY };
+        const windowed = historyAvgWaveMs(slowThenFast, { ...identity, windowSize: 3, baselines });
+
+        expect(windowed).toBeNull();
+        expect(pacePercent(6_000, windowed, 10)).toBeNull();
+        expect(paceChip(pacePercent(6_000, windowed, 10))).toBeNull();
+    });
+
+    test('the split profile honours the same two limits', () => {
+        const waved = (perWave, dayIndex) => ({
+            ...stored(perWave * MAX_WAVES, dayIndex),
+            waveTimes: new Array(MAX_WAVES).fill(perWave),
+        });
+        const runs = [waved(10_000, 1), waved(10_000, 2), waved(5_000, 3)];
+
+        expect(historyCumulativeProfile(runs, identity)[10]).toBe(83_333.33333333333);
+        expect(historyCumulativeProfile(runs, { ...identity, windowSize: 1 })[10]).toBe(50_000);
+        expect(
+            historyCumulativeProfile(runs, { ...identity, baselines: { 'Marketcow,Pal::Chimerical Den': 2 * DAY } })[10]
+        ).toBe(50_000);
+    });
+
+    test('with neither limit set nothing changes at all', () => {
+        expect(historyAvgWaveMs(slowThenFast, { ...identity, windowSize: 0, baselines: {} })).toBe(
+            historyAvgWaveMs(slowThenFast, identity)
+        );
+        expect(historyCumulativeProfile(slowThenFast, { ...identity, windowSize: 0, baselines: {} })).toBe(
+            historyCumulativeProfile(slowThenFast, identity)
+        );
+    });
+});

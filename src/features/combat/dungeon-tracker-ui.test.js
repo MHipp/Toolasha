@@ -21,7 +21,9 @@ import { describe, test, expect, beforeEach, vi } from 'vitest';
 const world = vi.hoisted(() => ({
     currentRun: null,
     pending: null,
-    settings: { dungeonTrackerUI: true, dungeonPace: true },
+    settings: { dungeonTrackerUI: true, dungeonPace: true, dungeonTrackerAverageWindow: 0 },
+    runs: [],
+    baselines: {},
 }));
 
 vi.mock('./dungeon-tracker.js', () => ({
@@ -67,19 +69,13 @@ vi.mock('./dungeon-roi-board-ui.js', stubModule);
 
 vi.mock('./dungeon-tracker-storage.js', () => ({
     default: {
-        getAllRuns: vi.fn(async () => []),
+        getAllRuns: vi.fn(async () => world.runs),
+        getAverageBaselines: vi.fn(async () => world.baselines),
         getStats: vi.fn(async () => ({ totalRuns: 0, avgTime: 0, fastestTime: 0, slowestTime: 0, avgWaveTime: 0 })),
         getDungeonInfo: () => null,
     },
     filterRunsForCharacter: (runs) => runs,
     currentCharacter: () => ({ id: 'market123', name: 'Marketcow' }),
-}));
-vi.mock('./dungeon-pace.js', () => ({
-    historyAvgWaveMs: () => null,
-    historyCumulativeProfile: () => [],
-    splitPacePercent: () => null,
-    pacePercent: () => null,
-    paceChip: () => null,
 }));
 vi.mock('../../core/data-manager.js', () => ({
     default: {
@@ -130,6 +126,9 @@ beforeEach(async () => {
     document.body.innerHTML = '';
     world.currentRun = null;
     world.pending = null;
+    world.runs = [];
+    world.baselines = {};
+    world.settings.dungeonTrackerAverageWindow = 0;
     ui.isInitialized = false;
     ui.container = null;
     if (ui.updateInterval) clearInterval(ui.updateInterval);
@@ -205,5 +204,86 @@ describe('a run joined part-way through', () => {
         );
 
         expect(ui.container.querySelector('#mwi-dt-pace').style.display).toBe('none');
+    });
+});
+
+describe('the average window reaches the panel too', () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const STATS_KEY = 'Marketcow,Pal::Pirate Cove';
+
+    /** A stored run of the live run's dungeon, chat-style: duration, no waves */
+    const storedRun = (durationMs, dayIndex) => ({
+        dungeonName: 'Pirate Cove',
+        tier: 1,
+        teamKey: 'Marketcow,Pal',
+        duration: durationMs,
+        timestamp: new Date(dayIndex * DAY).toISOString(),
+    });
+
+    // Five slow runs, then three fast ones: a lifetime average of 400_000ms
+    // and a last-three average of 250_000ms, which disagree about a run of 300s
+    const history = [
+        storedRun(500_000, 1),
+        storedRun(500_000, 2),
+        storedRun(500_000, 3),
+        storedRun(500_000, 4),
+        storedRun(500_000, 5),
+        storedRun(250_000, 6),
+        storedRun(250_000, 7),
+        storedRun(250_000, 8),
+    ];
+
+    /** A live run far enough in to have a pace, at a given wave average */
+    const paced = (avgWaveMs) =>
+        run({ wavesCompleted: 10, avgWaveTime: avgWaveMs, waveTimes: new Array(10).fill(avgWaveMs) });
+
+    test('Avg Run is the lifetime figure with the setting at its default', async () => {
+        world.runs = history;
+        await ui.update(paced(6_000), true);
+
+        // (5 × 500_000 + 3 × 250_000) / 8 = 406_250ms
+        expect(text('#mwi-dt-header-avg')).toBe('06:46');
+        expect(text('#mwi-dt-avg-time')).toBe('06:46');
+    });
+
+    test('a window pulls Avg Run onto the last N runs, as the chat line reports them', async () => {
+        world.runs = history;
+        world.settings.dungeonTrackerAverageWindow = 3;
+        await ui.update(paced(6_000), true);
+
+        // The same three runs the chat line's trailing average covers: 250_000ms
+        expect(text('#mwi-dt-header-avg')).toBe('04:10');
+        expect(text('#mwi-dt-avg-time')).toBe('04:10');
+        // The run count still describes the whole history
+        expect(text('#mwi-dt-header-runs')).toBe('8');
+    });
+
+    test('a reset marker excludes the runs before it from Avg Run', async () => {
+        world.runs = history;
+        world.baselines = { [STATS_KEY]: 5 * DAY };
+        await ui.update(paced(6_000), true);
+
+        expect(text('#mwi-dt-header-avg')).toBe('04:10');
+    });
+
+    test('the pace chip judges the run against the window, not the lifetime average', async () => {
+        world.runs = history;
+        // 6_000ms a wave over 65 waves is 390_000ms — faster than the lifetime
+        // average and slower than the last three runs
+        await ui.update(paced(6_000), true);
+        expect(ui.container.querySelector('#mwi-dt-pace').textContent).toContain('+');
+
+        world.settings.dungeonTrackerAverageWindow = 3;
+        await ui.update(paced(6_000), true);
+        expect(ui.container.querySelector('#mwi-dt-pace').textContent).toContain('−');
+    });
+
+    test('a marker that leaves nothing behind draws no chip and blanks Avg Run', async () => {
+        world.runs = history;
+        world.baselines = { [STATS_KEY]: 9 * DAY };
+        await ui.update(paced(6_000), true);
+
+        expect(ui.container.querySelector('#mwi-dt-pace').style.display).toBe('none');
+        expect(text('#mwi-dt-header-avg')).toBe('--:--');
     });
 });
