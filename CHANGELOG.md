@@ -6,6 +6,20 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### A queued action now counts what it makes, and the Iron Bell panel stops quoting percentages a hundred times over
+
+Queued actions already spent what they used; now they also credit what they produce, so a queue that forages, decomposes and then coinifies the essence is costed as the chain it is rather than three strangers. A crafted intermediate is credited exactly. A gathered or alchemical yield can only ever be an expectation, so those figures carry a `~` and everything downstream of one carries it too — a projected quantity is never presented as stock in hand. An endless producer credits nothing, since it never finishes; one that merely repeats until its materials run out credits every action it performs. The alt-readiness projection takes only the exact half, on the same argument it already refuses to guess at enhancing.
+
+The Iron Bell Farming panel quoted every percentage a hundred times too large — a loop split reading `2,881%` where it meant 29%, and the decompose and coinify success rates alongside it. The plan checklist folds away once its stages are done, keeping its summary in the header. And the panel will now size a batch for you: enter a number of hours or a number of cowbells and it works out the three action counts, balanced so no step asks for more than the step before it produced, then walks you through queueing them — opening each action with the count already typed into the game's own box. It never presses; one click stays one game action, and an alchemy step waits until you have put the right item in the slot.
+
+### The dungeon average can follow recent runs instead of every run ever
+
+A change that makes your runs a minute faster used to take hundreds more runs to show up, because the party-chat average covered every run on record. It can now cover the last N instead, labelled with what it counted — `Avg last 20` — and a button in the Run History header starts a fresh average from this moment without deleting anything. Both are per team and dungeon, so one party's reset leaves another alone, and the marker travels between your devices. Left alone, the average is exactly what it was.
+
+### Lab Simulator honours the guild's own shrine levels
+
+Lab Sim's Upgrade tab gained the Guild Shrine "Guild-allowed only" option the combat simulator has, so it stops ranking shrine levels your guild has not built and cannot sell. The flag reached the panel but not the labyrinth analyses behind it, which is why the table had been uncapped whatever the box said.
+
 ### Every queued action was costed as if it had the whole bag to itself
 
 The queue tooltip, the queue edit menu and the alt-readiness projection each worked out what a queued action could do against the inventory as it stands now, and then did the same for the next one, and the next — so three actions drawing on one stack of materials each reported that whole stack as theirs. Everything downstream inherited it: the "Complete at" clock ran late by whatever the earlier rows would really have consumed, and the projection that says when a character goes idle said hours later than the truth. Alchemy was the same story against the coin balance, one fee charged three times over from the same purse.

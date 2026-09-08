@@ -2690,7 +2690,16 @@ class ActionTimeDisplay {
                     }
 
                     // The current action runs before every queued row, so its materials are
-                    // gone by the time those rows are costed
+                    // gone by the time those rows are costed.
+                    //
+                    // No `isTrulyInfinite` is passed, deliberately. The flag the helper
+                    // wants means "endless AND unbounded by materials"; the `isInfinite`
+                    // in scope here only means "queued with no count", which is also true
+                    // of a Repeat-∞ action that materials cap at 27k actions — and that
+                    // one must spend. Passing it would silence exactly the case that has
+                    // to be charged. `count` is 0 for an action with no count, so the
+                    // helper's own `performed <= 0` guard is what stops the endless case,
+                    // and a material-limited one still spends what it performs.
                     this.deductQueueActionMaterials(inventoryLookup, actionDetails, currentAction, { count });
 
                     // Store action for profit calculation (done async after UI renders)
