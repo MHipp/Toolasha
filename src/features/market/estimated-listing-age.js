@@ -40,6 +40,33 @@ const LISTINGS_BASE = 'marketListingTimestamps';
 const ANCHORS_KEY = 'marketListingAnchors';
 
 /**
+ * Per-listing deletion tombstones, scoped like the log they speak for.
+ *
+ * A deletion is the one fact a growth-only record cannot carry: the log's fold
+ * is a union by id, so a row deleted here and pushed came straight back on the
+ * next pull from a peer that still had it — and "Clear History", which the
+ * dialog calls permanent, came back with it. The tombstones are a second key
+ * rather than a field on the log because the log is a bare array that the
+ * history viewer, the CSV export and the backup importer all read as one.
+ *
+ * Spelled apart from {@link LISTINGS_BASE} and {@link ANCHORS_KEY} so no
+ * scoped-base matcher can reach across from one to another.
+ */
+const GRAVES_BASE = 'marketListingGraves';
+
+/**
+ * How long a listing deletion is remembered.
+ *
+ * Long enough to outlive any plausible gap between two devices syncing, short
+ * enough that the map does not grow without bound. Same figure, for the same
+ * reason, as the custom inventory tabs' tombstones.
+ */
+const TOMBSTONE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Cap on remembered deletions, newest kept — a fifth of the log's own cap */
+const MAX_LISTING_TOMBSTONES = 1000;
+
+/**
  * Cap on the shared anchor pool.
  *
  * The estimator interpolates/regresses over id→time, so what it benefits from
@@ -142,6 +169,101 @@ function mergeListingLogs(base, fresh) {
         if (listing && typeof listing.id === 'number') byId.set(listing.id, listing);
     }
     return [...byId.values()].sort((a, b) => a.id - b.id);
+}
+
+/**
+ * The tombstone record's two halves, absent ones included.
+ *
+ * @param {*} record - A stored or downloaded tombstone record
+ * @returns {{removed: Object<string, number>, clearedThrough: number}}
+ */
+function gravesOf(record) {
+    const removed = record?.removed;
+    return {
+        removed: removed && typeof removed === 'object' ? removed : {},
+        clearedThrough: Number(record?.clearedThrough) || 0,
+    };
+}
+
+/**
+ * Two tombstone records folded into one: the later deletion wins per id, the
+ * higher clear watermark stands, and the map is then aged and capped.
+ *
+ * Unconditional tombstone-wins is safe here in a way it is not for a curated
+ * list: listing ids are server-minted, dense and never reused, so there is no
+ * "deleted, then re-created under the same id" for a stale tombstone to eat.
+ * A tombstone therefore needs no stamp comparison against the log — only an
+ * age, so the map does not grow for ever.
+ *
+ * @param {*} local - This device's record
+ * @param {*} incoming - The downloaded record
+ * @param {number} [now] - Clock, injectable for tests
+ * @returns {{removed: Object<string, number>, clearedThrough: number}} The union
+ */
+function mergeListingGraves(local, incoming, now = Date.now()) {
+    const ours = gravesOf(local);
+    const theirs = gravesOf(incoming);
+
+    const removed = {};
+    for (const source of [ours.removed, theirs.removed]) {
+        for (const [id, at] of Object.entries(source)) {
+            const when = Number(at) || 0;
+            if (now - when >= TOMBSTONE_MAX_AGE_MS) continue;
+            if (!(id in removed) || when > removed[id]) removed[id] = when;
+        }
+    }
+
+    const ids = Object.keys(removed);
+    let capped = removed;
+    if (ids.length > MAX_LISTING_TOMBSTONES) {
+        ids.sort((a, b) => removed[b] - removed[a]);
+        capped = {};
+        for (const id of ids.slice(0, MAX_LISTING_TOMBSTONES)) capped[id] = removed[id];
+    }
+
+    return { removed: capped, clearedThrough: Math.max(ours.clearedThrough, theirs.clearedThrough) };
+}
+
+/**
+ * Drop the listings their tombstones say are gone.
+ *
+ * Two classes of tombstone, judged apart:
+ *
+ * - **Deliberate** — an id at or below `clearedThrough`, the watermark a
+ *   "Clear History" writes. The user was shown a dialog naming the whole log
+ *   and told it cannot be undone, so these are applied whatever their number;
+ *   the watermark travels with the record, which is what makes the clear
+ *   survive a pull from a peer that still holds every row.
+ * - **Suspect** — anything above it, which is single-row deletes and whatever
+ *   a peer or a mangled record might assert. A fold must never empty the log at
+ *   a stroke on that evidence, so an application that would drop more than half
+ *   of what is left — and more than two rows, since a two-row log has no
+ *   majority worth protecting — is refused whole, the rows kept and the
+ *   tombstones held. They apply again once the log has grown past them.
+ *
+ * @param {Array<Object>} listings - The log
+ * @param {*} record - The tombstone record, as {@link mergeListingGraves} folds it
+ * @returns {Array<Object>} The survivors — the same array when nothing went
+ */
+function applyListingGraves(listings, record) {
+    const list = Array.isArray(listings) ? listings : [];
+    const { removed, clearedThrough } = gravesOf(record);
+    if (Object.keys(removed).length === 0) return list;
+
+    const buried = (listing) => String(listing?.id) in removed;
+    const afterClear = list.filter((listing) => !(buried(listing) && Number(listing?.id) <= clearedThrough));
+    const kept = afterClear.filter((listing) => !buried(listing));
+    const dropped = afterClear.length - kept.length;
+    if (dropped === 0) return afterClear.length === list.length ? list : afterClear;
+
+    if (dropped > 2 && dropped * 2 > afterClear.length) {
+        console.warn(
+            `[EstimatedListingAge] Refusing a fold that would delete ${dropped} of ${afterClear.length} listings ` +
+                `at once; keeping every row and holding ${Object.keys(removed).length} tombstone(s) back un-applied.`
+        );
+        return afterClear.length === list.length ? list : afterClear;
+    }
+    return kept;
 }
 
 /**
@@ -319,6 +441,8 @@ function applyListingRetention(listings) {
 class EstimatedListingAge {
     constructor() {
         this.knownListings = []; // Array of {id, timestamp, createdTimestamp, enhancementLevel, ...} sorted by id
+        /** This character's deletion record; see {@link GRAVES_BASE} */
+        this.listingGraves = { removed: {}, clearedThrough: 0 };
         this.anchors = []; // Shared {id, timestamp} calibration points, sorted by id
         this.anchorsLoaded = false;
         this.estimationPoints = []; // knownListings ∪ anchors, sorted by id
@@ -384,6 +508,49 @@ class EstimatedListingAge {
      */
     _listingsKey(owner) {
         return `${LISTINGS_BASE}_${owner.charId}`;
+    }
+
+    /**
+     * @param {{charId: string}} owner - From {@link _owner}
+     * @returns {string} The scoped tombstone key beside the log's
+     */
+    _gravesKey(owner) {
+        return `${GRAVES_BASE}_${owner.charId}`;
+    }
+
+    /**
+     * Remember that these listing ids were deleted, and persist the map.
+     *
+     * Written as a read-merge-write through the same fold a pull uses, so a
+     * second tab's deletions are not lost and the age and cap apply on every
+     * write rather than only on a pull.
+     * @param {Array<number>} ids - Listing ids just deleted
+     * @param {{generation: number, charId: string}} owner - From {@link _owner}
+     * @returns {Promise<boolean>} Whether a write landed
+     */
+    async _recordGraves(ids, owner, { clearAll = false } = {}) {
+        if (!ids.length) return false;
+        const now = Date.now();
+        const fresh = { removed: {}, clearedThrough: 0 };
+        for (const id of ids) fresh.removed[String(id)] = now;
+        // The watermark is the top of what was cleared, so a peer's later
+        // listings — which carry higher ids — are never covered by it
+        if (clearAll) fresh.clearedThrough = Math.max(...ids.map((id) => Number(id) || 0));
+
+        const key = this._gravesKey(owner);
+        try {
+            const probe = await storage.tryGet(key, LISTINGS_STORE);
+            if (probe === null) {
+                console.warn('[EstimatedListingAge] Deletions not recorded: storage could not be read first');
+                return false;
+            }
+            if (!this._ownsMemory(owner)) return false;
+            this.listingGraves = mergeListingGraves(probe.found ? probe.value : null, fresh, now);
+            return await storage.set(key, this.listingGraves, LISTINGS_STORE, true);
+        } catch (error) {
+            console.error('[EstimatedListingAge] Failed to record listing deletions:', error);
+            return false;
+        }
     }
 
     /**
@@ -526,9 +693,17 @@ class EstimatedListingAge {
                 if (!this._ownsMemory(owner)) return;
             }
 
+            // Deletions, read beside the log: a pull unions the downloaded log
+            // into this key, so rows this device deleted are back in `stored`
+            // and the tombstones are the only thing that says so.
+            const gravesProbe = await storage.tryGet(this._gravesKey(owner), LISTINGS_STORE);
+            if (!this._ownsMemory(owner)) return;
+            if (gravesProbe !== null) this.listingGraves = mergeListingGraves(gravesProbe.value, null);
+
             // Load all historical data (no time-based filtering). Entries without
             // an itemHrid are anchors, which now live in their own global key.
-            const personal = (Array.isArray(stored) ? stored : []).filter((entry) => entry && entry.itemHrid);
+            const personalWithGraves = (Array.isArray(stored) ? stored : []).filter((entry) => entry && entry.itemHrid);
+            const personal = applyListingGraves(personalWithGraves, this.listingGraves);
             // Stored is the truth, but anything recorded in memory that storage
             // has not seen yet (another tab's write landed in between, or a save
             // is still in flight) is kept rather than dropped on the floor
@@ -538,6 +713,9 @@ class EstimatedListingAge {
             // An array adopted from before the split still carries its anchor
             // half; drop it now rather than re-filtering it on every read. A log
             // that retention just trimmed is written back for the same reason
+            // A shorter `personal` than `stored` also means a resurrected row was
+            // just pruned, and the prune has to reach the key or the next pull
+            // pushes it back out
             if (personal.length !== stored.length || this.knownListings.length !== merged.length) {
                 await this.saveHistoricalData({ owner });
             }
@@ -734,7 +912,12 @@ class EstimatedListingAge {
                         return false;
                     }
                     const stored = probe.found && Array.isArray(probe.value) ? probe.value : [];
-                    const personal = stored.filter((entry) => entry && entry.itemHrid);
+                    // Tombstones applied to the stored side too, or a row deleted
+                    // in this session would be folded straight back off disk
+                    const personal = applyListingGraves(
+                        stored.filter((entry) => entry && entry.itemHrid),
+                        this.listingGraves
+                    );
                     // Retention again over the fold, or rows the log had already
                     // let go of would come back from storage on every save
                     const merged = applyListingRetention(this._mergeListings(personal, this.knownListings));
@@ -772,6 +955,10 @@ class EstimatedListingAge {
         if (!this._ownsMemory(owner)) return;
         this.knownListings = this.knownListings.filter((l) => l.id !== listingId);
         this.rebuildEstimationPoints();
+        // Before the write, so a pull landing between the two still finds the
+        // tombstone rather than only the shortened log
+        await this._recordGraves([listingId], owner);
+        if (!this._ownsMemory(owner)) return;
         await this.saveHistoricalData({ overwrite: true, owner });
     }
 
@@ -796,9 +983,16 @@ class EstimatedListingAge {
      * merge-on-write that every other save goes through.
      */
     async clearPersonalListings() {
+        const owner = this._owner();
+        const ids = this.knownListings.map((listing) => listing.id).filter((id) => typeof id === 'number');
         this.knownListings = [];
         this.rebuildEstimationPoints();
-        await this.saveHistoricalData({ overwrite: true });
+        // The dialog calls this permanent, so it has to outlive a pull: without
+        // a tombstone per row the log's union fold takes every one of them back
+        // from the first peer that still holds them
+        await this._recordGraves(ids, owner, { clearAll: true });
+        if (!this._ownsMemory(owner)) return;
+        await this.saveHistoricalData({ overwrite: true, owner });
     }
 
     /**
@@ -2037,6 +2231,8 @@ class EstimatedListingAge {
             // the emptiness under whoever's key is current.
             this._generation += 1;
             this.knownListings = [];
+            // Scoped like the log, so the arriving character must not inherit them
+            this.listingGraves = { removed: {}, clearedThrough: 0 };
             this.estimationPoints = [];
             this.orderBooksCache = {};
             this.currentItemHrid = null;
@@ -2075,6 +2271,18 @@ registerSyncMerge({
     label: 'Market listing anchors',
 });
 
+/*
+ * The tombstones beside the log. Without their own claim a pull would write the
+ * downloaded map over this device's, losing the deletions it had recorded — the
+ * same whole-key overwrite the log itself is registered against.
+ */
+registerSyncMerge({
+    store: LISTINGS_STORE,
+    base: GRAVES_BASE,
+    merge: (local, incoming) => mergeListingGraves(local, incoming),
+    label: 'Market listing deletions',
+});
+
 export default estimatedListingAge;
 export {
     ANCHOR_POOL_MAX,
@@ -2087,6 +2295,11 @@ export {
     LISTING_SAVE_DEBOUNCE_MS,
     ORDER_BOOK_REPAINT_MS,
     mergeListingLogs,
+    mergeListingGraves,
+    applyListingGraves,
+    gravesOf,
+    TOMBSTONE_MAX_AGE_MS,
+    MAX_LISTING_TOMBSTONES,
     matchesExpiredRow,
     matchesBeyondTopRow,
 };

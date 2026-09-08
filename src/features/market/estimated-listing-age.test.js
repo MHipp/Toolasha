@@ -108,6 +108,10 @@ const {
     ORDER_BOOK_REPAINT_MS,
     matchesExpiredRow,
     matchesBeyondTopRow,
+    mergeListingGraves,
+    applyListingGraves,
+    TOMBSTONE_MAX_AGE_MS,
+    MAX_LISTING_TOMBSTONES,
 } = await import('./estimated-listing-age.js');
 const { _resetAdoptionCache } = await import('../../utils/character-key.js');
 const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
@@ -141,6 +145,7 @@ beforeEach(() => {
     estimatedListingAge.anchors = [];
     estimatedListingAge.estimationPoints = [];
     estimatedListingAge.anchorsLoaded = false;
+    estimatedListingAge.listingGraves = { removed: {}, clearedThrough: 0 };
     estimatedListingAge._saveChain = null;
     // A save left waiting by the last test must not land in this one
     clearTimeout(estimatedListingAge._saveTimer);
@@ -1596,5 +1601,175 @@ describe('cachedTopOfBook', () => {
         };
         expect(estimatedListingAge.cachedTopOfBook('/items/coal', 0, true)).toBeNull();
         expect(estimatedListingAge.cachedTopOfBook('/items/coal', 0, false)).toBeNull();
+    });
+});
+
+/**
+ * A deleted listing used to come straight back on the next pull: the log's fold
+ * is a union by id, only the pulling device merges, so a peer that still held
+ * the row pushed it back and the deletion was undone in both directions.
+ */
+describe('deleted listings stay deleted across a sync pull', () => {
+    const GRAVES_KEY = 'marketListingGraves_market123';
+    const row = (id, timestamp) => ({ id, timestamp, itemHrid: '/items/coin', status: 'sold' });
+
+    /** What a pull leaves at a key: this device's copy folded under the peer's */
+    const pull = (key, incoming) => {
+        const registration = mergeForKey('marketListings', key);
+        expect(registration).not.toBeNull();
+        const local = storageMock.storeFor('marketListings').get(key) ?? null;
+        storageMock.storeFor('marketListings').set(key, structuredClone(registration.merge(local, incoming)));
+    };
+
+    /** Forget everything this session held, as a fresh load would */
+    const reload = async () => {
+        estimatedListingAge.knownListings = [];
+        estimatedListingAge.listingGraves = { removed: {}, clearedThrough: 0 };
+        await estimatedListingAge.loadHistoricalData();
+    };
+
+    test('the tombstone key claims its own fold', () => {
+        expect(mergeForKey('marketListings', GRAVES_KEY)?.label).toBe('Market listing deletions');
+        expect(mergeForKey('marketListings', 'marketListingGraves')?.label).toBe('Market listing deletions');
+        // and does not reach across to the log or the anchors
+        expect(mergeForKey('marketListings', 'marketListingTimestamps')?.label).toBe('Market listing log');
+        expect(mergeForKey('marketListings', 'marketListingAnchors')?.label).toBe('Market listing anchors');
+    });
+
+    test('a single deleted row is not resurrected by a peer that still holds it', async () => {
+        storageMock.storeFor('marketListings').set(LOG_KEY, [row(1, 1000), row(2, 2000), row(3, 3000)]);
+        await estimatedListingAge.loadHistoricalData();
+
+        await estimatedListingAge.deleteListing(2);
+        expect(
+            storageMock
+                .storeFor('marketListings')
+                .get(LOG_KEY)
+                .map((l) => l.id)
+        ).toEqual([1, 3]);
+
+        // The peer pushes the log it still has, and its empty tombstone record
+        pull(LOG_KEY, [row(1, 1000), row(2, 2000), row(3, 3000), row(4, 4000)]);
+        pull(GRAVES_KEY, null);
+        expect(
+            storageMock
+                .storeFor('marketListings')
+                .get(LOG_KEY)
+                .map((l) => l.id)
+        ).toEqual([1, 2, 3, 4]);
+
+        await reload();
+
+        // The deletion holds, and the row the peer recorded after it survives
+        expect(estimatedListingAge.knownListings.map((l) => l.id)).toEqual([1, 3, 4]);
+        // and the prune reached the key, so it is not pushed back out
+        expect(
+            storageMock
+                .storeFor('marketListings')
+                .get(LOG_KEY)
+                .map((l) => l.id)
+        ).toEqual([1, 3, 4]);
+    });
+
+    test('the peer applies the deletion too, so it holds in both directions', async () => {
+        storageMock.storeFor('marketListings').set(LOG_KEY, [row(1, 1000), row(2, 2000), row(3, 3000)]);
+        await estimatedListingAge.loadHistoricalData();
+        await estimatedListingAge.deleteListing(2);
+        const pushedGraves = storageMock.storeFor('marketListings').get(GRAVES_KEY);
+
+        // Now stand in for the peer: its own full log, pulling our record
+        storageMock.storeFor('marketListings').set(LOG_KEY, [row(1, 1000), row(2, 2000), row(3, 3000)]);
+        storageMock.storeFor('marketListings').delete(GRAVES_KEY);
+        pull(GRAVES_KEY, pushedGraves);
+        await reload();
+
+        expect(estimatedListingAge.knownListings.map((l) => l.id)).toEqual([1, 3]);
+    });
+
+    test('Clear History survives a peer pushing the whole log back', async () => {
+        const whole = [row(1, 1000), row(2, 2000), row(3, 3000), row(4, 4000), row(5, 5000)];
+        storageMock.storeFor('marketListings').set(LOG_KEY, whole);
+        await estimatedListingAge.loadHistoricalData();
+
+        await estimatedListingAge.clearPersonalListings();
+        expect(storageMock.storeFor('marketListings').get(LOG_KEY)).toEqual([]);
+        expect(storageMock.storeFor('marketListings').get(GRAVES_KEY).clearedThrough).toBe(5);
+
+        pull(LOG_KEY, [...whole, row(9, 9000)]);
+        pull(GRAVES_KEY, null);
+        await reload();
+
+        // Everything the clear named is gone; what the peer recorded after it stays
+        expect(estimatedListingAge.knownListings.map((l) => l.id)).toEqual([9]);
+    });
+
+    test('the anchor pool is untouched by a clear, so age estimates do not regress', async () => {
+        storageMock.storeFor('marketListings').set(LOG_KEY, [row(1, 1000), row(2, 2000), row(3, 3000)]);
+        storageMock.storeFor('marketListings').set(ANCHORS_KEY, [
+            { id: 1, timestamp: 1000 },
+            { id: 3, timestamp: 3000 },
+        ]);
+        await estimatedListingAge.loadHistoricalData();
+        await estimatedListingAge.clearPersonalListings();
+
+        // The pool the estimator calibrates on is deliberately kept whole
+        const anchorIds = storageMock
+            .storeFor('marketListings')
+            .get(ANCHORS_KEY)
+            .map((anchor) => anchor.id);
+        expect(anchorIds).toContain(1);
+        expect(anchorIds).toContain(3);
+        // The anchors alone still date a listing between them
+        expect(estimatedListingAge.estimateTimestamp(2)).toBe(2000);
+    });
+
+    test('a log with no deletions is left exactly as it was', () => {
+        const log = [row(1, 1000), row(2, 2000)];
+        expect(applyListingGraves(log, { removed: {}, clearedThrough: 0 })).toBe(log);
+        expect(applyListingGraves(log, null)).toBe(log);
+    });
+});
+
+describe('the tombstone record itself', () => {
+    test('the later deletion wins per id, and the higher watermark stands', () => {
+        const now = 1_000_000;
+        const folded = mergeListingGraves(
+            { removed: { 1: now - 900, 2: now - 500 }, clearedThrough: 7 },
+            { removed: { 1: now - 300 }, clearedThrough: 3 },
+            now
+        );
+        expect(folded).toEqual({ removed: { 1: now - 300, 2: now - 500 }, clearedThrough: 7 });
+    });
+
+    test('deletions older than the max age are forgotten', () => {
+        const now = 10 * TOMBSTONE_MAX_AGE_MS;
+        const folded = mergeListingGraves({ removed: { 1: now - TOMBSTONE_MAX_AGE_MS, 2: now - 1000 } }, null, now);
+        expect(Object.keys(folded.removed)).toEqual(['2']);
+    });
+
+    test('the map is capped, newest deletions kept', () => {
+        const removed = {};
+        for (let i = 0; i < MAX_LISTING_TOMBSTONES + 10; i++) removed[i] = 1000 + i;
+        const folded = mergeListingGraves({ removed }, null, 1000);
+        expect(Object.keys(folded.removed)).toHaveLength(MAX_LISTING_TOMBSTONES);
+        expect(folded.removed[MAX_LISTING_TOMBSTONES + 9]).toBe(1000 + MAX_LISTING_TOMBSTONES + 9);
+        expect(folded.removed[0]).toBeUndefined();
+    });
+
+    test('a mass delete above the clear watermark is refused rather than applied', () => {
+        const log = [1, 2, 3, 4, 5].map((id) => ({ id, timestamp: id * 1000, itemHrid: '/items/coin' }));
+        const removed = {};
+        for (const listing of log) removed[String(listing.id)] = 1;
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+        // No watermark: nothing says the user asked for the whole log to go
+        expect(applyListingGraves(log, { removed, clearedThrough: 0 })).toBe(log);
+        expect(warn).toHaveBeenCalledOnce();
+        warn.mockRestore();
+    });
+
+    test('a two-row log has no majority worth protecting, so the delete applies', () => {
+        const log = [1, 2].map((id) => ({ id, timestamp: id * 1000, itemHrid: '/items/coin' }));
+        expect(applyListingGraves(log, { removed: { 1: 1, 2: 1 }, clearedThrough: 0 })).toEqual([]);
     });
 });
