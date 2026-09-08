@@ -244,3 +244,38 @@ describe('offline income', () => {
         expect(state.saved).toBeNull();
     });
 });
+
+describe('an offline session recorded across a character switch', () => {
+    test('is never filed under the character who arrived while the rows were read', async () => {
+        // The Welcome Back payload is read, then the rows behind it — and a
+        // switch lands inside that read
+        let release;
+        const gate = new Promise((resolve) => {
+            release = resolve;
+        });
+        const storeLoad = recorder._store.load;
+        recorder._store.load = vi.fn(async (charId) => {
+            await gate;
+            return storeLoad(charId);
+        });
+
+        recorder._onCharacterInitialized({
+            offlineItems: [{ itemHrid: '/items/cheese', offlineCount: 3 }],
+            currentTimestamp: new Date().toISOString(),
+            character: { lastOfflineTime: new Date(Date.now() - 3600_000).toISOString() },
+        });
+
+        recorder._forget();
+        state.charId = 'char2';
+        // The arriving character starts its own read, so `_charId` names them
+        const arriving = recorder.load();
+        release();
+        await arriving;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        // char1's offline profit must not be written, least of all under char2
+        expect(state.saved).toBeNull();
+
+        recorder._store.load = storeLoad;
+    });
+});

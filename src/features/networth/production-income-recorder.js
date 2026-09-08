@@ -354,9 +354,16 @@ class ProductionIncomeRecorder {
             const day = localDayId(Number.isFinite(when) ? when : Date.now());
 
             // The rows have to be read before one of them is added to, or the
-            // save would take this single row for the whole history
+            // save would take this single row for the whole history.
+            // Gated on the generation the read started in, like every other
+            // write path here: a character switch landing inside that read
+            // leaves `_charId` naming the arriving character, and the
+            // departing character's offline session was then filed — and
+            // saved — under their key.
+            const generation = this._generation;
             const record = async () => {
                 await this.load();
+                if (this._generation !== generation) return;
                 this._rowFor(day).offlineProfit += economics.profit;
                 this._save();
             };
