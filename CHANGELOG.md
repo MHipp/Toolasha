@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Housekeeping: one script runs every gate CI runs
+
+`scripts/gates.sh` runs ESLint, Prettier with CI's own file globs, the test suite, both builds, the bundle-sharing check and the 2 MiB delivery ceiling, in CI's order. It exists because a push went red on four files that had been committed unformatted by tooling that skips the pre-commit hook; the same check now runs locally first.
+
 ### Five fixes ported from upstream
 
 An offline gap could graft one dungeon run onto the next. On page load the tracker restored a parked run whenever the dungeon matched, with only a ten-minute staleness clock as the guard; waves run about thirty-five seconds, so a short reconnect could span a run boundary and the old run's waves and times were carried into the new one. Restoration now waits for the first battle message and restores only when it names the same battle, at the cost of one wave during which the card shows the dungeon rather than the run.
