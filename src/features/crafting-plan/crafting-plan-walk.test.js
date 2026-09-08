@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
     filled: [],
     panelActionHrid: null,
     navigateSucceeds: true,
+    /** The action queue `endCharacterActions` re-lists alongside anything new */
+    currentActions: [],
 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -28,6 +30,7 @@ vi.mock('../../core/data-manager.js', () => ({
     default: {
         on: (event, handler) => mocks.dmHandlers.set(event, handler),
         off: (event) => mocks.dmHandlers.delete(event),
+        getCurrentActions: () => mocks.currentActions,
     },
 }));
 
@@ -103,6 +106,7 @@ beforeEach(() => {
     mocks.filled = [];
     mocks.panelActionHrid = null;
     mocks.navigateSucceeds = true;
+    mocks.currentActions = [];
     document.body.innerHTML = '';
     craftingPlanWalk.isInitialized = false;
     craftingPlanWalk.unregisterHandlers = [];
@@ -224,6 +228,47 @@ describe('walking a plan', () => {
         onActions({ endCharacterActions: [{ actionHrid: '/a' }] });
         expect(stripText()).toBe('Step 2 of 2: craft 2 Y');
         expect(mocks.navigatedActions).toEqual(['/a', '/b']);
+    });
+
+    test('an action the step began with, re-listed, is not a press — only a new one is', () => {
+        // `endCharacterActions` carries existing actions alongside new ones, so
+        // a step whose action the player is already running must not advance on
+        // the next queue event of any kind
+        mocks.currentActions = [{ id: 'already-running', actionHrid: '/a' }];
+        craftingPlanWalk.start([
+            {
+                key: 'craft:/a',
+                kind: 'craft',
+                itemHrid: '/items/x',
+                itemName: 'X',
+                actionHrid: '/a',
+                count: 1,
+                actions: 1,
+            },
+            {
+                key: 'craft:/b',
+                kind: 'craft',
+                itemHrid: '/items/y',
+                itemName: 'Y',
+                actionHrid: '/b',
+                count: 2,
+                actions: 2,
+            },
+        ]);
+        const onActions = mocks.wsHandlers.get('actions_updated');
+
+        // Somebody else's queue edit; the payload re-lists the running action
+        onActions({ endCharacterActions: [{ id: 'already-running', actionHrid: '/a' }] });
+        expect(stripText()).toContain('Step 1 of 2');
+
+        // The player's own press: a queue entry the step did not start with
+        onActions({
+            endCharacterActions: [
+                { id: 'already-running', actionHrid: '/a' },
+                { id: 'just-queued', actionHrid: '/a' },
+            ],
+        });
+        expect(stripText()).toBe('Step 2 of 2: craft 2 Y');
     });
 
     test('a buy step opens the marketplace and advances once the item is held', () => {

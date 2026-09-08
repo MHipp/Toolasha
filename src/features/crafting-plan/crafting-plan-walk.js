@@ -137,6 +137,15 @@ class CraftingPlanWalk {
         this.active = false;
         /** What the inventory must reach before a buy step is satisfied */
         this.buyTarget = 0;
+        /**
+         * Action ids already queued for the current step's action when the step
+         * began. `endCharacterActions` carries existing actions alongside new
+         * ones, so a step whose action the player had queued already — or is
+         * performing right now — would otherwise advance on the next queue
+         * event of any kind, with nothing pressed.
+         * @type {Set<*>}
+         */
+        this.queuedBefore = new Set();
         /** Why the walk ended, shown in the strip until it is dismissed */
         this.message = '';
         /**
@@ -205,6 +214,7 @@ class CraftingPlanWalk {
         this.steps = [];
         this.index = 0;
         this.buyTarget = 0;
+        this.queuedBefore = new Set();
         this.message = message;
         this.timerRegistry.clearAll();
         this._clearHighlight();
@@ -241,11 +251,16 @@ class CraftingPlanWalk {
             // Measured before navigating: the target is what the player holds now
             // plus what this step buys, so a partial fill does not advance early
             this.buyTarget = getInventoryCount(step.itemHrid) + step.count;
+            this.queuedBefore = new Set();
             navigateToMarketplace(step.itemHrid);
-        } else if (!navigateToAction(step.actionHrid)) {
-            this.stop('The game could not be opened on the next step.');
-            return;
         } else {
+            // Snapshotted before the player can press anything: only an action
+            // id this step did not start with is their press on this step
+            this.queuedBefore = this._queuedIdsFor(step.actionHrid);
+            if (!navigateToAction(step.actionHrid)) {
+                this.stop('The game could not be opened on the next step.');
+                return;
+            }
             this._prefillSoon(step);
         }
 
@@ -287,9 +302,29 @@ class CraftingPlanWalk {
     }
 
     /**
-     * A craft step is done when the server says the action the step named is in
-     * the queue. Any other `actions_updated` — a completion elsewhere, somebody
-     * else's queue edit — names other actions and moves nothing.
+     * The ids of the actions already queued for one action hrid.
+     * @param {string} actionHrid
+     * @returns {Set<*>}
+     * @private
+     */
+    _queuedIdsFor(actionHrid) {
+        const rows = dataManager.getCurrentActions?.() || [];
+        return new Set(rows.filter((row) => row?.actionHrid === actionHrid).map((row) => row.id));
+    }
+
+    /**
+     * A craft step is done when the server says an action the step named has
+     * been ADDED to the queue. Any other `actions_updated` — a completion
+     * elsewhere, somebody else's queue edit — names other actions and moves
+     * nothing.
+     *
+     * Added, not merely present: `endCharacterActions` carries existing actions
+     * alongside new ones, so a step whose action was already in the queue when
+     * the step began (the player queued some of it themselves, or is running it
+     * right now) matched on the first queue event of any kind and skipped
+     * itself, unpressed and uncrafted. Only an id the step did not start with
+     * is the player's press.
+     *
      * @param {Object} data - The `actions_updated` payload
      * @private
      */
@@ -298,7 +333,7 @@ class CraftingPlanWalk {
         if (!step || step.kind !== 'craft') return;
         const rows = data?.endCharacterActions;
         if (!Array.isArray(rows)) return;
-        if (!rows.some((row) => row?.actionHrid === step.actionHrid)) return;
+        if (!rows.some((row) => row?.actionHrid === step.actionHrid && !this.queuedBefore.has(row.id))) return;
         this._advance();
     }
 
