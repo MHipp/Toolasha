@@ -167,18 +167,28 @@ class LabyrinthRunAlerts {
         }
 
         if (!this.doingLab) return;
-        this.doingLab = false;
 
         const where = this.floor > 0 ? ` It reached floor ${this.floor}.` : '';
         const now = name ? ` The character is now on ${name}.` : ' The queue is empty.';
         const who = dataManager.getCurrentCharacterId?.() || 'unknown';
-        const key = `${EVENT_KEY_PREFIX}:${who}:${++this.stopSeq}`;
-        notificationService.notify(
+        const key = `${EVENT_KEY_PREFIX}:${who}:${this.stopSeq + 1}`;
+        const result = notificationService.notify(
             key,
             `Your labyrinth run has stopped — queue more rooms if you want to keep going.${where}${now}`,
             { title: 'Labyrinth stopped' }
         );
-        this.floor = 0;
+
+        // The stop is marked told, and the counter advanced, only once the
+        // notice actually reached the player. Clearing `doingLab` regardless —
+        // no toast host mounted yet, most likely, right after a fresh load —
+        // left a stop that fired into no channel silent for good: the
+        // character is not back in the labyrinth to re-arm it, so the next
+        // `actions_updated` would see `doingLab` already false and say nothing.
+        if (result?.fired) {
+            this.doingLab = false;
+            this.stopSeq += 1;
+            this.floor = 0;
+        }
     }
 
     /**

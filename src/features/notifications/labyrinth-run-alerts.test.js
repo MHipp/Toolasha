@@ -176,6 +176,32 @@ describe('the stop', () => {
         expect(game.notified[1].key).not.toBe(game.notified[0].key);
     });
 
+    test('a stop that reached no channel is retried on the next update, not lost until the lab is queued again', async () => {
+        game.notifyResult = { fired: false, channels: [] };
+        game.actions = [LAB, CHEESE];
+        await labyrinthRunAlerts.initialize();
+        game.wsHandlers.labyrinth_updated({ labyrinth: { isActive: true, currentFloor: 12 } });
+
+        game.actions = [CHEESE];
+        game.wsHandlers.actions_updated({});
+        expect(game.notified).toHaveLength(1);
+
+        // Still stopped, still nothing delivered — the character has not gone
+        // back into the labyrinth, so re-arming on that is not an option here;
+        // the very next update on the same stop must retry it instead
+        game.wsHandlers.actions_updated({});
+        expect(game.notified).toHaveLength(2);
+        expect(game.notified[1].key).toBe(game.notified[0].key);
+
+        game.notifyResult = { fired: true, channels: ['toast'] };
+        game.wsHandlers.actions_updated({});
+        expect(game.notified).toHaveLength(3);
+
+        // Delivered: further updates on the same resting state are silent again
+        game.wsHandlers.actions_updated({});
+        expect(game.notified).toHaveLength(3);
+    });
+
     test('off, nothing listens', async () => {
         game.settings = { [MASTER_SETTING]: false };
         game.actions = [LAB];
