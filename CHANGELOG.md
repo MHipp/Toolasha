@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### A labyrinth run's leftovers could be overwritten with a full pile
+
+After a run ends the game keeps re-sending the labyrinth state for a while, grid and path still attached, with the supply counts now showing the restocked pile. The run ledger read one of those re-sends as a new run starting under the finished run's own key, with a full pile in hand and nothing spent. Within a session the repeat was swallowed; across a reload it was not, and the memory copy won over the stored one — so a run's true leftovers were replaced by the capacity. That is why the Consumables panel's "left over after the last runs" line showed a full 400 torches for runs that had plainly been used. A run that has been seen to end is no longer reopened by a re-send, and a run already in the ring keeps its first recorded ending. Records already overwritten cannot be told from a run abandoned at the door and are left to age off.
+
 ### The Lab Simulator's Market button opens every piece of a multi-item upgrade
 
 An upgrade that swaps one item for two — a two-hander for a weapon and shield, or an armour pair — had a Market button that opened only the first piece. It now opens all of them through the missing-materials tabs, each at the enhancement level the upgrade names, so a +7 tab shows the +7 listings rather than the unenhanced item. Single-item upgrades open exactly as before.
