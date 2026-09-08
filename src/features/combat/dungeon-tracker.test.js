@@ -1881,6 +1881,77 @@ describe('scanning chat already on screen', () => {
         tracker.scanExistingChatMessages();
         expect(tracker.firstKeyCountTimestamp).toBeNull();
     });
+
+    test('an in-memory key count with an unreadable time gives its counts and no anchor', async () => {
+        // The counts parse from systemMetadata, the time does not parse from `t`.
+        // A NaN anchor would read as "already anchored" to every `=== null` test
+        // and lose to every comparison after it, stranding the run unbanked.
+        beTracking();
+        tracker.recentChatMessages = [
+            { m: 'systemChatMessage.partyBattleStarted', t: '2026-08-04T09:59:00.000Z' },
+            {
+                m: 'systemChatMessage.partyKeyCount',
+                t: 'the server sent nonsense',
+                systemMetadata: JSON.stringify({ keyCountString: 'Key counts: [Alice - 12], [Bob - 8]' }),
+            },
+        ];
+
+        tracker.scanExistingChatMessages();
+        await flush();
+
+        expect(tracker.currentRun.keyCountsMap).toEqual({ Alice: 12, Bob: 8 });
+        expect(tracker.firstKeyCountTimestamp).toBeNull();
+        expect(tracker.lastKeyCountTimestamp).toBeNull();
+        expect(tracker.keyCountMessages).toEqual([]);
+    });
+
+    test('a run left unanchored by an unreadable time still banks on the next key count', async () => {
+        beTracking();
+        tracker.recentChatMessages = [
+            { m: 'systemChatMessage.partyBattleStarted', t: '2026-08-04T09:59:00.000Z' },
+            {
+                m: 'systemChatMessage.partyKeyCount',
+                t: 'the server sent nonsense',
+                systemMetadata: JSON.stringify({ keyCountString: 'Key counts: [Alice - 12], [Bob - 8]' }),
+            },
+        ];
+        tracker.scanExistingChatMessages();
+        await flush();
+
+        // The recovery path: no anchor, so the next key count is the completion
+        // and currentRun.startTime is the start.
+        tracker.onChatMessage(keyCountsData('2026-08-04T10:04:32.000Z', 'Key counts: [Alice - 11], [Bob - 7]'));
+        await flush();
+
+        expect(game.savedRuns).toHaveLength(1);
+        expect(game.savedRuns[0].run.duration).toBe(272_000);
+    });
+
+    test('a DOM key-counts line whose stamp does not parse gives its counts and no anchor', async () => {
+        // No messages in memory, so the DOM fallback runs. The line opens with `[`
+        // (so it is not filtered as a player message) but carries no readable stamp.
+        beTracking();
+        tracker.recentChatMessages = [];
+        document.body.innerHTML = '';
+        const node = document.createElement('div');
+        node.className = 'ChatMessage_chatMessage__abc';
+        node.textContent = '[??] Key counts: [Alice - 12], [Bob - 8]';
+        document.body.appendChild(node);
+
+        tracker.scanExistingChatMessages();
+        await flush();
+
+        expect(tracker.currentRun.keyCountsMap).toEqual({ Alice: 12, Bob: 8 });
+        expect(tracker.firstKeyCountTimestamp).toBeNull();
+        expect(tracker.lastKeyCountTimestamp).toBeNull();
+        expect(tracker.keyCountMessages).toEqual([]);
+
+        tracker.onChatMessage(keyCountsData('2026-08-04T10:04:32.000Z', 'Key counts: [Alice - 11], [Bob - 7]'));
+        await flush();
+
+        expect(game.savedRuns).toHaveLength(1);
+        expect(game.savedRuns[0].run.duration).toBe(272_000);
+    });
 });
 
 describe('rebuilding history from the chat log', () => {

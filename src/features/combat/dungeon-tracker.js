@@ -457,7 +457,6 @@ class DungeonTracker {
         }
 
         try {
-            let battleStartedFound = false;
             let latestKeyCountsMap = null;
             let latestTimestamp = null;
 
@@ -468,7 +467,6 @@ class DungeonTracker {
                     if (message.m === 'systemChatMessage.partyBattleStarted') {
                         const timestamp = new Date(message.t).getTime();
                         this.battleStartedTimestamp = timestamp;
-                        battleStartedFound = true;
                     }
 
                     // Look for "Key counts" messages
@@ -561,7 +559,6 @@ class DungeonTracker {
                             const timestamp = new Date(now.getFullYear(), month - 1, day, hour, min, sec, 0);
 
                             this.battleStartedTimestamp = timestamp.getTime();
-                            battleStartedFound = true;
                         }
                     }
 
@@ -630,30 +627,36 @@ class DungeonTracker {
             if (latestKeyCountsMap && this.currentRun) {
                 this.currentRun.keyCountsMap = latestKeyCountsMap;
 
-                // Set firstKeyCountTimestamp and lastKeyCountTimestamp from DOM scan
-                // Priority: Use Battle started timestamp if found, otherwise use Key counts timestamp
-                if (this.firstKeyCountTimestamp === null) {
-                    if (battleStartedFound && this.battleStartedTimestamp) {
-                        // Use battle started as anchor point, key counts as first run timestamp
-                        this.firstKeyCountTimestamp = latestTimestamp;
-                        this.lastKeyCountTimestamp = latestTimestamp;
-                    } else if (latestTimestamp) {
-                        this.firstKeyCountTimestamp = latestTimestamp;
-                        this.lastKeyCountTimestamp = latestTimestamp;
-                    }
+                // The counts and the stamp fail independently: a DOM line whose
+                // `[MM/DD ...]` prefix does not match leaves the map set and the stamp
+                // null, and an in-memory message with an unreadable `t` leaves it NaN.
+                // Neither may be written to the anchor. `null` is the sentinel a later
+                // scan and `missedItsOwnStart` both test with `=== null`, and NaN
+                // survives that test while failing every comparison after it, so a
+                // NaN anchor silently stops the run banking at all.
+                //
+                // With no usable stamp the run carries no anchor: the next key count
+                // is read as the completion against `currentRun.startTime` by
+                // `onKeyCountsMessage`'s `missedItsOwnStart` fallback. No stamp is
+                // synthesised here — `battleStartedTimestamp` marks the queue's first
+                // battle, which in a queue of twenty runs is nineteen runs early, and
+                // `Date.now()` is not when a message already on screen was drawn.
+                const anchor = Number.isFinite(latestTimestamp) ? latestTimestamp : null;
+
+                if (this.firstKeyCountTimestamp === null && anchor !== null) {
+                    this.firstKeyCountTimestamp = anchor;
+                    this.lastKeyCountTimestamp = anchor;
 
                     // Store this message for history
-                    if (this.firstKeyCountTimestamp) {
-                        this.keyCountMessages.push({
-                            timestamp: this.firstKeyCountTimestamp,
-                            keyCountsMap: latestKeyCountsMap,
-                            text:
-                                `${DUNGEON_KEY_COUNTS} ` +
-                                Object.entries(latestKeyCountsMap)
-                                    .map(([name, count]) => `[${name} - ${count}]`)
-                                    .join(', '),
-                        });
-                    }
+                    this.keyCountMessages.push({
+                        timestamp: anchor,
+                        keyCountsMap: latestKeyCountsMap,
+                        text:
+                            `${DUNGEON_KEY_COUNTS} ` +
+                            Object.entries(latestKeyCountsMap)
+                                .map(([name, count]) => `[${name} - ${count}]`)
+                                .join(', '),
+                    });
                 }
 
                 // A run picked up part-way through has no start of its own, but
