@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Leftovers: the sim's spawn-table assumption is now stated and pinned
+
+The dungeon spawn rule lets a table become eligible from the wave its key names, while the note beside it said a species from that table is first seen one wave later. Both are right: in every dungeon that wave is a fixed roster and never reaches the random draw. That fact was in the game data and nowhere else, so it is now stated in the code and pinned by a test that fails if a future dungeon breaks the shape.
+
+Also: the storage health panel no longer redisplays counts from an earlier refresh when the latest one failed, the trade ledger's eviction sweep tells an unlistable store from an empty one like the rest of the storage layer, and a dead buff-removal method that would have dropped every source of a buff instead of one is gone.
+
 ### Sync no longer stalls on a device whose clock is wrong
 
 Whether a downloaded sync is newer than the one you last accepted was decided by comparing wall-clock timestamps from the pushing device. A device with a fast clock pushed a stamp from the future, and every other device then skipped correctly-stamped payloads as "older" until real time caught up — nothing lost, but sync silently stopped while reporting up to date. Ordering now uses a counter that only ever moves forward and that every device adopts on receipt, so no clock can stall it. The counter lives in the manifest beside the timestamp, not in the payload: an older build ignores it and keeps working exactly as before, an old gist applies exactly as before, and a mixed fleet keeps syncing indefinitely. Only a device still on the older build can stall on a fast clock, because it has no counter to consult.
