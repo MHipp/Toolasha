@@ -50,26 +50,82 @@ export function recordOpening(tally, chestHrid, count, gainedItems) {
     }
 
     // `last` is the same shape as the running total, so anything that can judge
-    // a lifetime can judge a single opening without a second code path
-    return {
-        ...tally,
-        [chestHrid]: { opened: previous.opened + count, loot, last: { opened: count, loot: justNow } },
-    };
+    // a lifetime can judge a single opening without a second code path.
+    //
+    // `since` is carried rather than re-stamped: it says when this bucket
+    // *began* counting, and an opening added to a bucket that a reset started
+    // is still part of that counting. Absent on a bucket no reset has touched,
+    // and left absent so a ledger that predates stamps keeps its old shape.
+    const bucket = { opened: previous.opened + count, loot, last: { opened: count, loot: justNow } };
+    if (previous.since != null) bucket.since = previous.since;
+    return { ...tally, [chestHrid]: bucket };
 }
 
 /**
  * Forget one chest's history, or all of it.
+ *
+ * A reset leaves an emptied bucket stamped with the moment it happened rather
+ * than removing the key. Removing it is what let a reset be undone: the counts
+ * are lifetime totals folded per counter with `Math.max`, so a peer that still
+ * held the old numbers restated them on the next pull — and the panel's return
+ * verdict is computed from `opened` and `loot`, so the figure the user had
+ * zeroed came back with nothing on screen to say it had. The stamp is what
+ * `mergeStoredTally` compares to decide which side is the newer news.
+ *
  * @param {Object} tally - The tally
  * @param {string} [chestHrid] - Which chest; omit to clear everything
+ * @param {number} [now] - The stamp to write; injectable for tests
  * @returns {Object} A new tally
  */
-export function resetTally(tally, chestHrid) {
-    if (!chestHrid) return {};
+export function resetTally(tally, chestHrid, now = Date.now()) {
+    const since = Number(now) || 0;
+    const cleared = () => ({ opened: 0, loot: {}, since });
 
-    const next = { ...tally };
-    delete next[chestHrid];
-    return next;
+    if (!chestHrid) {
+        const next = {};
+        for (const key of Object.keys(tally || {})) next[key] = cleared();
+        return next;
+    }
+
+    // Nothing to stamp where there was nothing recorded
+    if (!(tally || {})[chestHrid]) {
+        const next = { ...tally };
+        delete next[chestHrid];
+        return next;
+    }
+    return { ...tally, [chestHrid]: cleared() };
 }
+
+/** When a bucket began counting; unstamped buckets have always been counting */
+function sinceOf(bucket) {
+    return Number(bucket?.since) || 0;
+}
+
+/** The newest reset a whole tally carries, for the refusal below */
+function newestSince(tally) {
+    let newest = 0;
+    for (const bucket of Object.values(tally || {})) newest = Math.max(newest, sinceOf(bucket));
+    return newest;
+}
+
+/** How many openings a bucket claims */
+function openedOf(bucket) {
+    return Number(bucket?.opened) || 0;
+}
+
+/**
+ * How many chests one fold may zero on the strength of somebody else's reset.
+ *
+ * The reference implementation for this refusal is `custom-tabs-data.js` — a
+ * fold must never be the thing that empties a curated record. A reset is the
+ * one thing here that can take counts away, it arrives from a store or a peer
+ * that may be wrong about it, and a ledger of a hundred chests vanishing on a
+ * pull is never what the user asked a button on another device for. Twelve is
+ * above anything the per-chest Reset can reach in one fold — it zeroes exactly
+ * one chest — and above a typical "Delete all history", which touches the
+ * handful of chests a player actually opens.
+ */
+const RESET_FOLD_LIMIT = 12;
 
 /**
  * Fold a stored tally under the one in memory, for writing back.
@@ -79,21 +135,54 @@ export function resetTally(tally, chestHrid) {
  * when this tab has been opening chests, storage's when a read that could not
  * be made left memory behind, or another tab got there first. `last` is memory's
  * wherever memory has the chest, since it is the opening this tab just saw.
- * Anything that is not a number is memory's. Resets are the exception — they
- * mean to lose counts — and do not go through this.
+ * Anything that is not a number is memory's.
+ *
+ * A reset is the exception, and the reason for `since`. Max-per-counter cannot
+ * express "this went back to nought" — it undoes a reset unconditionally — so a
+ * reset stamps the bucket it empties (`resetTally`) and a bucket whose stamp is
+ * newer wins **whole**, counts and all, rather than being maxed against the
+ * other side. An unstamped bucket therefore loses to a stamped one, which is
+ * the right bias for an action confirmed through a danger dialog.
+ *
+ * That is also what keeps the peer's later openings: a device that has taken
+ * the reset carries its stamp, and every opening it records afterwards goes
+ * into that same stamped bucket (`recordOpening` carries `since` forward). Two
+ * buckets counting since the same reset have equal stamps and fold by max as
+ * they always did, so news from after the reset is never mistaken for news from
+ * before it.
+ *
+ * `stored` is this device's copy in both callers — the save fold reads it back
+ * from storage, and a sync pull hands it the local base with the remote copy as
+ * `memory` — which is what the mass-reset refusal below tests.
  *
  * @param {Object} stored - The tally as read back
  * @param {Object} memory - The tally as held
  * @returns {Object} A new tally
  */
 export function mergeStoredTally(stored, memory) {
-    const merged = { ...(stored && typeof stored === 'object' ? stored : {}) };
-    for (const [chestHrid, entry] of Object.entries(memory && typeof memory === 'object' ? memory : {})) {
+    const base = stored && typeof stored === 'object' ? stored : {};
+    const mine = memory && typeof memory === 'object' ? memory : {};
+    const merged = { ...base };
+    /** Buckets this fold would zero on a stamp the local side does not hold */
+    const zeroed = [];
+
+    for (const [chestHrid, entry] of Object.entries(mine)) {
         const theirs = merged[chestHrid];
         if (!theirs || !entry || typeof entry !== 'object') {
             merged[chestHrid] = entry;
             continue;
         }
+
+        const ourSince = sinceOf(entry);
+        const theirSince = sinceOf(theirs);
+        if (ourSince !== theirSince) {
+            const newer = ourSince > theirSince ? entry : theirs;
+            const older = newer === entry ? theirs : entry;
+            merged[chestHrid] = newer;
+            if (openedOf(older) > openedOf(newer)) zeroed.push([chestHrid, older]);
+            continue;
+        }
+
         const loot = { ...(theirs.loot || {}) };
         for (const [itemHrid, count] of Object.entries(entry.loot || {})) {
             loot[itemHrid] =
@@ -111,6 +200,19 @@ export function mergeStoredTally(stored, memory) {
             loot,
         };
     }
+
+    // A fold must never be the thing that empties the ledger. The local side
+    // holding the newest stamp means the reset is one this device already made
+    // or already took, and that always applies — the refusal is only ever about
+    // a reset arriving from elsewhere. See RESET_FOLD_LIMIT.
+    const ourReset = newestSince(base) >= newestSince(mine);
+    if (!ourReset && zeroed.length > RESET_FOLD_LIMIT) {
+        for (const [chestHrid, older] of zeroed) merged[chestHrid] = older;
+        console.warn(
+            `[ChestTally] Refusing a fold that would zero ${zeroed.length} chests at once on a reset this ` +
+                'device did not make; every count is kept. Reset here to clear them.'
+        );
+    }
     return merged;
 }
 
@@ -118,7 +220,9 @@ export function mergeStoredTally(stored, memory) {
  * Registered so a cross-device sync PULL combines this record instead of
  * overwriting it — a lifetime count can only be too low, never too high, so
  * the max-per-counter fold is the right answer for two devices as much as for
- * two tabs. Registration runs at import time, which is long before the
+ * two tabs — except where a reset says otherwise, which is what the `since`
+ * stamp is for and why only the pulling device merging is survivable at all.
+ * Registration runs at import time, which is long before the
  * earliest pull (the staggered startup pull, 20s+ after load), so the registry
  * is complete by the time sync consults it. See sync-merge-registry.js.
  */

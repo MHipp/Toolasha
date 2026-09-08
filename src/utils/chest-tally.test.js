@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'vitest';
+import { describe, test, expect, vi } from 'vitest';
 import {
     recordOpening,
     resetTally,
@@ -60,12 +60,29 @@ describe('recordOpening', () => {
 
 describe('resetTally', () => {
     test('forgets one chest and keeps the rest', () => {
-        const tally = { a: { opened: 1, loot: {} }, b: { opened: 2, loot: {} } };
-        expect(Object.keys(resetTally(tally, 'a'))).toEqual(['b']);
+        const tally = { a: { opened: 1, loot: { '/items/coin': 5 } }, b: { opened: 2, loot: {} } };
+        const reset = resetTally(tally, 'a', 1000);
+        expect(reset.a).toEqual({ opened: 0, loot: {}, since: 1000 });
+        expect(reset.b).toEqual({ opened: 2, loot: {} });
     });
 
     test('forgets everything when given no chest', () => {
-        expect(resetTally({ a: { opened: 1, loot: {} } })).toEqual({});
+        expect(resetTally({ a: { opened: 1, loot: {} } }, undefined, 1000)).toEqual({
+            a: { opened: 0, loot: {}, since: 1000 },
+        });
+        expect(resetTally({})).toEqual({});
+    });
+
+    test('leaves nothing behind for a chest that had no history', () => {
+        expect(resetTally({ b: { opened: 2, loot: {} } }, 'a')).toEqual({ b: { opened: 2, loot: {} } });
+    });
+
+    test('an opening after a reset keeps counting from the reset', () => {
+        // The stamp says when this bucket began counting, not when it was last
+        // touched — an opening added to it is part of that same counting
+        const reset = resetTally({ [CHEST]: { opened: 9, loot: {} } }, CHEST, 1000);
+        const after = recordOpening(reset, CHEST, 2, [{ itemHrid: '/items/coin', count: 40 }]);
+        expect(after[CHEST]).toMatchObject({ opened: 2, loot: { '/items/coin': 40 }, since: 1000 });
     });
 });
 
@@ -352,6 +369,78 @@ describe('mergeStoredTally', () => {
         expect(Object.keys(mergeStoredTally(stored, memory)).sort()).toEqual(['/items/a', '/items/b']);
         expect(mergeStoredTally(null, memory)).toEqual(memory);
         expect(mergeStoredTally(stored, undefined)).toEqual(stored);
+    });
+
+    test('a reset survives the round trip a peer would otherwise undo', () => {
+        // A resets and pushes; B pulls, and its still-full copy must not win —
+        // only the pulling device merges, so a reset that loses here loses
+        // everywhere, and comes back to A on the next pull
+        const full = { [CHEST]: { opened: 500, loot: { '/items/coin': 50000 } } };
+        const aAfterReset = resetTally(full, CHEST, 1000);
+
+        const bPulled = mergeStoredTally(full, aAfterReset);
+        expect(bPulled[CHEST]).toEqual({ opened: 0, loot: {}, since: 1000 });
+
+        const aPulledBack = mergeStoredTally(aAfterReset, bPulled);
+        expect(aPulledBack[CHEST]).toEqual({ opened: 0, loot: {}, since: 1000 });
+    });
+
+    test('an unstamped copy loses to a stamped reset whichever side holds it', () => {
+        const stamped = { [CHEST]: { opened: 0, loot: {}, since: 1000 } };
+        const unstamped = { [CHEST]: { opened: 40, loot: { '/items/coin': 4000 } } };
+
+        expect(mergeStoredTally(unstamped, stamped)[CHEST].opened).toBe(0);
+        expect(mergeStoredTally(stamped, unstamped)[CHEST].opened).toBe(0);
+    });
+
+    test('openings the peer recorded after the reset survive it', () => {
+        // The ordering hazard: the other device took the reset and kept opening
+        // chests. Its bucket counts from the same reset, so the stamps agree and
+        // the counters fold by max as they always did
+        const aAfterReset = resetTally({ [CHEST]: { opened: 500, loot: {} } }, CHEST, 1000);
+        const bAfterReset = recordOpening(aAfterReset, CHEST, 7, [{ itemHrid: '/items/coin', count: 700 }]);
+
+        expect(mergeStoredTally(aAfterReset, bAfterReset)[CHEST]).toMatchObject({
+            opened: 7,
+            loot: { '/items/coin': 700 },
+            since: 1000,
+        });
+        expect(mergeStoredTally(bAfterReset, aAfterReset)[CHEST]).toMatchObject({ opened: 7, since: 1000 });
+    });
+
+    test('a newer reset beats an older one', () => {
+        const older = { [CHEST]: { opened: 12, loot: { '/items/coin': 1200 }, since: 1000 } };
+        const newer = { [CHEST]: { opened: 0, loot: {}, since: 2000 } };
+        expect(mergeStoredTally(older, newer)[CHEST]).toEqual({ opened: 0, loot: {}, since: 2000 });
+    });
+
+    test('refuses a reset from elsewhere that would zero more than twelve chests', () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const local = {};
+        for (let i = 0; i < 13; i += 1) local[`/items/chest_${i}`] = { opened: 10, loot: { '/items/coin': 100 } };
+        const remote = resetTally(local, undefined, 1000);
+
+        const merged = mergeStoredTally(local, remote);
+        expect(Object.values(merged).every((entry) => entry.opened === 10)).toBe(true);
+        expect(warn).toHaveBeenCalled();
+        warn.mockRestore();
+    });
+
+    test('the refusal does not stand in the way of this device’s own reset', () => {
+        const local = {};
+        for (let i = 0; i < 13; i += 1) local[`/items/chest_${i}`] = { opened: 10, loot: {} };
+        const ourReset = resetTally(local, undefined, 1000);
+
+        // Local side holds the stamp: the reset was made or already taken here
+        const merged = mergeStoredTally(ourReset, local);
+        expect(Object.values(merged).every((entry) => entry.opened === 0)).toBe(true);
+    });
+
+    test('twelve at once still applies', () => {
+        const local = {};
+        for (let i = 0; i < 12; i += 1) local[`/items/chest_${i}`] = { opened: 10, loot: {} };
+        const merged = mergeStoredTally(local, resetTally(local, undefined, 1000));
+        expect(Object.values(merged).every((entry) => entry.opened === 0)).toBe(true);
     });
 
     test('memory wins wherever a count is not a number', () => {
