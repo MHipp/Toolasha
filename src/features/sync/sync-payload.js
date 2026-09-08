@@ -228,12 +228,13 @@ async function mergeLocalHistories(payload) {
  * those still take the remote wholesale.
  *
  * @param {string} json - Payload text as produced by `buildPayloadJSON()`
- * @returns {Promise<{restored: Record<string, number>, failed: Array<Object>, complete: boolean,
- *   merged: Array<Object>, mergeFailed: Array<Object>, mergeHeld: Array<Object>,
- *   exportedAt: string|null, applied: string}>}
- *   What landed, whether all of it did, which records could not be combined,
- *   which were held back because this device's copy could not be read, and the
- *   payload text as actually applied
+ * @returns {Promise<{restored: Record<string, number>, expected: Record<string, number>,
+ *   failed: Array<Object>, complete: boolean, merged: Array<Object>, mergeFailed: Array<Object>,
+ *   mergeHeld: Array<Object>, exportedAt: string|null, applied: string}>}
+ *   What landed, how many keys each store was asked for (the figure the pull summary
+ *   subtracts the folds from), whether all of it did, which records could not be
+ *   combined, which were held back because this device's copy could not be read, and
+ *   the payload text as actually applied
  */
 export async function applyPayload(json) {
     const payload = JSON.parse(json);
@@ -277,9 +278,10 @@ export async function applyPayload(json) {
         const rewrote = merged.length > 0 || mergeHeld.length > 0 || Boolean(settingsStore);
         const applied = rewrote ? JSON.stringify(payload) : json;
 
-        const { restored, failed, complete } = await importEverything(payload);
+        const { restored, expected, failed, complete } = await importEverything(payload);
         return {
             restored,
+            expected,
             failed,
             complete,
             merged,

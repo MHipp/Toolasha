@@ -69,6 +69,8 @@ vi.mock('./sync-payload.js', () => ({
             complete: payload.complete ?? true,
             merged: payload.merged ?? [],
             mergeFailed: payload.mergeFailed ?? [],
+            mergeHeld: payload.mergeHeld ?? [],
+            expected: payload.expected ?? {},
             exportedAt: null,
             applied: payload.appliedText ?? json,
         };
@@ -109,6 +111,13 @@ vi.mock('./gist-client.js', () => ({
     },
 }));
 
+// The panel is a floating-panel shell; the manager only has to hand it a click
+const panelOpens = vi.hoisted(() => []);
+vi.mock('./pull-summary-panel.js', () => ({
+    openPullSummaryPanel: () => panelOpens.push(1),
+}));
+
+const { lastPullSummary, clearPullSummary } = await import('./pull-summary.js');
 const { default: syncManager, isNewer } = await import('./sync-manager.js');
 
 beforeEach(() => {
@@ -124,6 +133,8 @@ beforeEach(() => {
     payload.appliedText = undefined;
     payload.merged = [];
     payload.mergeFailed = [];
+    payload.mergeHeld = [];
+    payload.expected = {};
     payload.complete = true;
     payload.failed = [];
     gist.found = null;
@@ -131,6 +142,8 @@ beforeEach(() => {
     gist.readError = null;
     gist.writeError = null;
     gist.writes = [];
+    panelOpens.length = 0;
+    clearPullSummary();
     syncManager.busy = false;
 });
 
@@ -398,7 +411,7 @@ describe('pull', () => {
         await syncManager.pull();
 
         expect(dialog.calls).toBe(0);
-        expect(toasts.at(-1).message).toContain('2 records were combined');
+        expect(toasts.at(-1).message).toContain('Pull applied: 2 records combined');
     });
 
     test('a record whose fold threw is named, not folded into the success line', async () => {
@@ -1014,5 +1027,69 @@ describe('the manifest is checked against what came back', () => {
 
         expect((await syncManager.pull()).ok).toBe(true);
         expect(payload.applied).toBe('{"remote":1}');
+    });
+});
+
+describe('what a pull says it reconciled', () => {
+    const remote = (exportedAt, body = '{"remote":1}') => ({
+        manifest: { exportedAt, chunks: 1, hash: `h:${body}`, bytes: body.length },
+        payload: body,
+    });
+
+    /** A pull with one folded key, one whole write and one held key */
+    const oneOfEach = () => {
+        stored.map.toolasha_sync_gistId = 'abc';
+        stored.map.toolasha_sync_lastSyncedAt = '2026-01-01T00:00:00.000Z';
+        gist.read = remote('2026-02-01T00:00:00.000Z');
+        payload.merged = [{ store: 'guildHistory', key: 'trials', label: 'trial records' }];
+        payload.mergeHeld = [{ store: 'guildHistory', key: 'chests', label: 'chest tallies' }];
+        payload.expected = { guildHistory: 2 };
+    };
+
+    test('the toast carries one line of counts, and an action that opens the panel', async () => {
+        oneOfEach();
+
+        await syncManager.pull();
+
+        const toast = toasts.at(-1);
+        expect(toast.message).toContain('Pull applied: 1 record combined, 1 written whole, 1 held unreadable.');
+        // The count is in that line, so the held fragment only names the record
+        // and says what to do — it must not count them a second time
+        expect(toast.message).toContain('The records kept from this device (chest tallies)');
+        expect(toast.message).not.toContain('1 could not be read here');
+        expect(toast.action.label).toBe('What changed?');
+    });
+
+    test('the summary is what the panel reads, and a second pull replaces it', async () => {
+        oneOfEach();
+        await syncManager.pull();
+        expect(lastPullSummary()).toMatchObject({ combined: 1, writtenWhole: 1, held: 1, unchanged: null });
+
+        // The first pull remembered the remote's hash; put this device back to
+        // "unchanged since the exchange" so the second pull is not a conflict
+        stored.map.toolasha_sync_lastHash = 'h:{"local":1}';
+        gist.read = remote('2026-03-01T00:00:00.000Z', '{"remote":2}');
+        payload.merged = [];
+        payload.mergeHeld = [];
+        payload.expected = { settings: 4 };
+
+        await syncManager.pull();
+
+        expect(lastPullSummary()).toMatchObject({ combined: 0, writtenWhole: 4, held: 0 });
+        expect(lastPullSummary().stores.map((store) => store.store)).toEqual(['settings']);
+    });
+
+    test('a character switch clears it — the summary belongs to the device, not the character', async () => {
+        oneOfEach();
+        await syncManager.pull();
+        expect(lastPullSummary()).not.toBeNull();
+
+        syncManager.cleanup();
+        character.id = 'char-Z';
+        await syncManager.initialize();
+
+        expect(lastPullSummary()).toBeNull();
+        syncManager.cleanup();
+        character.id = 'char-A';
     });
 });

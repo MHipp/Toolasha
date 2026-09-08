@@ -47,6 +47,14 @@ import { compressionAvailable, gzipText, gunzipToText } from './sync-compress.js
 import { encryptText, encryptBytes, decryptText, decryptBytes, bytesToBase64, base64ToBytes } from './sync-crypto.js';
 import { buildPayloadJSON, applyPayload, contentHash, hashPayload } from './sync-payload.js';
 import { registerCommand, unregisterCommand } from '../../utils/command-registry.js';
+import {
+    buildPullSummary,
+    formatPullSummaryLine,
+    rememberPullSummary,
+    clearPullSummary,
+    lastPullSummary,
+} from './pull-summary.js';
+import { openPullSummaryPanel } from './pull-summary-panel.js';
 
 const STORE = 'settings';
 
@@ -176,12 +184,22 @@ class SyncManager {
             run: () => this.pull(),
             when: () => this.isConfigured(),
         });
+        registerCommand({
+            name: 'Sync pull summary',
+            hint: 'What the last pull on this device reconciled',
+            run: () => openPullSummaryPanel(),
+            when: () => Boolean(lastPullSummary()),
+        });
 
         // A re-initialise for a DIFFERENT character is a switch: push shortly,
         // so the character just left has its changes on GitHub without waiting
         // out the quarter-hour timer. The unchanged-skip makes this free when
         // nothing moved; the first initialise of a page load never fires it.
         const characterId = dataManager.getCurrentCharacterId?.() ?? null;
+        // The summary describes what this device downloaded, not what this
+        // character owns; carrying it across a switch would put one character's
+        // pull on another character's screen.
+        if (characterId !== lastCharacterId) clearPullSummary();
         if (
             lastCharacterId !== null &&
             characterId !== null &&
@@ -202,6 +220,7 @@ class SyncManager {
     cleanup() {
         unregisterCommand('Sync push');
         unregisterCommand('Sync pull');
+        unregisterCommand('Sync pull summary');
         this.handoffUnregister?.();
         this.handoffUnregister = null;
         this.handoffPushed = false;
@@ -502,7 +521,7 @@ class SyncManager {
         // "wedged" shape as the dialog above, just without a dialog to point at.
         if (!this._stillOwns(opToken)) return this._supersededResult(silent, 'pull');
 
-        const { merged, mergeFailed, mergeHeld, complete, failed, applied } = await applyPayload(payload);
+        const { merged, mergeFailed, mergeHeld, complete, failed, applied, expected } = await applyPayload(payload);
 
         // A pull that wrote nothing must not move the stamp. Remembering the
         // remote's `exportedAt` after a failed apply makes every later pull
@@ -540,9 +559,18 @@ class SyncManager {
             syncSeq: advanceSeq(lastSeq, remoteSeq),
         });
 
-        const combined = merged?.length
-            ? ` ${merged.length} ${merged.length === 1 ? 'record was' : 'records were'} combined rather than replaced.`
-            : '';
+        // Every figure below comes out of the apply result; nothing here re-reads
+        // storage to find out what changed. See `pull-summary.js` for what that
+        // bounds — the unchanged count among them, which is reported as unknown.
+        const summary = buildPullSummary({
+            merged,
+            mergeFailed,
+            mergeHeld,
+            expected,
+            at: new Date().toISOString(),
+        });
+        rememberPullSummary(summary);
+
         // A record whose fold threw took the remote copy whole, which is this
         // device's entries for it gone. The pull still succeeded, so this is a
         // sentence rather than an error — but an unqualified "records were
@@ -557,9 +585,11 @@ class SyncManager {
         // above, and one the player has to be able to tell apart, because the
         // fix is different: this one says the database is unhealthy and the
         // downloaded entries are still waiting on the next pull.
+        // The count is in the summary line above, so this fragment only has to
+        // name the records and say what to do about them.
         const heldBack = mergeHeld?.length
-            ? ` ${mergeHeld.length} could not be read here and kept this device's copy ` +
-              `(${mergeHeld.map((entry) => entry.label).join(', ')}); pull again once storage is healthy.`
+            ? ` The records kept from this device (${mergeHeld.map((entry) => entry.label).join(', ')}) ` +
+              'could not be read here; pull again once storage is healthy.'
             : '';
         // Not politeness: the stores this pull replaced stop accepting writes
         // until the reload (see `storage.finishRestore`), because anything this
@@ -567,9 +597,13 @@ class SyncManager {
         // back would undo the pull. Saying so is the difference between a
         // reload the player chooses and changes they lose without being told.
         showToast(
-            `Synced from GitHub.${combined}${notCombined}${heldBack} Reload now — changes made before ` +
-                'reloading will not be kept.',
-            { duration: 0, kind: notCombined || heldBack ? 'warn' : 'info' }
+            `Synced from GitHub. ${formatPullSummaryLine(summary)}${notCombined}${heldBack} Reload now — ` +
+                'changes made before reloading will not be kept.',
+            {
+                duration: 0,
+                kind: notCombined || heldBack ? 'warn' : 'info',
+                action: { label: 'What changed?', onClick: () => openPullSummaryPanel() },
+            }
         );
 
         // The union only exists on this device until it is sent up. Pushing it
