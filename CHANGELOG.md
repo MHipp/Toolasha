@@ -6,6 +6,18 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### A sync pull says what it reconciled, the readiness card names who is short, and the census watches the spawn tables
+
+Seven smaller features, all informational, all off by default except the two safety warnings:
+
+- **Sync pull summary.** After each pull the notice says how many records were combined, written whole, or held back unreadable, with a panel listing each combined key and the merge that handled it. Counts come from what the pull already computed; a figure the pull cannot back is reported as unknown rather than guessed.
+- **Who is short of keys.** The dungeon readiness card lists each party member below the key count, sorted by shortfall, with a copy button for pasting into party chat. A member whose count was never seen reads as unknown, not zero.
+- **Spawn table divergence.** The spawn census now compares the rosters it records against the simulator's fitted spawn tables, with an exact expectation for each species rather than a sampled one, and alerts only when a species is far outside the table or the game's tables have changed — so a game-side change is noticed the day it happens rather than when clear times drift.
+- **Net worth forecast.** A collapsed section under the history chart projects a p10–p90 fan to a chosen horizon, with drift, volatility, doubling days and the probability of reaching a target by day 30, 60 and 90. The hourly series is reduced to one sample per day first, since hourly returns would read the drift as twenty-four times what it is.
+- **What a plan save changed.** Saving a guild trial ability plan reports which players changed kit, were added, or were removed since the last save, so the lead knows what to announce.
+- **Running two scripts.** If the MWITools userscript is also installed, a warning names the overlap once per load; neither script warned about the other before.
+- **Panels behind the phone keyboard.** Panels that size against the viewport now size against the visible one, so the keyboard no longer hides the bottom of the palette or settings on a phone.
+
 ### Buff bars under combat units, a wrong-gear warning, and live market values — adapted from MWITools
 
 Three features adapted from the MWITools userscript (CC-BY-NC-SA-4.0, the same licence as this script; attribution in `third-party/mwitools/`), each re-implemented in this script's own idiom and off by default:
