@@ -31,8 +31,27 @@ const game = vi.hoisted(() => ({
     // character-switch reset test moves this off 'char1' — every other test
     // in this file relies on the '_char1' suffix it has always had.
     currentCharId: 'char1',
+    // itemHrid -> { asks, bids }, the cached order book the advisor walks
+    books: {},
 }));
 
+// The persisted order-book cache the advisor values a batch against. Reached
+// through the bundle bridge in production (the tracker is a market-bundle
+// singleton), so the bridge is what a test stands in for; `game.books` empty
+// is the ordinary case of an item nobody has browsed.
+vi.mock('../../utils/bundle-bridge.js', async (importOriginal) => ({
+    ...(await importOriginal()),
+    estimatedListingAge: () =>
+        Object.keys(game.books).length === 0
+            ? null
+            : {
+                  cachedBookSide: (itemHrid, level, isSell) => {
+                      const book = game.books[itemHrid];
+                      const listings = isSell ? book?.asks : book?.bids;
+                      return listings?.length ? { listings, lastUpdated: Date.now() } : null;
+                  },
+              },
+}));
 vi.mock('../../core/config.js', () => ({
     default: { getSetting: (key, fallback) => (key in game.settings ? game.settings[key] : fallback) },
 }));
@@ -356,6 +375,7 @@ describe('guild credit value — exchange advisor sell/rebuy math', () => {
         game.settings = { guildCreditValue: true, guildCreditExchangeAdvisor: true, guildShrineUpgradePlanner: false };
         game.observers = {};
         game.inventory = [];
+        game.books = {};
         game.prices = {
             '/items/bronze_bar': { ask: 100, bid: 90 },
             '/items/iron_bar': { ask: 300, bid: 280 },
@@ -430,6 +450,77 @@ describe('guild credit value — exchange advisor sell/rebuy math', () => {
         const gross = 12 * 280;
         const net = gross - Math.floor(gross * MARKET_TAX);
         expect(advisor.textContent).toContain(formatKMB(net));
+    });
+
+    test('with no cached book the figures are still the top of book, and say so', () => {
+        const modal = buildAdvisorModal('Trade Credit', { spriteId: 'iron_bar', quantity: 12 });
+        game.observers['GuildPanel_exchangeModalContent'](modal);
+
+        const advisor = modal.querySelector('.mwi-exchange-advisor');
+        expect(advisor.textContent).toContain('top of book');
+    });
+
+    test('a batch bigger than the top bid is priced down the book, not at the best price', () => {
+        // 12 Iron Bar against a book that bids 280 for 2 and 200 for the rest.
+        // The old top-of-book quote was 12 x 280; the book actually pays
+        // 2 x 280 + 10 x 200.
+        game.books = {
+            '/items/iron_bar': {
+                bids: [
+                    { price: 280, quantity: 2 },
+                    { price: 200, quantity: 50 },
+                ],
+                asks: [{ price: 300, quantity: 50 }],
+            },
+            '/items/steel_bar': { asks: [{ price: 50, quantity: 1000 }], bids: [] },
+        };
+        const modal = buildAdvisorModal('Trade Credit', { spriteId: 'iron_bar', quantity: 12 });
+        game.observers['GuildPanel_exchangeModalContent'](modal);
+
+        const advisor = modal.querySelector('.mwi-exchange-advisor');
+        const gross = 2 * 280 + 10 * 200;
+        const net = gross - Math.floor(gross * MARKET_TAX);
+        expect(advisor.textContent).toContain(formatKMB(net));
+        expect(advisor.textContent).toContain('order book depth');
+        expect(advisor.textContent).not.toContain(formatKMB(12 * 280 - Math.floor(12 * 280 * MARKET_TAX)));
+    });
+
+    test('a book too thin to cover the batch is reported, and the verdict withheld', () => {
+        game.books = {
+            '/items/iron_bar': { bids: [{ price: 280, quantity: 3 }], asks: [] },
+            '/items/steel_bar': { asks: [{ price: 50, quantity: 1000 }], bids: [] },
+        };
+        const modal = buildAdvisorModal('Trade Credit', { spriteId: 'iron_bar', quantity: 12 });
+        game.observers['GuildPanel_exchangeModalContent'](modal);
+
+        const advisor = modal.querySelector('.mwi-exchange-advisor');
+        expect(advisor.textContent).toContain('bids for only 3 of 12 Iron Bar');
+        expect(advisor.textContent).toContain('not comparable');
+        expect(advisor.textContent).not.toContain('better');
+    });
+
+    test('the rebuy count walks the asks rather than dividing by the best ask', () => {
+        // Net proceeds buy Steel Bar one-for-one per credit. Only 4 sit at 50;
+        // the rest cost 500, so the naive divide-by-best-ask count is far too high.
+        game.books = {
+            '/items/iron_bar': { bids: [{ price: 280, quantity: 100 }], asks: [] },
+            '/items/steel_bar': {
+                asks: [
+                    { price: 50, quantity: 4 },
+                    { price: 500, quantity: 1000 },
+                ],
+                bids: [],
+            },
+        };
+        const modal = buildAdvisorModal('Trade Credit', { spriteId: 'iron_bar', quantity: 10 });
+        game.observers['GuildPanel_exchangeModalContent'](modal);
+
+        const gross = 10 * 280;
+        const net = gross - Math.floor(gross * MARKET_TAX);
+        const walked = 4 + Math.floor((net - 4 * 50) / 500);
+        const advisor = modal.querySelector('.mwi-exchange-advisor');
+        expect(advisor.textContent).toContain(`${walked.toLocaleString()} credits`);
+        expect(advisor.textContent).not.toContain(`${Math.floor(net / 50).toLocaleString()} credits`);
     });
 });
 

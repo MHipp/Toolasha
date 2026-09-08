@@ -30,6 +30,8 @@ import { openShoppingList } from '../../utils/shopping-list.js';
 import { createCuratedRecord, mergeMaps } from '../../utils/persisted-record.js';
 import { heldInInventory } from '../../utils/dungeon-key-forecast.js';
 import { setReactInputValue } from '../../utils/react-input.js';
+import { walkForQuantity, walkForBudget } from '../../utils/order-book.js';
+import { estimatedListingAge } from '../../utils/bundle-bridge.js';
 import { renderTierBadge, TIER_BADGE_CLASS } from './guild-trial-tier-badge.js';
 import { GUILD_BUILDING_MAX_LEVEL } from './guild-trials-store.js';
 import { describeGuildTokenGold, explainGuildTokenValue } from './guild-token-value.js';
@@ -41,6 +43,86 @@ import {
 } from './guild-token-exchange-capture.js';
 
 const CSS_CLASS = 'mwi-guild-credit-value';
+
+/**
+ * One side of an item's order book, from the listing tracker's persisted cache.
+ *
+ * Guild conversion items are not the item whose marketplace panel is open, so
+ * the only depth available anywhere is what that cache kept from earlier
+ * browsing (a week, top rows per side). Null means no book has been seen — not
+ * that the book is empty.
+ *
+ * @param {string} itemHrid - Conversion item
+ * @param {boolean} isSell - True for the asks, false for the bids
+ * @returns {Array<{price: number, quantity: number}>|null} Listings, best first
+ */
+function cachedListings(itemHrid, isSell) {
+    if (!itemHrid) return null;
+    return estimatedListingAge()?.cachedBookSide?.(itemHrid, 0, isSell)?.listings || null;
+}
+
+/**
+ * What selling a quantity would gross, against the book where one is known.
+ *
+ * A short book is answered with what it does cover rather than extrapolated:
+ * the game sends twenty listings a side and says nothing about the rest, so the
+ * units past the end have no price to quote. {@link describeBookShortfall}
+ * turns that into the caveat the panel shows.
+ *
+ * @param {string} itemHrid - Item being sold
+ * @param {number} quantity - Units on the table
+ * @param {number} topBid - Best bid, the fallback when no book has been seen
+ * @returns {{gold: number, filled: number, quantity: number, source: 'book'|'top'}} Gross proceeds
+ */
+function quoteSaleAgainstBook(itemHrid, quantity, topBid) {
+    const bids = cachedListings(itemHrid, false);
+    if (!bids) return { gold: quantity * topBid, filled: quantity, quantity, source: 'top' };
+
+    const { filled, gold } = walkForQuantity(bids, quantity);
+    return { gold, filled, quantity, source: 'book' };
+}
+
+/**
+ * How many units a budget buys, against the book where one is known.
+ *
+ * `units` is null when no book has been seen, which is the caller's signal to
+ * fall back to dividing by the top ask.
+ *
+ * @param {string} itemHrid - Item being bought
+ * @param {number} budget - Gold available
+ * @param {number} topAsk - Best ask, used only to decide the fallback is viable
+ * @returns {{units: number|null, exhausted: boolean, source: 'book'|'top'}} Units affordable
+ */
+function quotePurchaseAgainstBook(itemHrid, budget, topAsk) {
+    const asks = cachedListings(itemHrid, true);
+    if (!asks || !(topAsk > 0)) return { units: null, exhausted: false, source: 'top' };
+
+    const { units, exhausted } = walkForBudget(asks, budget);
+    return { units, exhausted, source: 'book' };
+}
+
+/**
+ * Why the sell → rebuy comparison is a bound rather than a quote, if it is.
+ *
+ * @param {{filled: number, quantity: number, source: string}} sale - From {@link quoteSaleAgainstBook}
+ * @param {{exhausted: boolean, source: string}} purchase - From {@link quotePurchaseAgainstBook}
+ * @param {{name: string}} selectedRow - The row being sold
+ * @param {{name: string}} bestRow - The row being bought
+ * @param {number} quantity - Units on the table
+ * @returns {string|null} A sentence for the panel, or null when both legs are covered
+ */
+function describeBookShortfall(sale, purchase, selectedRow, bestRow, quantity) {
+    if (sale.source === 'book' && sale.filled < quantity) {
+        return (
+            `The visible book bids for only ${formatWithSeparator(Math.floor(sale.filled))} of ` +
+            `${formatWithSeparator(quantity)} ${selectedRow.name} — the proceeds above are for those alone.`
+        );
+    }
+    if (purchase.source === 'book' && purchase.exhausted) {
+        return `The visible asks for ${bestRow.name} run out before the proceeds do — the rebuy count is a floor.`;
+    }
+    return null;
+}
 
 /**
  * The shrine planner's saved state, per character.
@@ -2771,25 +2853,42 @@ class GuildCreditValue {
             return;
         }
 
-        // Selling everything typed, not that amount scaled by itemCount again —
-        // `rawQuantity` is already how many units of the item are on the table.
-        const gross = rawQuantity * sellPrice;
+        // Both legs are batch-sized, so both are walked against the book rather
+        // than multiplied by the top of it: the Max button fills this field with
+        // everything held, and a thousand units quoted at the best bid is a
+        // number the book cannot honour. Where no book has been seen the top of
+        // book is still all there is — the figures then say so.
+        const sale = quoteSaleAgainstBook(selectedRow.hrid, rawQuantity, sellPrice);
+        const gross = sale.gold;
         const tax = Math.floor(gross * SELLER_TAX);
         const net = gross - tax;
 
         // How many batches of the best item can we buy with net proceeds?
         const bestBatchCost = bestRow.itemCount * bestRow.sellPrice;
-        const bestBatches = Math.floor(net / bestBatchCost);
+        const purchase = quotePurchaseAgainstBook(bestRow.hrid, net, bestRow.sellPrice);
+        const bestBatches = Math.floor(
+            purchase.units === null ? net / bestBatchCost : purchase.units / Math.max(1, bestRow.itemCount || 1)
+        );
         const bestCredits = bestBatches * bestRow.creditCount;
         const creditDiff = bestCredits - directCredits;
+        // A leg the book could not answer in full makes the comparison a bound,
+        // not a quote. The rows are still shown — they are what the visible book
+        // says — but the verdict line refuses to rank on them.
+        const bookNote = describeBookShortfall(sale, purchase, selectedRow, bestRow, rawQuantity);
 
         const diffColor = creditDiff > 0 ? '#4ade80' : '#ff6b6b';
         const diffSign = creditDiff > 0 ? '+' : '';
         const diffLabel = creditDiff > 0 ? '↑ better' : '↓ worse';
 
-        advisor.style.borderColor = creditDiff > 0 ? 'rgba(74,222,128,0.3)' : 'rgba(255,107,107,0.3)';
+        advisor.style.borderColor = bookNote
+            ? 'rgba(255,255,255,0.15)'
+            : creditDiff > 0
+              ? 'rgba(74,222,128,0.3)'
+              : 'rgba(255,107,107,0.3)';
         advisor.innerHTML = `
-            <div style="color:#9ca3af; margin-bottom:6px; font-size:11px;">Sell → rebuy best item (${Math.round(MARKET_TAX * 100)}% tax)</div>
+            <div style="color:#9ca3af; margin-bottom:6px; font-size:11px;">Sell → rebuy best item (${Math.round(MARKET_TAX * 100)}% tax)${
+                sale.source === 'top' || purchase.source === 'top' ? ', top of book' : ', order book depth'
+            }</div>
             <div style="display:flex; justify-content:space-between; margin-bottom:3px;">
                 <span style="color:#aaa;">Direct exchange</span>
                 <span style="color:#e0e0e0; font-weight:600;">${directCredits.toLocaleString()} credits</span>
@@ -2804,8 +2903,13 @@ class GuildCreditValue {
             </div>
             <div style="display:flex; justify-content:space-between; border-top:1px solid rgba(255,255,255,0.1); padding-top:6px;">
                 <span style="color:#aaa;">Difference</span>
-                <span style="color:${diffColor}; font-weight:700;">${diffSign}${creditDiff.toLocaleString()} credits ${diffLabel}</span>
+                ${
+                    bookNote
+                        ? `<span style="color:#9ca3af; font-weight:600;">not comparable</span>`
+                        : `<span style="color:${diffColor}; font-weight:700;">${diffSign}${creditDiff.toLocaleString()} credits ${diffLabel}</span>`
+                }
             </div>
+            ${bookNote ? `<div style="color:#9ca3af; font-size:11px; margin-top:6px;">${bookNote}</div>` : ''}
         `;
 
         modalEl.querySelector(`.${CSS_CLASS}`)?.insertAdjacentElement('afterend', advisor);

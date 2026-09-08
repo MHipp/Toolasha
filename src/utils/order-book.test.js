@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { bestPrice, queueAt, estimateFillSeconds } from './order-book.js';
+import { bestPrice, queueAt, estimateFillSeconds, walkForQuantity, walkForBudget } from './order-book.js';
 
 /**
  * A side of the book, newest listing last.
@@ -90,5 +90,69 @@ describe('estimateFillSeconds', () => {
     test('a level with no quantity has no rate', () => {
         const empty = listings(5, 100, 60_000, 0);
         expect(estimateFillSeconds(empty, 10)).toBeNull();
+    });
+});
+
+describe('walkForQuantity', () => {
+    const bids = [
+        { price: 100, quantity: 5 },
+        { price: 90, quantity: 10 },
+        { price: 80, quantity: 2 },
+    ];
+
+    test('takes from each level in turn rather than quoting the top price', () => {
+        expect(walkForQuantity(bids, 10)).toEqual({ filled: 10, gold: 5 * 100 + 5 * 90, covered: true });
+    });
+
+    test('a quantity inside the first level is that level alone', () => {
+        expect(walkForQuantity(bids, 3)).toEqual({ filled: 3, gold: 300, covered: true });
+    });
+
+    test('a book that runs out reports the shortfall instead of extrapolating', () => {
+        const result = walkForQuantity(bids, 100);
+        expect(result.filled).toBe(17);
+        expect(result.covered).toBe(false);
+        expect(result.gold).toBe(5 * 100 + 10 * 90 + 2 * 80);
+    });
+
+    test('an empty or absent side covers nothing', () => {
+        expect(walkForQuantity([], 5)).toEqual({ filled: 0, gold: 0, covered: false });
+        expect(walkForQuantity(null, 5)).toEqual({ filled: 0, gold: 0, covered: false });
+    });
+
+    test('rows with no price or no size are skipped', () => {
+        const rows = [{ price: 0, quantity: 5 }, { quantity: 5 }, { price: 50, quantity: 4 }];
+        expect(walkForQuantity(rows, 4)).toEqual({ filled: 4, gold: 200, covered: true });
+    });
+
+    test('asking for nothing is covered by nothing', () => {
+        expect(walkForQuantity(bids, 0)).toEqual({ filled: 0, gold: 0, covered: false });
+    });
+});
+
+describe('walkForBudget', () => {
+    const asks = [
+        { price: 100, quantity: 5 },
+        { price: 110, quantity: 10 },
+    ];
+
+    test('spends down the ladder rather than dividing by the top ask', () => {
+        // 1000 at the top ask alone would read as 10 units; the book gives 5 + 4
+        expect(walkForBudget(asks, 1000)).toEqual({ units: 9, gold: 5 * 100 + 4 * 110, exhausted: false });
+    });
+
+    test('a budget short of the next unit stops without buying a fraction', () => {
+        expect(walkForBudget(asks, 150)).toEqual({ units: 1, gold: 100, exhausted: false });
+    });
+
+    test('running off the end of the book with budget left says so', () => {
+        const result = walkForBudget(asks, 1_000_000);
+        expect(result.units).toBe(15);
+        expect(result.exhausted).toBe(true);
+    });
+
+    test('no book and no budget buy nothing', () => {
+        expect(walkForBudget([], 500)).toEqual({ units: 0, gold: 0, exhausted: true });
+        expect(walkForBudget(asks, 0)).toEqual({ units: 0, gold: 0, exhausted: false });
     });
 });

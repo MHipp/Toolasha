@@ -859,6 +859,35 @@ class EstimatedListingAge {
     }
 
     /**
+     * One whole side of an item's cached order book.
+     *
+     * {@link cachedTopOfBook} answers the head of the side; this answers the
+     * ladder, for a caller valuing more than one unit against it (see
+     * `utils/order-book.js`'s `walkForQuantity` / `walkForBudget`).
+     *
+     * The rows are the game's own, so they arrive best-first, and a persisted
+     * book carries only its top {@link ORDER_BOOK_PERSISTED_ROWS} rows — a walk
+     * running off the end has genuinely not been told what lies past it.
+     *
+     * @param {string} itemHrid - Item to look up
+     * @param {number} [enhancementLevel=0] - Which level's book
+     * @param {boolean} [isSell=true] - True for the asks, false for the bids
+     * @returns {{listings: Array<Object>, lastUpdated: number}|null} The side and when it
+     *   was read, or null when the cache has no book for that item and level
+     */
+    cachedBookSide(itemHrid, enhancementLevel = 0, isSell = true) {
+        const entry = this.orderBooksCache?.[itemHrid];
+        if (!entry) return null;
+        const orderBooks = (entry.data || entry)?.orderBooks;
+        if (!orderBooks) return null;
+
+        const book = Array.isArray(orderBooks) ? orderBooks[enhancementLevel] : orderBooks[String(enhancementLevel)];
+        const listings = isSell ? book?.asks : book?.bids;
+        if (!Array.isArray(listings) || listings.length === 0) return null;
+        return { listings, lastUpdated: entry.lastUpdated ?? 0 };
+    }
+
+    /**
      * Load cached order books from IndexedDB
      */
     async loadOrderBooksCache() {

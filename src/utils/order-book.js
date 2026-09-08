@@ -123,3 +123,77 @@ export function estimateFillSeconds(listings, count) {
     // The order's own quantity counts: it is not filled until all of it is
     return (quantity + count) / perSecond;
 }
+
+/**
+ * What a quantity would fetch (or cost) against one side of a book.
+ *
+ * Walks the listings in the order the game sends them — best first — taking
+ * from each until the quantity is met. The counterpart to {@link bestPrice} for
+ * anything valuing more than one unit: a batch quoted at the top price alone
+ * overstates a sale and understates a purchase by however much the book slopes.
+ *
+ * `filled` short of `quantity` is the answer, not a failure: the game only ever
+ * sends twenty listings per side, so a book that runs out has genuinely not
+ * said what the rest of the batch is worth. Callers report the shortfall rather
+ * than extrapolating past it.
+ *
+ * @param {Array<{price: number, quantity: number}>} listings - One side of the book, best first
+ * @param {number} quantity - How many units to walk for
+ * @returns {{filled: number, gold: number, covered: boolean}} Units the book covered,
+ *   what they come to, and whether the whole quantity was covered
+ */
+export function walkForQuantity(listings, quantity) {
+    const wanted = Number(quantity) > 0 ? Number(quantity) : 0;
+    let filled = 0;
+    let gold = 0;
+
+    for (const listing of listings || []) {
+        if (filled >= wanted) break;
+        const price = Number(listing?.price);
+        const available = Number(listing?.quantity);
+        if (!(price > 0) || !(available > 0)) continue;
+        const take = Math.min(wanted - filled, available);
+        filled += take;
+        gold += take * price;
+    }
+
+    return { filled, gold, covered: wanted > 0 && filled >= wanted };
+}
+
+/**
+ * How many whole units a budget buys against one side of a book.
+ *
+ * The inverse of {@link walkForQuantity} for the buy side: spend down the ask
+ * ladder rather than measure a fixed quantity. Partial units are never bought,
+ * so each level yields the floor of what the remaining budget covers there.
+ *
+ * `exhausted` says the walk ran off the end of the book with budget left — the
+ * true count is higher than reported, because the listings past the twenty the
+ * game sends are not known.
+ *
+ * @param {Array<{price: number, quantity: number}>} listings - Ask side, best first
+ * @param {number} budget - Gold to spend
+ * @returns {{units: number, gold: number, exhausted: boolean}} Units bought, gold spent,
+ *   and whether the book ran out before the budget did
+ */
+export function walkForBudget(listings, budget) {
+    let remaining = Number(budget) > 0 ? Number(budget) : 0;
+    let units = 0;
+    let gold = 0;
+
+    for (const listing of listings || []) {
+        const price = Number(listing?.price);
+        const available = Number(listing?.quantity);
+        if (!(price > 0) || !(available > 0)) continue;
+        const take = Math.min(available, Math.floor(remaining / price));
+        if (take <= 0) return { units, gold, exhausted: false };
+        units += take;
+        gold += take * price;
+        remaining -= take * price;
+        // Taking less than the level held means the budget bound here, and every
+        // level past this one is dearer — so the book was never the limit
+        if (take < available) return { units, gold, exhausted: false };
+    }
+
+    return { units, gold, exhausted: remaining > 0 };
+}

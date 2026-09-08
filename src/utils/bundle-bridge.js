@@ -147,6 +147,21 @@ export function queueLengthEstimator() {
 }
 
 /**
+ * The listing-age tracker, for its persisted order-book cache.
+ *
+ * The one cache of whole books that outlives the browsing session (a week, up
+ * to 200 items), so a feature outside the marketplace panel — the guild credit
+ * exchange advisor — can value a batch against real depth instead of the top
+ * of the book. Reached through the global because the tracker is a market
+ * bundle singleton and only that copy runs `initialize()`.
+ *
+ * @returns {Object|null} The tracker, or null when the market bundle is absent
+ */
+export function estimatedListingAge() {
+    return toolashaRoot()?.Market?.estimatedListingAge || null;
+}
+
+/**
  * The market-order totals calculator (coins committed to listings).
  * @returns {Object|null} The module, or null when the market bundle is absent
  */
