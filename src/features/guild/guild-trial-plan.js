@@ -320,6 +320,7 @@ export function verdictFor(line, abilities, abilityDetailMap = {}) {
 export function comparePlan(plan, participants = [], abilityDetailMap = {}) {
     const rows = participants || [];
     const verdicts = [];
+    const indexByKey = new Map();
     const byName = {};
     const notInTrial = [];
     const planned = new Set();
@@ -331,14 +332,22 @@ export function comparePlan(plan, participants = [], abilityDetailMap = {}) {
             continue;
         }
         const key = String(row.name || '').toLowerCase();
-        if (planned.has(key)) continue;
-        planned.add(key);
 
         const verdict = row.captured
             ? { name: row.name, planName: line.player, ...verdictFor(line, row.capture?.abilities, abilityDetailMap) }
             : { name: row.name, planName: line.player, status: 'uncaptured', missing: [], underLevel: [], extra: [] };
         verdict.unknown = [...(line.unknown || [])];
-        verdicts.push(verdict);
+
+        // A second line for the same player is a correction, not noise — the
+        // lead rewrote it rather than deleting the old one — so it replaces
+        // the earlier verdict instead of being silently skipped.
+        if (indexByKey.has(key)) {
+            verdicts[indexByKey.get(key)] = verdict;
+        } else {
+            indexByKey.set(key, verdicts.length);
+            verdicts.push(verdict);
+            planned.add(key);
+        }
         byName[key] = verdict;
     }
 

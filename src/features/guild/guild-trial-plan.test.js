@@ -218,6 +218,13 @@ describe('comparing a plan against the captures', () => {
         expect(planStatusLine(comparePlan(parse(''), []))).toBe('No plan saved.');
     });
 
+    test('a corrected duplicate line for the same player replaces the earlier one, not both', () => {
+        const plan = parse('Alice: Fierce Aura\nAlice: Aqua Aura');
+        const compare = comparePlan(plan, [row('Alice', [at('aqua_aura', 10)])], ABILITIES);
+        expect(compare.verdicts).toHaveLength(1);
+        expect(compare.verdicts[0]).toMatchObject({ status: 'ok', missing: [], extra: [] });
+    });
+
     test('verdictFor reads the highest copy of a duplicated ability', () => {
         const plan = parse('Alice: Vampirism 200');
         const verdict = verdictFor(plan.lines[0], [at('vampirism', 150), at('vampirism', 220)], ABILITIES);
