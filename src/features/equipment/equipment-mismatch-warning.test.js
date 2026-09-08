@@ -289,6 +289,75 @@ describe('which action is judged', () => {
     });
 });
 
+describe('staying where it was put', () => {
+    /** Fixed rects for the two nodes `position` measures, so a move is visible */
+    function measured(anchorRect) {
+        const host = document.querySelector('[class*="Header_actionInfo"]');
+        const anchorNode = host.querySelector('[class*="Header_communityBuffs"]');
+        host.getBoundingClientRect = () => ({ left: 0, top: 0, bottom: 40, width: 480, height: 40 });
+        anchorNode.getBoundingClientRect = () => anchorRect;
+        return { host, anchorNode };
+    }
+
+    /** Run the queued frame now — a real one is async and the assertion is not */
+    function flushFrame(work) {
+        const raf = window.requestAnimationFrame;
+        window.requestAnimationFrame = (callback) => {
+            callback();
+            return 1;
+        };
+        try {
+            work();
+        } finally {
+            window.requestAnimationFrame = raf;
+        }
+    }
+
+    test('a viewport change re-places the pill against the moved anchor', () => {
+        game.actions = [{ actionHrid: '/actions/cooking/cheese', ordinal: 1 }];
+        stock('/items/red_culinary_hat');
+
+        const nodes = measured({ left: 200, top: 0, bottom: 22, width: 220, height: 22 });
+        warning.render();
+        expect(document.querySelector(PILL).style.left).toBe('200px');
+
+        // The window narrows and the header reflows. No node is inserted, so
+        // the header observer never fires and nothing else would notice.
+        nodes.anchorNode.getBoundingClientRect = () => ({ left: 44, top: 0, bottom: 18, width: 90, height: 18 });
+        flushFrame(() => window.dispatchEvent(new Event('resize')));
+
+        expect(document.querySelector(PILL).style.left).toBe('44px');
+        expect(document.querySelector(PILL).style.top).toBe('22px');
+    });
+
+    test('a resize with the header gone takes the pill down rather than measuring a detached rect', () => {
+        game.actions = [{ actionHrid: '/actions/cooking/cheese', ordinal: 1 }];
+        stock('/items/red_culinary_hat');
+        measured({ left: 200, top: 0, bottom: 22, width: 220, height: 22 });
+        warning.render();
+        expect(document.querySelector(PILL)).not.toBeNull();
+
+        document.body.innerHTML = '';
+        flushFrame(() => window.dispatchEvent(new Event('resize')));
+
+        expect(document.querySelector(PILL)).toBeNull();
+    });
+
+    test('the resize listener goes with the feature', () => {
+        game.actions = [{ actionHrid: '/actions/cooking/cheese', ordinal: 1 }];
+        stock('/items/red_culinary_hat');
+        measured({ left: 200, top: 0, bottom: 22, width: 220, height: 22 });
+        warning.render();
+
+        warning.disable();
+        const spy = vi.spyOn(warning, 'reposition');
+        flushFrame(() => window.dispatchEvent(new Event('resize')));
+
+        expect(spy).not.toHaveBeenCalled();
+        spy.mockRestore();
+    });
+});
+
 describe('teardown', () => {
     test('disable removes the pill and unhooks the header', () => {
         game.actions = [{ actionHrid: '/actions/cooking/cheese', ordinal: 1 }];

@@ -188,6 +188,9 @@ class EquipmentMismatchWarning {
         this.registry = createCleanupRegistry();
         this.unregisterObserver = null;
         this.pendingTimer = null;
+        this.pendingFrame = null;
+        this.repositionQueued = false;
+        this.onResize = null;
         this._handlers = {};
     }
 
@@ -208,6 +211,12 @@ class EquipmentMismatchWarning {
         this.unregisterObserver = domObserver.onClass('EquipmentMismatchWarning', 'Header_actionInfo', () =>
             this.schedule()
         );
+
+        // The header observer only fires when an `Header_actionInfo` node is
+        // *inserted*, which a resize is not — see `reposition`.
+        this.onResize = () => this.scheduleReposition();
+        this.registry.registerListener(window, 'resize', this.onResize);
+        this.registry.registerListener(window, 'orientationchange', this.onResize);
 
         this.initialized = true;
         this.schedule();
@@ -230,6 +239,50 @@ class EquipmentMismatchWarning {
             this.render();
         }, DEBOUNCE_MS);
         this.registry.registerTimeout(this.pendingTimer);
+    }
+
+    /**
+     * Re-place a pill that is already up, without re-reading any gear.
+     *
+     * The pill is absolutely positioned from the community-buff row's rect, and
+     * that rect moves whenever the viewport does — a window resize, a phone
+     * rotating, the mobile breakpoint crossing. Nothing else repositions it:
+     * the header observer fires on an inserted `Header_actionInfo` node and a
+     * resize inserts nothing, so without this the pill keeps the offsets it was
+     * drawn with and can sit off-screen or over the game's own controls.
+     */
+    reposition() {
+        const pill = document.getElementById(PILL_ID);
+        if (!pill?.isConnected) return;
+        const host = document.querySelector(HOST_SELECTOR);
+        const anchor = host?.querySelector(ANCHOR_SELECTOR);
+        // The header the pill was measured against is gone; a rect from a
+        // detached node is not a position, so take the pill down instead
+        if (!host || !anchor || pill.parentElement !== host) {
+            this.remove();
+            return;
+        }
+        this.position(pill, host, anchor);
+    }
+
+    /**
+     * One reposition per frame: a resize drag fires the event far faster than
+     * the two `getBoundingClientRect` reads it would cost to answer each one.
+     */
+    scheduleReposition() {
+        if (!this.initialized || this.repositionQueued) return;
+        // The queued flag, not the frame handle, is the guard: a handle only
+        // arrives once the callback has been scheduled, and a synchronous one
+        // would land back here after the work had already run.
+        this.repositionQueued = true;
+        const run = () => {
+            this.repositionQueued = false;
+            this.reposition();
+        };
+        this.pendingFrame =
+            typeof window.requestAnimationFrame === 'function'
+                ? window.requestAnimationFrame(run)
+                : window.setTimeout(run, 16);
     }
 
     /**
@@ -340,6 +393,12 @@ class EquipmentMismatchWarning {
         if (this.pendingTimer) {
             clearTimeout(this.pendingTimer);
             this.pendingTimer = null;
+        }
+        this.repositionQueued = false;
+        if (this.pendingFrame !== null) {
+            if (typeof window.cancelAnimationFrame === 'function') window.cancelAnimationFrame(this.pendingFrame);
+            else clearTimeout(this.pendingFrame);
+            this.pendingFrame = null;
         }
         try {
             for (const [event, handler] of Object.entries(this._handlers)) {
