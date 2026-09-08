@@ -31,8 +31,17 @@ vi.mock('../../core/data-manager.js', () => ({
     },
 }));
 
-const { loadOverrides, setOverride, loadSnapshot, saveSnapshot, OVERRIDES_KEY, SNAPSHOT_KEY } =
-    await import('./ironcow-store.js');
+const {
+    loadOverrides,
+    setOverride,
+    loadSnapshot,
+    saveSnapshot,
+    loadPlanCollapsed,
+    setPlanCollapsed,
+    OVERRIDES_KEY,
+    SNAPSHOT_KEY,
+    PLAN_COLLAPSED_KEY,
+} = await import('./ironcow-store.js');
 
 beforeEach(() => {
     disk.values = {};
@@ -123,5 +132,33 @@ describe('the last costed loop', () => {
         await saveSnapshot({ goldPerHour: 1 });
         await saveSnapshot(null);
         await expect(loadSnapshot()).resolves.toBeNull();
+    });
+});
+
+describe('whether the plan section is shut', () => {
+    test('defaults to open, so an upgrade changes nobody’s panel', async () => {
+        await expect(loadPlanCollapsed()).resolves.toBe(false);
+    });
+
+    test('shut round-trips', async () => {
+        await setPlanCollapsed(true);
+        expect(disk.values[PLAN_COLLAPSED_KEY]).toBe(true);
+        await expect(loadPlanCollapsed()).resolves.toBe(true);
+    });
+
+    test('opening it again round-trips', async () => {
+        await setPlanCollapsed(true);
+        await setPlanCollapsed(false);
+        await expect(loadPlanCollapsed()).resolves.toBe(false);
+    });
+
+    test('anything stored that is not a boolean reads as open', async () => {
+        disk.values[PLAN_COLLAPSED_KEY] = 'yes';
+        await expect(loadPlanCollapsed()).resolves.toBe(false);
+    });
+
+    test('is keyed apart from the stage ticks and the snapshot', () => {
+        expect(PLAN_COLLAPSED_KEY).not.toBe(OVERRIDES_KEY);
+        expect(PLAN_COLLAPSED_KEY).not.toBe(SNAPSHOT_KEY);
     });
 });

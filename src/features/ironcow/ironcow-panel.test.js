@@ -16,7 +16,7 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const plan = vi.hoisted(() => ({ state: null, stages: [] }));
 const loop = vi.hoisted(() => ({ result: null, warnings: [], pricing: null, offline: null, pending: null }));
-const store = vi.hoisted(() => ({ overrides: {}, snapshot: null, written: [] }));
+const store = vi.hoisted(() => ({ overrides: {}, snapshot: null, written: [], collapsed: false, collapses: [] }));
 // Mutable so the character-switch race test can move the active character
 // mid-flight, the way a real switch does.
 const characterId = vi.hoisted(() => ({ current: 'charA' }));
@@ -49,6 +49,11 @@ vi.mock('./ironcow-store.js', () => ({
     loadSnapshot: async () => store.snapshot,
     saveSnapshot: async (value) => {
         store.snapshot = value;
+    },
+    loadPlanCollapsed: async () => store.collapsed,
+    setPlanCollapsed: async (value) => {
+        store.collapses.push(value);
+        store.collapsed = value;
     },
     setOverride: async (id, ticked) => {
         store.written.push([id, ticked]);
@@ -142,6 +147,8 @@ beforeEach(() => {
     store.overrides = {};
     store.snapshot = null;
     store.written = [];
+    store.collapsed = false;
+    store.collapses = [];
 });
 
 afterEach(() => {
@@ -426,5 +433,56 @@ describe('percentages', () => {
         const titles = [...ironCowFarmPanel.panel.querySelectorAll('[title]')].map((element) => element.title);
         expect(titles.some((title) => title.includes('60.0% decompose success'))).toBe(true);
         expect(titles.some((title) => title.includes('coinified at 70.0% success'))).toBe(true);
+    });
+});
+
+describe('the plan section folds away', () => {
+    test('is open by default, so an upgrade changes nothing on screen', async () => {
+        ironCowFarmPanel.show();
+        await ironCowFarmPanel.load();
+
+        expect(text()).toContain('The endless loop');
+        expect(text()).not.toContain(FAILED);
+    });
+
+    test('a character who shut it gets it shut, with the count still on the bar', async () => {
+        store.collapsed = true;
+        ironCowFarmPanel.show();
+        await ironCowFarmPanel.load();
+
+        expect(text()).not.toContain('The endless loop');
+        // Four of the six gating stages are done for this character; the loop
+        // itself is stage seven and is counted as ready, not as done.
+        expect(text()).toContain('4 of 6 stages done · the loop is ready');
+        expect(text()).not.toContain(FAILED);
+    });
+
+    test('shutting it stores the choice and redraws without the stages', async () => {
+        ironCowFarmPanel.show();
+        await ironCowFarmPanel.load();
+
+        const toggle = [...ironCowFarmPanel.panel.querySelectorAll('button')].find((element) =>
+            element.textContent.includes('The plan')
+        );
+        expect(toggle).toBeTruthy();
+        toggle.click();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(store.collapses).toEqual([true]);
+        expect(text()).not.toContain('The endless loop');
+        expect(text()).not.toContain(FAILED);
+    });
+
+    test('a shut plan does not take the sections after it with it', async () => {
+        store.collapsed = true;
+        ironCowFarmPanel.show();
+        await ironCowFarmPanel.load();
+        await ironCowFarmPanel.refresh();
+
+        expect(text()).toContain('The loop');
+        expect(text()).toContain('Cowbells');
+        expect(text()).toContain('Check');
+        expect(text()).not.toContain(FAILED);
     });
 });

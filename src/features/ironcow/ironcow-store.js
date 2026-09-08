@@ -25,6 +25,9 @@ export const OVERRIDES_KEY = 'ironCowFarmOverrides';
 /** Unscoped key for the last costed loop */
 export const SNAPSHOT_KEY = 'ironCowFarmSnapshot';
 
+/** Unscoped key for whether the plan section is shut */
+export const PLAN_COLLAPSED_KEY = 'ironCowFarmPlanCollapsed';
+
 /**
  * This character's manual stage ticks.
  * @returns {Promise<Object>} Stage id → true
@@ -99,4 +102,53 @@ export async function saveSnapshot(loop) {
     }
 }
 
-export default { OVERRIDES_KEY, SNAPSHOT_KEY, loadOverrides, setOverride, loadSnapshot, saveSnapshot };
+/**
+ * Whether this character has shut the plan section.
+ *
+ * Anything other than a stored `true` is open: the default has to be today's
+ * appearance, so that upgrading to a version that can collapse the section does
+ * not silently fold it up on everyone who never asked for that.
+ *
+ * @returns {Promise<boolean>} True when it is shut
+ */
+export async function loadPlanCollapsed() {
+    try {
+        // 'discard': one character having shut their plan says nothing about
+        // another's, exactly as for the stage ticks.
+        const stored = await readScoped(PLAN_COLLAPSED_KEY, 'settings', false, { migrate: 'discard' });
+        return stored === true;
+    } catch (error) {
+        console.error('[IronCow] Loading the plan section state failed:', error);
+        return false;
+    }
+}
+
+/**
+ * Shut the plan section, or open it.
+ *
+ * Nothing is read first — the new state is the caller's, not a mutation of the
+ * stored one — so there is no gap for a character switch to land in: the key is
+ * resolved inside `writeScoped`, against whoever is current at the write.
+ *
+ * @param {boolean} collapsed - True to shut it
+ * @returns {Promise<void>}
+ */
+export async function setPlanCollapsed(collapsed) {
+    try {
+        await writeScoped(PLAN_COLLAPSED_KEY, collapsed === true, 'settings');
+    } catch (error) {
+        console.error('[IronCow] Saving the plan section state failed:', error);
+    }
+}
+
+export default {
+    OVERRIDES_KEY,
+    SNAPSHOT_KEY,
+    PLAN_COLLAPSED_KEY,
+    loadOverrides,
+    setOverride,
+    loadSnapshot,
+    saveSnapshot,
+    loadPlanCollapsed,
+    setPlanCollapsed,
+};

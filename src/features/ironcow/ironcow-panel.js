@@ -37,7 +37,14 @@ import { restoreGeometry, saveGeometry, saveOpenState, reopenIfLeftOpen } from '
 import { attachMinimize } from '../../utils/panel-minimize.js';
 import { deriveStages, isIronCowMode, readCharacterState } from './ironcow-plan.js';
 import { calculateStarfruitLoop, cowbellPricing, loopWarnings, offlineWindow } from './starfruit-loop.js';
-import { loadOverrides, loadSnapshot, saveSnapshot, setOverride } from './ironcow-store.js';
+import {
+    loadOverrides,
+    loadPlanCollapsed,
+    loadSnapshot,
+    saveSnapshot,
+    setOverride,
+    setPlanCollapsed,
+} from './ironcow-store.js';
 import { registerCommand, unregisterCommand } from '../../utils/command-registry.js';
 import ironCowRuntime from './ironcow-runtime.js';
 // Side effect only: registers the "Iron Bell next step" overlay tile. Imported
@@ -170,6 +177,25 @@ function bells(value) {
     return formatWithSeparator(Math.round(value));
 }
 
+/**
+ * What a folded plan says instead of its stages.
+ *
+ * Stage 6 is the loop itself and is never "done" — it is the thing the other
+ * five stages unlock — so it is counted as ready or waiting rather than as a
+ * sixth box to tick.
+ *
+ * @param {Array<Object>} stages - From `deriveStages`
+ * @returns {string} e.g. "4 of 5 stages done · the loop is waiting"
+ */
+function planSummary(stages) {
+    const gates = stages.filter((stage) => stage.id !== 'loop');
+    if (!gates.length) return '';
+    const done = gates.filter((stage) => stage.done).length;
+    const loop = stages.find((stage) => stage.id === 'loop');
+    const tail = loop ? ` · the loop is ${loop.ready ? 'ready' : 'waiting'}` : '';
+    return `${done} of ${gates.length} stages done${tail}`;
+}
+
 class IronCowFarmPanel {
     constructor() {
         this.panel = null;
@@ -178,6 +204,10 @@ class IronCowFarmPanel {
         this._loop = null;
         this.pricedAt = null;
         this._overrides = {};
+        // Today's appearance until the stored answer lands: the section opens,
+        // and a character who shut it sees it shut a moment later rather than
+        // everyone seeing it fold up on upgrade.
+        this.planCollapsed = false;
         this.busy = false;
         this.loaded = null;
         // The overlay tile opens the same panel this toggles, and reads the
@@ -266,6 +296,7 @@ class IronCowFarmPanel {
         // the overlay tile, which reads ironCowRuntime.loop) would keep
         // showing the departing character's costed gold/hour, bells/week,
         // and "costed <time>" as if they were this character's.
+        this.planCollapsed = await loadPlanCollapsed();
         const snapshot = await loadSnapshot();
         this.loop = snapshot;
         this.pricedAt = snapshot?.computedAt || null;
@@ -329,6 +360,18 @@ class IronCowFarmPanel {
     async toggleStage(stageId, ticked) {
         this.overrides = await setOverride(stageId, ticked);
         this._render();
+    }
+
+    /**
+     * Fold the plan section away, or open it, and remember which.
+     * @returns {Promise<void>}
+     */
+    async togglePlan() {
+        this.planCollapsed = !this.planCollapsed;
+        // Drawn before the write: the fold is the player's own click and must
+        // land at once, whatever storage does next.
+        this._render();
+        await setPlanCollapsed(this.planCollapsed);
     }
 
     // -------------------------------------------------------------------------
@@ -540,11 +583,21 @@ class IronCowFarmPanel {
 
     /**
      * The numbered plan, each stage answered against the character.
+     *
+     * Foldable, because once the stages are done the checklist is six settled
+     * lines across the whole top of the panel and the figures below it are what
+     * the player came for. Folded, the bar carries the count so it is still
+     * saying something rather than sitting there as a lid.
+     *
      * @param {Array<Object>} stages - From `deriveStages`
      * @returns {HTMLElement} The card
      */
     _planCard(stages) {
-        const holder = card('The plan');
+        const holder = card('');
+        holder.appendChild(this._planHeader(stages));
+
+        if (this.planCollapsed) return holder;
+
         if (!stages.length) {
             holder.appendChild(span('No character state to check the plan against yet.', { color: COLORS.textDim }));
             return holder;
@@ -554,6 +607,29 @@ class IronCowFarmPanel {
             holder.appendChild(this._stageRow(stage));
         }
         return holder;
+    }
+
+    /**
+     * The plan's own title bar, which is also the control that folds it.
+     * @param {Array<Object>} stages - From `deriveStages`
+     * @returns {HTMLElement} The bar
+     */
+    _planHeader(stages) {
+        const summary = this.planCollapsed ? planSummary(stages) : '';
+        const label = `${this.planCollapsed ? '▸' : '▾'} The plan${summary ? ` — ${summary}` : ''}`;
+
+        const bar = button(label, () => this.togglePlan(), {
+            background: 'none',
+            border: 'none',
+            color: COLORS.accent,
+            fontWeight: 'bold',
+            fontSize: '12px',
+            padding: '0',
+            marginBottom: '2px',
+            textAlign: 'left',
+        });
+        bar.title = this.planCollapsed ? 'Show the stages' : 'Fold the stages away';
+        return bar;
     }
 
     /**
