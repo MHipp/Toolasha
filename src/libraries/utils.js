@@ -200,7 +200,21 @@ toolashaRoot.Utils = {
     cleanupRegistry,
     customPriceOverrides,
     houseCostCalculator,
-    enhancementCalculator,
+    // The protect-from level list (protectFromLevels, MIN_PROTECT_FROM) rides
+    // on the calculator namespace, beside calculateEnhancement/costStats/
+    // costPercentiles/costExceedanceProbability, rather than only under its
+    // own enhancementProtectSweep key below: a companion script's bridge reads
+    // this one namespace for the whole protect-from question — which levels
+    // are legal and what one of them costs — and a second namespace it would
+    // also have to know to check is exactly the kind of drift this guards
+    // against. `sweepProtectFrom` itself stays out: it takes this module's own
+    // chain parameters and solves internally, which does not fit a caller with
+    // its own budget-limited, memoised solve loop.
+    enhancementCalculator: {
+        ...enhancementCalculator,
+        protectFromLevels: enhancementProtectSweep.protectFromLevels,
+        MIN_PROTECT_FROM: enhancementProtectSweep.MIN_PROTECT_FROM,
+    },
     enhancementPricing,
     enhancementProtectSweep,
     commandRegistry,
