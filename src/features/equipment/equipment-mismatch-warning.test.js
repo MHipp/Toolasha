@@ -289,6 +289,27 @@ describe('which action is judged', () => {
     });
 });
 
+describe('the debounce holds one timer, not a session of them', () => {
+    test('repeated scheduling retains nothing', () => {
+        vi.useFakeTimers();
+        const spy = vi.spyOn(warning.registry, 'registerTimeout');
+
+        // `items_updated` fires on every craft, every drop and every loadout
+        // swap, and each one schedules
+        for (let i = 0; i < 200; i += 1) warning.schedule();
+
+        expect(spy).not.toHaveBeenCalled();
+        spy.mockRestore();
+
+        // And the one live timer is still cleared by teardown
+        game.actions = [{ actionHrid: '/actions/cooking/cheese', ordinal: 1 }];
+        stock('/items/red_culinary_hat');
+        warning.disable();
+        vi.advanceTimersByTime(1000);
+        expect(document.querySelector(PILL)).toBeNull();
+    });
+});
+
 describe('staying where it was put', () => {
     /** Fixed rects for the two nodes `position` measures, so a move is visible */
     function measured(anchorRect) {

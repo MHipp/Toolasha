@@ -228,6 +228,11 @@ class EquipmentMismatchWarning {
      * The character id is captured at scheduling time and checked again when the
      * timer fires: a switch inside the debounce window would otherwise paint the
      * departing character's gear against the arriving character's header.
+     *
+     * At most one timer exists at a time and `disable` clears it by hand, so it
+     * is deliberately not handed to the cleanup registry: the registry only
+     * empties at teardown, and this is scheduled on every `items_updated` — a
+     * session's worth of dead timer ids retained to clear one live one.
      */
     schedule() {
         if (!this.initialized) return;
@@ -238,7 +243,6 @@ class EquipmentMismatchWarning {
             if (dataManager.getCurrentCharacterId() !== characterId) return;
             this.render();
         }, DEBOUNCE_MS);
-        this.registry.registerTimeout(this.pendingTimer);
     }
 
     /**
