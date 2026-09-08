@@ -207,6 +207,10 @@ const utilsExternalGlobals = new Map([
     // registry its own bundle happened to import.
     [normalize(join(__dirname, 'src/utils/daily-checkpoints.js')), 'Toolasha.Utils.dailyCheckpoints'],
     [normalize(join(__dirname, 'src/utils/persisted-record.js')), 'Toolasha.Utils.persistedRecord'],
+    // Combat clears the records, the consumables panel reads one of them, and
+    // the sim bundle pulls it in transitively. Three copies would each hold
+    // their own idea of what a Reset cleared.
+    [normalize(join(__dirname, 'src/utils/cleared-record.js')), 'Toolasha.Utils.clearedRecord'],
     // The sync feature (ui bundle) asks it; market/guild/combat register into
     // it. One instance, or a pull would find an empty registry
     [normalize(join(__dirname, 'src/utils/sync-merge-registry.js')), 'Toolasha.Utils.syncMergeRegistry'],

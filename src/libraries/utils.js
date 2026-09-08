@@ -119,6 +119,7 @@ import * as dailyCheckpoints from '../utils/daily-checkpoints.js';
 import * as classWeapon from '../utils/class-weapon.js';
 import * as damageBoard from '../utils/damage-board.js';
 import * as persistedRecord from '../utils/persisted-record.js';
+import * as clearedRecord from '../utils/cleared-record.js';
 import * as syncMergeRegistry from '../utils/sync-merge-registry.js';
 import * as reactClick from '../utils/react-click.js';
 import * as consumableForecast from '../utils/consumable-forecast.js';
@@ -271,6 +272,7 @@ toolashaRoot.Utils = {
     classWeapon,
     damageBoard,
     persistedRecord,
+    clearedRecord,
     syncMergeRegistry,
     reactClick,
     consumableForecast,
