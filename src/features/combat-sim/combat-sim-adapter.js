@@ -526,24 +526,28 @@ export function parseShykaiImport(jsonString) {
         };
 
         // Equipment: array format [{itemLocationHrid, itemHrid, enhancementLevel}]
+        // (TLA-045) The export's itemLocationHrid is a raw Szerra/Shykai location (e.g.
+        // /item_locations/two_hand), not Toolasha's canonical equipment slot. The engine's
+        // slot-specific identity checks (weapon/pouch/charm) read canonical /equipment_types/*
+        // keys, so the raw location must never be used as the final DTO key - only current item
+        // metadata (the same authority the live/self path above uses) can determine canonical
+        // slot ownership. An item that can't be resolved to valid equipment metadata is skipped
+        // rather than guessed, so it fails closed instead of silently landing under a
+        // noncanonical key.
         if (Array.isArray(p.equipment)) {
             for (const eq of p.equipment) {
                 if (!eq.itemHrid) continue;
-                // The engine keys equipment by equipmentDetail.type
-                // (/equipment_types/head), but the export — like the game's raw
-                // data — files each piece under itemLocationHrid
-                // (/item_locations/head). Prefer the item sheet's authoritative
-                // type; fall back to translating the location prefix so an item
-                // missing from the sheet still lands on the slot the engine reads
-                // rather than an /item_locations/* key it never looks at.
-                const eqType =
-                    itemDetailMap[eq.itemHrid]?.equipmentDetail?.type ||
-                    eq.itemLocationHrid?.replace('/item_locations/', '/equipment_types/');
+                const eqType = itemDetailMap[eq.itemHrid]?.equipmentDetail?.type;
                 if (eqType) {
                     dto.equipment[eqType] = {
                         hrid: eq.itemHrid,
                         enhancementLevel: eq.enhancementLevel || 0,
                     };
+                } else {
+                    console.warn(
+                        `[CombatSimAdapter] Shykai import: could not resolve equipment slot for itemHrid ` +
+                            `"${eq.itemHrid}" (itemLocationHrid "${eq.itemLocationHrid}"); skipping.`
+                    );
                 }
             }
         }

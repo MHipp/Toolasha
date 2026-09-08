@@ -459,6 +459,12 @@ describe('a player DTO without the game data', () => {
  * lost, and the pouch's extra food/drink slots vanish. This is the one build
  * path that used to diverge — `buildPlayerDTO`/`buildPartyMemberDTO` both key by
  * `equipmentDetail.type` already.
+ *
+ * (TLA-045) An item missing from `itemDetailMap` used to fall back to translating the raw
+ * `itemLocationHrid` prefix into a guessed `/equipment_types/*` key. That guess is not
+ * authoritative — the live/self build path already treats an unresolvable item as absent
+ * rather than invent a slot for it — so the import path must fail closed the same way: skip
+ * the item and warn, never derive a slot from the location string.
  */
 describe('the equipment a Shykai import carries', () => {
     beforeEach(() => {
@@ -490,16 +496,26 @@ describe('the equipment a Shykai import carries', () => {
         expect(dto.equipment['/equipment_types/main_hand']).toEqual({ hrid: '/items/sword', enhancementLevel: 5 });
     });
 
-    test('falls back to translating the location prefix when the item is off the sheet', () => {
+    test('TLA-045: skips (and warns about) an item missing from itemDetailMap instead of guessing its slot', () => {
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
         const payload = JSON.stringify({
             player: {
                 attackLevel: 50,
-                equipment: [{ itemLocationHrid: '/item_locations/back', itemHrid: '/items/unknown_cape' }],
+                equipment: [
+                    { itemLocationHrid: '/item_locations/head', itemHrid: '/items/helm', enhancementLevel: 3 },
+                    { itemLocationHrid: '/item_locations/back', itemHrid: '/items/unknown_cape' },
+                ],
             },
         });
 
         const dto = parseShykaiImport(payload).players[0];
-        expect(dto.equipment['/equipment_types/back']).toEqual({ hrid: '/items/unknown_cape', enhancementLevel: 0 });
+
+        expect(dto.equipment['/equipment_types/back']).toBeUndefined();
+        expect(dto.equipment['/item_locations/back']).toBeUndefined();
+        expect(Object.keys(dto.equipment)).toEqual(['/equipment_types/head']);
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('/items/unknown_cape'));
+
+        warnSpy.mockRestore();
     });
 });
 
