@@ -6,6 +6,14 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Audit round: excluding your coins made the net worth chart's Inventory line dive by that amount
+
+Coin can be excluded from net worth, and the total honoured that — but the history kept writing the full coin balance into its gold field, and the chart draws Inventory as everything minus gold. Anyone who excluded coins got an Inventory line and rate that dropped by their whole balance. Three more in net worth: switching the value source (order book or the game's published value) never re-priced anything until an unrelated update happened; a recalculation still running when you switched character could paint the departing character's total under the arriving one; and offline production income could be filed under the wrong character on a fast switch.
+
+Three faults in yesterday's own fixes: the performance panel, just restored to the palette, closed itself on every character switch; a second combat sim import wiped the note listing what the first import could not place; and a second guild trial divided its damage by a clock the first trial had started, so its damage per second read as a fraction of the truth.
+
+In the companion script, the enhance-to-sell tooltip now says which of three things happened when a row is priced without protection — nothing priced, protection tried and not worth it, or the run too short for protection to apply — rather than one sentence that was wrong for the third.
+
 ### Leftovers: two devices that watched one fight now combine what they saw
 
 A combat session archived by two devices — one that saw the first hour, one that took over for the last five minutes — was stored under one key, and a sync pull let whichever copy arrived second replace the other. The two are combined now: every running total takes the larger reading, the start the earlier, the end the later, and anything that is a rate or a falling stack size is recomputed or taken from the later copy rather than maxed. And the labyrinth ledger no longer opens a run from a sighting that carries no start stamp; a real run always has one, and inventing an identity for one that does not is how phantom runs and double counts happen.
