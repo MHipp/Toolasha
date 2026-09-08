@@ -6,6 +6,16 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Audit round: the performance panel is back in the palette, and a guild trial no longer inherits the last one's damage
+
+Ctrl+K lost the PFormance panel when the palette moved to feature-registered entries: the panel's registration was written but nothing ever ran it. It is registered by the palette itself now, unconditionally like the health report, and a test pins every entry the palette has always had. A new guild trial carried the previous trial's banked damage, deaths and support forward — a fix two rounds ago cleared the reported figures and boss sheets but not the banked history — so a fresh trial could open showing hundreds of thousands of damage already done.
+
+The pasted ability plan cut a hyphenated player name at the hyphen and read the rest as abilities; a colon is now tried first, and a bare hyphen separates only when spaced on both sides. A corrected duplicate line for a player now replaces the earlier one instead of being ignored. And a sync pull could revert a re-captured player to a stale kit, since two authoritative captures were merged by argument order rather than by when they were taken.
+
+Three faults in this morning's own work: the Crafting Plan sized the remainder under a multi-output intermediate by an upper bound on the yield, so it could ask for one log too many; a piece a swap takes off and puts straight back on was listed as something to buy; and an imported item the sim could not place was reported only in the console, where nobody reads it — the sim editor names it now.
+
+In the companion script, the enhance-to-sell row compared candidates across target levels by raw cost, so it always settled on the shallowest profitable level and never surfaced a deeper, more profitable one; it now picks the cheapest way into each level, then the most profitable level.
+
 ### A labyrinth run's leftovers could be overwritten with a full pile
 
 After a run ends the game keeps re-sending the labyrinth state for a while, grid and path still attached, with the supply counts now showing the restocked pile. The run ledger read one of those re-sends as a new run starting under the finished run's own key, with a full pile in hand and nothing spent. Within a session the repeat was swallowed; across a reload it was not, and the memory copy won over the stored one — so a run's true leftovers were replaced by the capacity. That is why the Consumables panel's "left over after the last runs" line showed a full 400 torches for runs that had plainly been used. A run that has been seen to end is no longer reopened by a re-send, and a run already in the ring keeps its first recorded ending. Records already overwritten cannot be told from a run abandoned at the door and are left to age off.
