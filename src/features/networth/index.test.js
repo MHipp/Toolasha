@@ -122,6 +122,23 @@ describe('overlapping recalculations', () => {
     });
 });
 
+describe('a character switch mid-recalculation', () => {
+    test('a run in flight when the feature is disabled does not refill currentData', async () => {
+        const inFlight = deferred(111);
+        calculatorMock.calculateNetworth.mockReturnValueOnce(inFlight.promise);
+
+        const run = networthFeature.recalculate();
+        networthFeature.disable();
+
+        inFlight.resolve();
+        await run;
+
+        // The figure belongs to the character that has just been left
+        expect(networthFeature.currentData).toBeNull();
+        expect(displayMock.header.update).not.toHaveBeenCalled();
+    });
+});
+
 describe('pricing settings', () => {
     test('the value source re-prices net worth, exactly as the pricing mode does', () => {
         configMock.onSettingChange.mockClear();

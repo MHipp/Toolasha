@@ -303,6 +303,11 @@ class NetworthFeature {
             // outlive the feature that spawned them
             terminateItemValueWorkerPool();
 
+            // A recalculation still in flight belongs to the character being
+            // left: without this its `runId` still matches and it would refill
+            // `currentData` — and the header, the panel and the overlay tile —
+            // with the departing character's total after this cleared it
+            this.recalcSeq += 1;
             this.currentData = null;
             this.isActive = false;
         } catch (error) {
