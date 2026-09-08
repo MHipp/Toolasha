@@ -24,6 +24,7 @@ import {
     describeLeg,
     sustainableGold,
     createResourceLedger,
+    reservationLines,
     GOAL_TYPES,
 } from './goal-planner.js';
 
@@ -1068,5 +1069,74 @@ describe('the confidence note', () => {
     test('carries whatever the context has to say about its prices', () => {
         const plan = planGoal({ type: 'gold', amount: 100 }, context({ gold: 500, pricingNote: 'Priced at 10:00.' }));
         expect(plan.confidence.note).toBe('Priced at 10:00.');
+    });
+});
+
+describe('a shortfall that is somebody else’s claim', () => {
+    const observatory = '/house_rooms/observatory';
+
+    /**
+     * @param {Object} [overrides] - Context fields to replace
+     * @returns {Object} A house-goal plan over 500 logs held and 200 wanted
+     */
+    const housePlan = (overrides = {}) =>
+        planGoal(
+            { type: 'house', roomHrid: observatory, targetLevel: 8 },
+            context({
+                gold: 1_000_000_000,
+                houseLevel: () => 6,
+                itemName: () => 'Log',
+                houseCost: () => ({
+                    coins: 0,
+                    totalValue: 400_000,
+                    materials: [{ itemHrid: '/items/log', count: 200, marketPrice: 2000, totalValue: 400_000 }],
+                }),
+                ...overrides,
+            })
+        );
+
+    test('the goal asks what is available to IT, by its own id', () => {
+        const asked = [];
+        housePlan({
+            owned: (hrid, goalId) => {
+                asked.push([hrid, goalId]);
+                return 500;
+            },
+        });
+        expect(asked).toHaveLength(1);
+        expect(asked[0][0]).toBe('/items/log');
+        expect(typeof asked[0][1]).toBe('string');
+    });
+
+    test('a provider that ignores the reservation ledger plans exactly as before', () => {
+        const plan = housePlan({ owned: () => 500 });
+        expect(step(plan, 'materials').done).toBe(true);
+        expect(plan.warnings).toEqual([]);
+    });
+
+    test('another plan’s claim turns a full bag into a shortfall, and the line says whose', () => {
+        const plan = housePlan({
+            // 500 held, 400 claimed elsewhere
+            owned: () => 100,
+            reservationNote: (short) => `${short} short — 400 reserved by "Goal: Cheese sword"`,
+        });
+
+        expect(step(plan, 'materials').details.materials[0].missing).toBe(100);
+        expect(plan.warnings).toEqual(['Log: 100 short — 400 reserved by "Goal: Cheese sword"']);
+    });
+
+    test('no note means no line, so nothing is said about an ordinary shortfall', () => {
+        const plan = housePlan({ owned: () => 100, reservationNote: () => '' });
+        expect(plan.warnings).toEqual([]);
+    });
+
+    test('a plan claims what it needs in full, not only what it is short of', () => {
+        const plan = housePlan({ owned: () => 150 });
+        expect(reservationLines(plan)).toEqual([{ itemHrid: '/items/log', count: 200 }]);
+    });
+
+    test('a step already done claims nothing', () => {
+        const plan = housePlan({ owned: () => 500 });
+        expect(reservationLines(plan)).toEqual([]);
     });
 });

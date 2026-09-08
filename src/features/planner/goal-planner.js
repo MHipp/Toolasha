@@ -1197,7 +1197,9 @@ function planHouseGoal(goal, context) {
         // already in their bag.
         const shortfall = materials
             .map((material) => {
-                const held = num(ask(context, 'owned', [material.itemHrid], 0));
+                // What this goal may plan against: the bag less every OTHER
+                // plan's claim on it, never its own — see the `owned` provider
+                const held = num(ask(context, 'owned', [material.itemHrid, goal.id], 0));
                 const missing = Math.max(0, num(material.count) - held);
                 const unit = num(material.marketPrice, num(material.totalValue) / Math.max(1, num(material.count)));
                 return { ...material, held, missing, missingValue: missing * unit };
@@ -1205,6 +1207,15 @@ function planHouseGoal(goal, context) {
             .filter((material) => material.missing > 0);
 
         const missingValue = shortfall.reduce((sum, material) => sum + material.missingValue, 0);
+
+        // A bag that looks full and a plan that says it is short is a mystery
+        // unless the plan says who took the stock
+        for (const material of shortfall) {
+            const note = ask(context, 'reservationNote', [material.missing, material.itemHrid, goal.id], '');
+            if (!note) continue;
+            const itemName = ask(context, 'itemName', [material.itemHrid], null) || material.itemHrid;
+            warnings.push(`${itemName}: ${note}`);
+        }
 
         steps.push(
             makeStep({
@@ -1343,6 +1354,40 @@ export function planGoal(rawGoal, context = {}) {
 }
 
 /**
+ * Owner-id prefix the planner claims stock under, one owner per goal.
+ *
+ * Here rather than beside the context so it survives a caller that doubles the
+ * context module: it is the identity every `goal:` claim in the ledger is
+ * written and swept under, and a mocked-away prefix would sweep nothing.
+ */
+export const RESERVATION_OWNER_PREFIX = 'goal:';
+
+/**
+ * What a finished plan claims of the bag, for the reservation ledger.
+ *
+ * The FULL requirement of each acquire step, not the shortfall: a goal that
+ * needs 500 logs has claimed 500 logs whether or not it is holding them, and
+ * claiming only the part it is short of would leave the part it holds looking
+ * free to every other plan — which is the bug the ledger exists to stop.
+ *
+ * @param {Object} plan - A plan from {@link planGoal}
+ * @returns {Array<{itemHrid: string, count: number}>} Lines to reserve
+ */
+export function reservationLines(plan) {
+    const lines = [];
+    for (const step of plan?.steps || []) {
+        if (step?.done) continue;
+        const materials = step?.details?.allMaterials || step?.details?.materials;
+        for (const material of Array.isArray(materials) ? materials : []) {
+            const count = Math.floor(num(material?.count));
+            if (!material?.itemHrid || !(count > 0)) continue;
+            lines.push({ itemHrid: material.itemHrid, count });
+        }
+    }
+    return lines;
+}
+
+/**
  * Plan a list of goals, sharing one bagful of inputs and one pile of coins between them.
  *
  * ## What this costs
@@ -1385,6 +1430,8 @@ export default {
     describeGoal,
     planGoal,
     planGoals,
+    reservationLines,
+    RESERVATION_OWNER_PREFIX,
     planEarnings,
     describeLeg,
     sustainableGold,

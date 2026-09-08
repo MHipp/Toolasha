@@ -55,10 +55,18 @@ import { registerFloatingPanel, unregisterFloatingPanel, bringPanelToFront } fro
 import { makeDraggable, makeResizable } from '../../utils/floating-panel.js';
 import { restoreGeometry, saveGeometry, saveOpenState, reopenIfLeftOpen } from '../../utils/panel-geometry.js';
 import { attachMinimize } from '../../utils/panel-minimize.js';
-import { planGoals, describeGoal, describeLeg, GOAL_TYPES } from './goal-planner.js';
+import {
+    planGoals,
+    describeGoal,
+    describeLeg,
+    GOAL_TYPES,
+    reservationLines,
+    RESERVATION_OWNER_PREFIX,
+} from './goal-planner.js';
 import { buildPlannerContext, withHouseCosts, coinsHeld } from './goal-planner-context.js';
 import { loadGoals, addGoal, removeGoal, loadSnapshot, saveSnapshot, saveCombatGear } from './goal-planner-store.js';
 import { registerCommand, unregisterCommand } from '../../utils/command-registry.js';
+import { releaseMissing, reserve, reservationsEnabled } from '../../utils/inventory-reservations.js';
 
 const PANEL_ID = 'toolasha-goal-planner-panel';
 const GEOMETRY_KEY = 'goalPlannerPanel';
@@ -481,6 +489,7 @@ class GoalPlannerPanel {
             this.rateNotes = this.context.rateNotes || [];
             this.combatStatus = this.context.combatStatus || null;
             await saveSnapshot(this.plans, owner);
+            if (!gone()) await this._recordReservations();
         } catch (error) {
             console.error('[GoalPlanner] Planning failed:', error);
             // On `notice` rather than straight to the status line: the redraw in
@@ -490,6 +499,32 @@ class GoalPlannerPanel {
         } finally {
             this.busy = false;
             this._render();
+        }
+    }
+
+    /**
+     * Tell the reservation ledger what these goals now claim of the bag.
+     *
+     * A goal's claim persists — the goal does — so it is re-stated on every
+     * replan and dropped when the goal is. The whole goal list is in hand here,
+     * which is what makes a deleted goal's claim observable rather than
+     * something that has to time out: any `goal:` owner not on this list is a
+     * goal the player removed.
+     *
+     * @returns {Promise<void>}
+     */
+    async _recordReservations() {
+        if (!reservationsEnabled()) return;
+        try {
+            const live = this.plans.map((plan) => `${RESERVATION_OWNER_PREFIX}${plan.goalId}`);
+            await releaseMissing(RESERVATION_OWNER_PREFIX, live);
+            for (const plan of this.plans) {
+                await reserve(`${RESERVATION_OWNER_PREFIX}${plan.goalId}`, reservationLines(plan), {
+                    label: `Goal: ${plan.title}`,
+                });
+            }
+        } catch (error) {
+            console.error('[GoalPlanner] Recording reservations failed:', error);
         }
     }
 

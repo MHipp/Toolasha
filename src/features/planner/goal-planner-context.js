@@ -58,6 +58,8 @@ import { calculateEnhancement } from '../../utils/enhancement-calculator.js';
 import { calculateExpPerHour } from '../../utils/experience-calculator.js';
 import { GATHERING_TYPES, PRODUCTION_TYPES } from '../../utils/profit-constants.js';
 import { getPriceAgeString } from '../../utils/market-data.js';
+import { effectiveInventory, shortfallNote } from '../../utils/inventory-reservations.js';
+import { RESERVATION_OWNER_PREFIX } from './goal-planner.js';
 
 const COIN_HRID = '/items/coin';
 const INVENTORY_LOCATION = '/item_locations/inventory';
@@ -99,6 +101,28 @@ function heldCount(itemHrid) {
         total += item.count || 0;
     }
     return total;
+}
+
+/**
+ * How many of an item one goal may actually plan against.
+ *
+ * The bag, less what every OTHER goal, crafting plan or open panel has claimed
+ * of it — see `utils/inventory-reservations.js`. Never less what this goal
+ * itself claimed, or a goal would subtract its own claim from its own stock and
+ * report a shortfall that grows on every replan.
+ *
+ * With the reservation ledger switched off this is {@link heldCount} exactly,
+ * which is what it has always been.
+ *
+ * @param {string} itemHrid - The item
+ * @param {string|null} [goalId] - The goal asking; its own claim is not deducted
+ * @returns {number} Count
+ */
+function availableCount(itemHrid, goalId = null) {
+    return effectiveInventory(itemHrid, 0, {
+        excludeOwner: goalId ? `${RESERVATION_OWNER_PREFIX}${goalId}` : null,
+        held: heldCount(itemHrid),
+    });
 }
 
 /**
@@ -695,7 +719,11 @@ export async function buildPlannerContext({ measureRates = true } = {}) {
         houseRoomName: (roomHrid) => gameData?.houseRoomDetailMap?.[roomHrid]?.name || humanise(roomHrid),
 
         skill: skillState,
-        owned: heldCount,
+        owned: availableCount,
+        reservationNote: (short, itemHrid, goalId) =>
+            shortfallNote(short, itemHrid, 0, {
+                excludeOwner: goalId ? `${RESERVATION_OWNER_PREFIX}${goalId}` : null,
+            }),
         ownedEnhancementLevel: bestOwnedLevel,
         houseLevel: (roomHrid) => dataManager.getHouseRoomLevel(roomHrid),
 

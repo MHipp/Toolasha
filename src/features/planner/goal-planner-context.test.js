@@ -88,6 +88,27 @@ vi.mock('../../utils/experience-calculator.js', () => ({
 }));
 vi.mock('../../utils/market-data.js', () => ({ getPriceAgeString: () => 'a moment ago' }));
 
+/**
+ * The reservation ledger, doubled at the seam the context uses it through.
+ * `utils/inventory-reservations.test.js` owns the arithmetic; what matters here
+ * is that the context passes the asking goal's own owner id, so a goal is never
+ * deducted from itself.
+ */
+const reservations = vi.hoisted(() => ({ claims: {}, calls: [] }));
+vi.mock('../../utils/inventory-reservations.js', () => ({
+    effectiveInventory: (itemHrid, level, { excludeOwner, held } = {}) => {
+        reservations.calls.push({ itemHrid, excludeOwner, held });
+        let elsewhere = 0;
+        for (const [owner, byItem] of Object.entries(reservations.claims)) {
+            if (owner === excludeOwner) continue;
+            elsewhere += byItem[itemHrid] || 0;
+        }
+        return Math.max(0, held - elsewhere);
+    },
+    shortfallNote: (short, itemHrid, level, { excludeOwner } = {}) =>
+        excludeOwner === 'goal:mine' ? '' : `${short} short — reserved`,
+}));
+
 const { buildPlannerContext } = await import('./goal-planner-context.js');
 
 /**
@@ -108,6 +129,8 @@ function combat(goldPerHour, extra = {}) {
 }
 
 beforeEach(() => {
+    reservations.claims = {};
+    reservations.calls = [];
     liquidity.measured = true;
     game.actionDetailMap = {
         '/actions/milking/cow': {
@@ -315,5 +338,57 @@ describe('measureRates: false', () => {
         expect(context.goldRates()).toEqual([]);
         expect(context.rateNotes).toEqual([]);
         expect(rates.alchemyCalls).toEqual([]);
+    });
+});
+
+describe('what one goal may plan against', () => {
+    /**
+     * @returns {Promise<Object>} A context over a bag holding 500 logs
+     */
+    async function contextOver500Logs() {
+        game.inventory = [
+            { itemHrid: '/items/log', itemLocationHrid: '/item_locations/inventory', enhancementLevel: 0, count: 500 },
+        ];
+        return buildPlannerContext();
+    }
+
+    test('with nothing claimed, `owned` is the bag', async () => {
+        const context = await contextOver500Logs();
+        expect(context.owned('/items/log', 'a')).toBe(500);
+    });
+
+    test('another goal’s claim comes off; the asking goal’s own does not', async () => {
+        reservations.claims = { 'goal:mine': { '/items/log': 200 }, 'goal:other': { '/items/log': 300 } };
+        const context = await contextOver500Logs();
+
+        expect(context.owned('/items/log', 'mine')).toBe(200);
+        expect(context.owned('/items/log', 'other')).toBe(300);
+    });
+
+    test('the ledger is asked with the goal’s own owner id and the bag count', async () => {
+        const context = await contextOver500Logs();
+        context.owned('/items/log', 'mine');
+
+        expect(reservations.calls.at(-1)).toEqual({
+            itemHrid: '/items/log',
+            excludeOwner: 'goal:mine',
+            held: 500,
+        });
+    });
+
+    test('an equipped or enhanced copy is not stock, as it never was', async () => {
+        game.inventory = [
+            { itemHrid: '/items/log', itemLocationHrid: '/item_locations/inventory', enhancementLevel: 0, count: 500 },
+            { itemHrid: '/items/log', itemLocationHrid: '/item_locations/equipment', enhancementLevel: 0, count: 9 },
+            { itemHrid: '/items/log', itemLocationHrid: '/item_locations/inventory', enhancementLevel: 3, count: 4 },
+        ];
+        const context = await buildPlannerContext();
+        expect(context.owned('/items/log', 'mine')).toBe(500);
+    });
+
+    test('the visibility line is asked under the goal’s own owner id too', async () => {
+        const context = await contextOver500Logs();
+        expect(context.reservationNote(120, '/items/log', 'mine')).toBe('');
+        expect(context.reservationNote(120, '/items/log', 'other')).toBe('120 short — reserved');
     });
 });
