@@ -3,6 +3,7 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 const guild = vi.hoisted(() => ({
     /** buffHrid → detail, as initClientData.guildBuffDetailMap sends it */
@@ -4520,6 +4521,41 @@ describe('guild shrine candidates', () => {
             ).map((candidate) => candidate.buffHrid);
 
             expect(hrids).toEqual(['/guild_buffs/aegis_combat']);
+        });
+    });
+
+    /**
+     * The cap and the per-shrine targets are two halves of one decision, read off
+     * the same `options` bag by `generateCandidates`. They went out of step once:
+     * `runUpgradeAnalysis` forwarded both, while the two labyrinth wrappers
+     * forwarded only the targets — so Lab Sim's checkbox was drawn, saved and
+     * restored while the table still ranked shrine levels the guild cannot sell.
+     * Nothing about that is visible in a result, since the uncapped rows look like
+     * ordinary rows, so this pins the two together at the source rather than at a
+     * figure.
+     */
+    describe('the guild cap travels with the per-shrine targets', () => {
+        const source = readFileSync(new URL('./upgrade-advisor.js', import.meta.url), 'utf8');
+        const sourceLines = source.split(/\r?\n/).filter((line) => !/^\s*\*/.test(line));
+
+        test('every analysis entry point that takes targets also takes the cap', () => {
+            const takesTargets = sourceLines.filter((line) => /^\s*guildShrineTargets = null,$/.test(line));
+            const takesCap = sourceLines.filter((line) => /^\s*guildShrineCapToGuild = false,$/.test(line));
+
+            expect(takesTargets.length).toBeGreaterThanOrEqual(3);
+            expect(takesCap.length).toBe(takesTargets.length);
+        });
+
+        test('every options bag that forwards targets also forwards the cap', () => {
+            const forwarding = sourceLines
+                .filter((line) => /guildShrineTargets/.test(line))
+                .filter((line) => !/perBuffTargets/.test(line))
+                .filter((line) => !/guildShrineTargets = null,/.test(line));
+
+            expect(forwarding.length).toBeGreaterThanOrEqual(3);
+            for (const line of forwarding) {
+                expect(line, `forwards targets without the cap: ${line.trim()}`).toMatch(/guildShrineCapToGuild/);
+            }
         });
     });
 

@@ -4256,6 +4256,9 @@ function explainLabCandidateCost(candidate, gameData) {
  * @param {Object} [params.guildShrineTargets] - buffHrid → target level; takes precedence.
  *   Positive buys up to that level, 0 skips the shrine, negative means one level up, and a
  *   buff absent from the map is skipped
+ * @param {boolean} [params.guildShrineCapToGuild=false] - Rank only shrine levels the guild's own
+ *   shrine buildings can sell. A shrine the guild has not built is left out entirely, and one
+ *   built to Lv4 stops at Lv4
  * @param {Object} [params.tokenLevels] - buffKey → level the token rows step up from,
  *   matching whatever `labyrinthCombatBuffs` was built out of
  * @param {Function} onProgress - Called with { current, total, description }
@@ -4283,6 +4286,7 @@ export async function runLabyrinthUpgradeAnalysis(params, onProgress, options = 
         houseTargets = null,
         guildShrineTargetLevel = 0,
         guildShrineTargets = null,
+        guildShrineCapToGuild = false,
         tokenLevels = null,
         extraCandidates = [],
     } = params;
@@ -4318,7 +4322,7 @@ export async function runLabyrinthUpgradeAnalysis(params, onProgress, options = 
             // This table ranks win rate and Gold/1% and nothing else, so a room
             // whose only combat-facing buffs are the global wisdom and rare find
             // every room grants has nothing it could move here
-            { auraSwapsOnly, houseWinRateOnly: true, guildShrineTargets }
+            { auraSwapsOnly, houseWinRateOnly: true, guildShrineTargets, guildShrineCapToGuild }
         )
     );
 
@@ -5308,7 +5312,7 @@ export function labAllFightsTrialBudget(sims, hours) {
  *
  * @param {Object} params - { fights, crates, hours, communityBuffs, labyrinthCombatBuffs, abilityTargetLevel,
  *   combatLevelTargets, auraSwapsOnly, houseTargetLevel, houseTargets, guildShrineTargetLevel,
- *   guildShrineTargets, tokenLevels }
+ *   guildShrineTargets, guildShrineCapToGuild, tokenLevels }
  *   where fights = [{ monsterHrid, monsterName, roomLevel, dto, loadoutName }]
  * @param {Function} onProgress - Called with { current, total, description }, and
  *   once before anything runs with a `plan` of what the run comes to
@@ -5334,6 +5338,7 @@ export async function runLabyrinthAllFightsAnalysis(params, onProgress, options 
         houseTargets = null,
         guildShrineTargetLevel = 0,
         guildShrineTargets = null,
+        guildShrineCapToGuild = false,
         tokenLevels = null,
         extraCandidates = [],
     } = params;
@@ -5395,7 +5400,7 @@ export async function runLabyrinthAllFightsAnalysis(params, onProgress, options 
                 // Every row in this table is ranked on attempts to clear, so a
                 // house room that can only move XP or loot is a row that can
                 // only report the sims' own noise
-                { auraSwapsOnly, houseWinRateOnly: true, guildShrineTargets }
+                { auraSwapsOnly, houseWinRateOnly: true, guildShrineTargets, guildShrineCapToGuild }
             );
             for (const candidate of fightCandidates) {
                 pool(candidate.type === 'ability_swap' ? pooledSwapCandidate(candidate, gameData) : candidate);
