@@ -45,6 +45,29 @@ function planOwner(itemHrid) {
 }
 
 /**
+ * The reservation lines one plan claims: every tradeable material it is still
+ * short, in the shape {@link reserve} expects.
+ *
+ * Shared by the Buy button and the guided walk's start — both are commitments
+ * to the same plan, and deriving the claim twice would risk the two paths
+ * disagreeing about what "this plan's materials" means.
+ *
+ * @param {Object} fullPlan - Root plan node from `computeBestCraftingPlan`
+ * @param {string} itemHrid - The item this panel is planning, for the exclude-owner read
+ * @returns {Array<{itemHrid: string, count: number}>} Lines for `reserve()`
+ */
+function missingMaterialLines(fullPlan, itemHrid) {
+    // What this plan may actually claim: the bag less every OTHER owner's
+    // claim, never its own — a plan that deducted its own claim would grow a
+    // shortfall every time it recomputed
+    const inventory = effectiveInventoryRows(dataManager.getInventory() || [], {
+        excludeOwner: planOwner(itemHrid),
+    });
+    const missingMaterials = collectMissingMaterials(fullPlan, inventory).filter((material) => material.isTradeable);
+    return missingMaterials.map((material) => ({ itemHrid: material.itemHrid, count: material.required }));
+}
+
+/**
  * One line naming who took the stock, when that is the only reason the plan is
  * buying something the bag could otherwise have covered.
  *
@@ -514,25 +537,14 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
             const fullPlan = fullPlanForPanel(buyButton);
             if (!fullPlan) return;
 
-            // What this plan may actually spend: the bag less every OTHER
-            // owner's claim, never its own — a plan that deducted its own claim
-            // would grow a shortfall every time the panel redrew
-            const inventory = effectiveInventoryRows(dataManager.getInventory() || [], {
-                excludeOwner: planOwner(output.itemHrid),
-            });
-            const missingMaterials = collectMissingMaterials(fullPlan, inventory).filter(
-                (material) => material.isTradeable
-            );
-
-            if (missingMaterials.length === 0) return;
+            const lines = missingMaterialLines(fullPlan, output.itemHrid);
+            if (lines.length === 0) return;
 
             // The click is the commitment: from here the plan holds what it
             // needs against every other plan until it is replaced or expires
-            await reserve(
-                planOwner(output.itemHrid),
-                missingMaterials.map((material) => ({ itemHrid: material.itemHrid, count: material.required })),
-                { label: `Crafting plan: ${dataManager.getItemDetails(output.itemHrid)?.name || output.itemHrid}` }
-            );
+            await reserve(planOwner(output.itemHrid), lines, {
+                label: `Crafting plan: ${dataManager.getItemDetails(output.itemHrid)?.name || output.itemHrid}`,
+            });
 
             // Route through the shared missing-mats mechanism so the tabs get
             // live inventory tracking: buying a material lowers its badge and
@@ -541,7 +553,7 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
             // It navigates to the marketplace and subtracts inventory itself, so
             // pass the REQUIRED totals (not the shortfall) and let it recompute.
             await openMaterialsList(
-                missingMaterials.map((material) => ({ itemHrid: material.itemHrid, count: material.required })),
+                lines,
                 // The claim above is this plan's; the tabs must net against
                 // everyone else's and not against it, or the plan's own
                 // materials would read as taken the moment they were claimed
@@ -653,12 +665,47 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
                 border: 1px solid var(--border-color, #60a5fa); border-radius: 4px;
                 color: var(--text-color-primary, #fff); cursor: pointer; font-size: 0.85em;
             `;
-            walkButton.addEventListener('click', () => {
+            walkButton.addEventListener('click', async () => {
                 // The walk steps the real run, not the single unit this section
                 // renders, so it plans against the panel's own count first.
                 const fullPlan = fullPlanForPanel(walkButton);
                 if (!fullPlan) return;
-                craftingPlanWalk.start(buildWalkSteps(fullPlan));
+                const steps = buildWalkSteps(fullPlan);
+                if (steps.length === 0) return;
+
+                // Starting the walk is at least as much a commitment to the
+                // plan as clicking Buy Missing Materials: claim the same
+                // lines under the same owner so another plan sees this one's
+                // materials as taken from the moment the walk begins, not
+                // only once the player manually buys them. A no-op while the
+                // ledger setting is off — `reserve()` itself gates on it.
+                const reserveClaim = () =>
+                    reserve(planOwner(output.itemHrid), missingMaterialLines(fullPlan, output.itemHrid), {
+                        label: `Crafting plan: ${dataManager.getItemDetails(output.itemHrid)?.name || output.itemHrid}`,
+                    });
+                await reserveClaim();
+
+                // Shrink the claim as the walk consumes it. `missingMaterialLines`
+                // is inventory-driven, not step-driven: `collectMissingMaterials`
+                // credits a craft node against whatever of its item the bag
+                // currently holds, so re-running it against `fullPlan` after a
+                // craft step has actually landed in the game (the intermediate
+                // now held, the raw materials it took now gone) yields exactly
+                // the requirement for what is left, with no separate
+                // partial-progress bookkeeping needed. Re-running it after a buy
+                // step would be redundant — a bought material is still on this
+                // plan's shopping list, `reserve()` just now sees more of it held.
+                let previousStep = null;
+                craftingPlanWalk.onStepAboutToRun = (step) => {
+                    if (previousStep?.kind === 'craft') {
+                        reserveClaim().catch((error) =>
+                            console.error('[CraftingPlan] Re-reserving after a craft step failed:', error)
+                        );
+                    }
+                    previousStep = step;
+                };
+
+                craftingPlanWalk.start(steps);
             });
             content.appendChild(walkButton);
         }

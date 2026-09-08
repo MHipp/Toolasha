@@ -78,6 +78,14 @@ const ledger = vi.hoisted(() => ({
     claimedElsewhere: 0,
     rowsCalls: [],
     reserveCalls: [],
+    releaseCalls: [],
+    // Off by default so the existing Buy-button tests below (which never flip
+    // `enabled`) keep recording every reserve() the way they always have — the
+    // ledger's own gating is `utils/inventory-reservations.test.js`'s to own.
+    // The guided-walk tests turn this on to check display.js's contract that it
+    // calls `reserve()` unconditionally and leaves the on/off decision to the
+    // ledger, which this flag then actually enforces for those tests.
+    simulateGating: false,
 }));
 vi.mock('../../utils/inventory-reservations.js', () => ({
     reservationsEnabled: () => ledger.enabled,
@@ -88,13 +96,34 @@ vi.mock('../../utils/inventory-reservations.js', () => ({
         return rows;
     },
     reserve: async (ownerId, lines, options) => {
+        if (ledger.simulateGating && !ledger.enabled) return false;
         ledger.reserveCalls.push({ ownerId, lines, options });
+        return true;
+    },
+    release: async (ownerId) => {
+        ledger.releaseCalls.push(ownerId);
         return true;
     },
     shortfallNote: (short) =>
         ledger.claimedElsewhere > 0
             ? `${short} short — ${ledger.claimedElsewhere} reserved by "Goal: Cheese sword"`
             : '',
+}));
+
+/**
+ * The guided walk, doubled at the seam. `crafting-plan-walk.js` pulls in
+ * websocket/game-navigation machinery this file has no reason to set up —
+ * what matters here is only what `crafting-plan-display.js` hands it: the
+ * steps, and the `onStepAboutToRun` hook it wires for shrinking the claim.
+ */
+const walk = vi.hoisted(() => ({
+    instance: { start: vi.fn(() => true), stop: vi.fn(), onStepAboutToRun: null },
+    steps: [],
+}));
+vi.mock('./crafting-plan-walk.js', () => ({
+    default: walk.instance,
+    buildWalkSteps: () => walk.steps,
+    WALK_KEY_ATTRIBUTE: 'data-mwi-walk-key',
 }));
 
 const { buildPlanUI } = await import('./crafting-plan-display.js');
@@ -137,6 +166,8 @@ describe('the Buy Missing Materials button', () => {
         ledger.claimedElsewhere = 0;
         ledger.rowsCalls = [];
         ledger.reserveCalls = [];
+        ledger.releaseCalls = [];
+        ledger.simulateGating = false;
     });
 
     test('hands the shared path the required totals, one line per tradeable material', async () => {
@@ -199,6 +230,8 @@ describe('the crafting plan and the reservation ledger', () => {
         ledger.claimedElsewhere = 0;
         ledger.rowsCalls = [];
         ledger.reserveCalls = [];
+        ledger.releaseCalls = [];
+        ledger.simulateGating = false;
         state.plan = craftPlanBuying('/items/wood', 'Wood', 100);
         state.missing = [{ itemHrid: '/items/wood', itemName: 'Wood', missing: 160, required: 200, isTradeable: true }];
     });
@@ -247,5 +280,169 @@ describe('the crafting plan and the reservation ledger', () => {
         ledger.claimedElsewhere = 450;
         const section = buildPlanUI('/actions/crafting/wooden_bow');
         expect(section.querySelector('.mwi-crafting-plan-reserved')).toBeNull();
+    });
+});
+
+/**
+ * A plan whose root is itself a craft step (so "Crafting Steps" — and the
+ * "Start guided walk" button gated on it — renders) with one buy leaf (so the
+ * shopping list the reservation lines are drawn from is not empty).
+ */
+function craftPlanWithWalk(itemHrid, itemName, quantity) {
+    return {
+        strategy: 'craft',
+        actionHrid: '/actions/crafting/wooden_bow',
+        itemName: 'Wooden Bow',
+        quantity: 2,
+        actionsNeeded: 2,
+        craftCost: 1000,
+        buyPrice: 2000,
+        unitCost: 5,
+        children: [
+            {
+                strategy: 'buy',
+                itemHrid,
+                itemName,
+                quantity,
+                unitCost: 5,
+                totalCost: quantity * 5,
+                children: [],
+            },
+        ],
+    };
+}
+
+function findWalkButton(section) {
+    return [...section.querySelectorAll('button')].find((b) => b.textContent === 'Start guided walk');
+}
+
+describe('starting the guided walk and the reservation ledger', () => {
+    beforeEach(() => {
+        state.inventory = [];
+        state.settings = { craftingPlan_guidedWalk: true };
+        state.openMaterialsList.mockClear();
+        ledger.enabled = false;
+        ledger.held = 0;
+        ledger.claimedElsewhere = 0;
+        ledger.rowsCalls = [];
+        ledger.reserveCalls = [];
+        ledger.releaseCalls = [];
+        ledger.simulateGating = false;
+        walk.instance.start.mockClear();
+        walk.instance.stop.mockClear();
+        walk.instance.onStepAboutToRun = null;
+        walk.steps = [
+            {
+                key: 'craft:/actions/crafting/wooden_bow',
+                kind: 'craft',
+                itemHrid: '/items/wooden_bow',
+                itemName: 'Wooden Bow',
+                actionHrid: '/actions/crafting/wooden_bow',
+                count: 2,
+                actions: 2,
+            },
+            {
+                key: 'buy:/items/wood',
+                kind: 'buy',
+                itemHrid: '/items/wood',
+                itemName: 'Wood',
+                actionHrid: null,
+                count: 200,
+                actions: 0,
+            },
+        ];
+        state.plan = craftPlanWithWalk('/items/wood', 'Wood', 100);
+        state.missing = [{ itemHrid: '/items/wood', itemName: 'Wood', missing: 160, required: 200, isTradeable: true }];
+    });
+
+    test('starting the walk reserves the plan lines under craftingPlan:<hrid>', async () => {
+        ledger.enabled = true;
+        const section = buildPlanUI('/actions/crafting/wooden_bow');
+        const button = findWalkButton(section);
+        expect(button).toBeTruthy();
+
+        button.click();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(ledger.reserveCalls).toHaveLength(1);
+        expect(ledger.reserveCalls[0].ownerId).toBe('craftingPlan:/items/wooden_bow');
+        expect(ledger.reserveCalls[0].lines).toEqual([{ itemHrid: '/items/wood', count: 200 }]);
+        expect(walk.instance.start).toHaveBeenCalledWith(walk.steps);
+    });
+
+    test('with the setting off, starting the walk reserves nothing', async () => {
+        ledger.enabled = false;
+        ledger.simulateGating = true;
+        const section = buildPlanUI('/actions/crafting/wooden_bow');
+        findWalkButton(section).click();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(ledger.reserveCalls).toHaveLength(0);
+        // The walk itself is unaffected — display.js hands the ledger the
+        // decision rather than gating the walk on it.
+        expect(walk.instance.start).toHaveBeenCalledWith(walk.steps);
+    });
+
+    test('stopping the walk does not release the claim', async () => {
+        ledger.enabled = true;
+        const section = buildPlanUI('/actions/crafting/wooden_bow');
+        findWalkButton(section).click();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(ledger.reserveCalls).toHaveLength(1);
+
+        // The strip's own Stop button calls this on the real module; the plan
+        // is still the user's plan afterwards; the crafting-plan owner's TTL
+        // is what eventually lets an abandoned claim go, not a Stop click.
+        walk.instance.stop('');
+
+        expect(ledger.releaseCalls).toHaveLength(0);
+    });
+
+    test('a completed craft step shrinks the claim to what live inventory says is left', async () => {
+        ledger.enabled = true;
+        const section = buildPlanUI('/actions/crafting/wooden_bow');
+        findWalkButton(section).click();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(ledger.reserveCalls).toHaveLength(1);
+        expect(ledger.reserveCalls[0].lines).toEqual([{ itemHrid: '/items/wood', count: 200 }]);
+
+        // Before any step has run, the hook fires for the first step with no
+        // "previous" step yet — nothing to shrink from.
+        walk.instance.onStepAboutToRun(walk.steps[0]);
+        await Promise.resolve();
+        expect(ledger.reserveCalls).toHaveLength(1);
+
+        // The craft step (steps[0]) has now actually run in the game: the
+        // wooden bow is held, the wood it took is gone, so a live re-read of
+        // the plan needs less wood than it started with.
+        state.missing = [{ itemHrid: '/items/wood', itemName: 'Wood', missing: 60, required: 120, isTradeable: true }];
+        walk.instance.onStepAboutToRun(walk.steps[1]);
+        await Promise.resolve();
+
+        expect(ledger.reserveCalls).toHaveLength(2);
+        expect(ledger.reserveCalls[1].lines).toEqual([{ itemHrid: '/items/wood', count: 120 }]);
+    });
+
+    test('a completed buy step does not trigger a re-reserve', async () => {
+        ledger.enabled = true;
+        walk.steps = [...walk.steps, { ...walk.steps[0], key: 'craft:extra' }];
+        const section = buildPlanUI('/actions/crafting/wooden_bow');
+        findWalkButton(section).click();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(ledger.reserveCalls).toHaveLength(1);
+
+        walk.instance.onStepAboutToRun(walk.steps[0]); // no previous step yet
+        walk.instance.onStepAboutToRun(walk.steps[1]); // previous was craft: shrinks
+        await Promise.resolve();
+        expect(ledger.reserveCalls).toHaveLength(2);
+
+        walk.instance.onStepAboutToRun(walk.steps[2]); // previous (steps[1]) was a buy
+        await Promise.resolve();
+        expect(ledger.reserveCalls).toHaveLength(2);
     });
 });
