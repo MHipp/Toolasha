@@ -182,3 +182,19 @@ export function deriveSeed(seed, index) {
 export function randomSeed() {
     return Math.floor(Math.random() * 0x7fffffff);
 }
+
+/**
+ * An independent seeded draw function, detached from the module-level streams.
+ *
+ * The streams above are global state shared by whatever sim is running. A
+ * caller outside the engine — a Monte Carlo projection on the net worth panel,
+ * say — needs reproducibility without reseeding combat mid-run, so it takes its
+ * own generator instead.
+ * @param {number|null} seed - Seed; null/unusable falls back to Math.random()
+ * @returns {Function} Draw function returning [0, 1)
+ */
+export function createSeededDraw(seed) {
+    const base = normalizeSeed(seed);
+    if (base === null) return Math.random;
+    return mulberry32(mixSeed(base, 3));
+}

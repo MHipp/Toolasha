@@ -9,6 +9,7 @@ import config from '../../core/config.js';
 import dataManager from '../../core/data-manager.js';
 import storage from '../../core/storage.js';
 import { networthFormatter, formatDateTime } from '../../utils/formatters.js';
+import { createForecastSection } from './networth-forecast-section.js';
 import { PANEL_Z_CAP } from '../../utils/panel-z-index.js';
 
 const RANGE_MS = {
@@ -81,6 +82,7 @@ class NetworthHistoryChart {
         this._deletePopupOutsideHandler = null;
         this._deletePopupOutsideTimer = null;
         this._outsideClickTimer = null;
+        this.forecastSection = null;
     }
 
     /**
@@ -572,6 +574,16 @@ class NetworthHistoryChart {
         modal.appendChild(categoryRow);
         modal.appendChild(statsRow);
         modal.appendChild(canvasContainer);
+
+        // Projection, below the record and collapsed: it is off by default and
+        // costs thousands of Monte Carlo paths, so nothing runs until it is opened
+        if (config.getSetting('networth_forecast')) {
+            this.forecastSection = createForecastSection({
+                getHistory: () => networthHistory.history,
+            });
+            modal.appendChild(this.forecastSection.element);
+        }
+
         document.body.appendChild(modal);
 
         // ESC to close
@@ -1698,6 +1710,10 @@ class NetworthHistoryChart {
 
     closeModal() {
         this._dismissDeletePopup();
+
+        // Dropped with the modal it lived in; a stale reference would keep the
+        // detached fan and its listeners alive across the next open
+        this.forecastSection = null;
 
         if (this.chartInstance) {
             this.chartInstance.destroy();

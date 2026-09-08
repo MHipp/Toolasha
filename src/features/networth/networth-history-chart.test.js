@@ -20,6 +20,7 @@ vi.mock('../../core/config.js', () => ({
         COLOR_LOSS: '#f87171',
         Z_FLOATING_PANEL: 1100,
         getSettingValue: () => null,
+        getSetting: () => false,
     },
 }));
 vi.mock('../../core/data-manager.js', () => ({ default: { getInitClientData: () => null } }));

@@ -1816,6 +1816,16 @@ export const settingsGroups = {
                 default: true,
                 help: 'Records hourly net worth snapshots and shows a chart icon next to Total Net Worth. Disable to stop tracking and hide the chart button.',
             },
+            networth_forecast: {
+                id: 'networth_forecast',
+                label: 'Enable net worth forecast',
+                type: 'checkbox',
+                default: false,
+                help:
+                    'Adds a collapsed Forecast section to the net worth history chart: a Monte Carlo projection of the ' +
+                    'daily series as a p10–p90 fan to 30, 60 or 90 days, with daily drift, EWMA volatility, ' +
+                    'doubling time, and the odds of reaching a target you set. Needs the history chart enabled.',
+            },
             networth_goldSources: {
                 id: 'networth_goldSources',
                 label: 'Enable gold source attribution',
