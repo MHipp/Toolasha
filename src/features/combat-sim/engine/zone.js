@@ -108,9 +108,14 @@ class Zone {
         // Pirate Cove (keys 0/20/40) 268 census waves, solo; Enchanted Fortress
         // (keys 0/20/40) 106 census waves, solo; and Sinister Circus (keys
         // 0/15/40) 95 waves, solo. No monster ever appears below its own key's
-        // wave -- a key-20 species is first seen on wave 21, never on wave 20 --
-        // and not one roster mixes species the way a pooled union of the
-        // eligible tables would.
+        // wave. That is not itself a rule about the random draw below: in every
+        // one of these dungeons, every non-zero randomSpawnInfoMap key is also a
+        // fixedSpawnsMap key, so the fixed-roster check above (line ~92) always
+        // wins the tie on wave === key and the random path here never runs that
+        // wave at all. A key-20 table is eligible starting wave 20, but the
+        // earliest it is ever actually drawn from is wave 21 -- and not one
+        // roster mixes species the way a pooled union of the eligible tables
+        // would.
         //
         // The table is NOT always the highest eligible one. 384 of those 3078
         // waves are complete, well-formed draws from a strictly lower table, so
@@ -221,6 +226,10 @@ class Zone {
             return [];
         }
 
+        // >= makes a key-K table eligible from wave K on, but wave K itself is
+        // always caught by the fixedSpawnsMap check above in every live
+        // dungeon -- see the note above and zone.test.js's "every random spawn
+        // table's key is a fixed wave" describe block.
         const eligibleKeys = waveKeys.filter((key) => waveNum >= key);
 
         let monsterSpawns = null;

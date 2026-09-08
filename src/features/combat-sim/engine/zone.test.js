@@ -465,6 +465,61 @@ describe('dungeon waves', () => {
         expect(species.slice(0, 29)).not.toContain(LATE);
     });
 
+    /**
+     * Wave `== key` never draws from that key's random table, because every
+     * live dungeon's random keys are also fixed-roster waves and `getNextWave`
+     * checks `fixedSpawnsMap` first (zone.js line ~92). `waveNum >= key`
+     * (zone.js line ~224) makes the table eligible starting at wave `key`, but
+     * eligible is as far as it gets that wave — the fixed roster wins the tie,
+     * so the earliest the table can actually be drawn is wave `key + 1`. That
+     * is the fact the note above `eligibleKeys` in zone.js leans on, and this
+     * is what would fail if a future dungeon shipped a random key with no
+     * matching fixed wave.
+     *
+     * No fixture of real dungeon data lives in this repo, so the key sets
+     * below are a compact stand-in, hand-transcribed from the live game
+     * client (2026-09-05): every non-zero randomSpawnInfoMap key, and the
+     * fixedSpawnsMap keys, for the four dungeons that have random tables at
+     * all.
+     */
+    describe('every random spawn table\'s key is a fixed wave, so wave == key never draws random', () => {
+        const REAL_DUNGEONS = {
+            chimerical_den: { maxWaves: 50, randomKeys: [0, 10, 30], fixedStep: 5 },
+            enchanted_fortress: { maxWaves: 65, randomKeys: [0, 20, 40], fixedStep: 5 },
+            pirate_cove: { maxWaves: 65, randomKeys: [0, 20, 40], fixedStep: 5 },
+            sinister_circus: { maxWaves: 60, randomKeys: [0, 15, 40], fixedStep: 5 },
+        };
+
+        for (const [name, { maxWaves, randomKeys, fixedStep }] of Object.entries(REAL_DUNGEONS)) {
+            test(`${name}: every non-zero random key is a fixedSpawnsMap key`, () => {
+                const fixedWaves = new Set();
+                for (let wave = fixedStep; wave <= maxWaves; wave += fixedStep) fixedWaves.add(wave);
+
+                for (const key of randomKeys) {
+                    if (key === 0) continue;
+                    expect(fixedWaves.has(key)).toBe(true);
+                }
+            });
+
+            test(`${name}: getNextWave at wave == key returns the fixed roster, not a random draw`, () => {
+                const fixedSpawnsMap = {};
+                for (let wave = fixedStep; wave <= maxWaves; wave += fixedStep) {
+                    fixedSpawnsMap[String(wave)] = [{ combatMonsterHrid: FIXED, difficultyTier: 0 }];
+                }
+                const randomSpawnInfoMap = Object.fromEntries(randomKeys.map((key) => [key, band(EARLY)]));
+                const zone = installDungeon({ maxWaves, fixedSpawnsMap, randomSpawnInfoMap });
+
+                seedSimRng(11);
+                const species = waveSpecies(zone, maxWaves);
+
+                for (const key of randomKeys) {
+                    if (key === 0) continue;
+                    expect(species[key - 1]).toBe(FIXED);
+                }
+            });
+        }
+    });
+
     test('the counter wraps at maxWaves and records the clear', () => {
         seedSimRng(11);
         const zone = installBandedDungeon();
