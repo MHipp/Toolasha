@@ -459,7 +459,13 @@ describe('calculateProfit — itemPrice reconciliation', () => {
         simpleRecipe();
         // The raw order book is empty (marketplace.js mock always returns null), but the
         // value-filling patch still prices the item — getItemPrices reports that.
-        mocks.itemPrices['/items/cheese'] = { ask: 120, bid: 110, average: 115, askEstimated: true, bidEstimated: true };
+        mocks.itemPrices['/items/cheese'] = {
+            ask: 120,
+            bid: 110,
+            average: 115,
+            askEstimated: true,
+            bidEstimated: true,
+        };
 
         const result = await profitCalculator.calculateProfit('/items/cheese');
 

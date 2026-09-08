@@ -43,7 +43,7 @@ git commit -F /tmp/msg.txt
 ```
 
 **Never `git commit -F -`, and never pipe a `git commit` through `tail` or `head`.** Bash attaches a
-heredoc to the *last* command in a pipeline, so `git commit -F - | tail -3 <<'EOF'` feeds the message
+heredoc to the _last_ command in a pipeline, so `git commit -F - | tail -3 <<'EOF'` feeds the message
 to `tail` and leaves `git` reading a pipe that never closes. It hangs silently and forever — the
 commit never lands and nothing is printed. This has cost hours.
 

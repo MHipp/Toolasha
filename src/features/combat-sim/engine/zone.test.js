@@ -482,7 +482,7 @@ describe('dungeon waves', () => {
      * fixedSpawnsMap keys, for the four dungeons that have random tables at
      * all.
      */
-    describe('every random spawn table\'s key is a fixed wave, so wave == key never draws random', () => {
+    describe("every random spawn table's key is a fixed wave, so wave == key never draws random", () => {
         const REAL_DUNGEONS = {
             chimerical_den: { maxWaves: 50, randomKeys: [0, 10, 30], fixedStep: 5 },
             enchanted_fortress: { maxWaves: 65, randomKeys: [0, 20, 40], fixedStep: 5 },
