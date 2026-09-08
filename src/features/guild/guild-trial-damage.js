@@ -1527,6 +1527,18 @@ class GuildTrialDamage {
                 this.reported = null;
                 this.reportedMeasured = null;
                 this.bossSheets = {};
+
+                // The same carryover, one layer down: `_bankCurrentWave` (just
+                // above, in every wave rollover including this one) files the
+                // ending wave's tally by NAME into `bankedTally`/`bankedDeaths`/
+                // `bankedSupport` precisely so a tier's re-deal cannot move
+                // damage between people — but nothing ever emptied those maps
+                // between trials, so a previous trial's own banked names sat
+                // there forever, folded into every later trial's own totals as
+                // if this trial had dealt them too.
+                this.bankedTally = {};
+                this.bankedDeaths = {};
+                this.bankedSupport = {};
             }
         }
 

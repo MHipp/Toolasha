@@ -2123,6 +2123,33 @@ describe('per-name history is immutable across wave boundaries', () => {
         expect(rows.find((row) => row.name === 'NPD').damageTaken).toBe(850);
         expect(rows.find((row) => row.name === 'Rick')).toBeUndefined();
     });
+
+    test('a new trial (a genuine battle-id rollover) does not inherit the previous one’s banked damage', () => {
+        // Tier 3 of one trial: Rick and NPD both swing, banked at the tier
+        // rollover exactly as the sibling test above proves
+        game.wsHandlers.new_guild_battle(roster(3, ['Rick', 'NPD']));
+        tick(3, { 0: { atkCounter: 1 }, 1: { atkCounter: 1 } }, 650_000, 0, 0);
+        tick(3, { 1: { atkCounter: 2 } }, 500_000, 1, 250); // NPD 150K
+        tick(3, { 0: { atkCounter: 2 } }, 400_000, 2, 500); // Rick 100K
+        expect(totals()).toEqual({ NPD: 150_000, Rick: 100_000 });
+
+        // A different combat trial entirely: a new battle id, a fresh tier 1,
+        // a different encounter. Rick and NPD's Chameleon damage was banked
+        // under a previous trial (`bankedTally`/`bankedDeaths`/`bankedSupport`)
+        // and must not linger here — the same stale-carryover pattern
+        // `753785712` fixed for `reported`/`bossSheets`, but `bankedTally` and
+        // its siblings were never cleared on the same battle-id rollover
+        game.wsHandlers.new_guild_battle({
+            battleId: 10,
+            tier: 1,
+            players: [{ character: { id: 200, name: 'Zeta' } }],
+            monsters: [{ hrid: '/monsters/trial_hedgehog', name: 'Trial Hedgehog', combatDetails: {} }],
+        });
+
+        const report = guildTrialDamage.breakdown();
+        expect(report.totalDamage).toBe(0);
+        expect(totals()).toEqual({});
+    });
 });
 
 describe('the trial ends and its figures stop moving', () => {
