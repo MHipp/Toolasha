@@ -84,6 +84,23 @@ export function createPanel({ id, title, size, draw, accent = '#8fb4ff', refresh
         render();
     }
 
+    /**
+     * Whether the panel is on the page, as opposed to merely held.
+     *
+     * These two are not the same thing, which `show()` has always known and
+     * `toggle()` did not: the shell keeps its element in a closure, and anything
+     * that detaches that element without going through `hide()` — an outside
+     * teardown, or a `create()` that threw before the append — leaves a handle
+     * to a panel nobody can see. Asking the document instead of the closure is
+     * the difference between a link that opens a panel and one that appears to
+     * do nothing at all.
+     *
+     * @returns {boolean}
+     */
+    function isOpen() {
+        return Boolean(panel && document.body?.contains(panel));
+    }
+
     function create() {
         panel = document.createElement('div');
         panel.id = `toolasha-${id}-panel`;
@@ -197,7 +214,19 @@ export function createPanel({ id, title, size, draw, accent = '#8fb4ff', refresh
             // abandoned, or its refresh timer and its listeners would still be
             // running and each reopen would leave another set behind
             if (panel) api.hide({ remember: false });
-            create();
+
+            // A shell that fails half-built must not keep the handle: the next
+            // click would read it as an open panel and "close" something that
+            // was never on screen, so one failure would kill the control that
+            // opens it for the rest of the session.
+            try {
+                create();
+            } catch (error) {
+                console.error(`[Panel] ${title} could not be opened:`, error);
+                api.hide({ remember: false });
+                return;
+            }
+
             // A new panel opens at the base z-index, which is *underneath* every
             // panel that has been raised since the page loaded — so the panel you
             // just asked for appears behind the ones you did not
@@ -223,7 +252,7 @@ export function createPanel({ id, title, size, draw, accent = '#8fb4ff', refresh
             bodyEl = null;
         },
         toggle() {
-            if (panel) api.hide();
+            if (isOpen()) api.hide();
             else api.show();
         },
         render,
