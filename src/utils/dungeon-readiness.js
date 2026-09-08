@@ -346,6 +346,83 @@ export function memberReadiness({
 }
 
 /**
+ * Who is short of entry keys, and by how much.
+ *
+ * The card already says the party is short. The question at the party screen is
+ * *which* member, and the answer has to be one somebody can paste into party
+ * chat — so this is per member, not a total, and it is worded from the member's
+ * point of view rather than the reader's.
+ *
+ * A member whose key count was never stated is `has: null`, never zero. Nobody
+ * has sent a key-count message naming them, which is not the same as them
+ * holding nothing, and asking somebody for three keys they already have is the
+ * one way this line could waste the party's time. Their `short` is null for the
+ * same reason: an absent number is not a shortfall.
+ *
+ * Members at or above the requirement are dropped. A list that named everybody
+ * would put the reader back where they started — reading five lines to find the
+ * one that matters.
+ *
+ * @param {Object} input - The party and the plan
+ * @param {Array<Object>} input.members - From {@link memberReadiness}
+ * @param {number} [input.runsPlanned] - How many runs the party intends
+ * @returns {Array<{name: string, has: number|null, needs: number, short: number|null}>} Short
+ *   members first, by shortfall descending; members whose count is unknown last
+ */
+export function keyShortfalls({ members = [], runsPlanned = 1 } = {}) {
+    const needs = Math.max(0, Math.floor(Number(runsPlanned) || 0)) * KEYS_PER_RUN;
+
+    const rows = [];
+    for (const member of members || []) {
+        if (!member) continue;
+        const has = Number.isFinite(member.keysHeld) && member.keysHeld >= 0 ? Math.floor(member.keysHeld) : null;
+        if (has !== null && has >= needs) continue;
+        rows.push({
+            name: member.name || 'Unknown player',
+            has,
+            needs,
+            short: has === null ? null : needs - has,
+        });
+    }
+
+    // Unknown sorts last rather than as a large or a small shortfall: it is not
+    // a shortfall at all, and ranking it against real ones would put a member
+    // nobody has heard from above a member who is genuinely eight keys down
+    return rows.sort((a, b) => {
+        if (a.short === null && b.short === null) return 0;
+        if (a.short === null) return 1;
+        if (b.short === null) return -1;
+        return b.short - a.short;
+    });
+}
+
+/**
+ * One shortfall as a line to paste into party chat.
+ *
+ * @param {{name: string, has: number|null, needs: number, short: number|null}} row - From
+ *   {@link keyShortfalls}
+ * @returns {string} e.g. `bun needs 3 more keys (has 12 of 15)`
+ */
+export function formatKeyShortfall(row) {
+    if (!row) return '';
+    if (row.short === null) return `${row.name} key count unknown (needs ${row.needs})`;
+    return `${row.name} needs ${row.short} more key${row.short === 1 ? '' : 's'} (has ${row.has} of ${row.needs})`;
+}
+
+/**
+ * The whole list as text, which is what the card's copy button puts on the clipboard.
+ *
+ * @param {Array<Object>} rows - From {@link keyShortfalls}
+ * @returns {string} One line per member, newline separated; '' when nobody is listed
+ */
+export function formatKeyShortfalls(rows) {
+    return (rows || [])
+        .map((row) => formatKeyShortfall(row))
+        .filter(Boolean)
+        .join('\n');
+}
+
+/**
  * The soonest thing that stops this member, out of what is actually known.
  *
  * Two readings can bind: the food that empties first, and the keys that run
@@ -570,6 +647,7 @@ export function buildReadiness({
         runSamples: runLength?.samples ?? 0,
         keys,
         keyPlan: keyShortfallCost({ shortfall: keys?.shortfall ?? 0, cost: keyCost }),
+        keyShortfalls: keyShortfalls({ members, runsPlanned }),
         members: members || [],
         lint: lint || [],
         lintScope,
@@ -594,6 +672,9 @@ export default {
     typicalRunSeconds,
     keyReadiness,
     memberReadiness,
+    keyShortfalls,
+    formatKeyShortfall,
+    formatKeyShortfalls,
     memberLimit,
     whoStopsFirst,
     mergePartyRoster,

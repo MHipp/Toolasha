@@ -12,6 +12,9 @@ import {
     parseRunsPlanned,
     nextRunStep,
     keyShortfallCost,
+    keyShortfalls,
+    formatKeyShortfall,
+    formatKeyShortfalls,
     MAX_RUNS_PLANNED,
     UNKNOWN_CONSUMABLES,
     UNKNOWN_KEYS,
@@ -506,5 +509,76 @@ describe('the key plan on the built model', () => {
             members: [],
         });
         expect(model.keyPlan).toBeNull();
+    });
+});
+
+describe('who is short of keys, and by how much', () => {
+    /** A member row with only the field this reads set */
+    const member = (name, keysHeld) => memberReadiness({ name, keysHeld });
+
+    test('short members come back worst first, and members at the count are left out', () => {
+        const rows = keyShortfalls({
+            members: [member('bun', 12), member('ash', 15), member('cove', 5)],
+            runsPlanned: 15,
+        });
+
+        expect(rows).toEqual([
+            { name: 'cove', has: 5, needs: 15, short: 10 },
+            { name: 'bun', has: 12, needs: 15, short: 3 },
+        ]);
+    });
+
+    test('a member above the count is left out too', () => {
+        const rows = keyShortfalls({ members: [member('ash', 40)], runsPlanned: 15 });
+        expect(rows).toEqual([]);
+    });
+
+    test('a member nobody has heard a key count for is unknown, not zero, and sorts last', () => {
+        const rows = keyShortfalls({ members: [member('ghost', null), member('bun', 12)], runsPlanned: 15 });
+
+        expect(rows.map((row) => row.name)).toEqual(['bun', 'ghost']);
+        expect(rows[1]).toEqual({ name: 'ghost', has: null, needs: 15, short: null });
+    });
+
+    test('the run count is what multiplies the requirement', () => {
+        const members = [member('bun', 12)];
+        expect(keyShortfalls({ members, runsPlanned: 15 })[0]).toMatchObject({ needs: 15, short: 3 });
+        expect(keyShortfalls({ members, runsPlanned: 40 })[0]).toMatchObject({ needs: 40, short: 28 });
+        // One run wants one key, so a member holding twelve is not short
+        expect(keyShortfalls({ members, runsPlanned: 1 })).toEqual([]);
+    });
+
+    test('the line reads as something to paste into party chat', () => {
+        expect(formatKeyShortfall({ name: 'bun', has: 12, needs: 15, short: 3 })).toBe(
+            'bun needs 3 more keys (has 12 of 15)'
+        );
+        expect(formatKeyShortfall({ name: 'bun', has: 14, needs: 15, short: 1 })).toBe(
+            'bun needs 1 more key (has 14 of 15)'
+        );
+        expect(formatKeyShortfall({ name: 'ghost', has: null, needs: 15, short: null })).toBe(
+            'ghost key count unknown (needs 15)'
+        );
+    });
+
+    test('the joined text is one line per member', () => {
+        const rows = keyShortfalls({
+            members: [member('bun', 12), member('cove', 5), member('ghost', null)],
+            runsPlanned: 15,
+        });
+        expect(formatKeyShortfalls(rows)).toBe(
+            'cove needs 10 more keys (has 5 of 15)\n' +
+                'bun needs 3 more keys (has 12 of 15)\n' +
+                'ghost key count unknown (needs 15)'
+        );
+        expect(formatKeyShortfalls([])).toBe('');
+    });
+
+    test('the built model carries the list the card draws', () => {
+        const model = buildReadiness({
+            dungeon: { actionHrid: '/actions/combat/chimerical_den', name: 'Chimerical Den', tier: 2 },
+            runsPlanned: 15,
+            members: [member('bun', 12), member('ash', 15)],
+        });
+        expect(model.keyShortfalls).toEqual([{ name: 'bun', has: 12, needs: 15, short: 3 }]);
     });
 });

@@ -69,6 +69,8 @@ import {
     memberLimit,
     memberReadiness,
     mergePartyRoster,
+    formatKeyShortfall,
+    formatKeyShortfalls,
     nextRunStep,
     parseRunsPlanned,
     typicalRunSeconds,
@@ -1211,6 +1213,8 @@ class ConsumablesPanel {
             );
             const routeNote = this._keyRouteNote(plan);
             if (routeNote) section.appendChild(routeNote);
+            const shortfalls = this._keyShortfallBlock(model);
+            if (shortfalls) section.appendChild(shortfalls);
         }
 
         for (const member of model.members) {
@@ -1303,6 +1307,93 @@ class ConsumablesPanel {
         for (const note of model.footnotes) section.appendChild(this._readinessNote(note, COLORS.textDim));
 
         return section;
+    }
+
+    /**
+     * Who in the party is short of keys, worded for party chat.
+     *
+     * The figure above says the party is short; this says which member and by
+     * how much. Members at the count are not listed — the reader is looking for
+     * the exception — and a member nobody has heard a key count for is listed as
+     * unknown rather than as zero, because asking somebody for keys they already
+     * hold is the one way this block could cost the party time.
+     *
+     * The copy button exists because the lines are for somebody else to read.
+     * Retyping five names off a panel into chat is where a readiness check stops
+     * being used.
+     *
+     * @param {Object} model - From `_readinessModel`
+     * @returns {HTMLElement|null} Null when there is nothing to say
+     */
+    _keyShortfallBlock(model) {
+        const rows = model?.keyShortfalls || [];
+        if (!rows.length) return null;
+
+        const block = document.createElement('div');
+        block.style.marginTop = '3px';
+
+        const head = document.createElement('div');
+        Object.assign(head.style, { display: 'flex', alignItems: 'baseline', gap: '6px', fontSize: '0.9em' });
+
+        const heading = document.createElement('span');
+        heading.textContent = 'Short of keys';
+        heading.style.color = COLORS.textDim;
+        heading.style.flex = '1';
+
+        const copyBtn = document.createElement('span');
+        copyBtn.textContent = '⧉';
+        copyBtn.title = 'Copy these lines for party chat';
+        copyBtn.style.cssText = `cursor:pointer; line-height:1; color:${COLORS.accent};`;
+        copyBtn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            this._copyKeyShortfalls(rows, copyBtn);
+        });
+
+        head.append(heading, copyBtn);
+        block.appendChild(head);
+
+        for (const row of rows) {
+            block.appendChild(
+                this._readinessNote(formatKeyShortfall(row), row.short === null ? COLORS.textDim : ROW_COLORS.bad)
+            );
+        }
+
+        return block;
+    }
+
+    /**
+     * Put the shortfall lines on the clipboard, saying whether they landed.
+     *
+     * @param {Array<Object>} rows - From `keyShortfalls`
+     * @param {HTMLElement} button - The control clicked, for the acknowledgement
+     * @returns {Promise<void>}
+     */
+    async _copyKeyShortfalls(rows, button) {
+        const text = formatKeyShortfalls(rows);
+        if (!text) return;
+
+        try {
+            await navigator.clipboard.writeText(text);
+            this._flashCopy(button, '✓');
+        } catch (error) {
+            // A clipboard that refuses is not a reason to lose the lines
+            console.error('[Consumables] Copying the key shortfall failed:', error);
+            console.log(text);
+            this._flashCopy(button, '⚠');
+        }
+    }
+
+    /**
+     * @param {HTMLElement} button - What was clicked
+     * @param {string} mark - What it should say for a moment
+     * @returns {void}
+     */
+    _flashCopy(button, mark) {
+        const original = button.textContent;
+        button.textContent = mark;
+        setTimeout(() => {
+            if (button.isConnected) button.textContent = original;
+        }, 1200);
     }
 
     /**

@@ -874,3 +874,70 @@ describe('changing the key pricing mode from the card', () => {
         expect(text()).not.toContain('cheaper to buy');
     });
 });
+
+describe('which member is short of keys, and by how much', () => {
+    test('one line per short member, worst first, with the members at the count left out', async () => {
+        inParty();
+        // Ally is three keys short of ten; Stranger is nine short; you hold four
+        tracking({ dungeonHrid: DEN, keyCountsMap: { Me: 4, Ally: 7, Stranger: 1 } });
+        store.data.consumablesDungeonRuns = 10;
+        await render();
+
+        const body = text();
+        expect(body).toContain('Stranger needs 9 more keys (has 1 of 10)');
+        expect(body).toContain('Ally needs 3 more keys (has 7 of 10)');
+        expect(body.indexOf('Stranger needs 9')).toBeLessThan(body.indexOf('Ally needs 3'));
+    });
+
+    test('a member nobody has heard from is unknown, not nine short', async () => {
+        inParty();
+        tracking({ dungeonHrid: DEN, keyCountsMap: { Me: 4, Ally: 7 } });
+        store.data.consumablesDungeonRuns = 10;
+        await render();
+
+        const body = text();
+        expect(body).toContain('Stranger key count unknown (needs 10)');
+        expect(body).not.toContain('Stranger needs');
+    });
+
+    test('a party that is all stocked gets no lines at all', async () => {
+        inParty();
+        keysInBag(40);
+        tracking({ dungeonHrid: DEN, keyCountsMap: { Me: 40, Ally: 40, Stranger: 40 } });
+        store.data.consumablesDungeonRuns = 10;
+        await render();
+
+        expect(text()).not.toContain('Short of keys');
+    });
+
+    test('the copy button puts the joined lines on the clipboard', async () => {
+        inParty();
+        tracking({ dungeonHrid: DEN, keyCountsMap: { Me: 4, Ally: 7, Stranger: 1 } });
+        store.data.consumablesDungeonRuns = 10;
+        await render();
+
+        const written = [];
+        Object.defineProperty(window.navigator, 'clipboard', {
+            configurable: true,
+            value: {
+                writeText: async (value) => {
+                    written.push(value);
+                },
+            },
+        });
+
+        const button = [...consumablesPanel.bodyEl.querySelectorAll('span')].find(
+            (node) => node.title === 'Copy these lines for party chat'
+        );
+        expect(button).toBeTruthy();
+        button.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+        await settled();
+
+        expect(written).toHaveLength(1);
+        expect(written[0].split('\n')).toEqual([
+            'Stranger needs 9 more keys (has 1 of 10)',
+            'Me needs 6 more keys (has 4 of 10)',
+            'Ally needs 3 more keys (has 7 of 10)',
+        ]);
+    });
+});
