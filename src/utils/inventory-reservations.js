@@ -573,6 +573,22 @@ export async function ensureReservationsLoaded() {
     await ensureLoaded();
 }
 
+/*
+ * The render paths that ask what is available cannot await a load, and the
+ * first of them can run before anything has reserved anything — so a page that
+ * had claims stored would spend its first seconds planning as though it had
+ * none. Settings are what say whether the ledger is even on, so the read is
+ * hung off the moment they land, and off the switch being turned on later.
+ * Both are optional so a test double that is only `getSetting` still works.
+ */
+config.onSettingsLoaded?.(() => {
+    if (reservationsEnabled()) ensureLoaded().catch(() => {});
+});
+config.onSettingChange?.(RESERVATIONS_SETTING, (on) => {
+    if (on) ensureLoaded().catch(() => {});
+    else _resetReservations();
+});
+
 /** @returns {Promise<*>} The pending writes, for tests and shutdown */
 export function flushReservationWrites() {
     return record.flushed();
