@@ -19,6 +19,8 @@ const world = vi.hoisted(() => ({
     gameData: null,
     prices: {},
     materials: [],
+    /** Every owner id the calculator asked the material calculator under */
+    ownerIds: [],
 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -33,8 +35,31 @@ vi.mock('../../api/marketplace.js', () => ({
     default: { getPrice: (hrid) => world.prices[hrid] ?? null },
 }));
 vi.mock('../../utils/material-calculator.js', () => ({
-    calculateMaterialRequirements: (_hrid, n) =>
-        world.materials.map((m) => ({ ...m, required: m.perUnit * n, missing: Math.max(0, m.perUnit * n - m.have) })),
+    calculateMaterialRequirements: (_hrid, n, _queue, options) => {
+        world.ownerIds.push(options?.ownerId ?? null);
+        return world.materials.map((m) => ({
+            ...m,
+            required: m.perUnit * n,
+            missing: Math.max(0, m.perUnit * n - m.have),
+        }));
+    },
+}));
+
+/**
+ * The reservation ledger, doubled: what matters at this join is that the
+ * calculator asks under its own owner id, claims the required totals while its
+ * breakdown is up, and gives them back by every route the modal closes.
+ */
+const ledger = vi.hoisted(() => ({ reserved: [], released: [] }));
+vi.mock('../../utils/inventory-reservations.js', () => ({
+    reserve: async (ownerId, lines) => {
+        ledger.reserved.push({ ownerId, lines });
+        return true;
+    },
+    release: async (ownerId) => {
+        ledger.released.push(ownerId);
+        return true;
+    },
 }));
 vi.mock('../../utils/react-input.js', () => ({
     setReactInputValue: () => {},
@@ -228,5 +253,83 @@ describe('budget calculator breakdown modal Escape listener', () => {
 
         const keydownRemoves = removeSpy.mock.calls.filter((call) => call[0] === 'keydown').length;
         expect(keydownRemoves).toBe(1);
+    });
+});
+
+describe('the budget calculator and the reservation ledger', () => {
+    const ACTION = '/actions/cooking/omelette';
+
+    beforeEach(() => {
+        world.ownerIds = [];
+        ledger.reserved = [];
+        ledger.released = [];
+        world.gameData = {
+            actionDetailMap: {
+                [ACTION]: { type: '/action_types/cooking', inputItems: [{ itemHrid: '/items/egg' }] },
+            },
+            itemDetailMap: { '/items/egg': { isTradable: true } },
+        };
+        world.prices = { '/items/egg': { ask: 10 } };
+        world.materials = [{ itemHrid: '/items/egg', itemName: 'Egg', perUnit: 1, have: 0, isTradeable: true }];
+    });
+
+    afterEach(() => {
+        budgetCalculator.disable();
+        document.body.innerHTML = '';
+    });
+
+    /**
+     * @param {number} budget - What to type into the box
+     * @returns {HTMLElement} The breakdown modal overlay
+     */
+    function calculate(budget) {
+        budgetCalculator.initialize();
+        dispatcher.callback(resolveDetailPanel(mountPanel()));
+        const ui = document.getElementById('mwi-budget-calculator');
+        ui.querySelector('input').value = String(budget);
+        ui.querySelector('button').click();
+        return document.getElementById('mwi-budget-modal-overlay');
+    }
+
+    test('every costing is done under the calculator\u2019s own owner id', () => {
+        calculate(1000);
+        expect(world.ownerIds.length).toBeGreaterThan(0);
+        expect(new Set(world.ownerIds)).toEqual(new Set(['budgetCalculator']));
+    });
+
+    test('the open breakdown claims the required totals', () => {
+        calculate(1000);
+        expect(ledger.reserved.at(-1)).toEqual({
+            ownerId: 'budgetCalculator',
+            lines: [{ itemHrid: '/items/egg', count: 100 }],
+        });
+    });
+
+    test('closing the breakdown gives the claim back', () => {
+        const modal = calculate(1000);
+        modal.querySelector('#mwi-budget-modal-close').click();
+        expect(ledger.released).toContain('budgetCalculator');
+    });
+
+    test('a shortfall the bag would have covered names who claimed it', () => {
+        world.materials = [
+            {
+                itemHrid: '/items/egg',
+                itemName: 'Egg',
+                perUnit: 1,
+                have: 500,
+                isTradeable: true,
+                reservedNote: '80 short — 400 reserved by "Goal: Cheese sword"',
+            },
+        ];
+        const modal = calculate(1000);
+        expect(modal.querySelector('#mwi-budget-reserved-note').textContent).toBe(
+            'Egg: 80 short — 400 reserved by "Goal: Cheese sword"'
+        );
+    });
+
+    test('with no claim on the line the modal says nothing about reservations', () => {
+        const modal = calculate(1000);
+        expect(modal.querySelector('#mwi-budget-reserved-note')).toBeNull();
     });
 });

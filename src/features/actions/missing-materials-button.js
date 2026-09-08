@@ -41,6 +41,24 @@ import { setReactInputValue } from '../../utils/react-input.js';
 import { clickThroughReact } from '../../utils/react-click.js';
 import { testerShopEnabled, testerShopCoinCost } from '../../utils/tester-shop.js';
 import { runningAction } from '../../utils/combat-actions.js';
+import {
+    effectiveInventory,
+    release,
+    reserve,
+    reservedElsewhere,
+    shortfallNote,
+} from '../../utils/inventory-reservations.js';
+
+/**
+ * The owner this feature claims stock under, while its tabs are open.
+ *
+ * One id and not one per action: only one bill of materials is ever open at a
+ * time (`storedActionHrid` and its siblings are single-valued), so a second bill
+ * replacing the first is exactly right. Transient — the claim goes when the
+ * player leaves the marketplace, and the ledger's TTL is only a backstop for
+ * tabs that were never left properly.
+ */
+const RESERVATION_OWNER = 'missingMats';
 
 /**
  * Module-level state
@@ -238,7 +256,9 @@ function updateButtonForPanel(panel, value) {
         // Check if user wants to ignore queue (default: false, meaning we DO account for queue)
         const ignoreQueue = config.getSetting('actions_missingMaterialsButton_ignoreQueue') || false;
         const accountForQueue = !ignoreQueue; // Invert: ignoreQueue=false means accountForQueue=true
-        missingMaterials = calculateMaterialRequirements(actionHrid, numActions, accountForQueue);
+        missingMaterials = calculateMaterialRequirements(actionHrid, numActions, accountForQueue, {
+            ownerId: RESERVATION_OWNER,
+        });
         if (missingMaterials.length === 0) {
             disabled = true;
         }
@@ -676,12 +696,38 @@ async function handleMissingMaterialsClick(actionHrid, numActions) {
     // Recalculate materials fresh (inventory may have changed since button was rendered)
     const ignoreQueue = config.getSetting('actions_missingMaterialsButton_ignoreQueue') || false;
     const accountForQueue = !ignoreQueue;
-    const freshMaterials = calculateMaterialRequirements(actionHrid, numActions, accountForQueue);
+    const freshMaterials = calculateMaterialRequirements(actionHrid, numActions, accountForQueue, {
+        ownerId: RESERVATION_OWNER,
+    });
 
     if (!(await openWhereBought(freshMaterials))) return;
 
+    await claimOpenBill(freshMaterials);
+
     // Setup inventory listener for live updates
     setupInventoryListener();
+}
+
+/**
+ * Claim what the tabs now on screen are asking for, for as long as they are up.
+ *
+ * The REQUIRED totals rather than the shortfall: what is already in the bag for
+ * this bill is spoken for too, and claiming only the missing part would leave
+ * the rest looking free to every other plan.
+ *
+ * @param {Array<Object>} materials - The material lines the tabs were built from
+ * @returns {Promise<boolean>} Whether a write landed
+ */
+async function claimOpenBill(materials) {
+    return reserve(
+        RESERVATION_OWNER,
+        (materials || []).map((material) => ({
+            itemHrid: material.itemHrid,
+            count: material.required,
+            enhancementLevel: material.enhancementLevel || 0,
+        })),
+        { label: 'Missing materials panel' }
+    );
 }
 
 /**
@@ -1389,12 +1435,17 @@ function updateTabsOnInventoryChange() {
         // Production mode
         const ignoreQueue = config.getSetting('actions_missingMaterialsButton_ignoreQueue') || false;
         const accountForQueue = !ignoreQueue;
-        updatedMaterials = calculateMaterialRequirements(storedActionHrid, storedNumActions, accountForQueue);
+        updatedMaterials = calculateMaterialRequirements(storedActionHrid, storedNumActions, accountForQueue, {
+            ownerId: RESERVATION_OWNER,
+        });
     } else if (storedMaterialList) {
-        updatedMaterials = materialsFromList(storedMaterialList.lines);
+        updatedMaterials = materialsFromList(storedMaterialList.lines, storedMaterialList.ownerId || RESERVATION_OWNER);
     } else {
         return;
     }
+
+    // The bill has been recomputed; the claim behind it moves with it
+    claimOpenBill(updatedMaterials);
 
     // Update each existing tab
     currentMaterialsTabs.forEach((tab) => {
@@ -1502,6 +1553,10 @@ function handleMarketplaceCleanup() {
         inventoryUpdateHandler = null;
     }
 
+    // The tabs are the panel: leaving the marketplace closes it, and a
+    // transient claim does not outlive what made it
+    release(RESERVATION_OWNER);
+
     // Clear stored context — only when genuinely leaving the marketplace
     storedActionHrid = null;
     storedNumActions = 0;
@@ -1526,9 +1581,13 @@ function handleMarketplaceCleanup() {
  * not progress towards a +7.
  *
  * @param {Array<{itemHrid: string, count: number, enhancementLevel?: number}>} lines - What is needed, in total
+ * @param {string|null} [ownerId] - Who is asking, for the reservation ledger. The asking
+ *   owner's own claim is never deducted, and nothing is deducted while the ledger is off
+ *   or when no owner is named — omitting it is how every caller that predates the ledger
+ *   calls this, and it must go on meaning "the ledger is not part of these figures"
  * @returns {Array<Object>} Material objects for `createMaterialTab`
  */
-export function materialsFromList(lines) {
+export function materialsFromList(lines, ownerId = null) {
     const inventory = dataManager.getInventory?.() || [];
     const itemDetailMap = dataManager.getInitClientData?.()?.itemDetailMap || {};
     const out = [];
@@ -1545,6 +1604,17 @@ export function materialsFromList(lines) {
             inventory
                 .filter((i) => i.itemHrid === line.itemHrid && (i.enhancementLevel || 0) === level)
                 .reduce((sum, i) => sum + (i.count || 0), 0);
+        // Stock another plan has claimed is not this bill's to spend
+        const available = ownerId
+            ? effectiveInventory(line.itemHrid, level, { excludeOwner: ownerId, held: have })
+            : have;
+        const missing = Math.max(0, required - available);
+        const reserved = ownerId ? reservedElsewhere(line.itemHrid, level, { excludeOwner: ownerId }) : 0;
+        // Only when a claim is what put the line short: an empty bag needs no explanation
+        const reservedNote =
+            missing > 0 && have >= required
+                ? shortfallNote(missing, line.itemHrid, level, { excludeOwner: ownerId })
+                : '';
         out.push({
             itemHrid: line.itemHrid,
             itemName: details?.name || line.itemHrid.split('/').pop().replace(/_/g, ' '),
@@ -1552,10 +1622,12 @@ export function materialsFromList(lines) {
             required,
             have,
             queued: 0,
-            available: have,
-            missing: Math.max(0, required - have),
+            available,
+            missing,
             isTradeable: details?.isTradable === true,
             isUpgradeItem: false,
+            ...(reserved > 0 ? { reserved } : {}),
+            ...(reservedNote ? { reservedNote } : {}),
         });
     }
     return out;
@@ -1570,18 +1642,26 @@ export function materialsFromList(lines) {
  * names an enhancement level opens that level's listing.
  *
  * @param {Array<{itemHrid: string, count: number, enhancementLevel?: number}>} lines - Totals needed
+ * @param {Object} [options] - Options
+ * @param {string|null} [options.ownerId] - The caller's reservation-ledger owner id, when it
+ *   keeps a claim of its own; without one the open tabs claim the bill themselves
  * @returns {Promise<boolean>} Whether the marketplace opened and the tabs were drawn
  */
-export async function openMaterialsList(lines) {
+export async function openMaterialsList(lines, { ownerId = null } = {}) {
     const wanted = (lines || []).filter((line) => line?.itemHrid && Number(line.count) > 0);
     if (!wanted.length) return false;
 
     storedActionHrid = null;
     storedNumActions = 0;
     storedEnhancementContext = null;
-    storedMaterialList = { lines: wanted };
+    storedMaterialList = { lines: wanted, ownerId };
 
-    if (!(await openWhereBought(materialsFromList(wanted)))) return false;
+    // A caller that keeps a claim of its own has already made it (the crafting
+    // plan does, on the click that opened this); only an anonymous bill is
+    // claimed here, under the tabs' own transient owner
+    const materials = materialsFromList(wanted, ownerId || RESERVATION_OWNER);
+    if (!(await openWhereBought(materials))) return false;
+    if (!ownerId) await claimOpenBill(materials);
     setupInventoryListener();
     return true;
 }

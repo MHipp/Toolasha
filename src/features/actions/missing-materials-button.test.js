@@ -86,6 +86,42 @@ vi.mock('../../utils/tester-shop.js', () => ({
 }));
 vi.mock('../../utils/react-input.js', () => ({ setReactInputValue: () => {} }));
 
+/**
+ * The reservation ledger, doubled at the seam. Its arithmetic belongs to
+ * `utils/inventory-reservations.test.js`; what matters here is that the bill
+ * nets off other owners and never itself, that the open tabs claim what they
+ * are asking for and give it back on the way out, and that a bill built with
+ * no owner at all is the bill this file has always asserted.
+ */
+const ledger = vi.hoisted(() => ({ claims: {}, reserved: [], released: [] }));
+vi.mock('../../utils/inventory-reservations.js', () => ({
+    reservedElsewhere: (itemHrid, level, { excludeOwner } = {}) => {
+        let total = 0;
+        for (const [owner, byKey] of Object.entries(ledger.claims)) {
+            if (owner === excludeOwner) continue;
+            total += byKey[`${itemHrid}|${level}`] || 0;
+        }
+        return total;
+    },
+    effectiveInventory: (itemHrid, level, { excludeOwner, held } = {}) => {
+        let total = 0;
+        for (const [owner, byKey] of Object.entries(ledger.claims)) {
+            if (owner === excludeOwner) continue;
+            total += byKey[`${itemHrid}|${level}`] || 0;
+        }
+        return Math.max(0, held - total);
+    },
+    shortfallNote: (short) => `${short} short — reserved by "Goal: Cheese sword"`,
+    reserve: async (ownerId, lines) => {
+        ledger.reserved.push({ ownerId, lines });
+        return true;
+    },
+    release: (ownerId) => {
+        ledger.released.push(ownerId);
+        return Promise.resolve(true);
+    },
+}));
+
 const { materialsFromList, openMaterialsList, openMissingMaterials } = await import('./missing-materials-button.js');
 
 describe('a bill of materials against the inventory', () => {
@@ -190,6 +226,41 @@ describe('a bill of materials against the inventory', () => {
     });
 });
 
+/** A navbar marketplace button plus a visible tab strip carrying the two
+ * native tabs ("My Listings" is the clone template, "Market Listings" is
+ * where a clear-all should land the player). happy-dom does no real layout,
+ * so `offsetParent`/`getBoundingClientRect` are stubbed the same way
+ * marketplace-tabs.test.js stubs them for `visibleTabsContainer`. */
+function buildMarketplaceDom() {
+    document.body.innerHTML = '';
+
+    const nav = document.createElement('div');
+    nav.className = 'NavigationBar_nav__3uuUl';
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('aria-label', 'navigationBar.marketplace');
+    nav.appendChild(svg);
+    document.body.appendChild(nav);
+
+    const container = document.createElement('div');
+    container.className = 'MuiTabs-flexContainer';
+    container.setAttribute('role', 'tablist');
+    const myListings = document.createElement('button');
+    myListings.setAttribute('role', 'tab');
+    myListings.textContent = 'My Listings';
+    const marketListings = document.createElement('button');
+    marketListings.setAttribute('role', 'tab');
+    marketListings.textContent = 'Market Listings';
+    container.append(myListings, marketListings);
+    document.body.appendChild(container);
+    Object.defineProperty(container, 'offsetParent', { get: () => document.body, configurable: true });
+    Object.defineProperty(container, 'getBoundingClientRect', {
+        value: () => ({ width: 100 }),
+        configurable: true,
+    });
+
+    return { container, myListings, marketListings };
+}
+
 /**
  * The "Clear" control on the marketplace tab strip — one click retires every
  * pinned material tab, the Return tab, and the quantity armed for the buy
@@ -200,41 +271,6 @@ describe('a bill of materials against the inventory', () => {
  * lab-sim-ui.test.js does for the sim's own "clear all" control.
  */
 describe('the marketplace clear-all control', () => {
-    /** A navbar marketplace button plus a visible tab strip carrying the two
-     * native tabs ("My Listings" is the clone template, "Market Listings" is
-     * where a clear-all should land the player). happy-dom does no real layout,
-     * so `offsetParent`/`getBoundingClientRect` are stubbed the same way
-     * marketplace-tabs.test.js stubs them for `visibleTabsContainer`. */
-    function buildMarketplaceDom() {
-        document.body.innerHTML = '';
-
-        const nav = document.createElement('div');
-        nav.className = 'NavigationBar_nav__3uuUl';
-        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        svg.setAttribute('aria-label', 'navigationBar.marketplace');
-        nav.appendChild(svg);
-        document.body.appendChild(nav);
-
-        const container = document.createElement('div');
-        container.className = 'MuiTabs-flexContainer';
-        container.setAttribute('role', 'tablist');
-        const myListings = document.createElement('button');
-        myListings.setAttribute('role', 'tab');
-        myListings.textContent = 'My Listings';
-        const marketListings = document.createElement('button');
-        marketListings.setAttribute('role', 'tab');
-        marketListings.textContent = 'Market Listings';
-        container.append(myListings, marketListings);
-        document.body.appendChild(container);
-        Object.defineProperty(container, 'offsetParent', { get: () => document.body, configurable: true });
-        Object.defineProperty(container, 'getBoundingClientRect', {
-            value: () => ({ width: 100 }),
-            configurable: true,
-        });
-
-        return { container, myListings, marketListings };
-    }
-
     beforeEach(() => {
         state.autofill.setPendingCalculation.mockClear();
         state.autofill.clearQuantity.mockClear();
@@ -394,5 +430,72 @@ describe('the Tester shop strip', () => {
         expect(state.autofill.setPendingCalculation).toHaveBeenCalledWith(expect.any(Function), {
             itemHrid: '/items/plank',
         });
+    });
+});
+
+describe('the open bill and the reservation ledger', () => {
+    beforeEach(() => {
+        ledger.claims = {};
+        ledger.reserved = [];
+        ledger.released = [];
+        state.items = { '/items/cedar_lumber': { name: 'Cedar Lumber', isTradable: true } };
+        state.inventory = [{ itemHrid: '/items/cedar_lumber', enhancementLevel: 0, count: 120 }];
+        state.unclaimed = {};
+        state.actionMaterials = [];
+    });
+
+    test('a bill with no owner is the bill it has always been, claims or no claims', () => {
+        ledger.claims = { 'goal:a': { '/items/cedar_lumber|0': 100 } };
+        const [line] = materialsFromList([{ itemHrid: '/items/cedar_lumber', count: 100 }]);
+
+        expect(line.have).toBe(120);
+        expect(line.available).toBe(120);
+        expect(line.missing).toBe(0);
+        expect(line.reserved).toBeUndefined();
+        expect(line.reservedNote).toBeUndefined();
+    });
+
+    test('another owner\u2019s claim is not this bill\u2019s to spend, and the tab says whose it is', () => {
+        ledger.claims = { 'goal:a': { '/items/cedar_lumber|0': 100 } };
+        const [line] = materialsFromList([{ itemHrid: '/items/cedar_lumber', count: 100 }], 'missingMats');
+
+        expect(line.available).toBe(20);
+        expect(line.missing).toBe(80);
+        expect(line.reservedNote).toBe('80 short — reserved by "Goal: Cheese sword"');
+    });
+
+    test('a bill is never charged its own claim', () => {
+        ledger.claims = { missingMats: { '/items/cedar_lumber|0': 100 } };
+        const [line] = materialsFromList([{ itemHrid: '/items/cedar_lumber', count: 100 }], 'missingMats');
+
+        expect(line.available).toBe(120);
+        expect(line.missing).toBe(0);
+    });
+
+    test('an ordinary shortfall carries no note', () => {
+        state.inventory = [{ itemHrid: '/items/cedar_lumber', enhancementLevel: 0, count: 5 }];
+        ledger.claims = { 'goal:a': { '/items/cedar_lumber|0': 3 } };
+        const [line] = materialsFromList([{ itemHrid: '/items/cedar_lumber', count: 100 }], 'missingMats');
+
+        expect(line.missing).toBe(98);
+        expect(line.reservedNote).toBeUndefined();
+    });
+
+    test('the tabs on screen claim their required totals, and leaving gives them back', async () => {
+        const { container } = buildMarketplaceDom();
+        state.actionMaterials = [
+            { itemHrid: '/items/plank', itemName: 'Plank', missing: 40, required: 40, isTradeable: true },
+        ];
+
+        await openMissingMaterials('/actions/crafting/plank', 5);
+        expect(ledger.reserved.at(-1)).toEqual({
+            ownerId: 'missingMats',
+            lines: [{ itemHrid: '/items/plank', count: 40, enhancementLevel: 0 }],
+        });
+
+        container
+            .querySelector('[data-mwi-clear-all-tab="true"]')
+            .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        expect(ledger.released).toContain('missingMats');
     });
 });

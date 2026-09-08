@@ -154,7 +154,9 @@ describe('the Buy Missing Materials button', () => {
         await Promise.resolve();
 
         expect(state.openMaterialsList).toHaveBeenCalledTimes(1);
-        expect(state.openMaterialsList).toHaveBeenCalledWith([{ itemHrid: '/items/wood', count: 200 }]);
+        expect(state.openMaterialsList).toHaveBeenCalledWith([{ itemHrid: '/items/wood', count: 200 }], {
+            ownerId: 'craftingPlan:/items/wooden_bow',
+        });
     });
 
     test('untradeable materials are left off the bill', async () => {
@@ -169,7 +171,9 @@ describe('the Buy Missing Materials button', () => {
         await Promise.resolve();
         await Promise.resolve();
 
-        expect(state.openMaterialsList).toHaveBeenCalledWith([{ itemHrid: '/items/wood', count: 10 }]);
+        expect(state.openMaterialsList).toHaveBeenCalledWith([{ itemHrid: '/items/wood', count: 10 }], {
+            ownerId: 'craftingPlan:/items/wooden_bow',
+        });
     });
 
     test('does not open the marketplace when nothing is missing', async () => {

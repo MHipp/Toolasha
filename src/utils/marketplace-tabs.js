@@ -84,6 +84,26 @@ const POLL_MS = 3000;
  *   caller prune whatever list of its own it is keeping alongside the tab.
  * @returns {HTMLElement} Created tab element
  */
+/**
+ * The extra badge line naming who claimed the stock, when a material line
+ * carries one.
+ *
+ * Only `calculateMaterialRequirements` attaches `reservedNote`, and only when
+ * another owner's claim is what put the line short — so a tab built from a line
+ * without one is the tab it has always been.
+ *
+ * @param {Object} material - A material line
+ * @returns {string} An HTML fragment, or `''`
+ */
+function reservedBadgeLine(material) {
+    if (!material?.reservedNote) return '';
+    const escaped = String(material.reservedNote).replace(
+        /[&<>"']/g,
+        (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]
+    );
+    return `<div style="font-size: 0.7em; color: #e8a87c;">${escaped}</div>`;
+}
+
 export function createMaterialTab(material, referenceTab, onClickCallback, options = {}) {
     // Clone reference tab structure
     const tab = referenceTab.cloneNode(true);
@@ -128,6 +148,7 @@ export function createMaterialTab(material, referenceTab, onClickCallback, optio
                 <div style="font-size: 0.75em; color: ${statusColor};">
                     ${statusText}
                 </div>
+                ${reservedBadgeLine(material)}
             </div>
         `;
     }
@@ -401,6 +422,7 @@ export function updateTabBadge(tab, material) {
             <div style="font-size: 0.75em; color: ${statusColor};">
                 ${statusText}
             </div>
+            ${reservedBadgeLine(material)}
         </div>
     `;
 

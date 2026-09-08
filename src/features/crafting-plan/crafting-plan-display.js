@@ -541,7 +541,11 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
             // It navigates to the marketplace and subtracts inventory itself, so
             // pass the REQUIRED totals (not the shortfall) and let it recompute.
             await openMaterialsList(
-                missingMaterials.map((material) => ({ itemHrid: material.itemHrid, count: material.required }))
+                missingMaterials.map((material) => ({ itemHrid: material.itemHrid, count: material.required })),
+                // The claim above is this plan's; the tabs must net against
+                // everyone else's and not against it, or the plan's own
+                // materials would read as taken the moment they were claimed
+                { ownerId: planOwner(output.itemHrid) }
             );
         });
         content.appendChild(buyButton);

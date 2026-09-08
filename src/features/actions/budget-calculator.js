@@ -13,6 +13,7 @@ import { setReactInputValue } from '../../utils/react-input.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { onDetailPanel, resolveDetailPanel } from '../../utils/action-panel-helper.js';
 import { PANEL_Z_CAP } from '../../utils/panel-z-index.js';
+import { release, reserve } from '../../utils/inventory-reservations.js';
 
 const PRODUCTION_TYPES = [
     '/action_types/brewing',
@@ -23,6 +24,15 @@ const PRODUCTION_TYPES = [
 ];
 
 const UI_ID = 'mwi-budget-calculator';
+
+/**
+ * The owner the calculator claims stock under, while its breakdown is open.
+ *
+ * Transient by nature: a budget calculation is a question, not a plan, and the
+ * claim exists only so that a plan being costed elsewhere at the same moment
+ * does not count the same stock twice. It goes when the modal closes.
+ */
+const RESERVATION_OWNER = 'budgetCalculator';
 
 /**
  * Get action HRID from panel element.
@@ -71,7 +81,7 @@ function findMaxUnits(actionHrid, budget) {
      */
     const costForN = (n) => {
         if (n <= 0) return 0;
-        const mats = calculateMaterialRequirements(actionHrid, n, false);
+        const mats = calculateMaterialRequirements(actionHrid, n, false, { ownerId: RESERVATION_OWNER });
         let total = 0;
         for (const mat of mats) {
             if (!mat.isTradeable || mat.missing <= 0) continue;
@@ -84,7 +94,7 @@ function findMaxUnits(actionHrid, budget) {
 
     // If we can't afford even 1 unit, return 0
     if (costForN(1) > budget) {
-        const materials = calculateMaterialRequirements(actionHrid, 1, false);
+        const materials = calculateMaterialRequirements(actionHrid, 1, false, { ownerId: RESERVATION_OWNER });
         return { n: 0, materials };
     }
 
@@ -101,7 +111,7 @@ function findMaxUnits(actionHrid, budget) {
         }
     }
 
-    const materials = calculateMaterialRequirements(actionHrid, lo, false);
+    const materials = calculateMaterialRequirements(actionHrid, lo, false, { ownerId: RESERVATION_OWNER });
     return { n: lo, materials };
 }
 
@@ -241,6 +251,21 @@ function showBreakdownModal(budget, result) {
     modal.appendChild(header);
     modal.appendChild(tableWrap);
 
+    // A shortfall the bag would have covered is another plan's claim, and the
+    // modal is where the player is looking at that shortfall
+    const claimed = result.materials.find((mat) => mat.reservedNote);
+    if (claimed) {
+        const note = document.createElement('div');
+        note.id = 'mwi-budget-reserved-note';
+        note.style.cssText = `
+            margin-top: 12px; padding: 7px 10px; border-radius: 4px;
+            background: rgba(232,168,124,0.12); border: 1px solid rgba(232,168,124,0.35);
+            color: #e8a87c; font-size: 12px;
+        `;
+        note.textContent = `${claimed.itemName}: ${claimed.reservedNote}`;
+        modal.appendChild(note);
+    }
+
     if (hasUnpricedShortfall) {
         const note = document.createElement('div');
         note.id = 'mwi-budget-unpriced-note';
@@ -257,6 +282,15 @@ function showBreakdownModal(budget, result) {
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
 
+    // The required totals, not the shortfall: what the bag already holds for
+    // this budget is spoken for too, and claiming only the part being bought
+    // would leave the rest looking free to every other plan
+    reserve(
+        RESERVATION_OWNER,
+        result.materials.map((mat) => ({ itemHrid: mat.itemHrid, count: mat.required })),
+        { label: 'Budget calculator' }
+    );
+
     // close() is reachable three ways (×, backdrop click, Escape), but only the Escape path used
     // to detach this listener. Dismissing via the other two left it on `document` forever, and
     // since a fresh listener is added every time the modal reopens, repeatedly opening and
@@ -268,6 +302,7 @@ function showBreakdownModal(budget, result) {
     const close = () => {
         overlay.remove();
         document.removeEventListener('keydown', onEsc);
+        release(RESERVATION_OWNER);
     };
     overlay.querySelector('#mwi-budget-modal-close').addEventListener('click', close);
     overlay.addEventListener('click', (e) => {
@@ -486,6 +521,9 @@ class BudgetCalculator {
 
             document.querySelectorAll(`#${UI_ID}`).forEach((el) => el.remove());
             document.getElementById('mwi-budget-modal-overlay')?.remove();
+            // The modal is gone by any of its three routes plus this one, and the
+            // claim behind it goes with it every time
+            release(RESERVATION_OWNER);
 
             // Disconnect every panel observer. Left running, one keeps firing
             // on an open panel's own DOM churn (e.g. missing-mats-button being

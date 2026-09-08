@@ -9,6 +9,7 @@ import { parseArtisanBonus, getDrinkConcentration } from './tea-parser.js';
 import { getEnhancingParams } from './enhancement-config.js';
 import { calculateEnhancement } from './enhancement-calculator.js';
 import { resolveActionContext } from './action-context.js';
+import { reservedElsewhere, shortfallNote } from './inventory-reservations.js';
 
 export const ARTISAN_MATERIAL_MODE = {
     EXPECTED: 'expected',
@@ -161,6 +162,11 @@ export function calculateQueuedMaterialsForAction(actionHrid = null) {
  * @param {string} actionHrid - Action HRID (e.g., "/actions/crafting/celestial_enhancer")
  * @param {number} numActions - Number of actions to perform
  * @param {boolean} accountForQueue - Whether to subtract queued materials from available inventory (default: false)
+ * @param {Object} [options] - Options
+ * @param {string|null} [options.ownerId] - Who is asking, for the reservation ledger. Omitted
+ *   is how every caller that predates the ledger calls this, and it must go on meaning
+ *   "the ledger is not part of this figure" — so no claim is deducted without one, and
+ *   none is deducted with one either while the ledger is switched off
  * @returns {Array<Object>} Array of material requirement objects (includes upgrade items)
  */
 /**
@@ -180,7 +186,37 @@ export function unclaimedBoughtCount(itemHrid) {
         .reduce((sum, l) => sum + (l.unclaimedItemCount || 0), 0);
 }
 
-export function calculateMaterialRequirements(actionHrid, numActions, accountForQueue = false) {
+/**
+ * The two fields a material line carries only when another plan's claim is what
+ * put it short.
+ *
+ * Carried conditionally, so a line computed without a reservation ledger is the
+ * object it has always been — which is what lets every existing consumer, and
+ * every existing snapshot of one, go on unchanged.
+ *
+ * @param {number} missing - The shortfall as computed
+ * @param {string} itemHrid - The material
+ * @param {number} have - Units held (including bought-but-unclaimed)
+ * @param {number} queued - Units the action queue has spoken for
+ * @param {number} reserved - Units other owners have claimed
+ * @param {string|null} ownerId - Who is asking
+ * @returns {{reserved?: number, reservedNote?: string}} Fields to spread onto the line
+ */
+function reservationFields(missing, itemHrid, have, queued, reserved, ownerId) {
+    if (!(reserved > 0) || !(missing > 0)) return {};
+    // Only when the claim is what made it short: a player who is simply out of
+    // logs needs no explanation, and a note that fires either way explains nothing
+    if (Math.max(0, have - queued) < missing + reserved) return { reserved };
+    const reservedNote = shortfallNote(missing, itemHrid, 0, { excludeOwner: ownerId });
+    return reservedNote ? { reserved, reservedNote } : { reserved };
+}
+
+export function calculateMaterialRequirements(
+    actionHrid,
+    numActions,
+    accountForQueue = false,
+    { ownerId = null } = {}
+) {
     const actionDetails = dataManager.getActionDetails(actionHrid);
     const inventory = dataManager.getInventory() || [];
     const gameData = dataManager.getInitClientData();
@@ -217,9 +253,12 @@ export function calculateMaterialRequirements(actionHrid, numActions, accountFor
                     .filter((i) => i.itemHrid === input.itemHrid && !i.enhancementLevel)
                     .reduce((sum, i) => sum + (i.count || 0), 0);
 
-            // Calculate queued and available amounts
+            // Calculate queued and available amounts. Stock another plan has
+            // already claimed is not available either — see
+            // utils/inventory-reservations.js; zero while the ledger is off.
             const queued = queuedMaterialsMap.get(input.itemHrid) || 0;
-            const available = Math.max(0, have - queued);
+            const reserved = ownerId ? reservedElsewhere(input.itemHrid, 0, { excludeOwner: ownerId }) : 0;
+            const available = Math.max(0, have - queued - reserved);
             const missingAmount = Math.max(0, totalRequired - available);
 
             const itemDetails = gameData.itemDetailMap[input.itemHrid];
@@ -237,6 +276,7 @@ export function calculateMaterialRequirements(actionHrid, numActions, accountFor
                 missing: missingAmount,
                 isTradeable: itemDetails.isTradable === true, // British spelling
                 isUpgradeItem: false,
+                ...reservationFields(missingAmount, input.itemHrid, have, queued, reserved, ownerId),
             });
         }
     }
@@ -254,7 +294,8 @@ export function calculateMaterialRequirements(actionHrid, numActions, accountFor
 
         // Calculate queued and available amounts
         const queued = queuedMaterialsMap.get(actionDetails.upgradeItemHrid) || 0;
-        const available = Math.max(0, have - queued);
+        const reserved = ownerId ? reservedElsewhere(actionDetails.upgradeItemHrid, 0, { excludeOwner: ownerId }) : 0;
+        const available = Math.max(0, have - queued - reserved);
         const missingAmount = Math.max(0, totalRequired - available);
 
         const itemDetails = gameData.itemDetailMap[actionDetails.upgradeItemHrid];
@@ -269,6 +310,7 @@ export function calculateMaterialRequirements(actionHrid, numActions, accountFor
                 missing: missingAmount,
                 isTradeable: itemDetails.isTradable === true, // British spelling
                 isUpgradeItem: true, // Flag to identify upgrade items
+                ...reservationFields(missingAmount, actionDetails.upgradeItemHrid, have, queued, reserved, ownerId),
             });
         }
     }

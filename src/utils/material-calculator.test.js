@@ -44,6 +44,25 @@ vi.mock('./enhancement-calculator.js', () => ({
     calculateEnhancement: () => state.enhancementResult,
 }));
 
+/**
+ * The reservation ledger, doubled. `utils/inventory-reservations.test.js` owns
+ * its arithmetic; what matters here is that a caller with no owner id — which
+ * is every caller that existed before the ledger — gets the numbers it always
+ * got, and that a caller with one is never charged its own claim.
+ */
+const ledger = vi.hoisted(() => ({ claims: {} }));
+vi.mock('./inventory-reservations.js', () => ({
+    reservedElsewhere: (itemHrid, level, { excludeOwner } = {}) => {
+        let total = 0;
+        for (const [owner, byItem] of Object.entries(ledger.claims)) {
+            if (owner === excludeOwner) continue;
+            total += byItem[itemHrid] || 0;
+        }
+        return total;
+    },
+    shortfallNote: (short, itemHrid) => `${short} short — reserved elsewhere (${itemHrid})`,
+}));
+
 const {
     calculateMaterialRequirements,
     calculateQueuedMaterialsForAction,
@@ -78,6 +97,7 @@ beforeEach(() => {
     state.equipment = new Map();
     state.drinks = [];
     state.marketListings = [];
+    ledger.claims = {};
 });
 
 describe('affordableActions', () => {
@@ -352,5 +372,88 @@ describe('calculateEnhancementMaterialRequirements', () => {
         const protection = result.find((m) => m.itemHrid === '/items/protection_scroll');
         expect(protection.have).toBe(1);
         expect(protection.missing).toBe(2); // ceil(2.5) - 1
+    });
+});
+
+describe('material requirements and the reservation ledger', () => {
+    beforeEach(() => {
+        state.inventory = [
+            { itemHrid: '/items/plank', count: 100, enhancementLevel: 0 },
+            { itemHrid: '/items/nail', count: 100, enhancementLevel: 0 },
+        ];
+    });
+
+    /**
+     * @param {Array<Object>} materials - Lines from calculateMaterialRequirements
+     * @returns {Object} The plank line
+     */
+    const plank = (materials) => materials.find((material) => material.itemHrid === '/items/plank');
+
+    test('a caller with no owner id gets what it always got, claims or no claims', () => {
+        ledger.claims = { 'goal:a': { '/items/plank': 60 } };
+        const materials = calculateMaterialRequirements('/actions/crafting/table', 10);
+
+        // 40 planks wanted, 100 held — the ledger is not consulted without an
+        // owner id, and every field is the object this has always returned
+        expect(plank(materials)).toEqual({
+            itemHrid: '/items/plank',
+            itemName: 'Plank',
+            required: 40,
+            have: 100,
+            queued: 0,
+            available: 100,
+            missing: 0,
+            isTradeable: true,
+            isUpgradeItem: false,
+        });
+    });
+
+    test('another owner’s claim is not available, and the line says who has it', () => {
+        ledger.claims = { 'goal:a': { '/items/plank': 80 } };
+        const materials = calculateMaterialRequirements('/actions/crafting/table', 10, false, {
+            ownerId: 'missingMats',
+        });
+
+        expect(plank(materials).available).toBe(20);
+        expect(plank(materials).missing).toBe(20);
+        expect(plank(materials).reserved).toBe(80);
+        expect(plank(materials).reservedNote).toBe('20 short — reserved elsewhere (/items/plank)');
+    });
+
+    test('an owner is not charged its own claim', () => {
+        ledger.claims = { missingMats: { '/items/plank': 80 } };
+        const materials = calculateMaterialRequirements('/actions/crafting/table', 10, false, {
+            ownerId: 'missingMats',
+        });
+
+        expect(plank(materials).available).toBe(100);
+        expect(plank(materials).missing).toBe(0);
+        expect(plank(materials).reserved).toBeUndefined();
+    });
+
+    test('an ordinary shortfall carries no note — an empty bag needs no explanation', () => {
+        state.inventory = [{ itemHrid: '/items/plank', count: 10, enhancementLevel: 0 }];
+        ledger.claims = { 'goal:a': { '/items/plank': 5 } };
+        const materials = calculateMaterialRequirements('/actions/crafting/table', 10, false, {
+            ownerId: 'missingMats',
+        });
+
+        expect(plank(materials).missing).toBe(35);
+        expect(plank(materials).reserved).toBe(5);
+        expect(plank(materials).reservedNote).toBeUndefined();
+    });
+
+    test('a claim and the action queue both come off, and neither twice', () => {
+        state.currentActions = [
+            { actionHrid: '/actions/crafting/table', hasMaxCount: true, maxCount: 5, currentCount: 0 },
+        ];
+        ledger.claims = { 'goal:a': { '/items/plank': 30 } };
+        const materials = calculateMaterialRequirements('/actions/crafting/table', 10, true, {
+            ownerId: 'missingMats',
+        });
+
+        // 100 held, 20 queued for the five queued crafts, 30 claimed elsewhere
+        expect(plank(materials).queued).toBe(20);
+        expect(plank(materials).available).toBe(50);
     });
 });
