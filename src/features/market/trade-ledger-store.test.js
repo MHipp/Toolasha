@@ -47,6 +47,10 @@ const storageMock = vi.hoisted(() => {
             return true;
         }),
         getAllKeys: vi.fn(async (store = 'settings') => Array.from(storeFor(store).keys())),
+        tryGetAllKeys: vi.fn(async (store = 'settings') => {
+            if (storageMock.unavailable) return null;
+            return Array.from(storeFor(store).keys());
+        }),
         putAll: vi.fn(async (store, entries) => {
             if (storageMock.unavailable) return 0;
             for (const [key, value] of Object.entries(entries)) storeFor(store).set(key, structuredClone(value));
@@ -450,13 +454,33 @@ describe('a fill writes its own day and nothing else', () => {
         seedSplit([fill(1, DAY1), fill(2, DAY2)]);
         await tradeLedgerStore.load();
         tradeLedgerStore.states = baseline3();
-        storageMock.getAllKeys.mockClear();
+        storageMock.tryGetAllKeys.mockClear();
 
         fillNow(DAY3, 4);
         await awaitSaves();
 
-        expect(storageMock.getAllKeys).not.toHaveBeenCalled();
+        expect(storageMock.tryGetAllKeys).not.toHaveBeenCalled();
         expect(LEDGER().has(REC(DAY1))).toBe(true);
+    });
+
+    test('a sweep that cannot list the store deletes nothing', async () => {
+        // DAY1 falls off the cap entirely on load, so only the sweep (keyed by
+        // `tryGetAllKeys`) could remove it — a failed listing must leave it be
+        // rather than reading the failure as "nothing to sweep".
+        const day1 = [fill(1, DAY1 + 1000), fill(2, DAY1 + 2000)];
+        const day2 = Array.from({ length: LEDGER_RECORD_CAP }, (_, i) => fill(100 + i, DAY2 + i));
+        seedSplit([...day1, ...day2]);
+        await tradeLedgerStore.load();
+
+        tradeLedgerStore.states = baseline3();
+        storageMock.tryGetAllKeys.mockResolvedValueOnce(null);
+        storageMock.delete.mockClear();
+
+        fillNow(DAY3, 4);
+        await awaitSaves();
+
+        expect(LEDGER().has(REC(DAY1))).toBe(true);
+        expect(storageMock.delete).not.toHaveBeenCalledWith(REC(DAY1), 'marketListings');
     });
 });
 

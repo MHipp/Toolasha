@@ -693,7 +693,14 @@ class TradeLedgerStore {
      */
     async _evictBefore(charId, floorBucket) {
         try {
-            const keys = recordKeysFor(await storage.getAllKeys(LEDGER_STORE), RECORD_PREFIX, charId);
+            // `tryGetAllKeys`, not `getAllKeys`: the latter answers a listing it
+            // could not make with an empty array, indistinguishable from a store
+            // that genuinely has nothing to sweep. Failing this direction is
+            // safe either way — nothing gets deleted, and the next capped save
+            // retries the sweep — but null is still the honest answer.
+            const allKeys = await storage.tryGetAllKeys(LEDGER_STORE);
+            if (allKeys === null) return 0;
+            const keys = recordKeysFor(allKeys, RECORD_PREFIX, charId);
             const prefix = `${RECORD_PREFIX}_${charId}_`;
             let deleted = 0;
             for (const key of keys) {
