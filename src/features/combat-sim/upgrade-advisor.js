@@ -4304,6 +4304,7 @@ export async function runLabyrinthUpgradeAnalysis(params, onProgress, options = 
         referenceLevel = null,
         roomLevelShortlistSize = ROOM_LEVEL_SHORTLIST_SIZE,
         maxTrials = null,
+        precision = null,
     } = params;
     const { abortSignal } = options;
     const gameData = buildGameDataPayload();
@@ -4411,6 +4412,13 @@ export async function runLabyrinthUpgradeAnalysis(params, onProgress, options = 
         communityBuffs,
         labyrinthCombatBuffs,
         seed: simSeed,
+        // Every candidate is paired to the baseline's fight count, so the tab's
+        // precision target and max-fights cap have to land here or they govern
+        // nothing at all: this ran the plain `hours` budget and the Precision,
+        // Max fights and Uncapped controls sat over the single-fight run doing
+        // nothing. Null still falls back to `hours`, which is what the
+        // all-fights wrapper and the combat simulator both do.
+        ...(precision ? { precision } : {}),
     });
     current++;
     // Every candidate below plays exactly the baseline's fight count

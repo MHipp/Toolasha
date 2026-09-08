@@ -4534,6 +4534,80 @@ describe('guild shrine candidates', () => {
     });
 
     /**
+     * Three times now a Lab Sim control has been drawn, saved, restored and
+     * ignored, because the wrapper it was handed to never destructured the field:
+     * `guildShrineCapToGuild` (the Guild-allowed checkbox), and `precision` (the
+     * Precision, Max fights and Uncapped controls, which governed nothing on the
+     * single-fight run because its baseline fell back to the plain hours budget).
+     * Each was invisible — a table with too many rows, or a sample size nobody
+     * quotes, looks exactly like a correct one.
+     *
+     * The shape is always the same: `params` is a bag, an undeclared key is
+     * `undefined` rather than an error, and JavaScript says nothing. So rather
+     * than pin the fields one at a time as they are found, this reads what the
+     * panel actually passes and requires the wrapper to have taken it.
+     */
+    describe('every field the panel passes is a field the wrapper takes', () => {
+        const advisorSource = readFileSync(new URL('./upgrade-advisor.js', import.meta.url), 'utf8');
+        const panelSource = readFileSync(new URL('./lab-sim-ui.js', import.meta.url), 'utf8');
+
+        /** Deliberately handed over and deliberately not read, with the reason. */
+        const IGNORED = {
+            gameData: 'the wrapper builds its own with buildGameDataPayload(); the panel copy is never consulted',
+        };
+
+        /** The names bound out of `params` by one exported wrapper. */
+        const destructuredBy = (fn) => {
+            const at = advisorSource.indexOf(`export async function ${fn}(`);
+            expect(at, `${fn} not found`).toBeGreaterThan(-1);
+            const segment = advisorSource.slice(at, at + 6000);
+            const body = segment.slice(segment.indexOf('const {') + 7, segment.indexOf('} = params;'));
+            return new Set(
+                body
+                    .split('\n')
+                    .map((line) => line.trim().match(/^([A-Za-z_$][\w$]*)/))
+                    .filter(Boolean)
+                    .map((match) => match[1])
+            );
+        };
+
+        /**
+         * Top-level keys of the first object literal passed to one call.
+         *
+         * Line-based and depth-counted rather than a character scan: the call
+         * spans arrow functions, template literals and comments whose braces a
+         * naive scan mistakes for the literal's own, which made an earlier
+         * version report identifiers out of nested code as if they were keys.
+         */
+        const passedTo = (fn) => {
+            const at = panelSource.indexOf(`await ${fn}(`);
+            expect(at, `no call to ${fn} in the panel`).toBeGreaterThan(-1);
+            const lines = panelSource.slice(at, at + 8000).split('\n');
+            const keys = [];
+            let depth = 0;
+            for (const line of lines) {
+                const trimmed = line.trim();
+                const key = trimmed.match(/^([A-Za-z_$][\w$]*)\s*[,:]/);
+                if (depth === 1 && key) keys.push(key[1]);
+                depth += (line.match(/[{[]/g) || []).length - (line.match(/[}\]]/g) || []).length;
+                if (depth <= 0 && keys.length) break;
+            }
+            return keys;
+        };
+
+        test.each(['runLabyrinthUpgradeAnalysis', 'runLabyrinthAllFightsAnalysis'])('%s', (fn) => {
+            const taken = destructuredBy(fn);
+            const dropped = passedTo(fn).filter((key) => !taken.has(key) && !(key in IGNORED));
+
+            expect(
+                dropped,
+                `${fn} is handed these and never binds them, so they are silently undefined inside it. ` +
+                    'Destructure each, or add it to IGNORED above with the reason it is right to drop.'
+            ).toEqual([]);
+        });
+    });
+
+    /**
      * The cap and the per-shrine targets are two halves of one decision, read off
      * the same `options` bag by `generateCandidates`. They went out of step once:
      * `runUpgradeAnalysis` forwarded both, while the two labyrinth wrappers

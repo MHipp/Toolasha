@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The Lab Simulator's precision and fight-cap controls now govern the single-fight upgrade run
+
+Precision ±, Max fights and Uncapped sat above the Upgrade tab doing nothing whenever it ran against one fight: the panel handed them over, but the analysis behind it never took them, so its baseline ran the plain time budget instead — and since every candidate is played at the baseline's fight count, that set the sample size for the whole comparison. The all-fights run and the combat simulator both honoured the same controls, which is why the difference never showed. Runs will now end where the controls say rather than where the clock did.
+
+This is the third control found drawn, saved and quietly ignored, so the check for it is no longer one field at a time: the panel's own call is now read against what the analysis binds, and any field handed over and never taken fails the build unless it is listed with a reason.
+
 ### The Lab Simulator ranks upgrades by the room levels they buy, and names the floor
 
 An upgrade's worth in the labyrinth is not a percentage, it is whether it takes you a floor deeper — so the Upgrade tab can now rank by exactly that: how many room levels each upgrade adds to the deepest room you still clear at your configured rate, and which floor that reaches. A target floor can be named instead, and its requirement is the level of its own exit room, since a floor you cannot finish is a floor you have not got. Measuring a level costs a search of simulations rather than one, so the table is ranked cheaply first and only the leaders are measured properly; everything else reads as no change, and says so. Off until switched on, and the existing columns still mean what they meant.
