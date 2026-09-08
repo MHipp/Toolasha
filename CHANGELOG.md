@@ -6,6 +6,13 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Plans share one bag, and a crafting plan can walk you through itself
+
+Two features adapted in idea from MWITools (attribution in `third-party/mwitools/`), both off by default:
+
+- **One inventory between plans.** Every plan used to work out its shortfall against the same bag, so two plans that each needed 500 logs both read those 500 as theirs. With the reservation ledger on, a plan writes down what it has claimed and the others plan against what is left: the goal planner and the crafting plan hold their claims until changed or deleted, the missing-materials and budget panels hold theirs only while open, and an item queued for selling stops counting as a crafting material. Where a shortfall exists only because something else claimed the stock, the line says which plan did. With the setting off every figure is what it was before.
+- **A guided walk through a crafting plan.** A button under the plan's steps takes them leaves first: for each one it opens the game on that action and types the count into the game's own box, then waits — it never presses, so one click is always exactly one game action. A step the plan says to buy opens the marketplace instead and waits for the item to arrive. Skip and Stop are on the strip; a reload or a character switch ends the walk.
+
 ### A sync pull says what it reconciled, the readiness card names who is short, and the census watches the spawn tables
 
 Seven smaller features, all informational, all off by default except the two safety warnings:
