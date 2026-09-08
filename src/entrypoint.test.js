@@ -467,6 +467,24 @@ describe('the selector canary', () => {
             expect(failures.map((failure) => failure.key)).toEqual(['canaryTabsContainer']);
         });
 
+        test('the header action pair watches each other, so either class renaming alone is caught', () => {
+            // The community buff row is drawn inside the action-info block, so
+            // one present without the other is a header refactor, not a screen
+            // that happens not to draw them.
+            allAnchorsPresent();
+            document.body.innerHTML += '<div class="Header_communityBuffs__2mNqZ"></div>';
+            expect(canary().map((failure) => failure.key)).toEqual(['canaryHeaderActionInfo']);
+
+            allAnchorsPresent();
+            document.body.innerHTML += '<div class="Header_actionInfo__1kPqR"></div>';
+            expect(canary().map((failure) => failure.key)).toEqual(['canaryHeaderCommunityBuffs']);
+
+            allAnchorsPresent();
+            document.body.innerHTML +=
+                '<div class="Header_actionInfo__1kPqR"><div class="Header_communityBuffs__2mNqZ"></div></div>';
+            expect(canary()).toEqual([]);
+        });
+
         test('a badge-less tab strip reports only the badge', () => {
             allAnchorsPresent();
             document.body.innerHTML +=

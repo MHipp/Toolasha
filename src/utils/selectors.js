@@ -10,6 +10,11 @@
 export const GAME = {
     // Header
     TOTAL_LEVEL: '[class*="Header_totalLevel"]',
+    // The header's current-action block, and the community-buff row drawn
+    // inside it. A mirrored pair: the buff row is a descendant of the action
+    // info, so a header that draws one without the other is a refactor.
+    HEADER_ACTION_INFO: '[class*="Header_actionInfo"]',
+    HEADER_COMMUNITY_BUFFS: '[class*="Header_communityBuffs"]',
 
     // Settings Panel
     SETTINGS_PANEL_TITLE: '[class*="SettingsPanel_title"]',

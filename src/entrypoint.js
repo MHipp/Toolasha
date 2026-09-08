@@ -519,6 +519,23 @@ function checkAnchorCanaries() {
             selector: GAME.MARKETPLACE_NEW_LISTING_BUTTONS,
             when: GAME.MARKETPLACE_CURRENT_ITEM,
         },
+        // Header current-action anchors, another mirrored pair. The community
+        // buff row is drawn inside the action-info block, so the two always
+        // render together and either one renaming is caught by the other. They
+        // are gated on each other rather than on the header as a whole because
+        // the action block is not drawn on every screen the header is.
+        {
+            key: 'canaryHeaderActionInfo',
+            name: 'Header (current action block)',
+            selector: GAME.HEADER_ACTION_INFO,
+            when: GAME.HEADER_COMMUNITY_BUFFS,
+        },
+        {
+            key: 'canaryHeaderCommunityBuffs',
+            name: 'Header (community buff row)',
+            selector: GAME.HEADER_COMMUNITY_BUFFS,
+            when: GAME.HEADER_ACTION_INFO,
+        },
     ];
 
     const failures = [];
