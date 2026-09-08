@@ -52,6 +52,7 @@ await import('../features/combat/labyrinth-room-logs.js');
 await import('../features/combat/labyrinth-outcomes.js');
 await import('../features/combat/combat-replay-check.js');
 await import('../features/combat/labyrinth-run-ledger.js');
+await import('../features/combat/dungeon-tracker-storage.js');
 await import('../features/combat/labyrinth-tracker.js');
 await import('../features/guild/guild-xp-tracker.js');
 await import('../features/guild/guild-trials-store.js');
@@ -158,6 +159,10 @@ const corpus = [
     { store: 'marketListings', key: 'marketListingTimestamps', label: 'Market listing log' },
     { store: 'marketListings', key: `marketListingTimestamps_${CHAR}`, label: 'Market listing log' },
     { store: 'marketListings', key: 'marketListingAnchors', label: 'Market listing anchors' },
+    // The deletion tombstones beside the log. `marketListingGraves` is spelled
+    // apart from both siblings so neither scoped base can reach across
+    { store: 'marketListings', key: 'marketListingGraves', label: 'Market listing deletions' },
+    { store: 'marketListings', key: `marketListingGraves_${CHAR}`, label: 'Market listing deletions' },
 
     // combat-stats/combat-session-history.js
     { store: 'combatStats', key: 'combatSessionHistory', label: 'Combat sessions' },
@@ -183,6 +188,12 @@ const corpus = [
     { store: 'settings', key: `combatReplayCheck_observations_${CHAR}`, label: 'Replay check observations' },
     { store: 'settings', key: 'combatReplayCheck_history', label: 'Replay check history' },
     { store: 'settings', key: `combatReplayCheck_history_${CHAR}`, label: 'Replay check history' },
+
+    // combat/dungeon-tracker-storage.js — one account-wide list plus the clear
+    // watermark beside it. Two exact keys, and the watermark's own name starts
+    // with the list's, so the near-miss is worth stating
+    { store: 'unifiedRuns', key: 'allRuns', label: 'Dungeon run history' },
+    { store: 'unifiedRuns', key: 'allRunsClearedAt', label: 'Dungeon run history clear' },
 
     // combat/labyrinth-run-ledger.js
     { store: 'labyrinth', key: 'labyrinthRunLedger', label: 'Labyrinth run ledger' },
@@ -379,6 +390,112 @@ function collectSources(directory, out = []) {
     }
     return out;
 }
+
+/**
+ * Which stores some module actually registers a fold for, read off `src`.
+ *
+ * `registerSyncMerge({store: X, …})` names its store as a literal or as a
+ * module constant, so both forms are resolved: a quoted value is taken as is,
+ * an identifier is looked up against that same file's `const NAME = '…'`.
+ * A `this.storeName` is skipped, which is why this is only half the witness:
+ * `createChunkedHistory` registers on behalf of its caller and names the store
+ * through a parameter, so the chunked stores are invisible here and the corpus
+ * above is what speaks for them.
+ * @returns {Set<string>} Store names with at least one registration
+ */
+function storesWithRegistrations() {
+    const found = new Set();
+    for (const relative of collectSources(SRC)) {
+        const source = readFileSync(join(SRC, relative), 'utf8');
+        if (!source.includes('registerSyncMerge')) continue;
+        for (const match of source.matchAll(/registerSyncMerge\(\{[^}]*?\bstore:\s*([A-Za-z0-9_$.]+|'[^']+')/gs)) {
+            const raw = match[1];
+            if (raw.startsWith("'")) {
+                found.add(raw.slice(1, -1));
+                continue;
+            }
+            const constant = source.match(new RegExp(String.raw`\bconst ${raw} = '([^']+)'`));
+            if (constant) found.add(constant[1]);
+        }
+    }
+    return found;
+}
+
+/**
+ * Every object store `core/storage.js` creates, and what claims it.
+ *
+ * The `createPersistedRecord` grep below is a guard on one SHAPE, and the
+ * dungeon run history walked straight past it: it is not a persisted record and
+ * not a chunked history, just a module holding a list in its own object store
+ * and writing it with `storage.setJSON`. Nothing looked at it, so `unifiedRuns`
+ * carried no registration at all and every `everything`-scope pull overwrote
+ * the whole run history — data loss with nobody deleting anything, on a store
+ * the source-shape guard was structurally incapable of noticing.
+ *
+ * The store argument is usually a constant or `this.storeName`, so no grep over
+ * the source can tell which store a write lands in. What CAN be checked is the
+ * registry: a dedicated store exists to hold one feature's records, so a
+ * dedicated store with no registration at all is the hole this closes.
+ *
+ * A store that legitimately holds nothing mergeable says so here, with the
+ * reason. `null` means "something claims this store" — witnessed either by a
+ * readable `registerSyncMerge({store: …})` in the source or by an entry in the
+ * corpus above, since neither witness alone sees every registration. Both take
+ * a deliberate act, which is the point: the store nobody thought about at all
+ * is the one that fails.
+ * @type {Record<string, string|null>}
+ */
+const STORE_CLAIMS = {
+    settings: null,
+    marketListings: null,
+    combatStats: null,
+    xpHistory: null,
+    alchemyHistory: null,
+    labyrinth: null,
+    guildHistory: null,
+    networthHistory: null,
+    leaderboardHistory: null,
+    lootLogHistory: null,
+    rerollSpending: null,
+    unifiedRuns: null,
+
+    // Superseded by `unifiedRuns`: the dungeon tracker reads these two on
+    // migration and never writes them again, so there is nothing a pull can
+    // lose that the unified list does not already hold.
+    dungeonRuns: 'legacy pre-unification run stores, read-only since the migration',
+    teamRuns: 'legacy pre-unification run stores, read-only since the migration',
+
+    // A hand-triggered export blob and a rolling debug snapshot ring. Neither
+    // is a history anyone can be the sole holder of, and both are rewritten
+    // whole by the next export or snapshot.
+    combatExport: 'a hand-triggered export blob, rewritten whole by the next export',
+    queueSnapshots: 'a rolling debug snapshot ring, rewritten whole as it turns over',
+
+    // Curated by the user: what is in a collection is what they put there, so
+    // deletions are meaningful and whole-key replacement is the correct pull.
+    collections: 'user-curated, so a union would resurrect what they removed',
+};
+
+describe('a dedicated object store cannot go entirely unclaimed', () => {
+    test('every store core/storage.js creates is claimed or excused', () => {
+        const storageSource = readFileSync(join(SRC, 'core/storage.js'), 'utf8');
+        const stores = [...storageSource.matchAll(/createObjectStore\('([A-Za-z]+)'/g)].map((match) => match[1]);
+        expect(stores.length).toBeGreaterThan(10);
+
+        const unlisted = stores.filter((store) => !(store in STORE_CLAIMS));
+        expect(unlisted, 'New object stores must be listed in STORE_CLAIMS above').toEqual([]);
+
+        const claimed = storesWithRegistrations();
+        for (const entry of corpus) if (entry.label !== null) claimed.add(entry.store);
+        const unclaimed = stores.filter((store) => STORE_CLAIMS[store] === null && !claimed.has(store));
+        expect(
+            unclaimed,
+            "These stores hold a feature's records and claim no sync merge, so an `everything`-scope pull " +
+                'overwrites them whole. Register the fold the feature owns, or say here why a whole-key write ' +
+                'is right for the store.'
+        ).toEqual([]);
+    });
+});
 
 describe('a new additive record cannot be forgotten by the registry', () => {
     test('every createPersistedRecord module registers a sync merge', () => {

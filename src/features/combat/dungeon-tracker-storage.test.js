@@ -61,8 +61,16 @@ const {
     runMatchesCharacter,
     filterRunsForCharacter,
     mergeRuns,
+    mergeRunHistories,
+    mergeClearEpochs,
+    applyClearEpoch,
     PERSIST_COALESCE_MS,
+    RUNS_STORE,
+    RUNS_KEY,
+    RUNS_CLEARED_KEY,
 } = await import('./dungeon-tracker-storage.js');
+
+const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
 
 function seedRuns(runs) {
     game.saved.unifiedRuns = { allRuns: runs };
@@ -445,7 +453,11 @@ describe('deleting runs', () => {
 
         await dungeonTrackerStorage.clearAllRuns();
 
-        expect(game.writes).toEqual([['allRuns', true]]);
+        // The clear epoch beside the emptied list, so a pull cannot undo it
+        expect(game.writes).toEqual([
+            ['allRunsClearedAt', true],
+            ['allRuns', true],
+        ]);
         expect(game.saved.unifiedRuns.allRuns).toEqual([]);
         expect(await dungeonTrackerStorage.getAllRuns()).toEqual([]);
     });
@@ -862,5 +874,112 @@ describe('filterRunsForCharacter', () => {
         const kept = await dungeonTrackerStorage.getRunsForCharacter('mine');
         expect(kept.map((run) => run.id)).toEqual(['mine', 'legacy-mine']);
         expect(await dungeonTrackerStorage.getRunsForCharacter('all')).toHaveLength(4);
+    });
+});
+
+/**
+ * The run history is one key for the whole account in a store the `everything`
+ * sync scope carries. Before it claimed a fold, every pull wrote the downloaded
+ * list straight over the local one — data loss with nobody deleting anything.
+ */
+describe('sync fold for the run history', () => {
+    const run = (id, timestamp) => ({ id, teamKey: 'A,B', timestamp, duration: 100 + id });
+
+    test('the run history key resolves to a registered fold', () => {
+        expect(mergeForKey(RUNS_STORE, RUNS_KEY)?.label).toBe('Dungeon run history');
+        expect(mergeForKey(RUNS_STORE, RUNS_CLEARED_KEY)?.label).toBe('Dungeon run history clear');
+    });
+
+    test('two devices with disjoint histories end with both sets', () => {
+        const mine = [run(1, '2026-01-02T00:00:00.000Z')];
+        const theirs = [run(2, '2026-01-03T00:00:00.000Z')];
+        const fold = mergeForKey(RUNS_STORE, RUNS_KEY).merge;
+
+        expect(fold(mine, theirs).map((entry) => entry.id)).toEqual([2, 1]);
+        // The same union whichever device pulls
+        expect(fold(theirs, mine).map((entry) => entry.id)).toEqual([2, 1]);
+    });
+
+    test('a run both devices hold is kept once, the local copy standing', () => {
+        const local = { ...run(1, '2026-01-02T00:00:00.000Z'), tier: 3 };
+        const incoming = { ...run(1, '2026-01-02T00:00:00.000Z'), tier: null };
+
+        const folded = mergeRunHistories([local], [incoming]);
+        expect(folded).toHaveLength(1);
+        expect(folded[0].tier).toBe(3);
+    });
+
+    test('a history with no deletions is unchanged by the fold', () => {
+        const runs = [run(2, '2026-01-03T00:00:00.000Z'), run(1, '2026-01-02T00:00:00.000Z')];
+        expect(mergeRunHistories(runs, runs)).toEqual(runs);
+    });
+
+    test('a missing or unusable side is not an error', () => {
+        expect(mergeRunHistories(null, undefined)).toEqual([]);
+        expect(mergeClearEpochs(undefined, null)).toBe(0);
+    });
+
+    test('the later clear epoch stands, whichever side it came from', () => {
+        expect(mergeClearEpochs(10, 20)).toBe(20);
+        expect(mergeClearEpochs(20, 10)).toBe(20);
+    });
+
+    test('the epoch drops the runs it forgot and keeps ones recorded since', () => {
+        const cleared = Date.parse('2026-01-05T00:00:00.000Z');
+        const runs = [run(1, '2026-01-04T00:00:00.000Z'), run(2, '2026-01-06T00:00:00.000Z')];
+        expect(applyClearEpoch(runs, cleared).map((entry) => entry.id)).toEqual([2]);
+    });
+
+    test('an unstamped run is never guessed away by an epoch', () => {
+        const runs = [{ id: 9, teamKey: 'A', timestamp: null, duration: 1 }];
+        expect(applyClearEpoch(runs, Date.now())).toEqual(runs);
+    });
+
+    test('no epoch means no pruning, and the same array back', () => {
+        const runs = [run(1, '2026-01-04T00:00:00.000Z')];
+        expect(applyClearEpoch(runs, 0)).toBe(runs);
+    });
+});
+
+describe('clearing all run history survives a pull', () => {
+    const run = (id, timestamp) => ({ id, teamKey: 'A,B', timestamp, duration: 100 + id });
+
+    test('the clear writes an epoch, and a peer pushing its copy back cannot undo it', async () => {
+        vi.setSystemTime(Date.parse('2026-01-05T00:00:00.000Z'));
+        seedRuns([run(1, '2026-01-04T00:00:00.000Z')]);
+        await dungeonTrackerStorage.getAllRuns();
+
+        await dungeonTrackerStorage.clearAllRuns();
+        expect(game.saved.unifiedRuns[RUNS_KEY]).toEqual([]);
+        expect(game.saved.unifiedRuns[RUNS_CLEARED_KEY]).toBe(Date.parse('2026-01-05T00:00:00.000Z'));
+
+        // What a pull from a peer that never saw the clear leaves behind: the
+        // union of both copies at the key, and the epoch untouched
+        const fold = mergeForKey(RUNS_STORE, RUNS_KEY).merge;
+        game.saved.unifiedRuns[RUNS_KEY] = fold([], [run(1, '2026-01-04T00:00:00.000Z')]);
+        game.saved.unifiedRuns[RUNS_CLEARED_KEY] = mergeForKey(RUNS_STORE, RUNS_CLEARED_KEY).merge(
+            game.saved.unifiedRuns[RUNS_CLEARED_KEY],
+            0
+        );
+        dungeonTrackerStorage._resetCache();
+
+        expect(await dungeonTrackerStorage.getAllRuns()).toEqual([]);
+        // and the prune is written back, so it is not re-read or re-pushed
+        expect(game.saved.unifiedRuns[RUNS_KEY]).toEqual([]);
+        vi.useRealTimers();
+    });
+
+    test('runs the peer recorded after the clear survive it', async () => {
+        vi.setSystemTime(Date.parse('2026-01-05T00:00:00.000Z'));
+        seedRuns([run(1, '2026-01-04T00:00:00.000Z')]);
+        await dungeonTrackerStorage.getAllRuns();
+        await dungeonTrackerStorage.clearAllRuns();
+
+        const fold = mergeForKey(RUNS_STORE, RUNS_KEY).merge;
+        game.saved.unifiedRuns[RUNS_KEY] = fold([], [run(2, '2026-01-06T00:00:00.000Z')]);
+        dungeonTrackerStorage._resetCache();
+
+        expect((await dungeonTrackerStorage.getAllRuns()).map((entry) => entry.id)).toEqual([2]);
+        vi.useRealTimers();
     });
 });

@@ -5,6 +5,23 @@
 
 import storage from '../../core/storage.js';
 import dataManager from '../../core/data-manager.js';
+import { registerSyncMerge } from '../../utils/sync-merge-registry.js';
+
+/** The object store the run history lives in */
+export const RUNS_STORE = 'unifiedRuns';
+
+/** The one key holding every run, for the whole account rather than per character */
+export const RUNS_KEY = 'allRuns';
+
+/**
+ * When the user last asked for the whole history to be forgotten.
+ *
+ * A separate key because {@link RUNS_KEY} is a bare array that four other
+ * modules read directly; wrapping it to carry one number would break every one
+ * of them. Its own registration folds it with `Math.max`, so the clear
+ * outlives a pull in both directions.
+ */
+export const RUNS_CLEARED_KEY = 'allRunsClearedAt';
 
 /**
  * Runs are stored once for the whole account, not once per character.
@@ -130,6 +147,83 @@ export function mergeRuns(memory, stored, deleted) {
 }
 
 /**
+ * A run's own moment, in epoch milliseconds, or null when it has none usable.
+ *
+ * Only a run that can be placed in time may be judged against a clear epoch;
+ * an unstamped one is kept, because "when was this recorded" is exactly the
+ * question the epoch asks and a run that cannot answer it must not be guessed
+ * away.
+ *
+ * @param {Object} run - A stored run
+ * @returns {number|null} Epoch milliseconds, or null
+ */
+export function runTime(run) {
+    // `new Date(null)` is the epoch, not an error, so an absent stamp has to be
+    // rejected before parsing or every unstamped run would date to 1970
+    const stamp = run?.timestamp;
+    if (stamp == null || stamp === '') return null;
+    const time = new Date(stamp).getTime();
+    return Number.isFinite(time) ? time : null;
+}
+
+/**
+ * Drop the runs a "delete all history" at `clearedAt` was asking to forget.
+ *
+ * Runs are append-only observations stamped when the run finished, so a run
+ * recorded after the clear is stamped after it and survives — which is what
+ * makes an epoch the right shape here and per-run tombstones the wrong one:
+ * the history is unbounded and the clear names all of it at once.
+ *
+ * @param {Array<Object>} runs - Stored runs
+ * @param {number} clearedAt - Epoch milliseconds, 0 for "never cleared"
+ * @returns {Array<Object>} The survivors — the same array when nothing went
+ */
+export function applyClearEpoch(runs, clearedAt) {
+    const list = Array.isArray(runs) ? runs : [];
+    if (!(Number(clearedAt) > 0)) return list;
+    const kept = list.filter((run) => {
+        const at = runTime(run);
+        return at === null || at > clearedAt;
+    });
+    return kept.length === list.length ? list : kept;
+}
+
+/**
+ * Fold a downloaded run history into this device's, for a sync pull.
+ *
+ * The history is a set of observations — each device sees the runs its own
+ * party did — so the only fold that cannot lose data is a union by run
+ * identity. Two devices that watched different runs end up with both sets;
+ * neither is "newer" than the other in any sense a whole-key write could use.
+ *
+ * The local copy wins an identity clash because it is the one that may have
+ * been amended in place (a tier filled in from a chat annotation), the same
+ * reason {@link mergeRuns} prefers memory.
+ *
+ * @param {Array<Object>} local - This device's runs
+ * @param {Array<Object>} incoming - The downloaded runs
+ * @returns {Array<Object>} The union, newest first
+ */
+export function mergeRunHistories(local, incoming) {
+    return mergeRuns(Array.isArray(local) ? local : [], Array.isArray(incoming) ? incoming : []);
+}
+
+/**
+ * Fold two clear epochs: the later clear stands.
+ *
+ * A clear is a fact that only ever moves forward, and taking the max is what
+ * stops a pull from a device that has not seen the clear from un-clearing the
+ * device that has.
+ *
+ * @param {*} local - This device's epoch
+ * @param {*} incoming - The downloaded epoch
+ * @returns {number} The later of the two, 0 when neither is usable
+ */
+export function mergeClearEpochs(local, incoming) {
+    return Math.max(Number(local) || 0, Number(incoming) || 0);
+}
+
+/**
  * The character the panel is currently speaking for.
  * @returns {{id: string|null, name: string|null}}
  */
@@ -142,7 +236,7 @@ export function currentCharacter() {
 
 class DungeonTrackerStorage {
     constructor() {
-        this.unifiedStoreName = 'unifiedRuns'; // Unified storage for all runs
+        this.unifiedStoreName = RUNS_STORE; // Unified storage for all runs
 
         /**
          * The stored list, newest first, once it has been read.
@@ -168,6 +262,14 @@ class DungeonTrackerStorage {
         this._persistChain = null;
         /** A deferred merge-and-write is armed, to tell a burst from a lone run */
         this._pendingTimer = null;
+        /**
+         * The clear epoch as last read or written, in epoch milliseconds.
+         *
+         * Held so every merging write can re-apply it: a sync pull unions the
+         * downloaded history into the stored key, and the runs a clear already
+         * forgot are exactly what a peer that never saw the clear sends back.
+         */
+        this._clearedAt = 0;
 
         this._watchForTheEnd();
     }
@@ -235,15 +337,23 @@ class DungeonTrackerStorage {
         let read;
         read = (async () => {
             try {
-                const probe = await storage.tryGet('allRuns', this.unifiedStoreName);
+                const probe = await storage.tryGet(RUNS_KEY, this.unifiedStoreName);
                 if (probe === null) {
                     console.warn('[DungeonTrackerStorage] Run history could not be read');
                     return null;
                 }
+                const clearedProbe = await storage.tryGet(RUNS_CLEARED_KEY, this.unifiedStoreName);
                 // A reset landing inside the read means this list is no longer
                 // the one anyone asked for; indexing it would revive it
                 if (this._loading !== read) return null;
-                this._index(Array.isArray(probe.value) ? probe.value : []);
+                this._clearedAt = clearedProbe === null ? 0 : Number(clearedProbe.value) || 0;
+                const stored = Array.isArray(probe.value) ? probe.value : [];
+                const kept = applyClearEpoch(stored, this._clearedAt);
+                this._index(kept);
+                // A pull unioned runs the clear had already forgotten back into
+                // the stored key. Pruning memory alone would leave them there to
+                // be re-read — and pushed back out — so the prune is written.
+                if (kept.length !== stored.length) await this._persistReplace();
                 return this._runs;
             } finally {
                 if (this._loading === read) this._loading = null;
@@ -327,14 +437,15 @@ class DungeonTrackerStorage {
      */
     _persistNow(immediate) {
         const run = async () => {
-            const probe = await storage.tryGet('allRuns', this.unifiedStoreName);
+            const probe = await storage.tryGet(RUNS_KEY, this.unifiedStoreName);
             if (probe === null) {
                 console.warn('[DungeonTrackerStorage] Runs not saved: the stored history could not be read first');
                 return false;
             }
-            const merged = mergeRuns(this._runs || [], Array.isArray(probe.value) ? probe.value : [], this._deleted);
+            const stored = applyClearEpoch(Array.isArray(probe.value) ? probe.value : [], this._clearedAt);
+            const merged = mergeRuns(this._runs || [], stored, this._deleted);
             this._index(merged);
-            const write = storage.setJSON('allRuns', merged, this.unifiedStoreName, immediate);
+            const write = storage.setJSON(RUNS_KEY, merged, this.unifiedStoreName, immediate);
             // A debounced write resolves when its timer fires; awaiting it
             // would stall a backfill loop for the debounce delay on every run
             return immediate ? write : true;
@@ -352,7 +463,7 @@ class DungeonTrackerStorage {
      * @private
      */
     async _persistReplace() {
-        const run = () => storage.setJSON('allRuns', this._runs, this.unifiedStoreName, true);
+        const run = () => storage.setJSON(RUNS_KEY, this._runs, this.unifiedStoreName, true);
         this._persistChain = (this._persistChain || Promise.resolve()).then(run, run);
         return this._persistChain;
     }
@@ -371,6 +482,7 @@ class DungeonTrackerStorage {
         this._byTeam = new Map();
         this._deleted = new Set();
         this._persistChain = null;
+        this._clearedAt = 0;
     }
 
     /**
@@ -629,6 +741,11 @@ class DungeonTrackerStorage {
         }
         this._index([]);
         this._deleted = new Set();
+        // The epoch is what survives the round trip: a peer that never saw this
+        // clear will push its whole history back, and the union that folds it in
+        // has nothing else to tell those runs from ones recorded since.
+        this._clearedAt = Date.now();
+        await storage.setJSON(RUNS_CLEARED_KEY, this._clearedAt, this.unifiedStoreName, true);
         return this._persistReplace();
     }
 
@@ -765,5 +882,32 @@ class DungeonTrackerStorage {
 }
 
 const dungeonTrackerStorage = new DungeonTrackerStorage();
+
+/*
+ * The run history is a growth-only record in a store the `everything` sync
+ * scope carries, and until now it claimed no fold at all — so every pull wrote
+ * the downloaded list over the local one whole. That is data loss without
+ * anyone deleting anything: two devices that each recorded runs kept only
+ * whichever copy the pull happened to take, and the dungeon pace figures are
+ * computed from what is left. A union by run identity is the only fold that
+ * cannot lose a run. See utils/sync-merge-registry.js.
+ */
+registerSyncMerge({
+    store: RUNS_STORE,
+    key: RUNS_KEY,
+    merge: mergeRunHistories,
+    label: 'Dungeon run history',
+});
+
+/*
+ * The clear epoch beside it, so "Delete all run history" is not undone by the
+ * union above the moment a peer that never saw it pushes its copy back.
+ */
+registerSyncMerge({
+    store: RUNS_STORE,
+    key: RUNS_CLEARED_KEY,
+    merge: mergeClearEpochs,
+    label: 'Dungeon run history clear',
+});
 
 export default dungeonTrackerStorage;
