@@ -185,13 +185,29 @@ class BuildScore {
 
 const buildScore = new BuildScore();
 
-// The panel behind the tile reads the same figure the tile does, and asking for
-// it is what starts the watcher — so opening the panel on a character whose
-// score has never been computed computes it, rather than showing an empty shell.
-setScoreSource(() => {
+/**
+ * The current character's score, for whatever wants to read it.
+ *
+ * Asking for it is what starts the watcher, so opening the panel on a character
+ * whose score has never been computed computes it rather than showing an empty
+ * shell.
+ *
+ * Exported because the panel can be pointed at another player's profile and has
+ * to be pointed back: the profile card hands this in when the profile it is
+ * drawing is yours, and the alternative — the panel quietly remembering a
+ * previous source — is how you end up reading somebody else's numbers as your
+ * own.
+ *
+ * @returns {Object|null} The result of `calculateCombatScore`, or null before
+ *   the first one has landed
+ */
+export function readOwnScore() {
     buildScore.ensureWatching();
     return buildScore.score;
-});
+}
+
+// The panel behind the tile reads the same figure the tile does.
+setScoreSource(readOwnScore);
 
 // This module lives outside the feature registry — it starts lazily from the
 // overlay row's render rather than from an initialize(), the same shape

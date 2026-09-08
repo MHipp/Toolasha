@@ -41,11 +41,15 @@ vi.mock('../combat-sim/combat-sim-adapter.js', () => ({ buildPlayerDTOFromProfil
 vi.mock('../../utils/enhancement-worker-manager.js', () => ({ terminateWorkerPool: () => {} }));
 vi.mock('./build-score-panel.js', () => ({
     buildScorePanel: {
+        panel: null,
+        render: () => {},
         toggle: () => {
             stub.toggles += 1;
         },
     },
+    setScoreSource: () => false,
 }));
+vi.mock('./build-score-row.js', () => ({ readOwnScore: () => null }));
 
 const combatScore = (await import('./combat-score.js')).default;
 
@@ -308,7 +312,7 @@ describe('buildAbilitiesTriggersHTML', () => {
     });
 });
 
-describe('the breakdown link, own profile only', () => {
+describe('the breakdown link', () => {
     /**
      * A scored profile, in the shape `showScorePanel` draws.
      * @param {number} characterId - Whose profile this is
@@ -355,11 +359,13 @@ describe('the breakdown link, own profile only', () => {
         expect(stub.toggles).toBe(1);
     });
 
-    test("another player's profile shows no link — the panel can only score your own build", () => {
+    test("another player's profile offers the same link, named after them", () => {
         const { profileData, scoreData } = profile(99);
         combatScore.showScorePanel(profileData, scoreData, document.createElement('div'));
 
-        expect(document.querySelector('#mwi-score-breakdown-link')).toBeNull();
+        const link = document.querySelector('#mwi-score-breakdown-link');
+        expect(link).not.toBeNull();
+        expect(link.title).toContain("Someone's score");
     });
 
     test('a payload with no character id at all is not treated as yours', () => {

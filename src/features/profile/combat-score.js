@@ -12,7 +12,8 @@ import { numberFormatter } from '../../utils/formatters.js';
 import { constructExportObject } from '../combat/combat-sim-export.js';
 import { constructMilkonomyExport } from '../combat/milkonomy-export.js';
 import { handleViewCardClick, handleViewCardFromSnapshot } from './character-card-button.js';
-import { buildScorePanel } from './build-score-panel.js';
+import { buildScorePanel, setScoreSource } from './build-score-panel.js';
+import { readOwnScore } from './build-score-row.js';
 import { createMutationWatcher } from '../../utils/dom-observer-helpers.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { makeDraggable } from '../../utils/floating-panel.js';
@@ -233,6 +234,33 @@ class CombatScore {
     }
 
     /**
+     * Open the Build Score breakdown for the profile on screen.
+     *
+     * The panel is pointed at this profile's score before it is opened, and
+     * pointed back at the current character when the profile is yours — a panel
+     * that kept whatever source it was last given would show the last player you
+     * looked at under your own name, which is worse than not offering it at all.
+     *
+     * Re-pointing an already-open panel redraws it instead of toggling it shut:
+     * clicking "breakdown" on a profile is a request to see *that* build, and
+     * closing the window would read as the link having failed.
+     *
+     * @param {Object} profileData - Profile data from WebSocket
+     * @param {Object} scoreData - The score already computed for this profile
+     */
+    openBreakdown(profileData, scoreData) {
+        const own = this.isOwnProfile(profileData);
+        const owner = own ? null : profileData?.profile?.sharableCharacter?.name || 'Player';
+        const changed = setScoreSource(own ? readOwnScore : () => scoreData, owner);
+
+        if (changed && buildScorePanel.panel) {
+            buildScorePanel.render();
+            return;
+        }
+        buildScorePanel.toggle();
+    }
+
+    /**
      * Show combat score panel next to profile
      * @param {Object} profileData - Profile data
      * @param {Object} scoreData - Calculated score data
@@ -302,19 +330,20 @@ class CombatScore {
         const guildShrineHTML = this.buildGuildShrineHTML(scoreData, 'combat');
         const skillerGuildShrineHTML = this.buildGuildShrineHTML(scoreData, 'skiller');
 
-        // A way through to the standalone breakdown, on your own profile only.
-        // That panel scores the character you are playing — it cannot show
-        // anybody else's build — so offering it from another player's card would
-        // open a panel about the wrong person.
-        const breakdownLinkHTML = this.isOwnProfile(profileData)
-            ? `<span id="mwi-score-breakdown-link" style="
+        // A way through to the standalone breakdown, on every profile. The score
+        // behind this card has already been computed for whoever is on it, so
+        // the panel is pointed at that rather than at the character you are
+        // playing — see `openBreakdown`.
+        const breakdownTitle = this.isOwnProfile(profileData)
+            ? 'Open the Build Score panel: every house, ability, item and shrine the score is made of.'
+            : `Open the Build Score panel: every house, ability, item and shrine ${playerName}'s score is made of.`;
+        const breakdownLinkHTML = `<span id="mwi-score-breakdown-link" style="
                     cursor: pointer;
                     font-size: 0.75rem;
                     color: ${config.COLOR_TEXT_SECONDARY};
                     text-decoration: underline;
                     margin-right: 6px;
-                " title="Open the Build Score panel: every house, ability, item and shrine the score is made of.">breakdown</span>`
-            : '';
+                " title="${escapeHtml(breakdownTitle)}">breakdown</span>`;
 
         // Build View Card button HTML (only if characterCard setting is enabled)
         const viewCardButtonHTML = config.getSetting('characterCard')
@@ -543,10 +572,10 @@ class CombatScore {
             });
         }
 
-        // Breakdown link — present on your own profile only, see showScorePanel
+        // Breakdown link — on every profile, see showScorePanel
         const breakdownLink = panel.querySelector('#mwi-score-breakdown-link');
         if (breakdownLink) {
-            breakdownLink.addEventListener('click', () => buildScorePanel.toggle());
+            breakdownLink.addEventListener('click', () => this.openBreakdown(profileData, scoreData));
             breakdownLink.addEventListener('mouseover', () => {
                 breakdownLink.style.color = config.COLOR_TEXT_PRIMARY;
             });

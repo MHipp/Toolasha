@@ -31,11 +31,22 @@ const DEFAULT_REFRESH_MS = 3000;
  * @param {Function} definition.draw - `(body, panel) => void`, called each refresh
  * @param {string} [definition.accent] - Header and title colour
  * @param {number} [definition.refreshMs] - How often to redraw
- * @returns {Object} A panel with `show`, `hide` and `toggle`
+ * @returns {Object} A panel with `show`, `hide`, `toggle` and `setTitle`
  */
-export function createPanel({ id, title, size, draw, accent = '#8fb4ff', refreshMs = DEFAULT_REFRESH_MS }) {
+export function createPanel({
+    id,
+    title: openingTitle,
+    size,
+    draw,
+    accent = '#8fb4ff',
+    refreshMs = DEFAULT_REFRESH_MS,
+}) {
+    // Not a constant: a panel that can be pointed at more than one subject has
+    // to be able to say which one it is currently about
+    let title = openingTitle;
     let panel = null;
     let bodyEl = null;
+    let headingEl = null;
     let refreshId = null;
     let detachDrag = null;
     let detachResize = null;
@@ -134,9 +145,9 @@ export function createPanel({ id, title, size, draw, accent = '#8fb4ff', refresh
             flex: '0 0 auto',
         });
 
-        const heading = document.createElement('span');
-        heading.textContent = title;
-        Object.assign(heading.style, { fontWeight: 'bold', color: accent, flex: '1' });
+        headingEl = document.createElement('span');
+        headingEl.textContent = title;
+        Object.assign(headingEl.style, { fontWeight: 'bold', color: accent, flex: '1' });
 
         const close = document.createElement('button');
         close.textContent = '✕';
@@ -153,7 +164,7 @@ export function createPanel({ id, title, size, draw, accent = '#8fb4ff', refresh
             api.hide();
         });
 
-        header.append(heading, close);
+        header.append(headingEl, close);
         panel.appendChild(header);
 
         bodyEl = document.createElement('div');
@@ -250,10 +261,20 @@ export function createPanel({ id, title, size, draw, accent = '#8fb4ff', refresh
             panel.remove();
             panel = null;
             bodyEl = null;
+            headingEl = null;
         },
         toggle() {
             if (isOpen()) api.hide();
             else api.show();
+        },
+        /**
+         * Rename the panel, on screen and for the next time it opens.
+         * @param {string} next - The new header text
+         */
+        setTitle(next) {
+            if (!next) return;
+            title = next;
+            if (headingEl) headingEl.textContent = title;
         },
         render,
         get panel() {

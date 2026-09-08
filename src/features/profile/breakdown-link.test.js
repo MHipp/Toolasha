@@ -12,7 +12,7 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
-const stub = vi.hoisted(() => ({ currentCharacterId: 7, resizeThrows: false }));
+const stub = vi.hoisted(() => ({ currentCharacterId: 7, resizeThrows: false, ownScore: null }));
 
 vi.mock('../../utils/floating-panel.js', () => ({
     makeDraggable: () => () => {},
@@ -68,8 +68,10 @@ vi.mock('../../utils/panel-geometry.js', () => ({
     markPanelInteracted: () => {},
 }));
 
+vi.mock('./build-score-row.js', () => ({ readOwnScore: () => stub.ownScore }));
+
 const combatScore = (await import('./combat-score.js')).default;
-const { buildScorePanel, setScoreSource, resetBuildScorePanel } = await import('./build-score-panel.js');
+const { buildScorePanel, resetBuildScorePanel } = await import('./build-score-panel.js');
 
 /**
  * A scored profile, in the shape `showScorePanel` draws.
@@ -77,7 +79,7 @@ const { buildScorePanel, setScoreSource, resetBuildScorePanel } = await import('
  * @param {string} [name] - The character's name
  * @returns {{profileData: Object, scoreData: Object}}
  */
-function profile(characterId, name = 'Someone') {
+function profile(characterId, name = 'Someone', overrides = {}) {
     return {
         profileData: { profile: { sharableCharacter: { id: characterId, name } } },
         scoreData: {
@@ -91,9 +93,20 @@ function profile(characterId, name = 'Someone') {
             hasEquipmentData: true,
             breakdown: { houses: [], abilities: [], equipment: [] },
             skillerBreakdown: { equipment: [] },
+            ...overrides,
         },
     };
 }
+
+/** Draw a profile card and click its breakdown link */
+function openBreakdownFor(characterId, name, overrides) {
+    const { profileData, scoreData } = profile(characterId, name, overrides);
+    combatScore.showScorePanel(profileData, scoreData, document.createElement('div'));
+    clickBreakdown();
+}
+
+/** The Build Score window's header text */
+const panelTitle = () => openPanel()?.querySelector('span')?.textContent;
 
 /** The Build Score window, if it is on the page */
 const openPanel = () => document.querySelector('#toolasha-buildScore-panel');
@@ -109,8 +122,9 @@ beforeEach(() => {
     document.body.innerHTML = '';
     stub.currentCharacterId = 7;
     stub.resizeThrows = false;
+    stub.ownScore = { total: 300, skillerTotal: 90 };
     combatScore.currentPanel = null;
-    setScoreSource(() => ({ total: 300, skillerTotal: 90 }));
+    resetBuildScorePanel();
 });
 
 describe('clicking the breakdown link', () => {
@@ -159,5 +173,59 @@ describe('clicking the breakdown link', () => {
         clickBreakdown();
 
         expect(openPanel()).not.toBeNull();
+    });
+});
+
+describe('the breakdown for someone else', () => {
+    test("another player's profile opens their breakdown, titled with their name", () => {
+        openBreakdownFor(99, 'Bartleby');
+
+        expect(openPanel()).not.toBeNull();
+        expect(panelTitle()).toBe('Build Score — Bartleby');
+        expect(openPanel().textContent).toContain('300.0');
+    });
+
+    test('viewing one player then another shows the second one, not the first', () => {
+        openBreakdownFor(99, 'Ada');
+        expect(panelTitle()).toBe('Build Score — Ada');
+
+        // The panel is left open, as a viewer flicking between two profiles
+        // would leave it
+        document.querySelector('#mwi-combat-score-panel').remove();
+        combatScore.currentPanel = null;
+        openBreakdownFor(101, 'Babbage', { total: 12, skillerTotal: 3 });
+
+        expect(panelTitle()).toBe('Build Score — Babbage');
+        expect(openPanel().textContent).toContain('12.0');
+        expect(openPanel().textContent).not.toContain('300.0');
+    });
+
+    test('your own profile after someone else shows your numbers again', () => {
+        stub.ownScore = { total: 777, skillerTotal: 11 };
+        openBreakdownFor(99, 'Ada');
+        expect(panelTitle()).toBe('Build Score — Ada');
+
+        document.querySelector('#mwi-combat-score-panel').remove();
+        combatScore.currentPanel = null;
+        openBreakdownFor(7, 'Me');
+
+        expect(panelTitle()).toBe('Build Score');
+        expect(openPanel().textContent).toContain('777.0');
+        expect(openPanel().textContent).not.toContain('300.0');
+    });
+
+    test('a profile with hidden equipment says so rather than presenting a total as fact', () => {
+        openBreakdownFor(99, 'Cagey', { equipmentHidden: true, hasEquipmentData: false });
+
+        expect(openPanel().textContent).toContain('Equipment is hidden on this profile');
+    });
+
+    test('your own profile still opens and closes on the link alone', () => {
+        openBreakdownFor(7, 'Me');
+        expect(panelTitle()).toBe('Build Score');
+
+        clickBreakdown();
+
+        expect(openPanel()).toBeNull();
     });
 });

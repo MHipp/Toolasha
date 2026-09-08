@@ -25,12 +25,19 @@
  * hrid, so no icon; a guild token's gold value, so no price — the panel says so
  * rather than inventing it.
  *
- * ## Own character only
+ * ## Whose build
  *
- * The score of somebody else's build is on their profile card, and it is not the
- * same score: shrine levels are only ever known for your own character. So this
- * panel reads the current character and nothing else, and the link that opens it
- * from the profile popup appears only when the profile is yours.
+ * Usually yours, and that is the panel's resting state — the overlay row hands
+ * it a reader for the current character and it keeps it. But the same breakdown
+ * is worth having for a profile you are looking at, and the score behind that
+ * profile card has already been computed by the time the card is drawn, so the
+ * profile card can point the panel at it instead. One setter does both, and the
+ * header says whose build is on screen whenever it is not yours.
+ *
+ * What is *not* the same for another player is what the game shares: a profile
+ * with equipment hidden prices no gear at all. The panel says so rather than
+ * presenting the remainder as a total, which is the same rule it already
+ * followed for an item the market could not price.
  *
  * ## Why the score arrives from outside
  *
@@ -54,6 +61,9 @@ const TOP_CONTRIBUTORS = 5;
 const COMBAT_ACCENT = '#8fb4ff';
 const SKILLER_ACCENT = '#c9a0ff';
 
+/** The header when the panel is showing your own build */
+const OWN_TITLE = 'Build Score';
+
 /**
  * Where the score comes from.
  *
@@ -67,11 +77,46 @@ const SKILLER_ACCENT = '#c9a0ff';
 let readScore = () => null;
 
 /**
- * Tell the panel where to read the current character's score.
- * @param {Function} source - `() => Object|null`, the result of `calculateCombatScore`
+ * Whose build the panel is currently about, or null for your own.
+ *
+ * Kept beside the source rather than derived from it because it is the thing
+ * that has to be *checked*: pointing the panel at a profile and never pointing
+ * it back is how a viewer ends up reading somebody else's numbers under their
+ * own name, and a name is what makes that visible.
+ *
+ * @type {string|null}
  */
-export function setScoreSource(source) {
+let scoreOwner = null;
+
+/**
+ * Tell the panel whose score to read, and from where.
+ *
+ * The single way in. The overlay row calls it once with the current character's
+ * reader and no owner; a profile card calls it with that profile's already
+ * computed score and the name on the card, and calls it again with the row's
+ * reader when the profile is yours.
+ *
+ * @param {Function} source - `() => Object|null`, the result of `calculateCombatScore`
+ * @param {string|null} [owner] - The player whose build this is, or null for yours
+ * @returns {boolean} Whether this changed whose build the panel is about — the
+ *   caller's cue to redraw a panel that is already open rather than close it
+ */
+export function setScoreSource(source, owner = null) {
     readScore = typeof source === 'function' ? source : () => null;
+
+    const next = owner || null;
+    const changed = next !== scoreOwner;
+    scoreOwner = next;
+    buildScorePanel.setTitle(scoreOwner ? `Build Score — ${scoreOwner}` : OWN_TITLE);
+    return changed;
+}
+
+/**
+ * Whose build the panel is showing.
+ * @returns {string|null} The player's name, or null when it is your own
+ */
+export function scoreSourceOwner() {
+    return scoreOwner;
 }
 
 /**
@@ -85,9 +130,12 @@ export function setScoreSource(source) {
  */
 let sectionOpen = {};
 
-/** Put the folds back, for a test that must not inherit them */
+/** Put the folds back and the panel on your own build, for a test that must not inherit either */
 export function resetBuildScorePanel() {
     sectionOpen = {};
+    readScore = () => null;
+    scoreOwner = null;
+    buildScorePanel.setTitle(OWN_TITLE);
 }
 
 /**
@@ -411,23 +459,24 @@ function drawContributors(body, score) {
 }
 
 /**
- * What your build score is made of, for the character you are playing.
+ * What a build score is made of — yours by default, or whoever's profile is open.
  */
 export const buildScorePanel = createPanel({
     id: 'buildScore',
-    title: 'Build Score',
+    title: OWN_TITLE,
     size: { width: 380, height: 480 },
     accent: COMBAT_ACCENT,
     draw: (body) => {
         const note = panelNote(HEADER_NOTE);
         note.title =
             'Houses, ability books, worn gear and shrine levels, priced at what they would cost to buy today, ' +
-            'divided by a million. The same figure as the one on your profile card.';
+            'divided by a million. The same figure as the one on the profile card.';
         body.appendChild(note);
 
         const score = readScore();
         if (!score) {
-            body.appendChild(panelNote('Scoring your build — this needs the marketplace prices and a moment.'));
+            const whose = scoreOwner ? `${scoreOwner}'s build` : 'your build';
+            body.appendChild(panelNote(`Scoring ${whose} — this needs the marketplace prices and a moment.`));
             return;
         }
 
