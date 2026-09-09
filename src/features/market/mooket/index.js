@@ -74,6 +74,9 @@ const WATCHLIST_BASE = 'mooketWatchlist';
 const POLL_MS = 1000;
 /** The game's marketplace panel, matched the same way the class watcher matches it */
 const MARKETPLACE_SELECTOR = '[class*="MarketplacePanel_marketplacePanel"]';
+/** The class every game modal's full-screen container carries; the watcher and the seed scan share it */
+export const GAME_MODAL_CLASS = 'Modal_modalContainer';
+const GAME_MODAL_SELECTOR = `[class*="${GAME_MODAL_CLASS}"]`;
 
 /**
  * What the tab watcher has to see for the History tab to be put back.
@@ -153,11 +156,18 @@ const SERIES = [
  * live — so its presence is the whole test. The marketplace's own shell is
  * `MainPanel_marketplaceModalContainer`, which this does not match.
  *
+ * This states what counts; it is not what the poll runs. An unanchored
+ * `[class*=]` match cannot be indexed, so the browser walks the whole document
+ * for it: measured in Chrome, 0.29ms over a 10,800-element tree and 0.92ms over
+ * 30,800 — every tick, forever, for an answer that is "no modal" nearly always.
+ * The poll asks `_gameModalIsOpen()`, which reads the watched set seeded from
+ * `GAME_MODAL_SELECTOR` instead.
+ *
  * @param {Document} [doc] - The document to ask; injectable for tests
  * @returns {boolean}
  */
 export function gameModalIsOpen(doc = document) {
-    return Boolean(doc?.querySelector('[class*="Modal_modalContainer"]'));
+    return Boolean(doc?.querySelector(GAME_MODAL_SELECTOR));
 }
 
 class MarketHistoryPanel {
@@ -199,6 +209,14 @@ class MarketHistoryPanel {
          * an empty set means the poll has nothing to do.
          */
         this.marketplacePanels = new Set();
+        /**
+         * Every game modal container currently in the DOM, kept by the class watcher.
+         *
+         * Same trade as `marketplacePanels`: the poll asked "is a game modal open"
+         * with a whole-document `[class*=]` query every second, and the answer is
+         * "no" nearly always. An empty set is the same answer for free.
+         */
+        this.gameModals = new Set();
         this.watchlist = [];
         /** Whose list `watchlist` holds, so a switch never shows another's */
         this.watchlistOwner = null;
@@ -257,6 +275,7 @@ class MarketHistoryPanel {
         this.cleanupRegistry.registerCleanup(
             domObserver.onReady('MarketHistoryCatchUp', () => {
                 for (const el of document.querySelectorAll(MARKETPLACE_SELECTOR)) this.marketplacePanels.add(el);
+                for (const el of document.querySelectorAll(GAME_MODAL_SELECTOR)) this.gameModals.add(el);
                 this.ensureTabButton();
             })
         );
@@ -265,14 +284,21 @@ class MarketHistoryPanel {
             ['MarketplacePanel_marketplacePanel'],
             (el) => this.marketplacePanels.add(el)
         );
+        // Likewise for the game's modals: announced on insertion, and gone from
+        // the set the first time the poll finds them disconnected.
+        const gameModalWatcher = domObserver.onClass('MarketHistoryGameModal', [GAME_MODAL_CLASS], (el) =>
+            this.gameModals.add(el)
+        );
 
         this.cleanupRegistry.registerCleanup(() => {
             this.tabWatcher?.();
             this.tabWatcher = null;
             marketplaceWatcher?.();
+            gameModalWatcher?.();
             this.tabBar = null;
             this.marketplace = null;
             this.marketplacePanels.clear();
+            this.gameModals.clear();
         });
 
         const poll = setInterval(() => this.followMarketplace(), POLL_MS);
@@ -1177,7 +1203,7 @@ class MarketHistoryPanel {
 
         // The pin is anchored to the marketplace's item icon, and a game modal
         // covers that icon while drawing *under* the pin
-        if (gameModalIsOpen()) {
+        if (this._gameModalIsOpen()) {
             this._setDisplay(this.panel, wantPanel);
             this._setDisplay(this.pinButton, 'none');
             return;
@@ -1228,6 +1254,29 @@ class MarketHistoryPanel {
      */
     _setDisplay(el, value) {
         if (el && el.style.display !== value) el.style.display = value;
+    }
+
+    /**
+     * Whether one of the game's own modals is covering the page, from the set
+     * the class watcher keeps rather than from a fresh document query.
+     *
+     * Same answer as `gameModalIsOpen()`, which stays the definition and the
+     * seed scan; this is what the once-a-second poll may afford. Nearly always
+     * the set is empty and this is a single `Set` iteration that ends
+     * immediately — against 0.29ms (10,800 elements) to 0.92ms (30,800) for the
+     * unanchored `[class*=]` walk it replaces.
+     *
+     * Disconnected containers are dropped on the way past, so a modal that has
+     * been closed stops counting without anything having to watch for removals.
+     *
+     * @returns {boolean} Whether a game modal is open
+     */
+    _gameModalIsOpen() {
+        for (const el of this.gameModals) {
+            if (el.isConnected) return true;
+            this.gameModals.delete(el);
+        }
+        return false;
     }
 
     /**

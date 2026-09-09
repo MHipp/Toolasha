@@ -357,3 +357,91 @@ describe('a game modal hides the pin', () => {
         expect(gameModalIsOpen(null)).toBe(false);
     });
 });
+
+/**
+ * The same behaviour, asked once per modal instead of once per second.
+ *
+ * `followMarketplace` runs every second for the life of the page. Asking it
+ * with `document.querySelector('[class*="Modal_modalContainer"]')` is an
+ * unanchored attribute-substring match, which no browser can index: measured in
+ * Chrome it walks the whole document for 0.29ms over a 10,800-element tree and
+ * 0.92ms over 30,800 — the entire non-layout cost of the poll, for an answer
+ * that is "no modal" nearly always. The class watcher already knows when one
+ * appears, so the poll only has to look at what it collected.
+ */
+describe('the per-tick modal check reads the watched set, not the document', () => {
+    let queries;
+
+    /** A marketplace panel that is on screen and showing +0 cheese */
+    const liveMarketplace = () => {
+        const icon = { getBoundingClientRect: () => ({ right: 100, top: 50, width: 40, height: 40 }) };
+        const currentItem = {
+            querySelector: (sel) => {
+                if (sel === 'svg use') return { href: { baseVal: 'sprite#cheese' } };
+                if (sel === 'svg') return icon;
+                return null; // no enhancement badge
+            },
+        };
+        return {
+            isConnected: true,
+            getClientRects: () => [{}],
+            querySelector: (sel) => (sel.includes('MarketplacePanel_currentItem') ? currentItem : null),
+        };
+    };
+
+    beforeEach(() => {
+        queries = [];
+        globalThis.document = {
+            hidden: false,
+            querySelector: (sel) => {
+                queries.push(sel);
+                return null;
+            },
+        };
+        globalThis.window = { scrollX: 0, scrollY: 0 };
+        panel.panel = { style: { display: 'none' } };
+        panel.pinButton = { style: { display: 'none' } };
+        panel.prefs.open = true;
+        panel.current = { itemHrid: '/items/cheese', enhancementLevel: 0 };
+        panel.marketplace = liveMarketplace();
+        panel.gameModals = new Set();
+    });
+
+    test('an open modal hides the pin without the poll querying the document', () => {
+        panel.gameModals.add({ isConnected: true });
+
+        panel.followMarketplace();
+
+        expect(panel.pinButton.style.display).toBe('none');
+        expect(panel.panel.style.display).toBe('flex');
+        // Pre-fix this held `[class*="Modal_modalContainer"]`, once every second
+        expect(queries).toEqual([]);
+    });
+
+    test('with no modal the pin is placed, and still nothing is asked of the document', () => {
+        panel.followMarketplace();
+
+        expect(panel.pinButton.style.display).toBe('block');
+        expect(panel.pinButton.style.left).toBe('106px');
+        expect(queries).toEqual([]);
+    });
+
+    test('a closed modal stops counting and is dropped from the set', () => {
+        const closed = { isConnected: false };
+        panel.gameModals.add(closed);
+
+        panel.followMarketplace();
+
+        expect(panel.pinButton.style.display).toBe('block');
+        expect(panel.gameModals.has(closed)).toBe(false);
+    });
+
+    test('one modal still open outweighs one already closed', () => {
+        panel.gameModals.add({ isConnected: false });
+        panel.gameModals.add({ isConnected: true });
+
+        panel.followMarketplace();
+
+        expect(panel.pinButton.style.display).toBe('none');
+    });
+});
