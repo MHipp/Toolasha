@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The action bar stops reading a percentage as a number of seconds
+
+On a long action the game writes `59% - 1m 28s` on the progress bar instead of a bare total. The countdown read that with `parseFloat` and stored **59 seconds** as the action's total length, then used it to judge whether the bar's animation could be trusted — so the check passed on some ticks and failed on others, and the label flipped between two different scales several times a second. It now recognises only the bare-seconds form and stands down on the rest, leaving the game's own readout, which has the real figures, in charge.
+
 ### The Buy Now price can raise itself until it covers what you asked for
 
 Missing Materials fills in 24, the top ask has 15, and pressing the button bought 15. The modal can now walk up the ask ladder to the lowest price whose cumulative supply covers the whole quantity — 470K to 471K in the case that prompted this — and stops there. It never climbs past the rung it needs and never past the tradable maximum, it only ever raises, and it reads the modal's own "Available At Price" line as the authority, stepping again only if a stale order book left it short. You still press Post Buy Order, with "You Pay" already showing what it will cost.
