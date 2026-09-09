@@ -1238,6 +1238,100 @@ describe('which trial is being watched', () => {
         expect(guildTrialDamage.breakdown().encounter).toBeNull();
     });
 
+    test('the monsters area is not queried on every tick', () => {
+        // `_identifyEncounter` early-returns once the encounter is known, so
+        // the expensive case is the ordinary one: background spectating with
+        // the fight view shut, where nothing ever sets it and the
+        // `[class*="BattlePanel_monstersArea"]` query — an attribute-substring
+        // match no browser can index — ran on all 150,642 ticks of a trial
+        document.body.innerHTML = '';
+        const query = vi.spyOn(document, 'querySelector');
+        try {
+            const tick = { battleId: 21, tier: 1, pMap: { 0: { cHP: 100, mHP: 100 } }, mMap: {} };
+            const monsters = () => query.mock.calls.filter(([sel]) => String(sel).includes('monstersArea')).length;
+
+            for (let index = 0; index < 40; index += 1) game.wsHandlers[GUILD_BATTLE_MESSAGE](tick);
+
+            expect(monsters()).toBe(1);
+        } finally {
+            query.mockRestore();
+        }
+    });
+
+    test('a fight view opened mid-fight is still picked up, within a second', () => {
+        // The throttle must not cost the identification. The view is shut for
+        // the first ticks and opens later in the same wave
+        document.body.innerHTML = '';
+        const tick = { battleId: 22, tier: 1, pMap: { 0: { cHP: 100, mHP: 100 } }, mMap: {} };
+        game.wsHandlers[GUILD_BATTLE_MESSAGE](tick);
+        expect(guildTrialDamage.breakdown().encounter).toBeNull();
+
+        document.body.innerHTML =
+            '<div class="BattlePanel_monstersArea__d">' +
+            '<div class="CombatUnit_combatUnit__b"><div class="CombatUnit_name__c">Trial Chameleon</div></div>' +
+            '</div>';
+
+        // Inside the interval the answer is still the held one…
+        vi.setSystemTime(at + 999);
+        game.wsHandlers[GUILD_BATTLE_MESSAGE](tick);
+        expect(guildTrialDamage.breakdown().encounter).toBeNull();
+
+        // …and a second is the worst case
+        vi.setSystemTime(at + 1000);
+        game.wsHandlers[GUILD_BATTLE_MESSAGE](tick);
+        expect(guildTrialDamage.breakdown().encounter).toBe('chameleon');
+        expect(guildTrialDamage.breakdown().bossName).toBe('Trial Chameleon');
+    });
+
+    test('a wave boundary re-arms the probe rather than making it wait', () => {
+        document.body.innerHTML = '';
+        game.wsHandlers[GUILD_BATTLE_MESSAGE]({ battleId: 23, tier: 1, pMap: {}, mMap: {} });
+        expect(guildTrialDamage.breakdown().encounter).toBeNull();
+
+        document.body.innerHTML =
+            '<div class="BattlePanel_monstersArea__d">' +
+            '<div class="CombatUnit_combatUnit__b"><div class="CombatUnit_name__c">Trial Chameleon</div></div>' +
+            '</div>';
+        // The same instant, so only the re-arm can make this identify
+        game.wsHandlers[GUILD_BATTLE_MESSAGE]({ battleId: 23, tier: 2, pMap: {}, mMap: {} });
+
+        expect(guildTrialDamage.breakdown().encounter).toBe('chameleon');
+    });
+
+    test('the caches change no attributed number', () => {
+        // The point of both of them. The six captured ticks are replayed with
+        // the caches doing their job, then replayed again with both defeated
+        // per tick, and every figure the module publishes is compared
+        document.body.innerHTML =
+            '<div class="BattlePanel_monstersArea__d">' +
+            '<div class="CombatUnit_combatUnit__b"><div class="CombatUnit_name__c">Trial Chameleon</div></div>' +
+            '</div>' +
+            '<div class="BattlePanel_playersArea__a">' +
+            '<div class="CombatUnit_combatUnit__u"><div class="CombatUnit_name__n">Sarin</div></div>' +
+            '</div>';
+        game.loadouts = [{ name: 'Sarin', at: at - 1000, rows: [], stats: {} }];
+
+        /**
+         * Replay the capture, optionally dropping both caches before each tick.
+         * @param {boolean} defeat - Whether to force the uncached path
+         * @returns {string} The published report
+         */
+        const run = (defeat) => {
+            guildTrialDamage.reset();
+            wireDump.forEach((tick, index) => {
+                vi.setSystemTime(at + index * 250);
+                if (defeat) {
+                    guildTrialDamage.encounterProbeAt = 0;
+                    guildTrialDamage.fightViewCache = null;
+                }
+                game.wsHandlers[GUILD_BATTLE_MESSAGE](tick);
+            });
+            return JSON.stringify(guildTrialDamage.breakdown());
+        };
+
+        expect(run(false)).toBe(run(true));
+    });
+
     test('a tier change within one battle keeps it', () => {
         document.body.innerHTML =
             '<div class="BattlePanel_monstersArea__d">' +

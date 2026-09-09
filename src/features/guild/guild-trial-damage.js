@@ -206,6 +206,26 @@ const STALE_STREAM_MS = 3 * 60 * 1000;
 const NAME_REFRESH_MS = 1000;
 
 /**
+ * How long a tick may go without re-asking the fight view which boss it draws.
+ *
+ * `_identifyEncounter` early-returns the moment the encounter is known, so on a
+ * fight whose view is open this costs one sweep and never runs again. The
+ * expensive case is the ordinary one: spectating in the background with the
+ * fight view shut and the boss never clicked. Then nothing ever sets
+ * `this.encounter`, the early return never fires, and
+ * `fightViewBossNames()` — a `[class*="BattlePanel_monstersArea"]` query, an
+ * attribute-substring match the browser cannot serve from an index — runs on
+ * every one of a trial's 150,642 ticks.
+ *
+ * A second is the same bargain {@link NAME_REFRESH_MS} strikes and for the same
+ * reason: the view cannot open and be missed for longer than that, and one
+ * second of a sixty-minute trial is not an identification delay anyone can
+ * perceive. The probe is also re-armed on every wave boundary, so a view opened
+ * across a wave change is picked up on the next tick rather than waited for.
+ */
+const ENCOUNTER_PROBE_MS = 1000;
+
+/**
  * How long after `end_guild_battle` the game's own per-member totals are still
  * expected.
  *
@@ -660,6 +680,12 @@ export function mergeWaveTallies({
  * summarising the ledger's accuracy card draws; this is the export builder's
  * name for it, kept so the export's shape does not move.
  *
+ * Each cell carries `basis` and `expectedDivergence` beside its `deltaPct`, so
+ * the file says what its two sides measure. `taken` compares our
+ * post-mitigation figure against the game's pre-mitigation one and reads about
+ * −57% party-wide for that reason alone; without the annotation the export's
+ * first reader concludes the accounting is broken.
+ *
  * @param {{reported: Object|null|undefined, measured: Object|null|undefined}} input
  * @returns {Array<{name: string, matched: boolean, damage: Object, healing: Object, taken: Object}>}
  */
@@ -740,6 +766,8 @@ class GuildTrialDamage {
         this.poolSlots = {};
         /** The last sweep of the fight view's names, held for {@link NAME_REFRESH_MS} */
         this.fightViewCache = null;
+        /** When the fight view was last asked which boss it draws — see {@link ENCOUNTER_PROBE_MS} */
+        this.encounterProbeAt = 0;
         /** Index → `{name, source}`, from `guild-trial-units.js` */
         this.unitNames = {};
         /**
@@ -1318,7 +1346,7 @@ class GuildTrialDamage {
             const pMap = data.pMap || {};
             const mMap = data.mMap || {};
 
-            this._identifyEncounter();
+            this._identifyEncounter(now);
             // A session that missed the tier's opening message — a refresh —
             // reads the persisted roster back, gated on the battle id matching
             if (!Object.keys(this.roster).length) this._adoptStoredRoster(battleId, tier);
@@ -1635,6 +1663,9 @@ class GuildTrialDamage {
         // here: the next tick sweeps the view again rather than resolving this
         // wave's units against the last one's names
         this.fightViewCache = null;
+        // A wave boundary re-deals the monsters area too, so the identification
+        // probe is re-armed here rather than made to wait out its interval
+        this.encounterProbeAt = 0;
         // The pool is the wave's monsters summed, and the wave that just ended
         // is not this one: a dead wave's bars left in the sum would price the
         // new wave at its predecessor's health plus whatever has arrived so far
@@ -1657,17 +1688,27 @@ class GuildTrialDamage {
      * card. That is the whole point: standing in for every barless combat card
      * is what filed a Chameleon fight under Hedgehog, and "no data" on both is
      * strictly better than the right number on the wrong trial.
+     *
+     * @param {number} [now] - Clock, injectable for tests
      */
-    _identifyEncounter() {
+    _identifyEncounter(now = Date.now()) {
         if (this.encounter) return;
 
-        for (const name of fightViewBossNames()) {
-            const encounter = encounterOfMonster(name);
-            if (!encounter) continue;
+        // Throttled, not skipped: the DOM read is the whole cost of this method
+        // on a fight nobody has the view open for, and it is the only part of it
+        // that touches the document. The sheet check below stays per tick — it
+        // walks a map of at most a handful of entries and costs nothing.
+        if (!this.encounterProbeAt || now - this.encounterProbeAt >= ENCOUNTER_PROBE_MS) {
+            this.encounterProbeAt = now;
 
-            this.spectatedBossName = name;
-            this.encounter = encounter;
-            return;
+            for (const name of fightViewBossNames()) {
+                const encounter = encounterOfMonster(name);
+                if (!encounter) continue;
+
+                this.spectatedBossName = name;
+                this.encounter = encounter;
+                return;
+            }
         }
 
         // A sheet for the tier being fought first, then any sheet at all — one
