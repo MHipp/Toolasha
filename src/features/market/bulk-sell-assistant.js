@@ -799,14 +799,39 @@ class BulkSellAssistant {
         return slug ? `/items/${slug}` : null;
     }
 
-    /** The enhancement level the modal is set to; 0 when it has no such field */
+    /**
+     * The enhancement level the modal is set to.
+     *
+     * The label is a *sibling* of the field's wrapper in the game's markup, not
+     * an ancestor of the input — so `input.closest('div')` sees only the input
+     * and the old read matched nothing and returned 0 for every modal. That
+     * made the level check vacuous for a +0 step and permanently wrong for an
+     * enhanced one: the strip's Confirm refused every enhanced item with "the
+     * modal is selling +0, not +3", which is a dead button again.
+     *
+     * So the ancestor is walked outward a level at a time — the same shape the
+     * quantity finder uses — taking the tightest container that names
+     * Enhancement Level and not Quantity, which is what keeps it off the
+     * quantity field when both share an outer container.
+     *
+     * @param {HTMLElement} modal
+     * @returns {number|null} Null when the modal has no enhancement field at
+     *   all, which is what an unenhanceable item's modal looks like
+     */
     _modalEnhancementLevel(modal) {
-        for (const input of modal.querySelectorAll('input')) {
-            if (input.closest('div')?.textContent?.includes('Enhancement Level')) {
-                return parseInt(input.value, 10) || 0;
+        const inputs = Array.from(modal.querySelectorAll('input'));
+        for (let level = 0; level < 4; level++) {
+            for (const input of inputs) {
+                let parent = input.parentElement;
+                for (let step = 0; step < level && parent; step++) parent = parent.parentElement;
+                if (!parent) continue;
+                const text = parent.textContent || '';
+                if (text.includes('Enhancement Level') && !text.includes('Quantity')) {
+                    return parseInt(String(input.value).replace(/[^0-9-]/g, ''), 10) || 0;
+                }
             }
         }
-        return 0;
+        return null;
     }
 
     /**
@@ -875,8 +900,16 @@ class BulkSellAssistant {
             return { why: `the modal is selling ${name}, not ${this.current.name}` };
         }
         const level = this._modalEnhancementLevel(modal);
-        if (level !== (this.current.enhancementLevel || 0)) {
-            return { why: `the modal is selling +${level}, not +${this.current.enhancementLevel || 0}` };
+        const wanted = this.current.enhancementLevel || 0;
+        // No field at all is how an unenhanceable item's modal looks, so it
+        // means +0 — but only for a step that queued +0. A step that queued an
+        // enhanced stack against a modal that will not say its level is a sale
+        // whose level nothing has checked, and that is the one this guard is
+        // for, so it refuses rather than assuming
+        if (level === null) {
+            if (wanted !== 0) return { why: 'the modal does not say what enhancement level it is selling' };
+        } else if (level !== wanted) {
+            return { why: `the modal is selling +${level}, not +${wanted}` };
         }
         const quantity = this._modalQuantity(modal);
         if (quantity === null) return { why: 'the modal quantity cannot be read' };
@@ -965,6 +998,20 @@ class BulkSellAssistant {
                 this._render();
                 return;
             }
+        }
+
+        // The snapshot store fills from storage asynchronously, and until it has,
+        // `getAllSnapshots()` reports an empty {} — which is indistinguishable
+        // from "this character has no loadouts". Start pressed in that window
+        // built a queue with every piece of loadout gear in it, held back
+        // nothing, and said "0 held back" while it did. `whenReady` is what the
+        // store offers for exactly this, and it is bounded (it declares itself
+        // ready at a deadline), so a store that never loads costs a pause, not
+        // a stuck button.
+        try {
+            await (loadoutSnapshot() || bundledLoadoutSnapshot).whenReady?.();
+        } catch (error) {
+            console.error('[BulkSellAssistant] Waiting for loadout snapshots failed:', error);
         }
 
         const clientData = dataManager.getInitClientData();
@@ -1324,7 +1371,16 @@ class BulkSellAssistant {
         if (!text.includes('Sell Now') && !text.includes('Sell Listing')) return;
 
         const count = this.current.count;
+        const wantedHrid = this.current.itemHrid;
         setTimeout(() => {
+            // Checked here rather than above because the icon is not reliably in
+            // the modal the instant the observer sees it. A modal about some
+            // other item is one the player opened themselves during the run's
+            // wait, and writing this step's quantity and price into it would be
+            // the assistant editing a sale nobody asked it to touch. An icon it
+            // cannot read is left alone the way it always was.
+            const shown = this._modalItemHrid(modal);
+            if (shown && shown !== wantedHrid) return;
             const input = marketplaceShortcuts.findQuantityInput(modal);
             if (!input) return;
             nativeInputValueSetter.call(input, String(count));
@@ -1339,6 +1395,8 @@ class BulkSellAssistant {
         if (text.includes('Sell Now') && this.decision?.insta && this.decision.price > 0) {
             const price = this.decision.price;
             setTimeout(() => {
+                const shown = this._modalItemHrid(modal);
+                if (shown && shown !== wantedHrid) return;
                 const priceRow = modal.querySelector('div[class*="MarketplacePanel_priceInputs"]');
                 if (!priceRow) return;
                 if (!priceRow.querySelector('input')) {

@@ -16,6 +16,8 @@ const game = vi.hoisted(() => ({
     loadouts: [],
     characterId: 'char',
     tabsByCharacter: {},
+    loadoutsReady: true,
+    readyWaiters: [],
 }));
 /** The settings store, so a per-character key can be proved to be per character */
 const store = vi.hoisted(() => ({ data: {} }));
@@ -83,7 +85,12 @@ vi.mock('./marketplace-shortcuts.js', () => ({
     },
 }));
 vi.mock('../combat/loadout-snapshot.js', () => ({
-    default: { getAllSnapshots: () => game.loadouts },
+    default: {
+        getAllSnapshots: () => game.loadouts,
+        // The real store fills from storage asynchronously; a run that reads it
+        // before it has sees no loadouts at all
+        whenReady: () => (game.loadoutsReady ? Promise.resolve(true) : new Promise((r) => game.readyWaiters.push(r))),
+    },
 }));
 vi.mock('../../utils/marketplace-tabs.js', () => ({ navigateToMarketplace: () => {} }));
 vi.mock('../../utils/dom-observer-helpers.js', () => ({
@@ -121,6 +128,8 @@ beforeEach(() => {
     bulkSell.holdProviders = new Map();
     bulkSell.selectedTabId = 'all';
     game.loadouts = [];
+    game.loadoutsReady = true;
+    game.readyWaiters = [];
     game.characterId = 'char';
     game.tabsByCharacter = {};
     store.data = {};
@@ -234,6 +243,25 @@ describe('gear saved into a loadout', () => {
 
         expect(bulkSell.heldCount).toBe(1);
         expect(bulkSell._skipNote()).toContain('loadout');
+    });
+
+    test('is waited for rather than read while the store is still empty', async () => {
+        // The snapshot store fills from storage after the feature initializes.
+        // Start pressed in that window used to read an empty {} as "no
+        // loadouts" and queue the sword the loadout is wearing — reporting
+        // "0 held back" while it did it.
+        game.loadoutsReady = false;
+        game.loadouts = [];
+        const run = bulkSell._start();
+
+        // The store finishes loading while Start is still resolving
+        game.loadouts = [{ equipment: [{ itemHrid: '/items/sword', enhancementLevel: 3 }] }];
+        for (const resolve of game.readyWaiters) resolve(true);
+        game.readyWaiters = [];
+        await run;
+
+        expect(queued()).not.toContain('/items/sword');
+        expect(bulkSell.heldCount).toBe(1);
     });
 
     test('a loadout with nothing in it is not a problem', async () => {
@@ -551,7 +579,7 @@ describe('confirming from the strip', () => {
      * A sell modal shaped like the game's: header, item icon, quantity row and
      * the game's own confirming button.
      */
-    const openModal = ({ item = 'cheese', qty = 18, header = 'Sell Now' } = {}) => {
+    const openModal = ({ item = 'cheese', qty = 18, header = 'Sell Now', enhancement = null } = {}) => {
         const modal = document.createElement('div');
         modal.className = 'Modal_modalContainer__abc';
         const head = document.createElement('div');
@@ -564,6 +592,22 @@ describe('confirming from the strip', () => {
         const input = document.createElement('input');
         input.value = String(qty);
         qtyRow.appendChild(input);
+        // The enhancement row as the game builds it: the label is a *sibling* of
+        // the field's wrapper, not an ancestor of the input. A fixture that put
+        // the label in the input's own div would let `closest('div')` read it,
+        // which the real modal never does.
+        let enhRow = null;
+        if (enhancement !== null) {
+            enhRow = document.createElement('div');
+            enhRow.className = 'MarketplacePanel_enhancementLevelInputs__z';
+            const label = document.createElement('div');
+            label.textContent = 'Enhancement Level';
+            const wrap = document.createElement('div');
+            const enhInput = document.createElement('input');
+            enhInput.value = String(enhancement);
+            wrap.appendChild(enhInput);
+            enhRow.append(label, wrap);
+        }
         const confirm = document.createElement('button');
         // As the real game builds it: the label its string table calls
         // `postSellOrder`, and NO `Button_sell` class. The fixture used to grant
@@ -573,7 +617,7 @@ describe('confirming from the strip', () => {
         confirm.className = 'Button_button__1Fe9z';
         confirm.textContent = 'Post Sell Order';
         confirm.addEventListener('click', () => gameClicks++);
-        modal.append(head, icon, qtyRow, confirm);
+        modal.append(head, icon, ...(enhRow ? [enhRow] : []), qtyRow, confirm);
         document.body.appendChild(modal);
         return modal;
     };
@@ -725,6 +769,101 @@ describe('confirming from the strip', () => {
         // and the whole line is still readable on hover, however narrow the strip
         expect(status.title).toContain('Cheese');
         expect(status.title).toContain('the sell modal is not open');
+    });
+
+    /**
+     * The level check, which used to read nothing at all.
+     *
+     * `input.closest('div')` is the input's own wrapper, and the game puts the
+     * "Enhancement Level" label in a sibling — so the read matched no modal
+     * ever and answered 0 for all of them. That is a guard that passes every
+     * +0 step whatever the modal is showing, and refuses every enhanced step
+     * whatever the modal is showing.
+     */
+    describe('and the enhancement level it checks', () => {
+        /** A run parked on an enhanced step */
+        const runAtEnhancedStep = () => {
+            bulkSell.queue = [{ itemHrid: '/items/sword', enhancementLevel: 3, count: 1, name: 'Sword' }];
+            bulkSell.index = 0;
+            bulkSell.current = bulkSell.queue[0];
+            bulkSell.decision = { insta: true, price: 10, avgPrice: 10, reason: 'queue ok' };
+            bulkSell.state = 'awaiting_confirm';
+            bulkSell._buildPanel();
+            bulkSell._render();
+        };
+
+        test('a +0 step will not confirm a modal that is selling an enhanced copy', () => {
+            // The sharp end: same item, same count, different level. The old
+            // read answered 0 for this modal too, so the guard passed and the
+            // press sold a +5 sword at the price a +0 was judged by.
+            openModal({ item: 'cheese', qty: 18, enhancement: 5 });
+            runAtStep0();
+
+            confirmBtn().click();
+
+            expect(gameClicks).toBe(0);
+            expect(statusText()).toMatch(/\+5, not \+0/);
+        });
+
+        test('an enhanced step confirms against the modal that names its level', () => {
+            openModal({ item: 'sword', qty: 1, enhancement: 3 });
+            runAtEnhancedStep();
+
+            confirmBtn().click();
+
+            expect(gameClicks).toBe(1);
+        });
+
+        test('and refuses a modal that will not say its level at all', () => {
+            openModal({ item: 'sword', qty: 1 });
+            runAtEnhancedStep();
+
+            confirmBtn().click();
+
+            expect(gameClicks).toBe(0);
+            expect(statusText()).toMatch(/does not say what enhancement level/);
+        });
+
+        test('an unenhanceable item has no such field, and that still means +0', () => {
+            openModal();
+            runAtStep0();
+
+            confirmBtn().click();
+
+            expect(gameClicks).toBe(1);
+        });
+    });
+
+    /**
+     * The prefill writes into the modal the run opened — not into one the
+     * player opened for something else while the run waited.
+     */
+    describe('prefilling the modal', () => {
+        test('a modal about another item is left exactly as the player left it', () => {
+            bulkSell.queue = [{ itemHrid: '/items/cheese', enhancementLevel: 0, count: 18, name: 'Cheese' }];
+            bulkSell.index = 0;
+            bulkSell.current = bulkSell.queue[0];
+            bulkSell.state = 'awaiting_confirm';
+
+            const theirs = openModal({ item: 'milk', qty: 2 });
+            bulkSell._onModal(theirs);
+            vi.advanceTimersByTime(500);
+
+            expect(theirs.querySelector('input').value).toBe('2');
+        });
+
+        test('the run’s own modal is still filled with the queued count', () => {
+            bulkSell.queue = [{ itemHrid: '/items/cheese', enhancementLevel: 0, count: 18, name: 'Cheese' }];
+            bulkSell.index = 0;
+            bulkSell.current = bulkSell.queue[0];
+            bulkSell.state = 'preparing';
+
+            const ours = openModal({ item: 'cheese', qty: 0 });
+            bulkSell._onModal(ours);
+            vi.advanceTimersByTime(500);
+
+            expect(ours.querySelector('input').value).toBe('18');
+        });
     });
 
     test('with the feature off there is no panel and no confirm button', async () => {
