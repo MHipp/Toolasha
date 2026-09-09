@@ -835,6 +835,41 @@ describe('confirming from the strip', () => {
     });
 
     /**
+     * The two ways a press can arrive at a step that is no longer the one on
+     * screen. Both have to refuse: the vendor path has no modal to check
+     * anything against, and a skipped step's `current` is a sale that is over.
+     */
+    describe('a step the strip is no longer looking at', () => {
+        test('a vendor step offers no Confirm, and refuses one anyway', () => {
+            // The vendor sale is the game's own "Sell For" button in the item
+            // menu — there is no modal naming an item, a level or a quantity,
+            // so there is nothing for the guard to check and nothing to press.
+            openModal();
+            runAtStep0();
+            bulkSell.decision = { insta: false, vendor: true, price: 10, reason: 'vendor' };
+            bulkSell._render();
+
+            expect(confirmBtn().style.display).toBe('none');
+            confirmBtn().click();
+
+            expect(gameClicks).toBe(0);
+            expect(bulkSell._confirmTarget().why).toMatch(/vendor/);
+        });
+
+        test('after Skip the same modal is no longer this step’s sale', () => {
+            const modal = openModal();
+            runAtStep0();
+
+            bulkSell.chip.querySelector(`.${CHIP}-main`).click();
+            confirmBtn().click();
+
+            expect(gameClicks).toBe(0);
+            expect(bulkSell._confirmTarget().why).toMatch(/no sale waiting/);
+            modal.remove();
+        });
+    });
+
+    /**
      * The prefill writes into the modal the run opened — not into one the
      * player opened for something else while the run waited.
      */
