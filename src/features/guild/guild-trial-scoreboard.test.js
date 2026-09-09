@@ -487,12 +487,13 @@ describe('the panel', () => {
 
     test('every row is measured, and the counter-confirmed one is named', () => {
         // The server groups each tick by actor, so every row's damage is
-        // attributed off the stream. Your own unit additionally streams its
-        // attack counters, which confirm its rows directly — worth naming
-        // without calling anybody else's row a guess
+        // attributed off the stream. When counters cover only *some* of the
+        // party, saying which rows they cover is worth doing — it names a
+        // subset without calling anybody else's row a guess
         game.breakdown = breakdown({
             source: 'spectated',
             seconds: 60,
+            participants: 2,
             countedNames: ['Player20'],
             players: [
                 { index: '19', name: 'Player20', damage: 600_000, deaths: 0, measured: true },
@@ -508,14 +509,14 @@ describe('the panel', () => {
     });
 
     test('a counted name with markup in it is escaped, not injected as an element', () => {
-        // `countedNames` only ever holds the viewer's own character today, but
-        // it is player-controlled text off the wire like any other name in this
-        // panel — an in-game name can legally contain '<', '>' and '&', and
-        // `_ownRowNote` interpolates it straight into the panel's innerHTML.
+        // `countedNames` is player-controlled text off the wire like any other
+        // name in this panel — an in-game name can legally contain '<', '>' and
+        // '&', and `_ownRowNote` interpolates it straight into the innerHTML.
         const hostileName = '<img src=x onerror="window.__pwned = true">';
         game.breakdown = breakdown({
             source: 'spectated',
             seconds: 60,
+            participants: 2,
             countedNames: [hostileName],
             players: [{ index: '19', name: hostileName, damage: 600_000, deaths: 0, measured: true }],
         });
@@ -531,6 +532,37 @@ describe('the panel', () => {
         // The escaped text is still legible in the note, just inert
         expect(panel.innerHTML).toContain('&lt;img src=x onerror=');
         expect(text()).toContain('carries own attack counters');
+    });
+
+    test('the counter note stays silent when the counters cover the whole party', () => {
+        // The game changed what it streams: action counters used to arrive for
+        // the viewer's unit alone and now arrive for every present player, so
+        // `countedNames` is the whole roster — 57 of 57 in the replayed trial.
+        // The sentence then reads "…and 55 more carry own attack counters that
+        // confirm it directly", which asserts every row is directly confirmed:
+        // the exact claim the note was written to avoid making, and one the
+        // attribution does not support.
+        game.breakdown = breakdown({
+            source: 'spectated',
+            seconds: 60,
+            participants: 3,
+            countedNames: ['Tib', 'Moo', 'Ada'],
+        });
+        guildTrialScoreboard.open();
+
+        expect(text()).not.toContain('attack counters');
+        expect(text()).not.toContain('confirm it directly');
+        // The rest of the caption is untouched — this drops a claim, not a panel
+        expect(text()).toContain('Measured from the trial fight');
+    });
+
+    test('an unknown party size is not a subset either', () => {
+        // Without a party size "these rows and not the others" cannot be
+        // established, so the note has nothing it can honestly say
+        game.breakdown = breakdown({ source: 'spectated', seconds: 60, countedNames: ['Tib'], players: [] });
+        guildTrialScoreboard.open();
+
+        expect(text()).not.toContain('attack counters');
     });
 
     test('a placeholder name is flagged as one', () => {

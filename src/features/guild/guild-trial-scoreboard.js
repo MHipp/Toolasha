@@ -628,12 +628,28 @@ class GuildTrialScoreboard {
     }
 
     /**
-     * Whose damage is actually measured, when only some of it is.
+     * Which rows the stream's own attack counters single out, when it singles
+     * any out at all.
      *
-     * The game streams action counters for **one** unit — the viewer's own
-     * character — so a watched trial produces a real, attributed figure for you
-     * and nothing attributable for anybody else. Saying "measured" over a table
-     * where that is true of one row would be claiming the other twenty-nine.
+     * This was written for a stream that carried action counters for **one**
+     * unit — the viewer's — where naming that row was the whole point: it said
+     * which single row of thirty had a counter behind it. The game now streams
+     * counters for every present player, so `countedNames` is the whole party
+     * (57 of 57 in the captured trial) and the same sentence renders as "…and
+     * 55 more carry own attack counters that confirm it directly" — an
+     * assertion that every row is directly confirmed, which is precisely the
+     * claim the note existed to *avoid* making, and which the attribution does
+     * not support: the counter rung and the equal-split rung disagree on 0.6%
+     * of damaging ticks and one rung's behaviour on full snapshots is still
+     * under review.
+     *
+     * So it is gated rather than dropped. Silent when the counters cover the
+     * whole party (they then distinguish nobody, and the caveat sentence next
+     * to it, `_coverageNote`, is the one with something to say); silent too
+     * when the party size is unknown, since "a subset" cannot be established
+     * without it. It speaks only when the counters really do single out fewer
+     * rows than there are players — the case it was written for, where the
+     * wording is exactly right.
      *
      * @param {Object} breakdown - From `guildTrialDamage.breakdown()`
      * @returns {string} A sentence, or an empty string
@@ -642,11 +658,12 @@ class GuildTrialScoreboard {
         const named = breakdown?.countedNames || [];
         if (!named.length) return '';
 
-        // Today `countedNames` only ever holds the viewer's own character, but
-        // it is still player-controlled text off the wire — the same reason
-        // every other name this file interpolates (`boardRowHTML`,
-        // `boardHeadHTML`) goes through `escapeText` first rather than trusting
-        // that today's one caller stays its only one.
+        const { party } = attributionCoverage(breakdown);
+        if (!party || named.length >= party) return '';
+
+        // `countedNames` is player-controlled text off the wire — the same
+        // reason every other name this file interpolates (`boardRowHTML`,
+        // `boardHeadHTML`) goes through `escapeText` first.
         const escaped = named.map((name) => escapeText(name));
         return (
             ` Each row is attributed off the ticks the server groups by actor;` +
