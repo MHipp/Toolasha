@@ -282,20 +282,18 @@ function showBreakdownModal(budget, result) {
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
 
-    // The required totals, not the shortfall: what the bag already holds for
-    // this budget is spoken for too, and claiming only the part being bought
-    // would leave the rest looking free to every other plan
-    reserve(
-        RESERVATION_OWNER,
-        result.materials.map((mat) => ({ itemHrid: mat.itemHrid, count: mat.required })),
-        { label: 'Budget calculator' }
-    );
-
     // close() is reachable three ways (×, backdrop click, Escape), but only the Escape path used
     // to detach this listener. Dismissing via the other two left it on `document` forever, and
     // since a fresh listener is added every time the modal reopens, repeatedly opening and
     // closing it by mouse alone grew an unbounded pile of keydown listeners that outlived the
     // panel — and even disable(), which only ever removed the overlay element.
+    //
+    // Wired before the claim below is made, on purpose: RESERVATION_OWNER is a transient
+    // owner that is only ever supposed to hold its claim while this modal is open, so the
+    // modal must be closable before the claim exists, not after. Reserving first and wiring
+    // second used to mean a throw in between left the claim held with no way to release it —
+    // the modal was already unclosable, so the ×/backdrop/Escape handlers that would have run
+    // release() never got attached.
     const onEsc = (e) => {
         if (e.key === 'Escape') close();
     };
@@ -309,6 +307,31 @@ function showBreakdownModal(budget, result) {
         if (e.target === overlay) close();
     });
     document.addEventListener('keydown', onEsc);
+
+    // The required totals, not the shortfall: what the bag already holds for
+    // this budget is spoken for too, and claiming only the part being bought
+    // would leave the rest looking free to every other plan.
+    //
+    // Every close route is wired by the time this runs, so the modal can always be dismissed
+    // even if this throws. The try/catch covers both a synchronous throw while building the
+    // line list and reserve() itself throwing instead of returning its usual rejected-never
+    // promise; either way release() runs defensively in case anything was written before the
+    // failure, so no claim is left held with nothing left to release it.
+    try {
+        Promise.resolve(
+            reserve(
+                RESERVATION_OWNER,
+                result.materials.map((mat) => ({ itemHrid: mat.itemHrid, count: mat.required })),
+                { label: 'Budget calculator' }
+            )
+        ).catch((error) => {
+            console.error('[BudgetCalculator] Failed to claim materials:', error);
+            release(RESERVATION_OWNER);
+        });
+    } catch (error) {
+        console.error('[BudgetCalculator] Failed to claim materials:', error);
+        release(RESERVATION_OWNER);
+    }
 }
 
 class BudgetCalculator {

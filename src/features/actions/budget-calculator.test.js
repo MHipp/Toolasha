@@ -49,9 +49,14 @@ vi.mock('../../utils/material-calculator.js', () => ({
  * The reservation ledger, doubled: what matters at this join is that the
  * calculator asks under its own owner id, claims the required totals while its
  * breakdown is up, and gives them back by every route the modal closes.
+ *
+ * `reservationsMock` holds the actual `reserve`/`release` implementations behind a
+ * mutable indirection, so a single test can swap in a throwing `reserve` (to
+ * prove a failure after the claim point still leaves the modal closable and no
+ * claim held) and restore the normal one afterward.
  */
 const ledger = vi.hoisted(() => ({ reserved: [], released: [] }));
-vi.mock('../../utils/inventory-reservations.js', () => ({
+const reservationsMock = vi.hoisted(() => ({
     reserve: async (ownerId, lines) => {
         ledger.reserved.push({ ownerId, lines });
         return true;
@@ -60,6 +65,10 @@ vi.mock('../../utils/inventory-reservations.js', () => ({
         ledger.released.push(ownerId);
         return true;
     },
+}));
+vi.mock('../../utils/inventory-reservations.js', () => ({
+    reserve: (...args) => reservationsMock.reserve(...args),
+    release: (...args) => reservationsMock.release(...args),
 }));
 vi.mock('../../utils/react-input.js', () => ({
     setReactInputValue: () => {},
@@ -263,6 +272,14 @@ describe('the budget calculator and the reservation ledger', () => {
         world.ownerIds = [];
         ledger.reserved = [];
         ledger.released = [];
+        reservationsMock.reserve = async (ownerId, lines) => {
+            ledger.reserved.push({ ownerId, lines });
+            return true;
+        };
+        reservationsMock.release = async (ownerId) => {
+            ledger.released.push(ownerId);
+            return true;
+        };
         world.gameData = {
             actionDetailMap: {
                 [ACTION]: { type: '/action_types/cooking', inputItems: [{ itemHrid: '/items/egg' }] },
@@ -305,9 +322,21 @@ describe('the budget calculator and the reservation ledger', () => {
         });
     });
 
-    test('closing the breakdown gives the claim back', () => {
+    test('closing the breakdown via the × button gives the claim back', () => {
         const modal = calculate(1000);
         modal.querySelector('#mwi-budget-modal-close').click();
+        expect(ledger.released).toContain('budgetCalculator');
+    });
+
+    test('closing the breakdown via the backdrop gives the claim back', () => {
+        const overlay = calculate(1000);
+        overlay.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        expect(ledger.released).toContain('budgetCalculator');
+    });
+
+    test('closing the breakdown via Escape gives the claim back', () => {
+        calculate(1000);
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
         expect(ledger.released).toContain('budgetCalculator');
     });
 
@@ -331,5 +360,30 @@ describe('the budget calculator and the reservation ledger', () => {
     test('with no claim on the line the modal says nothing about reservations', () => {
         const modal = calculate(1000);
         expect(modal.querySelector('#mwi-budget-reserved-note')).toBeNull();
+    });
+
+    test('a throw at the claim point leaves no claim held and the modal still closable', () => {
+        // Simulates reserve() writing the ledger entry and then failing before returning —
+        // the bug this guards against was claiming *before* the close handlers were wired,
+        // so a throw here used to leave the modal stuck open with the claim orphaned: no
+        // close route existed yet to run release().
+        reservationsMock.reserve = (ownerId, lines) => {
+            ledger.reserved.push({ ownerId, lines });
+            throw new Error('boom');
+        };
+
+        const overlay = calculate(1000);
+
+        // The claim point threw, but the modal must still be on screen and closable.
+        expect(overlay).not.toBeNull();
+        const closeBtn = overlay.querySelector('#mwi-budget-modal-close');
+        expect(closeBtn).not.toBeNull();
+
+        closeBtn.click();
+
+        expect(document.getElementById('mwi-budget-modal-overlay')).toBeNull();
+        // Whatever reserve() wrote before throwing must have been given back, not left
+        // held with no owner left able to release it.
+        expect(ledger.released).toContain('budgetCalculator');
     });
 });
