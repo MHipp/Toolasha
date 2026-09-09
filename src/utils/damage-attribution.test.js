@@ -530,16 +530,111 @@ describe('a collision too big to adjudicate', () => {
         expect(findCaster(crowd(20), state, { soloFallback: false })).toBeNull();
     });
 
-    test('a counter still names one person in a crowd', () => {
-        // `atkCounter` is a statement about who acted, and it stays decisive
-        // however many people are present — the gate below applies to mana,
-        // which is only ever an inference
+    test('a lone counter rise in a crowd is split, not credited', () => {
+        // Deliberately reversed, like the mana rung above it, and for a reason
+        // outside this module: the server used to stream `atkCounter` for the
+        // viewer's own unit alone, so a lone rise meant "the one player we can
+        // see acted". It now streams counters for every present player, so a
+        // lone rise in a full snapshot means one of a whole roster ticked over
+        // first. On a 150,642-tick trial, crediting the riser moved 1,332 ticks
+        // and 100,379 damage onto one name. The tick falls to the equal split.
         const state = newAttributionState();
         const before = { ...crowd(20), 5: { cHP: 100, cMP: 50, atkCounter: 7 } };
         attributeTick({ pMap: before, mMap: { 0: monster(10_000, 1) } }, state);
         const swinging = { ...crowd(20), 5: { cHP: 100, cMP: 50, atkCounter: 8 } };
 
-        expect(findActors(swinging, state, { soloFallback: false })).toEqual({ actors: ['5'], shared: false });
+        const { actors, shared } = findActors(swinging, state, { soloFallback: false });
+        expect(shared).toBe(true);
+        expect(actors).toHaveLength(20);
+    });
+
+    test('a counter still names one person in a small collision', () => {
+        // The rung's original and still-valid purpose: with a couple of units
+        // in play a lone counter rise really is the swinger, and the gate must
+        // not touch that case
+        const state = newAttributionState();
+        const before = { ...crowd(3), 2: { cHP: 100, cMP: 50, atkCounter: 7 } };
+        attributeTick({ pMap: before, mMap: { 0: monster(10_000, 1) } }, state);
+        const swinging = { ...crowd(3), 2: { cHP: 100, cMP: 50, atkCounter: 8 } };
+
+        expect(findActors(swinging, state, { soloFallback: false })).toEqual({ actors: ['2'], shared: false });
+    });
+
+    test('the counter gate moves with the threshold the caller passes', () => {
+        // The bound is the equal split's own, not a second number
+        const state = newAttributionState();
+        const before = { ...crowd(20), 5: { cHP: 100, cMP: 50, atkCounter: 7 } };
+        attributeTick({ pMap: before, mMap: { 0: monster(10_000, 1) } }, state);
+        const swinging = { ...crowd(20), 5: { cHP: 100, cMP: 50, atkCounter: 8 } };
+
+        expect(findActors(swinging, state, { soloFallback: false, collisionThreshold: 50 })).toEqual({
+            actors: ['5'],
+            shared: false,
+        });
+    });
+
+    test('a lone player in a tick is still theirs, counter or not', () => {
+        // The presence rung sits below the gated one and reads this tick's own
+        // payload, so a solo tick is unaffected by the crowd rule
+        const state = newAttributionState();
+        attributeTick({ pMap: { 4: { cHP: 100, cMP: 50, atkCounter: 2 } }, mMap: { 0: monster(10_000, 1) } }, state);
+
+        expect(findActors({ 4: { cHP: 100, cMP: 50, atkCounter: 3 } }, state, { soloFallback: false })).toEqual({
+            actors: ['4'],
+            shared: false,
+        });
+    });
+
+    test('two counters rising in a crowd are split, as they always were', () => {
+        const state = newAttributionState();
+        const before = {
+            ...crowd(20),
+            5: { cHP: 100, cMP: 50, atkCounter: 7 },
+            9: { cHP: 100, cMP: 50, atkCounter: 4 },
+        };
+        attributeTick({ pMap: before, mMap: { 0: monster(10_000, 1) } }, state);
+        const swinging = {
+            ...crowd(20),
+            5: { cHP: 100, cMP: 50, atkCounter: 8 },
+            9: { cHP: 100, cMP: 50, atkCounter: 5 },
+        };
+
+        const { actors, shared } = findActors(swinging, state, { soloFallback: false });
+        expect(shared).toBe(true);
+        expect(actors).toHaveLength(20);
+    });
+
+    test('the gated split still sums to exactly the tick’s damage', () => {
+        // Conservation across the path the gate now routes a lone riser down
+        const state = newAttributionState();
+        const before = { ...crowd(20), 5: { cHP: 100, cMP: 50, atkCounter: 7 } };
+        attributeTick({ pMap: before, mMap: { 0: monster(10_000, 1) } }, state);
+        const swinging = { ...crowd(20), 5: { cHP: 100, cMP: 50, atkCounter: 8 } };
+
+        const events = attributeTick({ pMap: swinging, mMap: { 0: monster(9_100, 2) } }, state, {
+            soloFallback: false,
+        });
+
+        expect(events).toHaveLength(20);
+        expect(events.reduce((sum, event) => sum + event.amount, 0)).toBeCloseTo(900, 9);
+
+        const tally = foldEvents({}, events, { filterNonDamaging: false });
+        const total = Object.values(tally).reduce((sum, row) => sum + row.damage, 0);
+        expect(total).toBeCloseTo(900, 9);
+    });
+
+    test('and the ungated small-collision path conserves it too', () => {
+        const state = newAttributionState();
+        const before = { ...crowd(3), 2: { cHP: 100, cMP: 50, atkCounter: 7 } };
+        attributeTick({ pMap: before, mMap: { 0: monster(10_000, 1) } }, state);
+        const swinging = { ...crowd(3), 2: { cHP: 100, cMP: 50, atkCounter: 8 } };
+
+        const events = attributeTick({ pMap: swinging, mMap: { 0: monster(9_100, 2) } }, state, {
+            soloFallback: false,
+        });
+
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({ playerIndex: '2', amount: 900 });
     });
 
     test('a lone mana drop still names one person in a party small enough to adjudicate', () => {

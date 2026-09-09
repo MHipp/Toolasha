@@ -14,6 +14,13 @@
  * between a player and a monster's lost health, and the one signal that also
  * expresses misses, crits and the per-ability split.
  *
+ * That recording predates a server change: counters then arrived for the
+ * viewer's own unit alone, and now arrive for every present player. In a small
+ * party a lone riser is still the swinger, so the rung is unchanged there; in a
+ * full trial snapshot it is one of fifty-seven rosters ticking over and no
+ * longer proof, so it is capped at {@link COLLISION_SPLIT_THRESHOLD} like the
+ * mana rung. The rung's own comment carries the measurement.
+ *
  * ## Presence is the attribution when no counter moved
  *
  * The server groups each `battle_updated` by **actor**: the player in a tick's
@@ -181,24 +188,26 @@ export function noteActions(state, players) {
  * field figures on real trial captures: ~13% of messages are collisions, up to
  * 23 actors at once.
  *
- * It gates the **mana rung as well as the fallback**, and for the same reason
- * rather than a merely similar one: a lone `cMP` drop identifies the caster
+ * It gates the **counter and mana rungs as well as the fallback**, and for the
+ * same reason rather than a merely similar one: a lone `cMP` drop identifies the caster
  * only while everybody present could plausibly have cast. In a twelve- to
  * twenty-three-player trial most of the roster is auto-attacking and never
  * touches its mana, so "exactly one drop" is temporal coincidence — the one
  * spender is simply the only person who *could* leave a trace — and awarding
- * them the tick systematically inflates whoever casts most. Above the
- * threshold both rungs are skipped and the tick reaches the equal split.
+ * them the tick systematically inflates whoever casts most. The counter rung
+ * joined it once the server began streaming `atkCounter` for every present
+ * player rather than the viewer's own unit — see the note on that rung. Above
+ * the threshold all three are skipped and the tick reaches the equal split.
  */
 export const COLLISION_SPLIT_THRESHOLD = 3;
 
 /**
  * Who acted this tick, and whether the tick had to be shared between them.
  *
- * The rungs, strongest first: a lone attack counter rising, a lone player in
- * the tick, a lone mana drop in a party no larger than
- * {@link COLLISION_SPLIT_THRESHOLD}, a party of one. When none of them fires
- * and more
+ * The rungs, strongest first: a lone attack counter rising in a party no larger
+ * than {@link COLLISION_SPLIT_THRESHOLD}, a lone player in the tick, a lone
+ * mana drop in a party no larger than the same threshold, a party of one. When
+ * none of them fires and more
  * than {@link COLLISION_SPLIT_THRESHOLD} players are present, the tick is
  * *shared* — every present player gets an equal fraction of it — and below that
  * it falls to the last swinger as it always did.
@@ -244,9 +253,32 @@ export function findActors(pMap, state, { soloFallback = true, collisionThreshol
     // in a five-character party, two of them swung on the same tick three times
     // in fourteen hundred, one of which dealt damage. Rare enough to identify
     // by, not so rare that the tie can be pretended away.
+    //
+    // Gated on the same threshold as the mana rung, and for a reason that only
+    // became true later. The rung was written when the server streamed action
+    // counters for the **viewer's own unit alone**: a counter rise was then a
+    // statement that this player acted and an absence of one said nothing about
+    // anybody else, so "exactly one riser" really did mean "exactly one known
+    // swinger, and the tick is his". The server now sends `atkCounter`,
+    // `critCounter` and `dmgCounter` for **every player present** — all 57 slots
+    // of a guild trial, in every tick bucket — and the same shape means
+    // something much weaker: one of a full roster ticked over while the rest
+    // were mid-swing. Measured over a 150,642-tick trial, treating the lone
+    // riser as the owner moves 1,332 ticks and 100,379 damage (0.32% of 31.6M)
+    // off the party and onto one name, and it is the only rung in the new
+    // stream that *concentrates* rather than spreads.
+    //
+    // So above the threshold a lone riser is no longer authoritative and the
+    // tick falls through to the equal split below: it spreads the uncertainty
+    // instead of piling it on whoever happened to tick over first, and it keeps
+    // figures recorded either side of the server change comparable. Below the
+    // threshold nothing changes — with a couple of units in play a lone counter
+    // rise is still the swinger, which is what this rung was always for.
     if (swung.length === 1) {
+        // Recorded whether or not the rung fires: the swing is a fact about who
+        // acted, and the small-collision fallback below still wants it
         state.lastSwing = swung[0];
-        return one(swung[0]);
+        if (indices.length <= collisionThreshold) return one(swung[0]);
     }
 
     // The delta names the actor. A tick's `pMap` carries the player whose
