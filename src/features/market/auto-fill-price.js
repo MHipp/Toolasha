@@ -8,37 +8,14 @@ import domObserver from '../../core/dom-observer.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { parseItemCount } from '../../utils/number-parser.js';
 import { setReactInputValue } from '../../utils/react-input.js';
+import { tradableRangeFrom, clampToRange } from '../../utils/tradable-range.js';
 
 /**
- * The tradable range a listing modal states, when it states one.
- *
- * The game bounds each item's postable prices to a daily band ("Tradable
- * range: 307M – 375M"), but the best standing offer can sit OUTSIDE it — a
- * stale order from before the band moved. Matching that offer fills a price
- * the range no longer admits, and a buy listing under the floor is one nobody
- * can sell to.
- *
- * @param {string} text - The modal's text content
- * @returns {{min: number, max: number}|null} The band, or null when unstated
+ * Re-exported from `utils/tradable-range.js`, where the band lives now so the
+ * buy-modal autofill (a util reached by every feature bundle) can honour the
+ * same one without importing this feature module.
  */
-export function tradableRangeFrom(text) {
-    const match = String(text || '').match(/tradable range:?\s*([\d.,\s]+[kmbt]?)\s*[–—-]\s*([\d.,\s]+[kmbt]?)/i);
-    if (!match) return null;
-    const min = parseItemCount(match[1], NaN);
-    const max = parseItemCount(match[2], NaN);
-    if (!Number.isFinite(min) || !Number.isFinite(max) || min > max) return null;
-    return { min, max };
-}
-
-/**
- * Where a price outside the band should land: the nearest admitted bound.
- * @param {number} price - The filled price
- * @param {{min: number, max: number}} range - The band
- * @returns {number} The price, clamped into the band
- */
-export function clampToRange(price, range) {
-    return Math.min(Math.max(price, range.min), range.max);
-}
+export { tradableRangeFrom, clampToRange };
 
 class AutoFillPrice {
     constructor() {

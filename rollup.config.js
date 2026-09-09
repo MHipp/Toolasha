@@ -156,6 +156,7 @@ const utilsExternalGlobals = new Map([
     [normalize(join(__dirname, 'src/utils/overlay-flow.js')), 'Toolasha.Utils.overlayFlow'],
     [normalize(join(__dirname, 'src/utils/overlay-format.js')), 'Toolasha.Utils.overlayFormat'],
     [normalize(join(__dirname, 'src/utils/order-book.js')), 'Toolasha.Utils.orderBook'],
+    [normalize(join(__dirname, 'src/utils/tradable-range.js')), 'Toolasha.Utils.tradableRange'],
     [normalize(join(__dirname, 'src/utils/combat-level.js')), 'Toolasha.Utils.combatLevel'],
     [normalize(join(__dirname, 'src/utils/opanel-config.js')), 'Toolasha.Utils.opanelConfig'],
     [normalize(join(__dirname, 'src/utils/skill-progress.js')), 'Toolasha.Utils.skillProgress'],
