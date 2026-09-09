@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The Equipment Watch row stops re-costing every target on every redraw
+
+That one overlay row was the single most expensive thing on the page in three separate live captures — 77ms in one call, more than any websocket handler. It was solving the full protection sweep for every enhancing target from scratch each time it drew, though nothing about those targets had changed between draws: nearly two hundred Markov solves for the same answers. It now keeps each sweep against the things that decide it — the item, the levels, your bench, the material and protection prices — so a redraw where nothing moved reuses them, and a genuine change still sweeps again. Measured on a game-sized fixture, a redraw went from 18.7ms to 1.05ms.
+
+On the test server, ability books in the Item Dictionary now follow the Tester shop setting, as its description always said they did: the cost is floored at the shop's price where the shop is cheaper — on both figures, since both are prices you would pay to buy a book — and the buy button takes you to the shop with the amount filled in, instead of to the marketplace. It fills the amount; pressing Buy is still yours.
+
 ### Features that a character switch used to break, and a lighter start
 
 Switching character while a feature was still reading its own saved data could leave that feature registered to nobody and marked as started, so the arriving character's copy never ran and the feature stayed dead until the page was reloaded. Nine are fixed, five of them in that worst state: the labyrinth tracker, the leaderboard and XP trackers, the task reroll tracker, the alchemy and enhancement pins, and the inventory sort. Two more turned out to be doing something different and worse than expected — the trade history could end up recording every fill twice for the rest of the session, and a modal drag could keep running after being switched off. A survey of all 87 feature initialisers found 38 that register something after a read and 29 exposed to this; the rest accumulate a duplicate registration per switch and are the next pass.
