@@ -11,6 +11,7 @@ import dataManager from '../../core/data-manager.js';
 import inventoryBadgeManager from './inventory-badge-manager.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { readScoped, writeScoped } from '../../utils/character-key.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 
 /**
  * InventorySort class manages inventory sorting and price badges
@@ -82,8 +83,17 @@ class InventorySort {
             return;
         }
 
+        // Taken before the read, checked after it. A `character_switching`
+        // teardown landing inside `loadSettings()` has already emptied
+        // `unregisterHandlers` and dropped the badge provider; carrying on here
+        // registered a provider and two observers over that teardown and left
+        // `unregisterHandlers` non-empty, which is the re-entry guard above — so
+        // the switch's own re-initialise early-returned and the sort controls
+        // and stack-price badges stayed gone until the page was reloaded.
+        const ticket = captureOwner(this);
         // Load persisted settings
         await this.loadSettings();
+        if (!stillOurs(ticket)) return;
 
         // Register with badge manager for coordinated rendering (MUST BE BEFORE checking existing inventory)
         inventoryBadgeManager.registerProvider(
@@ -536,6 +546,7 @@ class InventorySort {
      * Disable and cleanup
      */
     disable() {
+        noteTeardown(this);
         try {
             // Clear debounce timers
             clearTimeout(this.itemsUpdatedDebounceTimer);

@@ -25,6 +25,7 @@ import domObserver from '../../core/dom-observer.js';
 import { findEnhanceItemMenu, menuTiles, tileItemHrid, ENHANCE_BUCKET } from './enhancement-item-selector.js';
 import { createCuratedRecord } from '../../utils/persisted-record.js';
 import { togglePin, orderTiles, sameOrder, mergePins } from '../../utils/item-picker-pins.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 
 export { togglePin, orderTiles, sameOrder, mergePins };
 
@@ -107,7 +108,16 @@ class EnhancementItemPins {
 
         // Read here rather than at import, so a character switch — which
         // re-initialises the feature — picks up that character's own pins
+        // Taken before the read, checked after it. A `character_switching`
+        // teardown landing inside `loadPins()` has already removed the style
+        // element and the menu watcher; carrying on here appended a second
+        // <style> and registered a second observer that nothing holds an
+        // unregister for, once per switch, for as long as the tab is open.
+        const ticket = captureOwner(this);
         await this.loadPins();
+        // `disable()` cleared `isInitialized`, so the switch's own
+        // re-initialise is what puts the feature back up for the new character
+        if (!stillOurs(ticket)) return;
 
         this.styleEl = document.createElement('style');
         this.styleEl.id = STYLE_ID;
@@ -156,6 +166,7 @@ class EnhancementItemPins {
     }
 
     disable() {
+        noteTeardown(this);
         try {
             this.unregister?.();
             this.unregister = null;
