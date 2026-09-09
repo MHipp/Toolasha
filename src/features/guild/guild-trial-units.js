@@ -63,7 +63,9 @@
  * - **Positional portraits only when they cover the party.** A portrait list
  *   shorter than the party is not in slot order for anybody.
  * - **One name, one unit.** The watcher's own name may only bind to the slot
- *   their own attack counters confirm, and any resolution pass ends by
+ *   the caller identifies as theirs (the roster entry carrying their character
+ *   id — the stream's attack counters, which used to single them out, now
+ *   arrive for every player), and any resolution pass ends by
  *   enforcing injectivity outright — a duplicate name demotes the weaker claim
  *   to a placeholder rather than letting two rows wear it.
  *
@@ -291,11 +293,15 @@ function placeholderFor(index) {
  * earned by the duplicate-name incident in the module note:
  *
  * - **The watcher's own name binds only to the watcher's own slot.** `own` is
- *   the slot their attack counters confirm (the stream carries counters for
- *   exactly one unit — theirs); a portrait, a build or a held name claiming
- *   that name anywhere else is structurally the spectate view's own-unit tile
- *   read positionally, and is refused. The roster is exempt: it is the game
- *   stating the slot outright.
+ *   the slot the caller says the watcher holds — derived from the roster entry
+ *   whose `characterId` is theirs, since the stream now carries attack counters
+ *   for every present player and no longer singles anybody out; a portrait, a
+ *   build or a held name claiming that name anywhere else is structurally the
+ *   spectate view's own-unit tile read positionally, and is refused. The roster
+ *   is exempt: it is the game stating the slot outright. A null `own.slot`
+ *   means the watcher's slot is unknown, and their name is then refused
+ *   everywhere outside the roster — a placeholder is recoverable, a name filed
+ *   against the wrong guildmate is not.
  * - **One name, one unit.** After resolution, a name held by two slots keeps
  *   its highest-ranked claim and the rest fall back to placeholders — a row
  *   with a placeholder is recoverable; damage filed under the wrong member is
@@ -314,8 +320,8 @@ function placeholderFor(index) {
  * @param {string[]} [input.partyNames] - From {@link fightViewPartyNames}; a set, never positional
  * @param {Array<Object>} [input.loadouts] - Snapshots from `guild-loadout-capture.js`
  * @param {Object} [input.known] - Names already resolved, index → `{name, source}`
- * @param {{slot: string|number|null, name: string|null, characterId?: number|null}|null} [input.own] -
- *   The watcher: the slot their own counters confirm, and their character's name
+ * @param {{slot: string|number|null, name: string|null, characterId?: number|string|null}|null} [input.own] -
+ *   The watcher: the slot they hold (null when unknown), and their character's name
  * @returns {Object<string, {name: string, source: 'roster'|'own'|'portrait'|'vitals'|'elimination'|'placeholder',
  *   characterId?: number|null}>} Per index; may also carry corrections for slots outside this
  *   tick whose held name lost an injectivity contest
@@ -341,7 +347,7 @@ export function resolveUnitNames({
 
     // Whether a source may put this name on this slot. The watcher's own name
     // is the poisoned one — the spectate view draws their tile whatever slot
-    // they hold — so it binds only where their own counters say they are.
+    // they hold — so it binds only where the caller says they are.
     const allowed = (index, name, source) => {
         if (!ownName || String(name || '').toLowerCase() !== ownName.toLowerCase()) return true;
         if (source === 'roster') return true;
@@ -357,7 +363,7 @@ export function resolveUnitNames({
             continue;
         }
 
-        // The watcher's own slot, confirmed by their own attack counters
+        // The watcher's own slot, as the caller derived it
         if (ownName && ownSlot !== null && String(index) === ownSlot) {
             resolved[index] = { name: ownName, source: 'own', characterId: own?.characterId ?? null };
             continue;

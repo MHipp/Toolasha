@@ -21,6 +21,11 @@ const game = vi.hoisted(() => ({
     wsHandlers: {},
     loadouts: [],
     ownName: null,
+    ownId: null,
+    // The identity read, indirected so a test can make the character change
+    // *between* two reads of it — the swap race `_ownIdentity` has to survive.
+    // Null means "answer with `ownId`", which is every other test.
+    readOwnId: null,
     storedRoster: null,
     storedStats: null,
     casts: [],
@@ -34,6 +39,7 @@ vi.mock('../../core/data-manager.js', () => ({
     default: {
         getInitClientData: () => game.clientData,
         getCurrentCharacterName: () => game.ownName,
+        getCurrentCharacterId: () => (game.readOwnId ? game.readOwnId() : game.ownId),
     },
 }));
 // The roster persistence reaches IndexedDB through the store; here it is a
@@ -1342,6 +1348,109 @@ describe('which trial is being watched', () => {
         game.wsHandlers[GUILD_BATTLE_MESSAGE]({ ...wireDump[1], tier: 3 });
 
         expect(guildTrialDamage.breakdown().encounter).toBe('chameleon');
+    });
+});
+
+/**
+ * Which slot the watcher is standing in.
+ *
+ * This used to be read off the stream: `guild_battle_updated` carried
+ * `atkCounter` for one unit — the recording client's own — so "the only counted
+ * slot" *was* the watcher. The game now sends counters for every present player
+ * (57 of 57 slots in the replayed trial, in every tick bucket), so that test is
+ * never true again and the derivation had to move to the roster, which states
+ * slot → `characterId` and can be matched against the character we are.
+ */
+describe('the watcher’s own slot', () => {
+    const at = new Date('2026-08-03T16:00:00Z').getTime();
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setSystemTime(at);
+        game.clientData = {};
+        game.loadouts = [];
+        game.ownName = null;
+        game.ownId = null;
+        game.readOwnId = null;
+        game.storedRoster = null;
+        game.guildMembers = {};
+        guildTrialDamage.storedRoster = null;
+        guildTrialDamage.initialize();
+        guildTrialDamage.reset();
+        guildTrialDamage.setTrialNames(['Trial Badger']);
+    });
+
+    afterEach(() => {
+        guildTrialDamage.cleanup();
+        game.ownId = null;
+        game.readOwnId = null;
+        vi.useRealTimers();
+        document.body.innerHTML = '';
+    });
+
+    /** A tick where every slot in the roster carries counters, as the game now sends them */
+    const everyoneCounts = () => ({
+        battleId: 1,
+        tier: 1,
+        pMap: Object.fromEntries(
+            Array.from({ length: 30 }, (unused, index) => [index, { cHP: 1500, mHP: 1554, atkCounter: 3 }])
+        ),
+        mMap: {},
+    });
+
+    test('the roster’s character id finds the watcher, whatever the counters cover', () => {
+        game.ownName = 'Player20';
+        game.ownId = 900020;
+        game.wsHandlers.new_guild_battle(NEW_GUILD_BATTLE);
+        game.wsHandlers[GUILD_BATTLE_MESSAGE](everyoneCounts());
+
+        // The old rule's precondition is gone: the whole party is counted
+        expect(guildTrialDamage.countedSlots.size).toBe(30);
+        // …and the watcher is still found, because the roster says where they are
+        expect(guildTrialDamage._ownIdentity()).toEqual({ slot: '19', name: 'Player20', characterId: 900020 });
+    });
+
+    test('an id the roster does not list leaves the slot unknown', () => {
+        // Watching a trial you are not fighting in. Refusing to guess is the
+        // whole point: a wrong own slot is somebody else's damage under your name
+        game.ownName = 'Spectator';
+        game.ownId = 999999;
+        game.wsHandlers.new_guild_battle(NEW_GUILD_BATTLE);
+        game.wsHandlers[GUILD_BATTLE_MESSAGE](everyoneCounts());
+
+        expect(guildTrialDamage._ownIdentity().slot).toBeNull();
+    });
+
+    test('with no roster the lone counted slot is still the watcher', () => {
+        // The pre-change rule, kept for the stream it was written for: nothing
+        // states the slots, and one counted unit is the one the server will
+        // talk about
+        game.ownName = 'MillenniumTest';
+        game.ownId = 900002;
+        game.wsHandlers[GUILD_BATTLE_MESSAGE]({
+            battleId: 7,
+            tier: 1,
+            pMap: { 0: { cHP: 3000, mHP: 3100 }, 2: { cHP: 2600, mHP: 2612, atkCounter: 4 } },
+            mMap: {},
+        });
+
+        expect(guildTrialDamage.roster).toEqual({});
+        expect(guildTrialDamage._ownIdentity()).toMatchObject({ slot: '2', name: 'MillenniumTest' });
+    });
+
+    test('a character switch mid-resolution binds nobody', () => {
+        // The documented race: identity is mutable global state, so it is read
+        // before the derivation and verified after it. A switch between the two
+        // reads yields no own slot at all — the departing character's name must
+        // never be pinned to the arriving character's slot.
+        game.ownName = 'Player20';
+        let reads = 0;
+        game.readOwnId = () => (reads++ === 0 ? 900020 : 900021);
+        game.wsHandlers.new_guild_battle(NEW_GUILD_BATTLE);
+        game.wsHandlers[GUILD_BATTLE_MESSAGE](everyoneCounts());
+
+        reads = 0;
+        expect(guildTrialDamage._ownIdentity()).toEqual({ slot: null, name: null, characterId: null });
     });
 });
 

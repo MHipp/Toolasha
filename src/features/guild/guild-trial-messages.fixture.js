@@ -15,10 +15,11 @@
  *   Its `monsters[]` are full tier-scaled sheets, so a boss sheet no longer needs
  *   a click; and 30 players against a 330,000-health Badger giving 429,000 is the
  *   participant rule exact once more (`330,000 × 1.30`).
- * - **`guild_battle_updated`** carries action counters for **one** player — the
- *   recording client's own unit, index 19 here. So a per-player damage split is
- *   measurable for your own character and for nobody else, which is a per-row
- *   fact rather than an all-or-nothing one.
+ * - **`guild_battle_updated`** carries action counters for **one** player in
+ *   this recording — the recording client's own unit, index 19. That is a fact
+ *   about this capture and no longer about the game: a later replay of a
+ *   150,642-tick trial has counters on every present player, all 57 slots, in
+ *   every tick bucket. Nothing may generalise "one counted slot" from here.
  * - **`guild_skilling_updated`** is the skilling half the DOM was being scraped
  *   for: pool, tier, participants by character id, and the per-tier personal
  *   figures (`successRate`, `efficiency`, `progressPerAction`, `actionTimeMs`).

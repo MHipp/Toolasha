@@ -556,22 +556,24 @@ export function summariseTrialDamage({ tally = {}, names = {}, deaths = {}, seco
  * How much of the party the per-player split actually covers.
  *
  * A spectated trial names its attacker by *presence* — the lone player changing
- * in a tick where the boss lost health — because `guild_battle_updated` does not
- * stream other players' attack counters (their `atkCounter` is absent, so
- * `splitFromCounters` is false). That rung only fires on a tick with exactly one
- * player in it, so a member who never had such a tick this window — always
- * sharing a tick, or never appearing at all — earns no row at all. The result is
- * honest but partial: three names summing to 100% under a party of seven, where
- * the four missing did not do nothing, they merely never landed a hit this
- * client could split out.
+ * in a tick where the boss lost health. That rung only fires on a tick with
+ * exactly one player in it, so a member who never had such a tick this window —
+ * always sharing a tick, or never appearing at all — earns no row at all. The
+ * result is honest but partial: three names summing to 100% under a party of
+ * seven, where the four missing did not do nothing, they merely never landed a
+ * hit this client could split out.
  *
  * This states the coverage so the display can say "3 of 7" rather than implying
  * the party is three people. `party` is the size the game stated (the roster the
  * ladders scale by); `attributed` is how many earned a damage row; `partial` is
  * true only when the party size is known and fewer than all of it is covered.
- * `counterConfirmed` is how many rows a player's *own* counters confirmed
- * directly — the viewer's, in every recording so far — which is zero on a stream
- * that carried none.
+ *
+ * `counterConfirmed` counts the rows carrying a player's own `atkCounter`. That
+ * used to be the viewer alone; the game now streams counters for every present
+ * player, so on a full trial it is the whole party (57 in the captured one)
+ * rather than 1, and "confirmed" no longer singles anybody out. **No consumer
+ * reads it** — it is kept because the export does — so nothing is displayed off
+ * it; anything that starts reading it must not read it as "directly verified".
  *
  * @param {Object} breakdown - From {@link GuildTrialDamage#breakdown}
  * @returns {{party: number|null, attributed: number, counterConfirmed: number, partial: boolean}}
@@ -773,10 +775,14 @@ class GuildTrialDamage {
         /**
          * How much of the stream has been seen, and how much of it could be split.
          *
-         * `playerActionTicks` is the one that decides what the panel may claim: a
-         * boss losing health is party damage no matter what, but naming who did
-         * it needs `atkCounter` on the `pMap` entries. Counting the ticks that
-         * carried one lets the caption say which of the two this trial has.
+         * `playerActionTicks` counts the ticks that carried `atkCounter` on any
+         * `pMap` entry. Its meaning has moved with the stream: it used to mean
+         * "ticks carrying the viewer's own counters", because the viewer's unit
+         * was the only one that ever carried them; the game now sends counters
+         * for every present player, so it means "ticks carrying any player's".
+         * It is still a fair test of whether counters are on the wire at all,
+         * which is all `splitFromCounters` asks of it — but it is no longer a
+         * statement about the viewer, and nothing may read it as one.
          */
         this.spectator = { ticks: 0, playerActionTicks: 0, bossTicks: 0, lastAt: 0, firstAt: 0 };
         /** The boss's own stat sheet, per tier, from clicking it in the fight view */
@@ -785,7 +791,12 @@ class GuildTrialDamage {
         this.spectatedBossName = null;
         /** Slot → `{name, characterId}`, from `new_guild_battle` */
         this.roster = {};
-        /** Slots whose own action counters have been seen — your character, and only yours */
+        /**
+         * Slots whose own action counters have been seen. Once the viewer's
+         * slot alone; the game now streams counters for every present player,
+         * so on a full trial this is the whole party. It is no longer a way to
+         * find the viewer — see {@link GuildTrialDamage#_ownIdentity}.
+         */
         this.countedSlots = new Set();
         /** When each tier started, from the message that opens it */
         this.tierStarts = {};
@@ -1377,9 +1388,11 @@ class GuildTrialDamage {
 
             this.spectator.ticks += 1;
             // Which *slots* carried counters, not merely whether any did. The
-            // recording shows exactly one player entry ever carrying them — the
-            // client's own unit — so "can this be split" is a fact about a row
-            // rather than about the trial
+            // older recordings showed exactly one player entry ever carrying
+            // them — the client's own unit; the current stream carries them for
+            // every present player, so this is now typically the whole party.
+            // Kept per slot regardless: it is the export's record of what the
+            // wire actually said, wave by wave.
             let counted = false;
             for (const [index, unit] of Object.entries(pMap)) {
                 if (!Number.isFinite(Number(unit?.atkCounter))) continue;
@@ -1771,6 +1784,65 @@ class GuildTrialDamage {
     }
 
     /**
+     * The watcher: which slot they hold, and the name that may bind to it.
+     *
+     * The old derivation was `countedSlots.size === 1`, from a stream that
+     * carried `atkCounter` for the viewer's unit alone. The game now streams
+     * counters for *every* present player — 57 of 57 slots in the captured
+     * trial, in every tick bucket — so that test is never true and the own
+     * slot was permanently `null`. That is fail-safe (nothing is mislabelled)
+     * but it disabled the `own` name source outright, and `allowed()` in
+     * `guild-trial-units.js` reads a null own slot as "this name binds
+     * nowhere", so on a wave with no `new_guild_battle` roster — a message
+     * that arrives once or twice an hour — the viewer's own row could only
+     * ever be a placeholder, uncorrectable by portrait or vitals.
+     *
+     * The roster is the answer instead: it is the game stating slot →
+     * `characterId` outright, and `dataManager` knows which character id is
+     * ours. `countedSlots.size === 1` is kept only as the fallback for a
+     * stream held with no roster at all, where it still means what it always
+     * meant.
+     *
+     * ## The character-swap race
+     *
+     * The slot, the name and the id must all describe the *same* character.
+     * Nothing here awaits, so an interleave cannot happen mid-call today —
+     * but `dataManager`'s identity is mutable global state read three times,
+     * and the repo's rule is to capture identity before and verify it after.
+     * A mismatch yields no own slot at all rather than the departing
+     * character's name pinned to the arriving one's slot: a placeholder is
+     * recoverable, a wrong name filed against a guildmate's damage is not.
+     *
+     * @returns {{slot: string|null, name: string|null, characterId: string|number|null}} The watcher
+     */
+    _ownIdentity() {
+        const before = dataManager.getCurrentCharacterId?.() ?? null;
+        const name = dataManager.getCurrentCharacterName?.() || null;
+
+        let slot = null;
+        if (before !== null && before !== '') {
+            for (const [index, entry] of Object.entries(this.roster || {})) {
+                if (entry?.characterId === undefined || entry?.characterId === null) continue;
+                // The roster's ids come off the wire as numbers and
+                // `dataManager` holds a string; compare as text either way
+                if (String(entry.characterId) !== String(before)) continue;
+                slot = index;
+                break;
+            }
+        }
+        // No roster held: the stream is all there is, and a lone counted slot
+        // still means the one unit the server is willing to talk about
+        if (slot === null && !Object.keys(this.roster || {}).length && this.countedSlots.size === 1) {
+            slot = [...this.countedSlots][0];
+        }
+
+        const after = dataManager.getCurrentCharacterId?.() ?? null;
+        if (String(before ?? '') !== String(after ?? '')) return { slot: null, name: null, characterId: null };
+
+        return { slot, name, characterId: before };
+    }
+
+    /**
      * Put names to the tick's unit indexes.
      *
      * The resolution itself runs on every tick — it corrects names as well as
@@ -1791,9 +1863,9 @@ class GuildTrialDamage {
             this.fightViewCache = { at: now, portraits: fightViewNames(), partyNames: fightViewPartyNames() };
         }
 
-        // The one slot the stream carries attack counters for is the watcher's
-        // own unit — the only slot their own name may bind to
-        const ownSlot = this.countedSlots.size === 1 ? [...this.countedSlots][0] : null;
+        // The slot the roster says the watcher holds — the only slot their own
+        // name may bind to from a non-roster source. See {@link _ownIdentity}.
+        const own = this._ownIdentity();
 
         const resolved = resolveUnitNames({
             pMap,
@@ -1802,7 +1874,7 @@ class GuildTrialDamage {
             partyNames: this.fightViewCache.partyNames,
             loadouts: guildLoadoutCapture.seen?.() || [],
             known: this.unitNames,
-            own: { slot: ownSlot, name: dataManager.getCurrentCharacterName?.() || null },
+            own,
         });
 
         for (const [index, entry] of Object.entries(resolved)) {
@@ -2175,13 +2247,15 @@ class GuildTrialDamage {
             // A sanity ceiling on the whole party's damage: the summed health of
             // every boss seen. A measured total above it is over-attributing.
             damageCeiling: bossHpCeiling(this.bossSheets),
-            // Whether any player's own attack counters have been seen. The
-            // split no longer depends on them — the presence rung measures
-            // every actor — but a row they confirm directly is worth naming,
-            // and the export keeps the fact either way
+            // Whether any player's attack counters have been seen at all. The
+            // split does not depend on them — the presence rung measures every
+            // actor — and the export keeps the fact either way
             splitFromCounters: this.spectator.playerActionTicks > 0,
-            // Which slots the game streamed counters for. In every recording so
-            // far that is exactly one — the viewer's own character
+            // Which slots the game streamed counters for. Once exactly one, the
+            // viewer's own character; the current stream sends them for every
+            // present player, so this is normally the whole party and singles
+            // nobody out. Consumers must not read it as "these rows are the
+            // confirmed ones".
             countedSlots: [...this.countedSlots],
             countedNames: [...this.countedSlots].map((index) => this.names[index]).filter(Boolean),
             // The roster the game stated, and the party size the ladders scale by
