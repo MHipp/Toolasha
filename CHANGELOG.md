@@ -6,6 +6,16 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The trial scoreboard stops claiming every row is confirmed, and a lone attacker no longer takes a whole tick
+
+The game changed what it streams during a guild trial: action counters used to arrive for your own character only, and now arrive for every player present. Nothing was reporting a wrong total because of it — a full trial still reconciles to within 0.006% of the game's own figure — but two things quietly started meaning something else.
+
+The scoreboard's note about attack counters existed to say which rows the counters single out. With counters now covering everyone it was reading as "and 55 more carry own attack counters that confirm it directly", which asserts a confirmation the attribution does not make. It stays quiet now unless the counters really do cover a subset.
+
+And a tick where exactly one player's counter rose was being credited to that player in full, even in a snapshot showing the whole party — where the same tick used to be divided. On a real trial that moved about 0.32% of the damage onto individual names. It is split again above the crowding threshold; a lone attacker in a small skirmish still gets the credit, which is what that rule was always for. Party totals are unchanged either way.
+
+Also corrected: the watcher's own slot is now found from the roster's character id rather than inferred from the counters, which had stopped identifying anyone, and a good deal of documentation that still described the one-counter world.
+
 ### Startup runs the features that were meant to run together, and a guild trial costs less
 
 Features that were marked as safe to start alongside each other never did. The registry has always supported it, but the list of fields handed over at startup did not include the flag, so it arrived undefined and every feature waited for the one before it — measured across two real startup traces, not one feature's start ever overlapped another's. Fifteen of the sixteen marked features now start together; the sixteenth was deliberately left to wait, because what it installs is the second confirmation between a Decompose click and an item you cannot get back, and starting it late to save a moment is the wrong trade. A test now reads the registry to find every field it depends on and fails if one stops being handed over, which is the thing that would have caught this.
