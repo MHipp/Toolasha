@@ -33,24 +33,74 @@
  * **unmatched** and shown as a count, and it is kept out of every median.
  */
 
-/** The three metrics the pair holds, and what a reader should expect of each */
+/**
+ * The three metrics the pair holds, and what a reader should expect of each.
+ *
+ * `expectation` is the line the ledger card draws. `basis` and
+ * `expectedDivergence` are the same statement made in a form the **export** can
+ * carry: {@link joinTrialStats} copies them into every compared cell, because a
+ * bare `deltaPct` in a JSON file has no card beside it to explain itself.
+ *
+ * That is not a cosmetic worry. A real trial's `taken` rows read −88.20% to
+ * −33.51%, every row, every trial, and the party total is 5,018,969 against
+ * 11,609,469. Nothing is wrong: the two sides are not the same quantity. Ours
+ * is post-mitigation health actually lost; the game's `premitigatedDamageTaken`
+ * is the swing before armour and resistances took their cut. Anyone opening the
+ * export cold reads a 57% shortfall and files a bug against arithmetic that is
+ * doing exactly what it says.
+ */
 export const ACCURACY_METRICS = [
     {
         key: 'damage',
         label: 'Damage',
         expectation: 'Split from per-player attack counters — the tightest of the three.',
+        basis: {
+            measured: 'per-tick boss health lost, split by each player’s attack counter',
+            reported: 'the game’s own per-member damage total for the trial',
+        },
+        // The one pair that is genuinely like for like, so a delta here is a
+        // fault worth chasing rather than a definition
+        expectedDivergence: null,
     },
     {
         key: 'healing',
         label: 'Healing',
         expectation: 'Inferred from health deltas: over-heals are invisible, so this runs wide. Expected.',
+        basis: {
+            measured: 'per-tick health rises attributed to the caster, revives excluded',
+            reported: 'the game’s own per-member healing total for the trial',
+        },
+        expectedDivergence: {
+            direction: 'either',
+            reason:
+                'Different quantities, not a discrepancy: a heal landing on the same tick as a hit nets out ' +
+                'and an over-heal is invisible, while a rise that no single caster owns is left unattributed. ' +
+                'Measured against reported has run about +3% party-wide and up to +16% per member.',
+        },
     },
     {
         key: 'taken',
         label: 'Taken',
         expectation: 'Inferred the same way, against server-side mitigation. Expected to run wide.',
+        basis: {
+            measured: 'per-tick health actually lost, per player — post-mitigation, and a floor',
+            reported: 'the game’s `premitigatedDamageTaken` — the swing before armour and resistances',
+        },
+        expectedDivergence: {
+            direction: 'low',
+            reason:
+                'Different quantities, not a discrepancy: mitigation happens server-side and is never on the ' +
+                'wire, so the measured side is smaller than the reported one by whatever the party mitigated. ' +
+                'A real trial read 5,018,969 against 11,609,469 party-wide, and −88% to −34% per member. The ' +
+                'delta is the mitigation, not an error.',
+        },
     },
 ];
+
+/** Metric key to its `{basis, expectedDivergence}`, so a cell can be built without a scan */
+const METRIC_BASIS = Object.fromEntries(
+    ACCURACY_METRICS.map(({ key, basis, expectedDivergence }) => [key, { basis, expectedDivergence }])
+);
 
 /**
  * How far a player's figure has to run before the card names them.
@@ -100,6 +150,12 @@ function has(map, name) {
  * whether the name matched at all — a row with `matched: false` has a measured
  * side that is zeroes because nothing was found, not because nothing happened.
  *
+ * Each cell carries `basis` — what its measured and reported sides each count —
+ * and `expectedDivergence`, non-null on the two metrics that compare quantities
+ * which are not the same quantity. The numbers are untouched by this; it is
+ * there so the export reads as what it is instead of as a failure. See
+ * {@link ACCURACY_METRICS}.
+ *
  * @param {Object} [input] - The pair
  * @param {Object|null} [input.reported] - The game's totals, by name
  * @param {Object|null} [input.measured] - The stream's totals, by name
@@ -108,7 +164,11 @@ function has(map, name) {
 export function joinTrialStats({ reported, measured } = {}) {
     if (!reported || typeof reported !== 'object') return [];
     const mine = measured && typeof measured === 'object' ? measured : {};
-    const cell = (m, g) => ({ measured: m, reported: g, deltaPct: deltaPct(m, g) });
+    // Every cell carries what its two sides measure and whether they are
+    // expected to disagree. Repetitive in the file, and deliberately so: the
+    // export's consumers read a row, not a legend, and two of the three metrics
+    // compare quantities that are not the same quantity
+    const cell = (key, m, g) => ({ measured: m, reported: g, deltaPct: deltaPct(m, g), ...METRIC_BASIS[key] });
 
     return Object.entries(reported)
         .map(([name, game]) => {
@@ -116,9 +176,9 @@ export function joinTrialStats({ reported, measured } = {}) {
             return {
                 name,
                 matched: has(mine, name),
-                damage: cell(seen.damage || 0, game?.damage || 0),
-                healing: cell(seen.healing || 0, game?.healing || 0),
-                taken: cell(seen.taken || 0, game?.taken || 0),
+                damage: cell('damage', seen.damage || 0, game?.damage || 0),
+                healing: cell('healing', seen.healing || 0, game?.healing || 0),
+                taken: cell('taken', seen.taken || 0, game?.taken || 0),
             };
         })
         .sort((a, b) => b.damage.reported - a.damage.reported);

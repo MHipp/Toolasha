@@ -79,6 +79,47 @@ describe('joinTrialStats', () => {
     });
 });
 
+describe('the compared rows say what they compare', () => {
+    // The export carries a bare `deltaPct` and no card beside it. `taken`
+    // compares our post-mitigation figure against the game's
+    // `premitigatedDamageTaken` — 5,018,969 against 11,609,469 on a real trial,
+    // −88% to −34% per member, every row, every trial — and a reader landing on
+    // that cold concludes the accounting is broken
+    test('every cell names what its two sides measure', () => {
+        const rows = joinTrialStats(perfectPair());
+        for (const row of rows) {
+            for (const { key } of ACCURACY_METRICS) {
+                expect(typeof row[key].basis.measured).toBe('string');
+                expect(typeof row[key].basis.reported).toBe('string');
+            }
+        }
+        expect(rows[0].taken.basis.reported).toMatch(/premitigatedDamageTaken/);
+        expect(rows[0].taken.basis.measured).toMatch(/post-mitigation/);
+    });
+
+    test('the two metrics that are not like-for-like are marked, and damage is not', () => {
+        const rows = joinTrialStats(perfectPair());
+        expect(rows[0].damage.expectedDivergence).toBeNull();
+        expect(rows[0].taken.expectedDivergence).toMatchObject({ direction: 'low' });
+        expect(rows[0].taken.expectedDivergence.reason).toMatch(/mitigation/);
+        expect(rows[0].healing.expectedDivergence).toMatchObject({ direction: 'either' });
+    });
+
+    test('a marked cell is still an honest number', () => {
+        // Presentation only: nothing is silenced, clamped or rounded toward
+        // agreement, and an unannotated row would read the same figures
+        const rows = joinTrialStats({
+            reported: { Alice: { damage: 1000, healing: 200, taken: 11_609_469 } },
+            measured: { Alice: { damage: 1000, healing: 206, taken: 5_018_969 } },
+        });
+        expect(rows[0].taken.measured).toBe(5_018_969);
+        expect(rows[0].taken.reported).toBe(11_609_469);
+        expect(rows[0].taken.deltaPct).toBeCloseTo(-56.77, 2);
+        expect(rows[0].healing.deltaPct).toBeCloseTo(3, 5);
+        expect(rows[0].damage.deltaPct).toBe(0);
+    });
+});
+
 describe('measuredOnlyNames', () => {
     test('names the measurement found that the game never mentioned', () => {
         expect(measuredOnlyNames({ Alice: {} }, { Alice: {}, Ghost: {} })).toEqual(['Ghost']);
