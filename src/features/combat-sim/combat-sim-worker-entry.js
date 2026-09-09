@@ -114,16 +114,25 @@ onmessage = function (event) {
         // against buffed instead of showing every self-buff as a gap.
         if (capturePlayerDetails) setPlayerDetailsCapture(true, playerCombatBuffs || null);
 
-        // Run simulation
-        const simResult = combatSimulator.simulate(simulationTimeLimit, precision);
+        // Run simulation. Capture comes off in a `finally`: a run that throws
+        // still posts an `error` and the runner treats that worker as healthy
+        // and pools it (see runWorkerChunk), so a capture flag left on is
+        // module-level state surviving into somebody else's run — an unbounded
+        // buff sink and a build snapshot taken on every later run of the
+        // session. These are the only engine globals not reset per message.
+        let simResult;
+        try {
+            simResult = combatSimulator.simulate(simulationTimeLimit, precision);
 
-        if (captureBuffs) {
-            simResult.producedMonsterBuffs = getCapturedMonsterBuffs();
-            setBuffCapture(false);
-        }
-        if (capturePlayerDetails) {
-            simResult.playerCombatDetails = getCapturedPlayerDetails();
-            setPlayerDetailsCapture(false);
+            if (captureBuffs) {
+                simResult.producedMonsterBuffs = getCapturedMonsterBuffs();
+            }
+            if (capturePlayerDetails) {
+                simResult.playerCombatDetails = getCapturedPlayerDetails();
+            }
+        } finally {
+            if (captureBuffs) setBuffCapture(false);
+            if (capturePlayerDetails) setPlayerDetailsCapture(false);
         }
 
         postMessage({
