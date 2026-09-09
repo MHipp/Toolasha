@@ -467,3 +467,129 @@ describe('a corrupt record costs its own contents and nothing else', () => {
         expect(() => chatHistoryPersistence.record('tab:General', '<div>new</div>')).not.toThrow();
     });
 });
+
+/**
+ * A tab is identified by its label or not at all.
+ *
+ * The tab strip is not always rendered when a container appears, and history
+ * keyed by the container's *position* in that case restores into whichever tab
+ * later sits at that index — a whisper into Global, which is exactly the thing
+ * the persistence choice was not meant to cost.
+ */
+describe('tab identity is a name, never a position', () => {
+    beforeEach(() => {
+        settingValues.chatHistoryExtender = true;
+        settingValues.chatHistoryExtender_maxHistory = null;
+        observerReady.handlers = [];
+        observerReady.domReady = true;
+        db.settings = {};
+        db.quota = false;
+        db.writes = 0;
+    });
+
+    afterEach(() => {
+        chatHistoryExtender.disable();
+        chatHistoryPersistence.reset();
+        document.body.innerHTML = '';
+    });
+
+    /**
+     * Chat containers with no tab strip at all — what the DOM looks like in the
+     * window between the containers mounting and the strip rendering.
+     * @param {number} count - How many containers
+     * @returns {Array<Element>} The containers, in order
+     */
+    function buildChatWithoutTabStrip(count = 1) {
+        document.body.innerHTML = '<div id="root"></div>';
+        const root = document.getElementById('root');
+        return Array.from({ length: count }, () => {
+            const container = document.createElement('div');
+            container.className = 'ChatHistory_chatHistory__abc';
+            root.appendChild(container);
+            return container;
+        });
+    }
+
+    test('an unnamed tab is not keyed at all', () => {
+        const [container] = buildChatWithoutTabStrip(1);
+        expect(chatTabKey(container)).toBeNull();
+    });
+
+    test('an unnamed tab writes no history rather than a positional key', async () => {
+        const [container] = buildChatWithoutTabStrip(2);
+        const secret = makeMessage('[1/2 10:00:00] Alice: meet me at the tower');
+        container.appendChild(secret);
+
+        chatHistoryExtender.initialize();
+        await settle();
+        await evict(container, secret);
+        await chatHistoryPersistence.flush();
+
+        const stored = db.settings[STORAGE_KEY];
+        const keys = stored ? Object.keys(stored.tabs) : [];
+        expect(keys).toEqual([]);
+    });
+
+    test('a tab named only after its container appeared starts persisting under that name', async () => {
+        const [container] = buildChatWithoutTabStrip(1);
+        chatHistoryExtender.initialize();
+        await settle();
+
+        // The strip renders late, which is the whole reason the fallback existed
+        const strip = document.createElement('div');
+        strip.className = 'Chat_tabsComponentContainer__x';
+        const button = document.createElement('button');
+        button.setAttribute('role', 'tab');
+        button.textContent = 'Whispers';
+        strip.appendChild(button);
+        document.getElementById('root').prepend(strip);
+
+        const secret = makeMessage('[1/2 10:00:00] Alice: meet me at the tower');
+        container.appendChild(secret);
+        await evict(container, secret);
+        await chatHistoryPersistence.flush();
+
+        expect(Object.keys(db.settings[STORAGE_KEY].tabs)).toEqual(['tab:Whispers']);
+    });
+
+    test('a stored positional record is dropped, never restored into the tab now at that index', async () => {
+        db.settings[STORAGE_KEY] = {
+            v: 1,
+            savedAt: 1,
+            tabs: {
+                'idx:0': ['<div class="ChatMessage_chatMessage__z">Alice: meet me at the tower</div>'],
+                'tab:General': ['<div class="ChatMessage_chatMessage__z">hello</div>'],
+            },
+        };
+
+        const [general] = buildChat(['General']);
+        chatHistoryExtender.initialize();
+        await settle();
+
+        const rendered = [...document.querySelectorAll('.mwi-history-buffer [class*="ChatMessage_chatMessage"]')].map(
+            (el) => el.textContent
+        );
+        expect(rendered).toEqual(['hello']);
+        expect(general.textContent).not.toContain('meet me at the tower');
+
+        // And it is gone from the record, not merely unread this session
+        await chatHistoryPersistence.flush();
+        expect(Object.keys(db.settings[STORAGE_KEY].tabs)).toEqual(['tab:General']);
+    });
+
+    test('a key matching no current tab is skipped and renders nowhere', async () => {
+        db.settings[STORAGE_KEY] = {
+            v: 1,
+            savedAt: 1,
+            tabs: {
+                'tab:Whispers': ['<div class="ChatMessage_chatMessage__z">Alice: meet me at the tower</div>'],
+            },
+        };
+
+        buildChat(['General', 'Party']);
+        chatHistoryExtender.initialize();
+        await settle();
+
+        expect(document.body.textContent).not.toContain('meet me at the tower');
+    });
+});

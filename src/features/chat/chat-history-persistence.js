@@ -361,6 +361,31 @@ export function handleRestoredClick(event) {
 }
 
 /**
+ * Prefix of the positional keys older versions wrote when the tab strip had not
+ * rendered yet. Never written any more — see {@link dropPositionalKeys}.
+ */
+const POSITIONAL_KEY_PREFIX = 'idx:';
+
+/**
+ * Copy a stored `{tabKey: [html]}` map without the positional keys.
+ *
+ * `idx:<n>` names the *n*th slot in the tab strip, not a tab, so restoring one
+ * puts whatever was recorded there into whichever tab now sits at that index —
+ * a whisper into Global. Nothing on disk records which tab was in that slot
+ * when the record was written, so these cannot be migrated to a name and are
+ * dropped instead. The drop reaches storage on the next flush, because the
+ * working record is what this returns.
+ *
+ * @param {Record<string, Array<string>>} tabs - Not mutated
+ * @returns {Record<string, Array<string>>} A fresh map holding only named tabs
+ */
+export function dropPositionalKeys(tabs) {
+    return Object.fromEntries(
+        Object.entries(tabs || {}).filter(([key]) => !String(key).startsWith(POSITIONAL_KEY_PREFIX))
+    );
+}
+
+/**
  * Apply the three caps to a `{tabKey: [html]}` map, oldest-first, in place.
  *
  * Per-tab count first (cheap, and the cap the user's setting talks about), then
@@ -474,7 +499,7 @@ class ChatHistoryPersistence {
             // A record from a version we do not understand is discarded rather
             // than half-read; the cost is one session's history.
             const stored = record && record.v === RECORD_VERSION && record.tabs ? record.tabs : {};
-            const loaded = applyCaps({ ...stored }, this.getMaxHistory());
+            const loaded = applyCaps(dropPositionalKeys(stored), this.getMaxHistory());
 
             // Anything recorded while the read was in flight belongs after what
             // was on disk, not instead of it.
@@ -501,6 +526,10 @@ class ChatHistoryPersistence {
      */
     record(tabKey, html) {
         if (!this.enabled || !tabKey || !html) return;
+        // Belt and braces beside `chatTabKey`, which no longer produces one:
+        // a positional key names a slot in the tab strip rather than a tab, so
+        // nothing may enter the record under it.
+        if (tabKey.startsWith(POSITIONAL_KEY_PREFIX)) return;
         if (!this.tabs) this.tabs = {};
         if (!this.tabs[tabKey]) this.tabs[tabKey] = [];
         this.tabs[tabKey].push(html);

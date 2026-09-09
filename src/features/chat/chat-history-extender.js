@@ -33,7 +33,7 @@ const CSS = `
 `;
 
 /**
- * A stable-ish identity for one chat tab's message container.
+ * The identity of one chat tab's message container: its name, or nothing.
  *
  * The game gives these containers nothing to be named by, so the tab strip is
  * used instead: containers and tab buttons are rendered in the same order, so
@@ -41,12 +41,16 @@ const CSS = `
  * so their own keys, which is the point — every tab is persisted, private ones
  * included.
  *
- * The index fallback is what makes this safe when the tab strip has not
- * rendered yet or has been restyled: history keyed by position is history in
- * the wrong tab at worst, never a throw.
+ * There is deliberately no positional fallback. The tab strip is not always
+ * rendered when a container appears, and a key of `idx:<n>` names a *slot*,
+ * not a tab: the record written under it is restored into whichever tab later
+ * sits at that index, which is a whisper reappearing in Global. An unnamed tab
+ * is therefore not keyed at all — its history is skipped until the strip names
+ * it. A tab whose history is missing is recoverable; a private conversation in
+ * a public tab's scrollback is not.
  *
  * @param {Element} containerEl - A `ChatHistory_chatHistory` element
- * @returns {string|null} Tab key, or null when the container is not in the document
+ * @returns {string|null} `tab:<label>`, or null when the tab cannot be named
  */
 export function chatTabKey(containerEl) {
     try {
@@ -60,7 +64,7 @@ export function chatTabKey(containerEl) {
             button?.getAttribute('data-mention-channel') ||
             button?.textContent?.trim().replace(/\d+$/, '').trim() ||
             '';
-        return label ? `tab:${label}` : `idx:${index}`;
+        return label ? `tab:${label}` : null;
     } catch {
         return null;
     }
@@ -116,6 +120,8 @@ class ChatTabHandler {
         this.interactionCache = interactionCache;
         this.getMaxHistory = getMaxHistory;
         this.tabKey = tabKey;
+        /** Whether a restore has already been fired for this tab; see {@link _resolveTabKey}. */
+        this.restoreStarted = false;
 
         this.bufferEl = document.createElement('div');
         this.bufferEl.className = 'mwi-history-buffer';
@@ -153,6 +159,36 @@ class ChatTabHandler {
     }
 
     /**
+     * This tab's persistence key, resolved late when it could not be resolved
+     * at attach time.
+     *
+     * The tab strip can still be unrendered when a container appears, and there
+     * is no positional key to fall back on any more, so an unnamed tab simply
+     * does not persist. It stays unnamed only until the strip renders: the next
+     * eviction asks again, and the first answer is cached — the container is
+     * this tab's identity for as long as it lives, and re-querying the strip on
+     * every evicted message would be two document queries per message.
+     *
+     * The restore that could not run while the tab was unnamed is fired here,
+     * once. It inserts above the restore anchor, so history still lands above
+     * whatever this session has already evicted into the buffer.
+     *
+     * @returns {string|null} `tab:<label>`, or null while the tab is unnamed
+     */
+    _resolveTabKey() {
+        if (this.tabKey) return this.tabKey;
+        const key = chatTabKey(this.container);
+        if (!key) return null;
+        this.tabKey = key;
+        if (!this.restoreStarted) {
+            this.restore(key).catch((error) => {
+                console.error('[ChatHistoryExtender] Late restore failed:', error);
+            });
+        }
+        return key;
+    }
+
+    /**
      * Put this tab's stored history back above the anchor.
      *
      * Off the critical path on purpose: the caller does not await it, so chat
@@ -165,6 +201,7 @@ class ChatTabHandler {
      */
     async restore(tabKey) {
         if (!tabKey) return 0;
+        this.restoreStarted = true;
 
         let stored;
         try {
@@ -352,7 +389,8 @@ class ChatTabHandler {
                     // it away again: the record is capped separately from the
                     // buffer, so a message can leave the screen and stay stored.
                     const html = serializeMessage(clone);
-                    if (html) chatHistoryPersistence.record(this.tabKey, html);
+                    const tabKey = this._resolveTabKey();
+                    if (html && tabKey) chatHistoryPersistence.record(tabKey, html);
 
                     this._trim(maxHistory);
                 }
