@@ -6,6 +6,28 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Bulk Sell checked an enhancement level it was never actually reading
+
+The strip's Confirm compares the enhancement level in the modal against the one it queued, but the read never found the game's label — it looked inside the input's own wrapper, where the game puts it in a sibling. So it answered "+0" for every modal. Enhanced items could therefore never be confirmed from the strip at all; and a plain item queued against a modal showing an enhanced copy of the same thing at the same count passed every check, the level being the only thing that told them apart. It reads the real field now, and an enhanced step refuses outright when no level can be read rather than assuming zero.
+
+Two more from the same look. Pressing Start before the loadout list had finished loading queued the gear saved in your loadouts, holding nothing back while reporting that it had — an unloaded list reads as empty, which is indistinguishable from having none. Start waits for it now. And a sell modal you opened yourself during a run had its quantity, and its price, overwritten with the queued sale's; the prefill checks the modal is showing the item it queued.
+
+### A counted enhancing row shows the time its materials cover
+
+The last place a queued row still promised work its materials could not pay for: enhancing returned its own answer before the cap every other action type had gained. A row that can perform none of its request now reads as no time at all, the same as everywhere else. Protection items stay uncounted, deliberately — they are charged only on a failure and the ledger does not count them either, so binding the display on them would put the row back at odds with the ledger it feeds.
+
+### Chat history is filed under a tab's name, never its position
+
+A tab whose strip had not drawn yet was keyed by position, so restored messages could land in whatever tab later sat at that index — a whisper reappearing in a public tab's scrollback. History is written only once a tab can be named, and a tab that gains its name later starts persisting then rather than losing what came before. Records already filed by position are dropped rather than restored, since nothing on record says which tab they belonged to.
+
+### The leak canary can watch anything that will report a count
+
+It could only see the shared registries, which left the two collections most likely to be growing invisible to it. A feature can register a count of its own now, and the dungeon tracker's two long-lived message maps do — so the panel shows whether they climb across a session. Nothing is pruned; this is only the ability to see it.
+
+### And the marker, the badge, and the dungeon you are looking at
+
+"Avg from here" marks the team and dungeon the panel is actually showing — a run in progress first, then whatever the history is filtered to — instead of whichever run happened to be stored most recently, which could quietly reset a different dungeon's average. Where the panel genuinely does not say, it asks rather than picking. And a marketplace tab keeps its "reserved by" note when the inventory updates, instead of losing the line that explains why stock you can see is not yours to use.
+
 ### The profile's breakdown link opens on the first press
 
 It could be pressed and do nothing at all. Opening the breakdown redrew the panel whenever the profile it was pointed at changed and a panel object existed — but that object outlives the panel being taken off the page, so it redrew something invisible and stopped there. Measured on a live page: the panel opened and closed perfectly once it had been built, and only the press that mattered, the first one after opening a profile, was swallowed.
