@@ -47,25 +47,57 @@ const {
 } = await import('./task-reroll-badge.js');
 
 describe('sumBoardRerollSpend', () => {
+    const quest = (id, coin, cowbell) => ({ id, coinRerollCount: coin, cowbellRerollCount: cowbell });
+
     test('sums gold and cowbells across the active tasks only', () => {
         const taskRerollData = new Map([
             [1, { coinRerollCount: 2, cowbellRerollCount: 0 }], // 10K + 20K = 30K
             [2, { coinRerollCount: 0, cowbellRerollCount: 2 }], // 1 + 2 = 3
             [3, { coinRerollCount: 5, cowbellRerollCount: 5 }], // retired, not counted
         ]);
-        const activeIds = new Set([1, 2]);
+        const activeQuests = [quest(1, 0, 0), quest(2, 0, 0)];
 
-        expect(sumBoardRerollSpend(taskRerollData, activeIds)).toEqual({ gold: 30000, cowbells: 3 });
+        expect(sumBoardRerollSpend(taskRerollData, activeQuests)).toEqual({ gold: 30000, cowbells: 3 });
     });
 
     test('a task with no reroll data yet contributes nothing', () => {
         const taskRerollData = new Map([[1, { coinRerollCount: 0, cowbellRerollCount: 0 }]]);
-        expect(sumBoardRerollSpend(taskRerollData, new Set([1]))).toEqual({ gold: 0, cowbells: 0 });
+        expect(sumBoardRerollSpend(taskRerollData, [quest(1, 0, 0)])).toEqual({ gold: 0, cowbells: 0 });
     });
 
     test('an empty board is zero, not a throw', () => {
-        expect(sumBoardRerollSpend(new Map(), new Set())).toEqual({ gold: 0, cowbells: 0 });
+        expect(sumBoardRerollSpend(new Map(), [])).toEqual({ gold: 0, cowbells: 0 });
         expect(sumBoardRerollSpend(null, null)).toEqual({ gold: 0, cowbells: 0 });
+    });
+
+    test('an untracked quest falls back to the server payload rather than reading zero', () => {
+        // The tracker loads its map behind an await; a board summed before
+        // that lands has no tracked entries at all, and the map alone would
+        // render a rerolled board as "spent nothing"
+        expect(sumBoardRerollSpend(new Map(), [quest(1, 2, 0), quest(2, 0, 2)])).toEqual({
+            gold: 30000,
+            cowbells: 3,
+        });
+        // The whole map missing is the same case, one step earlier
+        expect(sumBoardRerollSpend(undefined, [quest(1, 2, 0)])).toEqual({ gold: 30000, cowbells: 0 });
+    });
+
+    test('a tracked count wins over the server payload', () => {
+        // The tracker carries rerolls the payload has not caught up on
+        const taskRerollData = new Map([[1, { coinRerollCount: 2, cowbellRerollCount: 0 }]]);
+        expect(sumBoardRerollSpend(taskRerollData, [quest(1, 0, 0)])).toEqual({ gold: 30000, cowbells: 0 });
+    });
+
+    test('a tracked zero stays zero instead of collapsing into the payload', () => {
+        // `??`, not `||`: tracked-zero and untracked are different things, and
+        // a task the tracker knows has no rerolls must not re-read the payload
+        const taskRerollData = new Map([[1, { coinRerollCount: 0, cowbellRerollCount: 0 }]]);
+        expect(sumBoardRerollSpend(taskRerollData, [quest(1, 5, 5)])).toEqual({ gold: 0, cowbells: 0 });
+    });
+
+    test('each currency falls back on its own', () => {
+        const taskRerollData = new Map([[1, { coinRerollCount: 2 }]]);
+        expect(sumBoardRerollSpend(taskRerollData, [quest(1, 5, 2)])).toEqual({ gold: 30000, cowbells: 3 });
     });
 });
 
@@ -107,6 +139,41 @@ describe('appearing on a panel that is already open', () => {
         taskRerollBadge.initialize();
 
         expect(header.querySelector('.toolasha-reroll-spend-badge')).not.toBeNull();
+    });
+
+    test('the badge is right before the tracker map arrives, and stays right after', async () => {
+        // The catch-up pass draws the moment the badge initializes, which can
+        // be before the tracker's storage load resolves. Without the payload
+        // fallback that first draw reads an empty map as "spent nothing" and
+        // stays wrong until the next task-list mutation.
+        const { default: taskRerollTracker } = await import('./task-reroll-tracker.js');
+        const header = document.createElement('div');
+        header.className = 'TasksPanel_taskSlotCount__abc';
+        document.body.appendChild(header);
+
+        board.quests = [
+            {
+                id: 1,
+                category: '/quest_category/random_task',
+                status: '/quest_status/in_progress',
+                coinRerollCount: 2,
+                cowbellRerollCount: 0,
+            },
+        ];
+        const savedData = taskRerollTracker.taskRerollData;
+        taskRerollTracker.taskRerollData = new Map();
+        try {
+            taskRerollBadge.initialize();
+            const badge = header.querySelector('.toolasha-reroll-spend-badge');
+            expect(badge.textContent).toBe('Rerolls: 30.0K\u{1f4b0}');
+
+            // The load lands, carrying a reroll the payload had not caught up on
+            taskRerollTracker.taskRerollData = new Map([[1, { coinRerollCount: 3, cowbellRerollCount: 0 }]]);
+            taskRerollBadge._render();
+            expect(badge.textContent).toBe('Rerolls: 70.0K\u{1f4b0}');
+        } finally {
+            taskRerollTracker.taskRerollData = savedData;
+        }
     });
 
     test('an unchanged spend leaves the badge’s text node alone', async () => {

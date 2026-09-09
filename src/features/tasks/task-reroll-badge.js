@@ -20,39 +20,57 @@ const TASK_CATEGORY = '/quest_category/random_task';
 const STATUS_IN_PROGRESS = '/quest_status/in_progress';
 
 /**
- * Task ids currently on the board.
- * @returns {Set<number>} Active random-task ids
+ * The random tasks currently on the board.
+ *
+ * The quest objects themselves rather than their ids: each carries the
+ * server's own `coinRerollCount`/`cowbellRerollCount`, which is the fallback
+ * `sumBoardRerollSpend` needs for a task the tracker has not loaded yet.
+ *
+ * @returns {Array<Object>} Active random-task quests
  */
-function activeTaskIds() {
+function activeTasks() {
     const quests = Array.isArray(dataManager.characterQuests) ? dataManager.characterQuests : [];
-    return new Set(
-        quests
-            .filter((quest) => quest?.category === TASK_CATEGORY && quest?.status === STATUS_IN_PROGRESS)
-            .map((quest) => quest.id)
-    );
+    return quests.filter((quest) => quest?.category === TASK_CATEGORY && quest?.status === STATUS_IN_PROGRESS);
 }
 
 /**
  * Sum the reroll spend across the tasks currently in progress.
  *
- * Scoped to `activeIds` rather than the whole map: the map keeps a
+ * Driven from the board rather than from the map: the map keeps a
  * just-retired task for a short grace window (see `task-reroll-tracker.js`),
  * and a badge that briefly counted a task that has already left the board
  * would disagree with the per-card lines it is meant to be summing.
  *
+ * Walking the quests also buys the fallback. The tracker loads its map from
+ * storage behind an await, and the badge draws from a catch-up pass that
+ * fires the moment it initializes - a board read before that load lands has
+ * no tracked entries at all, and summing the map alone renders it as "spent
+ * nothing" until the next task-list mutation. `quest.coinRerollCount` off the
+ * server payload is the same figure, so fall back to it, exactly as the
+ * sibling reader in task-statistics.js `calculateRerollSpend` does.
+ *
+ * `??` and not `||`: a tracked zero and an untracked task are different
+ * things. A task the tracker knows about with no rerolls on it must stay
+ * zero, not silently re-read the payload - the tracker's count is the
+ * authority once it has one, and it can legitimately be 0.
+ *
  * @param {Map<number, {coinRerollCount?: number, cowbellRerollCount?: number}>} taskRerollData
- * @param {Set<number>} activeIds - Task ids currently in progress
+ * @param {Array<{id: number, coinRerollCount?: number, cowbellRerollCount?: number}>} activeQuests -
+ *     Random-task quests currently in progress
  * @returns {{gold: number, cowbells: number}}
  */
-export function sumBoardRerollSpend(taskRerollData, activeIds) {
+export function sumBoardRerollSpend(taskRerollData, activeQuests) {
     let gold = 0;
     let cowbells = 0;
-    if (!taskRerollData || !activeIds) return { gold, cowbells };
+    if (!Array.isArray(activeQuests)) return { gold, cowbells };
 
-    for (const [taskId, data] of taskRerollData.entries()) {
-        if (!activeIds.has(taskId)) continue;
-        gold += calculateGoldSpent(data?.coinRerollCount || 0);
-        cowbells += calculateCowbellSpent(data?.cowbellRerollCount || 0);
+    for (const quest of activeQuests) {
+        if (!quest) continue;
+        const tracked = taskRerollData?.get(quest.id);
+        const coinCount = tracked?.coinRerollCount ?? quest.coinRerollCount ?? 0;
+        const cowbellCount = tracked?.cowbellRerollCount ?? quest.cowbellRerollCount ?? 0;
+        gold += calculateGoldSpent(coinCount);
+        cowbells += calculateCowbellSpent(cowbellCount);
     }
     return { gold, cowbells };
 }
@@ -144,7 +162,7 @@ class TaskRerollBadge {
     _render() {
         if (!this.badge || !this.badge.isConnected) return;
 
-        const spend = sumBoardRerollSpend(taskRerollTracker.taskRerollData, activeTaskIds());
+        const spend = sumBoardRerollSpend(taskRerollTracker.taskRerollData, activeTasks());
         const text = formatRerollSpendBadge(spend);
         // Write-level diff: the observer fires for every task-list mutation —
         // progress counts ticking up during combat included — and rewriting an
