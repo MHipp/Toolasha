@@ -41,6 +41,9 @@ import { createMutationWatcher } from '../../utils/dom-observer-helpers.js';
 import { setReactInputValue } from '../../utils/react-input.js';
 import { clickThroughReact } from '../../utils/react-click.js';
 import { testerShopEnabled, testerShopCoinCost } from '../../utils/tester-shop.js';
+// The walk to the Tester tab is shared with the Item Dictionary's ability-book
+// panel — see utils/tester-shop-nav.js
+import { findTesterTab, setShopFilter, openTesterShopPage } from '../../utils/tester-shop-nav.js';
 import { runningAction } from '../../utils/combat-actions.js';
 import {
     effectiveInventory,
@@ -864,61 +867,6 @@ function makeMaterialClickHandler(tabRef) {
         // is that level's, not the +0 one underneath it
         navigateToMarketplace(mat.itemHrid, mat.enhancementLevel || 0);
     };
-}
-
-/**
- * Open the Shop on its Tester tab.
- *
- * The shop's nav entry, then the tab that says Tester. Each step that cannot
- * be found is logged and reported as a failure, so the caller can fall back
- * to the marketplace rather than leave the player nowhere.
- *
- * @returns {Promise<HTMLElement|null>} The Tester tab once selected, else null
- */
-export async function openTesterShopPage() {
-    const navButtons = document.querySelectorAll('.NavigationBar_nav__3uuUl');
-    const shopButton = Array.from(navButtons).find((nav) => nav.querySelector('svg[aria-label="navigationBar.shop"]'));
-    if (!shopButton) {
-        console.error('[MissingMats] Shop navbar button not found');
-        return null;
-    }
-    shopButton.click();
-
-    const wait = (ms) =>
-        new Promise((resolve) => {
-            timerRegistry.registerTimeout(setTimeout(resolve, ms));
-        });
-
-    for (let i = 0; i < 30; i++) {
-        await wait(100);
-        const testerTab = findTesterTab();
-        if (testerTab) {
-            testerTab.click();
-            await wait(150);
-            return testerTab;
-        }
-    }
-    console.error('[MissingMats] Tester shop tab not found');
-    return null;
-}
-
-/** The Shop's Tester tab, when its strip is on screen */
-function findTesterTab() {
-    for (const container of document.querySelectorAll('.MuiTabs-flexContainer[role="tablist"]')) {
-        if (container.offsetParent === null) continue;
-        const tab = Array.from(container.children).find((el) => /^\s*tester\s*$/i.test(el.textContent || ''));
-        if (tab) return tab;
-    }
-    return null;
-}
-
-/** Type a name into the shop's item filter, when the box is on screen */
-function setShopFilter(itemName) {
-    const input = Array.from(document.querySelectorAll('input')).find(
-        (el) => el.offsetParent !== null && /filter/i.test(el.placeholder || '')
-    );
-    if (input) setReactInputValue(input, itemName || '');
-    return Boolean(input);
 }
 
 /**

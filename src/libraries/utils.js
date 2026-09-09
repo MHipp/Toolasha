@@ -133,6 +133,7 @@ import * as dungeonLevelGap from '../utils/dungeon-level-gap.js';
 import * as equipmentSavings from '../utils/equipment-savings.js';
 import * as gameServer from '../utils/game-server.js';
 import * as testerShop from '../utils/tester-shop.js';
+import * as testerShopNav from '../utils/tester-shop-nav.js';
 import * as bestiary from '../utils/bestiary.js';
 import * as gameText from '../utils/game-text.js';
 import * as guildCreditPricing from '../utils/guild-credit-pricing.js';
@@ -287,6 +288,7 @@ toolashaRoot.Utils = {
     equipmentSavings,
     gameServer,
     testerShop,
+    testerShopNav,
     bestiary,
     gameText,
     guildCreditPricing,
