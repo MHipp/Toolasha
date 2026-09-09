@@ -6,6 +6,14 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The Buy Now price can raise itself until it covers what you asked for
+
+Missing Materials fills in 24, the top ask has 15, and pressing the button bought 15. The modal can now walk up the ask ladder to the lowest price whose cumulative supply covers the whole quantity — 470K to 471K in the case that prompted this — and stops there. It never climbs past the rung it needs and never past the tradable maximum, it only ever raises, and it reads the modal's own "Available At Price" line as the authority, stepping again only if a stale order book left it short. You still press Post Buy Order, with "You Pay" already showing what it will cost.
+
+It pays more per unit — on every unit, not just the extra ones — so it is **off by default**: turn on "raise a Buy Now price to cover the quantity" in the marketplace settings. It applies to every panel that fills a buy quantity, not just Missing Materials.
+
+Alongside it: the marketplace pushpin no longer draws on top of a house or action panel opened over the marketplace. The game's own modals sit far below where a comment in this repo claimed they did, so the pin was winning a contest it should never have been in.
+
 ### Leftovers: enhancing rows count their protections, and two modals stop guessing which box is which
 
 An enhancing row's time and its material ledger both ignored protection items, so a climb that runs out of protections halfway still promised the full request. Both sides now charge the expected protection draw per attempt — the same figure the action bar already showed — and both stop at the same count, marked `~` because it is an expectation rather than a promise. Where a protection cannot be quantified at all it caps nothing and the figure is marked as an estimate, rather than reading as unlimited. The action bar's own duplicate cap is gone; there is one place that decides now. Switch it off with the existing protection setting and every figure returns to what it was.
