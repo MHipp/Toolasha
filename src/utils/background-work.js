@@ -12,9 +12,69 @@
  * hands its heavy part to `runInBackground`, gets a promise back, and awaits that
  * promise anywhere its own correctness depends on the work being done. Everything
  * else gets to start.
+ *
+ * "Later" means after feature startup has finished *and* the browser is idle —
+ * see `whenFeatureStartupIsDone`. Idleness alone is not a proxy for startup
+ * being over, and on Chrome it demonstrably is not.
  */
 
+import featureRegistry from '../core/feature-registry.js';
 import performanceMonitor from './performance-monitor.js';
+
+/**
+ * How long to wait for feature startup before running anyway.
+ *
+ * The gate below has to survive a startup that never signals: a feature registry
+ * that is never run at all (unit tests, any bundle that carries this module
+ * without Core's registry), or an `initializeFeatures()` that is prevented from
+ * finishing. There is no way to tell "not finished yet" from "never will be", so
+ * the wait is bounded rather than conditional.
+ *
+ * 10 s because it must never fire on a healthy start and must still be short
+ * enough to be a hiccup rather than a hang. The two real startup traces this was
+ * built from finished their feature chains at 4.7 s (Firefox) and 4.0 s
+ * (Chrome), so this is roughly double the worst measured startup; and the cost
+ * of firing early is only that background work goes back to competing with the
+ * chain, which is exactly the behaviour that existed before the gate.
+ */
+const STARTUP_GATE_TIMEOUT_MS = 10_000;
+
+/**
+ * Wait for feature startup to be out of the way.
+ *
+ * Returns synchronously-fast once startup has settled, so work handed over
+ * afterwards — a character switch, a panel opened an hour in — is not made to
+ * wait for a signal that has already fired and will not fire again.
+ *
+ * Degrades to "do not gate" when the registry is not reachable at all. This
+ * module is shared through `Toolasha.Utils.backgroundWork` while the registry
+ * arrives as `Toolasha.Core.featureRegistry`; Core loads first, so the binding
+ * is there in every real build, and a missing one means there is no feature
+ * startup to wait for.
+ *
+ * @returns {Promise<void>}
+ */
+async function whenFeatureStartupIsDone() {
+    if (typeof featureRegistry?.isStartupComplete !== 'function') return;
+    if (featureRegistry.isStartupComplete()) return;
+
+    let timer;
+    const giveUp = new Promise((resolve) => {
+        timer = setTimeout(() => {
+            console.warn(
+                `[Toolasha] Feature startup has not finished after ${STARTUP_GATE_TIMEOUT_MS} ms; ` +
+                    'running background work anyway.'
+            );
+            resolve();
+        }, STARTUP_GATE_TIMEOUT_MS);
+    });
+
+    try {
+        await Promise.race([featureRegistry.whenStartupComplete(), giveUp]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
 
 /**
  * Wait for a quiet moment, or the next tick if the browser will not say.
@@ -47,6 +107,11 @@ function whenIdle() {
  * @returns {Promise<*>} Resolves when the work is done, never rejects
  */
 export async function runInBackground(name, work) {
+    // Startup first, then idleness. Idleness alone was the bug: a browser that
+    // counts the feature chain's storage awaits as idle time will start this in
+    // the middle of the chain, and the two then contend for the same one-key-per-
+    // transaction IndexedDB reads and roughly double each other.
+    await whenFeatureStartupIsDone();
     await whenIdle();
     const startedAt = performanceMonitor.sinceBoot();
     try {

@@ -10,15 +10,47 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import performanceMonitor from './performance-monitor.js';
 import { runInBackground, yieldToEventLoop } from './background-work.js';
 
+// The startup gate, stood in for so a test can decide when feature startup
+// "finishes". The registry's own half is tested in feature-registry.test.js;
+// what matters here is only what background work does with the signal.
+const gate = vi.hoisted(() => {
+    const state = { settled: true, promise: Promise.resolve(), release: () => {} };
+    state.close = () => {
+        state.settled = false;
+        state.promise = new Promise((resolve) => {
+            state.release = () => {
+                state.settled = true;
+                resolve();
+            };
+        });
+    };
+    state.open = () => state.release();
+    state.reset = () => {
+        state.settled = true;
+        state.promise = Promise.resolve();
+        state.release = () => {};
+    };
+    return state;
+});
+
+vi.mock('../core/feature-registry.js', () => ({
+    default: {
+        isStartupComplete: () => gate.settled,
+        whenStartupComplete: () => gate.promise,
+    },
+}));
+
 beforeEach(() => {
     performanceMonitor.reset();
     // reset() deliberately keeps marks — they are the startup trace, and it
     // cannot be taken again without a reload. Tests need a clean one anyway.
     performanceMonitor.marks.length = 0;
     vi.stubGlobal('requestIdleCallback', undefined);
+    gate.reset();
 });
 
 afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
 });
 
@@ -52,6 +84,78 @@ describe('handing work to the background', () => {
             })
         ).resolves.toBe(null);
         expect(console.error).toHaveBeenCalled();
+    });
+});
+
+describe('waiting for feature startup', () => {
+    test('work requested during startup does not begin until startup finishes', async () => {
+        // The defect this gate exists for: on Chrome the idle callback fired
+        // 280 ms after features:start and ran 2 s of net worth work straight
+        // through the middle of the feature chain, roughly doubling both.
+        gate.close();
+        let ran = false;
+        const promise = runInBackground('networth', async () => {
+            ran = true;
+        });
+
+        // Give every microtask and macrotask already queued a chance to run;
+        // nothing may start the work while startup is still going.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        expect(ran).toBe(false);
+
+        gate.open();
+        await promise;
+        expect(ran).toBe(true);
+    });
+
+    test('work requested after startup has finished is not made to wait for a second signal', async () => {
+        // The signal resolves once and stays resolved; a late caller must find
+        // it already open rather than waiting for a startup that will not run
+        // again this session.
+        const order = [];
+        await runInBackground('late', async () => order.push('work'));
+
+        expect(order).toEqual(['work']);
+    });
+
+    test('a startup that never finishes gives up rather than holding the work forever', async () => {
+        vi.spyOn(console, 'warn').mockImplementation(() => {});
+        vi.useFakeTimers();
+        gate.close();
+        let ran = false;
+        const promise = runInBackground('stranded', async () => {
+            ran = true;
+        });
+
+        await vi.advanceTimersByTimeAsync(9_000);
+        expect(ran).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(2_000);
+        await promise;
+        expect(ran).toBe(true);
+        expect(console.warn).toHaveBeenCalled();
+    });
+
+    test('the idle wait still applies once the gate opens', async () => {
+        // The gate is added in front of the idle wait, not instead of it.
+        let fireIdle = null;
+        vi.stubGlobal('requestIdleCallback', (callback) => {
+            fireIdle = callback;
+        });
+        gate.close();
+        let ran = false;
+        const promise = runInBackground('idle-still', async () => {
+            ran = true;
+        });
+
+        gate.open();
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        expect(ran).toBe(false);
+        expect(typeof fireIdle).toBe('function');
+
+        fireIdle();
+        await promise;
+        expect(ran).toBe(true);
     });
 });
 

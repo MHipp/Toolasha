@@ -14,6 +14,77 @@ import performanceMonitor from '../utils/performance-monitor.js';
 const featureRegistry = [];
 
 /**
+ * Feature startup, published as something other code can wait for.
+ *
+ * Background work used to be scheduled on idleness alone, and idleness is not
+ * the same question. On Chrome the feature chain's storage awaits *look* idle:
+ * a real trace has net worth's idle callback firing 280 ms after
+ * `features:start` and running for 2.06 s straight through the middle of a
+ * 3.97 s chain, with both sides roughly doubling as they took turns on
+ * IndexedDB. The same build on Firefox happened to fire 268 ms after startup
+ * had finished and cost 268 ms. Nothing in `src/` read this completion signal
+ * before; the only trace of it was the `features:done` mark below.
+ *
+ * Settled once per session, never re-armed. A caller arriving after startup has
+ * finished must find it already open — an "await the next startup" signal would
+ * strand every feature that starts late (a character switch re-initialises, and
+ * its `initializeFeatures()` can return early without ever completing) on a
+ * startup that is not coming.
+ */
+let startupSettled = false;
+
+/** Called once to open the gate; replaced by the promise's own resolver below. */
+let releaseStartup = () => {};
+
+/** Resolves the first time feature startup finishes, or gives up trying. */
+const startupComplete = new Promise((resolve) => {
+    releaseStartup = resolve;
+});
+
+/**
+ * Open the gate, once.
+ *
+ * Called from a `finally`, so the paths that never reach `features:done` — a
+ * `initializeFeatures()` that returns early because a character switch is under
+ * way, or one that throws before the mark — release waiters rather than leaving
+ * them to the caller-side timeout. There is no startup in progress in either
+ * case, which is exactly what a waiter wants to know.
+ *
+ * @returns {void}
+ */
+function settleStartup() {
+    if (startupSettled) return;
+    startupSettled = true;
+    releaseStartup();
+}
+
+/**
+ * Has feature startup finished (or been given up on) this session?
+ *
+ * Lets a caller skip the await entirely rather than yielding a microtask for an
+ * answer it can have synchronously.
+ *
+ * @returns {boolean} True once startup has settled
+ */
+function isStartupComplete() {
+    return startupSettled;
+}
+
+/**
+ * A promise that resolves when feature startup has finished.
+ *
+ * Already resolved for anyone who asks after the fact. It never rejects: a
+ * feature that throws is caught and recorded by `initializeFeatures`, and the
+ * gate is about *when* startup stopped occupying the main thread, not whether
+ * it went well.
+ *
+ * @returns {Promise<void>} Resolves once, then stays resolved
+ */
+function whenStartupComplete() {
+    return startupComplete;
+}
+
+/**
  * Initialize all enabled features
  *
  * Returns what failed rather than only logging it. An initializer that throws
@@ -48,6 +119,22 @@ const featureRegistry = [];
  * @returns {Promise<Array<{key: string, name: string, reason: string}>>} Failures, in registry order
  */
 async function initializeFeatures() {
+    try {
+        return await runFeatureInitialization();
+    } finally {
+        // Whatever happened — an early return, a throw, a clean pass — startup
+        // is no longer occupying the main thread, so anything gated on it runs.
+        settleStartup();
+    }
+}
+
+/**
+ * The body of `initializeFeatures`, separated only so the gate above can be
+ * released in a `finally` without indenting the whole routine.
+ *
+ * @returns {Promise<Array<{key: string, name: string, reason: string}>>} Failures, in registry order
+ */
+async function runFeatureInitialization() {
     // Block feature initialization during character switch
     if (dataManager.getIsCharacterSwitching()) {
         return [];
@@ -515,6 +602,8 @@ function replaceFeatures(newFeatures) {
 
 export default {
     initializeFeatures,
+    isStartupComplete,
+    whenStartupComplete,
     disableAllFeatures,
     getDisableFailures,
     setupCharacterSwitchHandler,

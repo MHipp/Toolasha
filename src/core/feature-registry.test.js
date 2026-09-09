@@ -568,3 +568,86 @@ describe('setupCharacterSwitchHandler — serialized lifecycle', () => {
         vi.useRealTimers();
     });
 });
+
+describe('the startup-complete signal', () => {
+    /**
+     * A registry instance nobody else in this file has run yet, so its gate is
+     * still closed. The mocks above are module-level and survive resetModules.
+     * @returns {Promise<Object>} A fresh feature-registry default export
+     */
+    const freshRegistry = async () => {
+        vi.resetModules();
+        const fresh = (await import('./feature-registry.js')).default;
+        fresh.replaceFeatures([]);
+        return fresh;
+    };
+
+    /**
+     * Whether a promise has already resolved, without waiting on it.
+     * @param {Promise<*>} promise - The promise to probe
+     * @returns {Promise<boolean>} True if it settled within a few microtasks
+     */
+    const hasResolved = async (promise) => {
+        const pendingMarker = Symbol('pending');
+        return (await Promise.race([promise, Promise.resolve(pendingMarker)])) !== pendingMarker;
+    };
+
+    test('is closed until feature startup has run', async () => {
+        const fresh = await freshRegistry();
+
+        expect(fresh.isStartupComplete()).toBe(false);
+        expect(await hasResolved(fresh.whenStartupComplete())).toBe(false);
+    });
+
+    test('opens when startup finishes', async () => {
+        const fresh = await freshRegistry();
+        fresh.replaceFeatures([{ key: 'a', name: 'A', initialize: vi.fn() }]);
+        state.enabledFeatures = new Set(['a']);
+
+        await fresh.initializeFeatures();
+
+        expect(fresh.isStartupComplete()).toBe(true);
+        expect(await hasResolved(fresh.whenStartupComplete())).toBe(true);
+    });
+
+    test('opens even when startup returns early because a switch is under way', async () => {
+        // Nothing is initializing, so there is nothing for a waiter to wait for
+        const fresh = await freshRegistry();
+        state.isCharacterSwitching = true;
+
+        await fresh.initializeFeatures();
+
+        expect(fresh.isStartupComplete()).toBe(true);
+    });
+
+    test('opens even when a feature initializer throws', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        const fresh = await freshRegistry();
+        fresh.replaceFeatures([
+            {
+                key: 'broken',
+                name: 'Broken',
+                initialize: () => {
+                    throw new Error('nope');
+                },
+            },
+        ]);
+        state.enabledFeatures = new Set(['broken']);
+
+        await fresh.initializeFeatures();
+
+        expect(fresh.isStartupComplete()).toBe(true);
+    });
+
+    test('stays open across a character switch rather than re-arming', async () => {
+        // A waiter arriving later must not be parked on the next startup: the
+        // re-init after a switch can return early and never complete.
+        const fresh = await freshRegistry();
+        await fresh.initializeFeatures();
+        state.isCharacterSwitching = true;
+        await fresh.initializeFeatures();
+
+        expect(fresh.isStartupComplete()).toBe(true);
+        expect(await hasResolved(fresh.whenStartupComplete())).toBe(true);
+    });
+});
