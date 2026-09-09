@@ -18,6 +18,34 @@ import { characterKey, readScoped, writeScoped } from '../../utils/character-key
 import { runningCombatAction } from '../../utils/combat-actions.js';
 import { assessRecoveredStart } from './dungeon-pace.js';
 import { parseGameNumber, gameDigitsSource } from '../../utils/number-parser.js';
+import { chatStampToDate } from '../../utils/locale-date-order.js';
+
+/**
+ * The date a DOM chat stamp means, from a match of the tracker's stamp regexes.
+ *
+ * All three read `[<first><sep><second> HH:MM:SS <AM/PM>]` into the same seven
+ * groups, so they share one reading of it: the slash separator leaves the field
+ * order to the game's locale (overruled by any field over 12), the dash and dot
+ * separators are day-first in every locale that renders them, and the year is
+ * whichever puts the stamp in the recent past.
+ *
+ * Only the DOM scans need this. The in-memory chat messages carry a real ISO
+ * `t`, which has never been ambiguous.
+ *
+ * @param {RegExpMatchArray} match - Groups: first, separator, second, hour, minute, second, period
+ * @returns {Date|null} The stamp's date, or null when no reading of it is one
+ */
+function stampFromMatch(match) {
+    return chatStampToDate({
+        first: parseInt(match[1], 10),
+        second: parseInt(match[3], 10),
+        ambiguousOrder: match[2] === '/',
+        hour: parseInt(match[4], 10),
+        minute: parseInt(match[5], 10),
+        sec: parseInt(match[6], 10),
+        period: match[7],
+    });
+}
 
 /**
  * The party the server says is in this fight, from a `new_battle` message.
@@ -524,40 +552,8 @@ class DungeonTracker {
                             /\[(\d{1,2})([-/])(\d{1,2})\s+(\d{1,2}):(\d{2}):(\d{2})\s*([AP]M)?\]/
                         );
 
-                        if (timestampMatch) {
-                            const part1 = parseInt(timestampMatch[1], 10);
-                            const separator = timestampMatch[2];
-                            const part2 = parseInt(timestampMatch[3], 10);
-                            let hour = parseInt(timestampMatch[4], 10);
-                            const min = parseInt(timestampMatch[5], 10);
-                            const sec = parseInt(timestampMatch[6], 10);
-                            const period = timestampMatch[7];
-
-                            // Determine format based on separator
-                            let month, day;
-                            if (separator === '/') {
-                                // MM/DD format — but if first part > 12 it must be DD/MM (e.g. "16/07")
-                                if (part1 > 12) {
-                                    day = part1;
-                                    month = part2;
-                                } else {
-                                    month = part1;
-                                    day = part2;
-                                }
-                            } else {
-                                // DD-M format (dash separator)
-                                day = part1;
-                                month = part2;
-                            }
-
-                            // Handle AM/PM if present
-                            if (period === 'PM' && hour < 12) hour += 12;
-                            if (period === 'AM' && hour === 12) hour = 0;
-
-                            // Create timestamp (assumes current year)
-                            const now = new Date();
-                            const timestamp = new Date(now.getFullYear(), month - 1, day, hour, min, sec, 0);
-
+                        const timestamp = timestampMatch && stampFromMatch(timestampMatch);
+                        if (timestamp) {
                             this.battleStartedTimestamp = timestamp.getTime();
                         }
                     }
@@ -574,40 +570,8 @@ class DungeonTracker {
                                 /\[(\d{1,2})([-/.])(\d{1,2})\.?\s+(\d{1,2}):(\d{2}):(\d{2})\s*([AP]M)?\]/
                             );
 
-                            if (timestampMatch) {
-                                const part1 = parseInt(timestampMatch[1], 10);
-                                const separator = timestampMatch[2];
-                                const part2 = parseInt(timestampMatch[3], 10);
-                                let hour = parseInt(timestampMatch[4], 10);
-                                const min = parseInt(timestampMatch[5], 10);
-                                const sec = parseInt(timestampMatch[6], 10);
-                                const period = timestampMatch[7];
-
-                                // Determine format based on separator
-                                let month, day;
-                                if (separator === '/') {
-                                    // MM/DD format — but if first part > 12 it must be DD/MM (e.g. "16/07")
-                                    if (part1 > 12) {
-                                        day = part1;
-                                        month = part2;
-                                    } else {
-                                        month = part1;
-                                        day = part2;
-                                    }
-                                } else {
-                                    // DD-M format (dash separator)
-                                    day = part1;
-                                    month = part2;
-                                }
-
-                                // Handle AM/PM if present
-                                if (period === 'PM' && hour < 12) hour += 12;
-                                if (period === 'AM' && hour === 12) hour = 0;
-
-                                // Create timestamp (assumes current year)
-                                const now = new Date();
-                                const timestamp = new Date(now.getFullYear(), month - 1, day, hour, min, sec, 0);
-
+                            const timestamp = timestampMatch && stampFromMatch(timestampMatch);
+                            if (timestamp) {
                                 // Keep this as the latest (will be overwritten if we find a newer one)
                                 latestKeyCountsMap = keyCountsMap;
                                 latestTimestamp = timestamp.getTime();
@@ -2029,38 +1993,8 @@ class DungeonTracker {
                 );
                 if (!timestampMatch) continue;
 
-                const part1 = parseInt(timestampMatch[1], 10);
-                const separator = timestampMatch[2];
-                const part2 = parseInt(timestampMatch[3], 10);
-                let hour = parseInt(timestampMatch[4], 10);
-                const min = parseInt(timestampMatch[5], 10);
-                const sec = parseInt(timestampMatch[6], 10);
-                const period = timestampMatch[7];
-
-                // Determine format based on separator
-                let month, day;
-                if (separator === '/') {
-                    // MM/DD format — but if first part > 12 it must be DD/MM (e.g. "16/07")
-                    if (part1 > 12) {
-                        day = part1;
-                        month = part2;
-                    } else {
-                        month = part1;
-                        day = part2;
-                    }
-                } else {
-                    // DD-M format (dash separator)
-                    day = part1;
-                    month = part2;
-                }
-
-                // Handle AM/PM if present
-                if (period === 'PM' && hour < 12) hour += 12;
-                if (period === 'AM' && hour === 12) hour = 0;
-
-                // Create timestamp (assumes current year)
-                const now = new Date();
-                const timestamp = new Date(now.getFullYear(), month - 1, day, hour, min, sec, 0);
+                const timestamp = stampFromMatch(timestampMatch);
+                if (!timestamp) continue;
 
                 // Extract "Battle started:" messages
                 if (text.includes(DUNGEON_BATTLE_STARTED)) {

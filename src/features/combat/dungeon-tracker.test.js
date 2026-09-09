@@ -19,6 +19,7 @@
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { _resetGameNumberSeparators } from '../../utils/number-parser.js';
+import { _resetDateFieldOrder } from '../../utils/locale-date-order.js';
 
 const game = vi.hoisted(() => ({
     characterId: 'market123',
@@ -3098,5 +3099,194 @@ describe('a character switch inside completeDungeon', () => {
         await flush();
 
         expect(game.savedRuns).toHaveLength(1);
+    });
+});
+
+describe('reading a DOM chat stamp on a day-first client', () => {
+    // The DOM scans read the stamp the game drew, which on a dd/mm client runs
+    // day first. Guessing from the digits alone — the heuristic all three sites
+    // carried — turns a run over midnight into a run over a month, which is what
+    // a player reported: "[Run #295: 41774m 13s]" for fourteen minutes.
+    //
+    // The stamps below all use fields of 12 or less on purpose: that is the case
+    // the digits cannot settle, and the only one the locale decides.
+    function chatLog(lines) {
+        document.body.innerHTML = '';
+        for (const text of lines) {
+            const node = document.createElement('div');
+            node.className = 'ChatMessage_chatMessage__abc';
+            const body = document.createElement('span');
+            body.textContent = text;
+            node.appendChild(body);
+            document.body.appendChild(node);
+        }
+    }
+
+    /** Pretend the client renders dates in this order; the runtime's own locale cannot be changed. */
+    function clientOrder(dayFirst) {
+        _resetDateFieldOrder(dayFirst);
+    }
+
+    beforeEach(() => {
+        clientOrder(true);
+        // Mid-December, so a fixture read either way round is in the past: the
+        // year rule then never enters into what the day-first tests prove.
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        vi.setSystemTime(new Date(2028, 11, 15, 12, 0, 0));
+        document.body.innerHTML = '';
+    });
+
+    afterEach(() => {
+        _resetDateFieldOrder();
+    });
+
+    describe('the battle-started scan', () => {
+        test('a dd/mm stamp is the day it says', () => {
+            beTracking();
+            tracker.recentChatMessages = [];
+            chatLog(['[04/03 23:00:00] Battle started: Chimerical Den']);
+
+            tracker.scanExistingChatMessages();
+
+            // Read as M/D this was 3 April, two hundred and forty days out.
+            expect(tracker.battleStartedTimestamp).toBe(new Date(2028, 2, 4, 23, 0, 0).getTime());
+        });
+
+        test('a stamp over New Year lands in the year that puts it in the past', () => {
+            vi.setSystemTime(new Date(2028, 0, 1, 0, 30, 0));
+            beTracking();
+            tracker.recentChatMessages = [];
+            chatLog(['[31/12 23:58:00] Battle started: Chimerical Den']);
+
+            tracker.scanExistingChatMessages();
+
+            expect(tracker.battleStartedTimestamp).toBe(new Date(2027, 11, 31, 23, 58, 0).getTime());
+        });
+
+        test('a month-first client reads the same stamp as it always did', () => {
+            clientOrder(false);
+            beTracking();
+            tracker.recentChatMessages = [];
+            chatLog(['[04/03 23:00:00] Battle started: Chimerical Den']);
+
+            tracker.scanExistingChatMessages();
+
+            expect(tracker.battleStartedTimestamp).toBe(new Date(2028, 3, 3, 23, 0, 0).getTime());
+        });
+    });
+
+    describe('the key-counts scan', () => {
+        test('a run over midnight anchors minutes before the completion, not a month', async () => {
+            beTracking();
+            tracker.recentChatMessages = [];
+            chatLog(['[04/03 23:52:47] Key counts: [Alice - 12], [Bob - 8]']);
+
+            tracker.scanExistingChatMessages();
+            await flush();
+
+            const anchor = new Date(2028, 2, 4, 23, 52, 47).getTime();
+            expect(tracker.firstKeyCountTimestamp).toBe(anchor);
+            expect(tracker.lastKeyCountTimestamp).toBe(anchor);
+
+            // The completion, fourteen minutes later on the far side of midnight.
+            tracker.currentRun.wavesCompleted = 10;
+            tracker.onChatMessage(
+                keyCountsData(new Date(2028, 2, 5, 0, 7, 0).toISOString(), 'Key counts: [Alice - 11], [Bob - 7]')
+            );
+            await flush();
+
+            expect(game.savedRuns).toHaveLength(1);
+            expect(game.savedRuns[0].run.duration).toBe(14 * 60_000 + 13_000);
+        });
+
+        test('a stamp over New Year lands in the year that puts it in the past', async () => {
+            vi.setSystemTime(new Date(2028, 0, 1, 0, 30, 0));
+            beTracking();
+            tracker.recentChatMessages = [];
+            chatLog(['[31/12 23:58:00] Key counts: [Alice - 12]']);
+
+            tracker.scanExistingChatMessages();
+            await flush();
+
+            expect(tracker.firstKeyCountTimestamp).toBe(new Date(2027, 11, 31, 23, 58, 0).getTime());
+        });
+
+        test('a month-first client reads the same stamp as it always did', async () => {
+            clientOrder(false);
+            beTracking();
+            tracker.recentChatMessages = [];
+            chatLog(['[04/03 23:52:47] Key counts: [Alice - 12], [Bob - 8]']);
+
+            tracker.scanExistingChatMessages();
+            await flush();
+
+            expect(tracker.firstKeyCountTimestamp).toBe(new Date(2028, 3, 3, 23, 52, 47).getTime());
+        });
+
+        test('the dot format stays day-first whatever the language says', async () => {
+            clientOrder(false);
+            beTracking();
+            tracker.recentChatMessages = [];
+            chatLog(['[4.3. 23:52:47] Key counts: [Alice - 12]']);
+
+            tracker.scanExistingChatMessages();
+            await flush();
+
+            expect(tracker.firstKeyCountTimestamp).toBe(new Date(2028, 2, 4, 23, 52, 47).getTime());
+        });
+    });
+
+    describe('the backfill scan', () => {
+        test('a run over midnight is banked as minutes, not a month', async () => {
+            chatLog([
+                '[04/03 23:00:00] Battle started: Chimerical Den',
+                '[04/03 23:52:47] Key counts: [Alice - 12], [Bob - 8]',
+                '[05/03 00:07:00] Key counts: [Alice - 11], [Bob - 7]',
+            ]);
+
+            const result = await tracker.backfillFromChatHistory();
+
+            expect(result.runsAdded).toBe(1);
+            expect(game.savedRuns[0].run.duration).toBe(14 * 60_000 + 13_000);
+            expect(game.savedRuns[0].run.timestamp).toBe(new Date(2028, 2, 4, 23, 52, 47).toISOString());
+        });
+
+        test('a run over New Year is banked in the year that puts it in the past', async () => {
+            vi.setSystemTime(new Date(2028, 0, 1, 0, 30, 0));
+            chatLog([
+                '[31/12 23:56:00] Battle started: Chimerical Den',
+                '[31/12 23:58:00] Key counts: [Alice - 12]',
+                '[01/01 00:02:00] Key counts: [Alice - 11]',
+            ]);
+
+            const result = await tracker.backfillFromChatHistory();
+
+            expect(result.runsAdded).toBe(1);
+            expect(game.savedRuns[0].run.duration).toBe(4 * 60_000);
+            expect(game.savedRuns[0].run.timestamp).toBe(new Date(2027, 11, 31, 23, 58, 0).toISOString());
+        });
+
+        test('a month-first client banks the same run as it always did', async () => {
+            clientOrder(false);
+            chatLog([
+                '[04/03 23:00:00] Battle started: Chimerical Den',
+                '[04/03 23:52:47] Key counts: [Alice - 12], [Bob - 8]',
+                '[04/03 23:57:00] Key counts: [Alice - 11], [Bob - 7]',
+            ]);
+
+            await tracker.backfillFromChatHistory();
+
+            expect(game.savedRuns[0].run.timestamp).toBe(new Date(2028, 3, 3, 23, 52, 47).toISOString());
+        });
+
+        test('a stamp no reading can make a date is skipped, not guessed at', async () => {
+            chatLog([
+                '[16/16 23:00:00] Battle started: Chimerical Den',
+                '[16/16 23:52:47] Key counts: [Alice - 12]',
+                '[16/16 23:57:00] Key counts: [Alice - 11]',
+            ]);
+
+            expect((await tracker.backfillFromChatHistory()).runsAdded).toBe(0);
+        });
     });
 });

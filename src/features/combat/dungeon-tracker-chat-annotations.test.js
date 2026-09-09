@@ -13,6 +13,21 @@
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { _resetGameNumberSeparators } from '../../utils/number-parser.js';
+import { _resetDateFieldOrder } from '../../utils/locale-date-order.js';
+
+/**
+ * Pretend the client renders dates in this order.
+ *
+ * The order comes from the runtime locale, which a test cannot change, so the
+ * fixtures' field order is seeded rather than detected. Not the game's own
+ * language: the client builds these stamps with `toLocaleDateString(undefined, …)`,
+ * so they follow the browser, not the game's language setting.
+ *
+ * @param {boolean} [dayFirst] - Force this order; omit to re-detect
+ */
+function clientOrder(dayFirst) {
+    _resetDateFieldOrder(dayFirst);
+}
 
 const game = vi.hoisted(() => ({
     settings: { dungeonTrackerChatAnnotations: true },
@@ -57,16 +72,6 @@ const markAsProfileLinkMock = vi.hoisted(() =>
     })
 );
 vi.mock('../chat/chat-profile-link.js', () => ({ markAsProfileLink: markAsProfileLinkMock }));
-
-// Which way round the client writes a date. The real detection reads the
-// runtime's locale, which a test cannot change; the detection itself is covered
-// in locale-date-order.test.js, so here it is simply told what the client is.
-const locale = vi.hoisted(() => ({ dayFirst: false }));
-vi.mock('../../utils/locale-date-order.js', () => ({
-    isDayFirstLocale: () => locale.dayFirst,
-    detectDayFirst: () => locale.dayFirst,
-    _resetDateFieldOrder: () => {},
-}));
 
 vi.mock('./dungeon-tracker-storage.js', () => ({
     default: {
@@ -162,7 +167,7 @@ beforeEach(() => {
     annotations.initComplete = true;
     annotations.timerRegistry.clearAll();
     markAsProfileLinkMock.mockClear();
-    locale.dayFirst = false;
+    clientOrder(false);
 
     // A stamp carries no year, so which year it parses to depends on today's
     // date. Pinning the clock inside the year the fixtures are written for
@@ -225,7 +230,7 @@ describe('a client that writes the day first', () => {
     // Mid-December, so every fixture below is in the past whichever way its
     // fields are read: the year rule then never enters into what these prove.
     beforeEach(() => {
-        locale.dayFirst = true;
+        clientOrder(true);
         vi.setSystemTime(new Date(2028, 11, 15, 12, 0, 0));
     });
 
@@ -283,7 +288,7 @@ describe('a client that writes the day first', () => {
 
 describe('a client that writes the month first is untouched', () => {
     beforeEach(() => {
-        locale.dayFirst = false;
+        clientOrder(false);
         vi.setSystemTime(new Date(2028, 11, 15, 12, 0, 0));
     });
 
