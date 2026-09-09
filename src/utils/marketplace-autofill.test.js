@@ -487,6 +487,8 @@ function buildBuyNowModal({
     itemHrid = '/items/wooden_bow',
     tradableRange = null,
     sleepingPrice = false,
+    displayPrice = null,
+    shopWording = false,
     enhancementLevel = null,
 } = {}) {
     const modal = document.createElement('div');
@@ -495,9 +497,11 @@ function buildBuyNowModal({
     header.textContent = 'Buy Now';
     modal.appendChild(header);
 
-    const icon = document.createElement('div');
-    icon.innerHTML = `<svg><use href="/static/media/items_sprite.svg#${itemHrid.split('/').pop()}"></use></svg>`;
-    modal.appendChild(icon);
+    if (itemHrid) {
+        const icon = document.createElement('div');
+        icon.innerHTML = `<svg><use href="/static/media/items_sprite.svg#${itemHrid.split('/').pop()}"></use></svg>`;
+        modal.appendChild(icon);
+    }
 
     if (enhancementLevel !== null) {
         const enhRow = document.createElement('div');
@@ -516,7 +520,7 @@ function buildBuyNowModal({
     if (sleepingPrice) {
         const display = document.createElement('div');
         display.className = 'MarketplacePanel_priceDisplay';
-        display.textContent = price;
+        display.textContent = displayPrice ?? price;
         display.addEventListener('click', () => {
             display.remove();
             const woken = document.createElement('input');
@@ -548,11 +552,22 @@ function buildBuyNowModal({
         modal.appendChild(range);
     }
 
+    // The Shop's dialog is told apart by "You Pay" plus a bare "Buy" button; a
+    // marketplace Buy Now modal can carry both, so it is built that way here
+    if (shopWording) {
+        const pay = document.createElement('div');
+        pay.textContent = 'You Pay: 11,304,000 (less if better offers exist)';
+        const buy = document.createElement('button');
+        buy.textContent = 'Buy';
+        modal.append(pay, buy);
+    }
+
     document.body.appendChild(modal);
     return {
         modal,
         priceValue: () => priceRow.querySelector('input')?.value ?? priceRow.textContent,
         quantityValue: () => quantityInput.value,
+        priceInput: () => priceRow.querySelector('input'),
         setAvailable: (n) => {
             availabilityLabel.textContent = `Quantity (Available At Price: ${n})`;
         },
@@ -729,6 +744,97 @@ describe('raising the buy price until it covers the quantity', () => {
 
         expect(view.priceValue()).toBe('475,000');
         expect(view.quantityValue()).toBe('24');
+    });
+
+    test('the abbreviated sleeping display is never what a raise is measured against', () => {
+        vi.useFakeTimers();
+        try {
+            // A rung between what the display rounds to and what the price is
+            cacheAsks([
+                { price: 470_000, quantity: 15 },
+                { price: 470_200, quantity: 900 },
+            ]);
+            const manager = createAutofillManager('Test-Observer');
+            manager.setQuantity(24, { itemHrid: ITEM });
+            manager.initialize();
+
+            // The control sleeps showing "470K"; the price it actually holds is 470,432
+            const view = buildBuyNowModal({
+                price: '470,432',
+                displayPrice: '470K',
+                available: 15,
+                sleepingPrice: true,
+            });
+            observerState.handlers['Test-Observer'](view.modal);
+            vi.advanceTimersByTime(1000);
+
+            // Writing the 470,200 rung would have cut the price by 232
+            expect(view.priceValue()).toBe('470,432');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    test('a price that changes while the control wakes is not written over', () => {
+        vi.useFakeTimers();
+        try {
+            cacheAsks(LADDER);
+            const manager = createAutofillManager('Test-Observer');
+            manager.setQuantity(24, { itemHrid: ITEM });
+            manager.initialize();
+
+            const view = buildBuyNowModal({ price: '470,000', available: 15, sleepingPrice: true });
+            observerState.handlers['Test-Observer'](view.modal);
+
+            // The wake click has revealed the input; the player doubles the price
+            // in it (the shortcuts' own ×2 button) before the fill lands
+            view.priceInput().value = '940,000';
+            vi.advanceTimersByTime(1000);
+
+            expect(view.priceValue()).toBe('940,000');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    test('the band’s floor never pushes the price past the covering rung', () => {
+        cacheAsks(LADDER);
+        const manager = createAutofillManager('Test-Observer');
+        manager.setQuantity(24, { itemHrid: ITEM });
+        manager.initialize();
+
+        // The whole ladder sits under a band that has moved up since it was posted
+        const view = buildBuyNowModal({ price: '470,000', available: 15, tradableRange: '480,000 – 500,000' });
+        observerState.handlers['Test-Observer'](view.modal);
+
+        // A buy price is a limit, so the floor is no reason to reach for rungs
+        // between 471,000 and 480,000 that coverage never asked for
+        expect(view.priceValue()).toBe('471000');
+    });
+
+    test('a modal that names no item is filled but never priced', () => {
+        cacheAsks(LADDER);
+        const manager = createAutofillManager('Test-Observer');
+        manager.setQuantity(24, { itemHrid: ITEM });
+        manager.initialize();
+
+        const view = buildBuyNowModal({ price: '470,000', available: 15, itemHrid: null });
+        observerState.handlers['Test-Observer'](view.modal);
+
+        expect(view.priceValue()).toBe('470,000');
+        expect(view.quantityValue()).toBe('24');
+    });
+
+    test('a Buy Now modal wording-compatible with the Shop’s dialog is still priced', () => {
+        cacheAsks(LADDER);
+        const manager = createAutofillManager('Test-Observer');
+        manager.setQuantity(24, { itemHrid: ITEM });
+        manager.initialize();
+
+        const view = buildBuyNowModal({ price: '470,000', available: 15, shopWording: true });
+        observerState.handlers['Test-Observer'](view.modal);
+
+        expect(view.priceValue()).toBe('471000');
     });
 
     test('with the setting off, nothing about today’s behaviour changes', () => {

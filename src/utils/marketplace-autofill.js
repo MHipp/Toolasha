@@ -10,7 +10,7 @@ import { setReactInputValue } from './react-input.js';
 import { parseItemCount } from './number-parser.js';
 import { estimatedListingAge } from './bundle-bridge.js';
 import { priceCoveringQuantity, nextPriceAbove } from './order-book.js';
-import { tradableRangeFrom, clampToRange } from './tradable-range.js';
+import { tradableRangeFrom } from './tradable-range.js';
 
 /**
  * How many times the price may step up the ask ladder after the first raise.
@@ -128,6 +128,11 @@ export function findQuantityInput(modal) {
  * @returns {boolean}
  */
 export function isShopBuyModal(modal) {
+    // The Shop's dialog has no marketplace header; a modal that has one is a
+    // marketplace modal whatever its wording happens to share with the Shop's.
+    // Without this a Buy Now modal that says "You Pay" and carries a bare "Buy"
+    // button reads as the Shop's and silently opts out of the price cover.
+    if (modal?.querySelector?.('div[class*="MarketplacePanel_header"]')) return false;
     const text = String(modal?.textContent || '');
     if (!/quantity/i.test(text) || !/you pay/i.test(text)) return false;
     if (/sell/i.test(text)) return false;
@@ -263,17 +268,17 @@ function priceRow(modal) {
 }
 
 /**
- * The price the modal is currently showing, read from the live input when the
- * control is awake and from the display div when it is not.
- * @param {HTMLElement} modal - Modal container element
+ * The price a live price input is holding.
+ *
+ * Only the input counts. The sleeping display div abbreviates ("470K" for
+ * 470,432), so a raise decided against it can be a cut of up to a rounding
+ * step, and the whole guarantee of this feature is that it never cuts.
+ *
+ * @param {HTMLInputElement} input - The woken price input
  * @returns {number|null} The price, or null when it cannot be read
  */
-function modalPrice(modal) {
-    const row = priceRow(modal);
-    if (!row) return null;
-    const input = row.querySelector('input');
-    const text = input ? input.value : row.querySelector('div[class*="MarketplacePanel_priceDisplay"]')?.textContent;
-    const value = parseItemCount(text, NaN);
+function priceInInput(input) {
+    const value = parseItemCount(input?.value, NaN);
     return Number.isFinite(value) && value > 0 ? value : null;
 }
 
@@ -348,14 +353,23 @@ function withPriceInput(modal, apply) {
  * @param {number} budget - Steps left after this one
  */
 function stepPriceToCover(modal, listings, quantity, target, budget) {
-    const range = tradableRangeFrom(modal.textContent || '');
-    const wanted = range ? clampToRange(target, range) : target;
-    const current = modalPrice(modal);
-    // Only ever raises. An unreadable price is not a licence to guess: without
-    // it there is no way to be sure the write is not a cut.
-    if (current === null || !(wanted > current)) return;
-
     withPriceInput(modal, (input) => {
+        // Decided here, against the input that is about to be written, rather
+        // than before the wake. Waking a sleeping price control takes a frame,
+        // and in it the modal can re-render, the player can type, and the
+        // shortcuts' own ÷2 button can halve the field — a decision taken
+        // before any of that and applied after it is a cut.
+        if (!document.body.contains(modal)) return;
+        const range = tradableRangeFrom(modal.textContent || '');
+        // Only the band's ceiling binds. A Buy Now price is a limit, not a
+        // posted listing, so its floor is no reason to raise past the covering
+        // rung and expose the order to levels coverage never asked for.
+        const wanted = range ? Math.min(target, range.max) : target;
+        const current = priceInInput(input);
+        // Only ever raises. An unreadable price is not a licence to guess:
+        // without it there is no way to be sure the write is not a cut.
+        if (current === null || !Number.isFinite(wanted) || !(wanted > current)) return;
+
         setReactInputValue(input, String(wanted), { focus: false, dispatchChange: true });
         // A price change can make the game re-derive the quantity, so the amount
         // that was asked for is written back after every step.
@@ -379,12 +393,12 @@ function stepPriceToCover(modal, listings, quantity, target, budget) {
  * buys only those. The lowest price whose cumulative supply covers the whole
  * amount is filled in instead — never above the modal's tradable maximum,
  * never below the price already shown, and never further up the ladder than
- * coverage requires. Off by default; the player still presses the button.
+ * coverage requires. The player still presses the button.
  *
  * Nothing happens when the setting is off, when the modal already covers the
- * quantity, when it shows no price field, when it is the Shop's dialog (no
- * order book behind it), or when no book for the item and enhancement level is
- * cached — every one of those is today's behaviour, unchanged.
+ * quantity, when it shows no price field, when it does not itself name the item
+ * being priced, when it is the Shop's dialog (no order book behind it), or when
+ * no book for the item and enhancement level is cached — every one of those is today's behaviour, unchanged.
  *
  * @param {HTMLElement} modal - Modal container element
  * @param {string|null} itemHrid - The item the fill was armed for
@@ -393,6 +407,12 @@ function stepPriceToCover(modal, listings, quantity, target, budget) {
 function raisePriceToCoverQuantity(modal, itemHrid, quantity) {
     if (!config?.getSetting?.('market_raiseBuyPriceToCoverQuantity')) return;
     if (!itemHrid || isShopBuyModal(modal)) return;
+    // The modal has to name the item itself. An arming is matched leniently —
+    // a modal that names no item is left to the header checks — but pricing is
+    // not: reading a ladder for one item into another item's live buy form is
+    // the one mistake here that spends money, so an unconfirmed modal is a
+    // stop, exactly as an unreadable price is.
+    if (modalItemHrid(modal) !== itemHrid) return;
     if (!priceRow(modal)) return;
     if (modalCoversQuantity(modal, quantity)) return;
 
