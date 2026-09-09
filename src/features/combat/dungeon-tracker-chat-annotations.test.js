@@ -58,6 +58,16 @@ const markAsProfileLinkMock = vi.hoisted(() =>
 );
 vi.mock('../chat/chat-profile-link.js', () => ({ markAsProfileLink: markAsProfileLinkMock }));
 
+// Which way round the client writes a date. The real detection reads the
+// runtime's locale, which a test cannot change; the detection itself is covered
+// in locale-date-order.test.js, so here it is simply told what the client is.
+const locale = vi.hoisted(() => ({ dayFirst: false }));
+vi.mock('../../utils/locale-date-order.js', () => ({
+    isDayFirstLocale: () => locale.dayFirst,
+    detectDayFirst: () => locale.dayFirst,
+    _resetDateFieldOrder: () => {},
+}));
+
 vi.mock('./dungeon-tracker-storage.js', () => ({
     default: {
         scrubOutlierRuns: async () => 0,
@@ -152,6 +162,17 @@ beforeEach(() => {
     annotations.initComplete = true;
     annotations.timerRegistry.clearAll();
     markAsProfileLinkMock.mockClear();
+    locale.dayFirst = false;
+
+    // A stamp carries no year, so which year it parses to depends on today's
+    // date. Pinning the clock inside the year the fixtures are written for
+    // keeps every "[08/04 ...]" test reading the same date all year round.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(YEAR, 7, 10, 12, 0, 0));
+});
+
+afterEach(() => {
+    vi.useRealTimers();
 });
 
 describe('reading a timestamp off a message', () => {
@@ -197,6 +218,91 @@ describe('reading a timestamp off a message', () => {
         expect(annotations.getTimestampFromMessage(node, true)).toBeNull();
         expect(warn).toHaveBeenCalled();
         warn.mockRestore();
+    });
+});
+
+describe('a client that writes the day first', () => {
+    // Mid-December, so every fixture below is in the past whichever way its
+    // fields are read: the year rule then never enters into what these prove.
+    beforeEach(() => {
+        locale.dayFirst = true;
+        vi.setSystemTime(new Date(2028, 11, 15, 12, 0, 0));
+    });
+
+    test('a run over midnight is minutes, not a month — the reported bug', async () => {
+        message('[04/03 23:00:00]', 'Battle started: Chimerical Den');
+        const first = message('[04/03 23:52:47]', 'Key counts: [Alice - 12]');
+        message('[05/03 00:07:00]', 'Key counts: [Alice - 11]');
+
+        await annotations.annotateAllMessages();
+
+        // Before the fix: [Run #1: 41774m 13s]. Read as M/D these are 3 April
+        // and 3 May, so one night becomes an April — the exact label a player
+        // posted.
+        expect(labelOn(first)).toBe('[Run #1: 14m 13s]');
+    });
+
+    test('a day over twelve still reads as a day', () => {
+        const node = message('[16/07 10:00:00]', 'Key counts: [Alice - 1]');
+        expect(annotations.getTimestampFromMessage(node)).toEqual(new Date(2028, 6, 16, 10, 0, 0, 0));
+    });
+
+    test('digits that contradict the locale win, because the page rendered them', () => {
+        // Day-first client, but 16 cannot be a month: this is 16 July whichever
+        // way the locale says the fields run.
+        const node = message('[07/16 10:00:00]', 'Key counts: [Alice - 1]');
+        expect(annotations.getTimestampFromMessage(node)).toEqual(new Date(2028, 6, 16, 10, 0, 0, 0));
+    });
+
+    test('a stamp no reading can make a date is dropped', () => {
+        const node = message('[16/16 10:00:00]', 'Key counts: [Alice - 1]');
+        expect(annotations.getTimestampFromMessage(node)).toBeNull();
+    });
+
+    test('the dash and dot formats are unchanged — they were already day first', () => {
+        const dash = message('[04-8 22:15:30]', 'Key counts: [Alice - 1]');
+        const dot = message('[4.8. 22:15:30]', 'Key counts: [Alice - 1]');
+        expect(annotations.getTimestampFromMessage(dash)).toEqual(new Date(2028, 7, 4, 22, 15, 30, 0));
+        expect(annotations.getTimestampFromMessage(dot)).toEqual(new Date(2028, 7, 4, 22, 15, 30, 0));
+    });
+
+    test('a run over New Year lands in the year that puts it in the past', () => {
+        vi.setSystemTime(new Date(2028, 0, 1, 0, 30, 0));
+
+        const before = message('[31/12 23:58:00]', 'Key counts: [Alice - 12]');
+        const after = message('[01/01 00:02:00]', 'Key counts: [Alice - 11]');
+
+        const start = annotations.getTimestampFromMessage(before);
+        const end = annotations.getTimestampFromMessage(after);
+
+        expect(start).toEqual(new Date(2027, 11, 31, 23, 58, 0, 0));
+        expect(end).toEqual(new Date(2028, 0, 1, 0, 2, 0, 0));
+        expect(end - start).toBe(4 * 60 * 1000);
+    });
+});
+
+describe('a client that writes the month first is untouched', () => {
+    beforeEach(() => {
+        locale.dayFirst = false;
+        vi.setSystemTime(new Date(2028, 11, 15, 12, 0, 0));
+    });
+
+    test('the stamps behind the reported bug read as month first, as they always did', () => {
+        const first = message('[04/03 23:52:47]', 'Key counts: [Alice - 12]');
+        const second = message('[05/03 00:07:00]', 'Key counts: [Alice - 11]');
+        expect(annotations.getTimestampFromMessage(first)).toEqual(new Date(2028, 3, 3, 23, 52, 47, 0));
+        expect(annotations.getTimestampFromMessage(second)).toEqual(new Date(2028, 4, 3, 0, 7, 0, 0));
+    });
+
+    test('twelve-hour, swapped, dash and dot stamps all read as before', () => {
+        const american = message('[08/04 01:05:09 PM]', 'Key counts: [Alice - 1]');
+        const swapped = message('[16/07 10:00:00]', 'Key counts: [Alice - 1]');
+        const dash = message('[04-8 22:15:30]', 'Key counts: [Alice - 1]');
+        const dot = message('[4.8. 22:15:30]', 'Key counts: [Alice - 1]');
+        expect(annotations.getTimestampFromMessage(american)).toEqual(new Date(2028, 7, 4, 13, 5, 9, 0));
+        expect(annotations.getTimestampFromMessage(swapped)).toEqual(new Date(2028, 6, 16, 10, 0, 0, 0));
+        expect(annotations.getTimestampFromMessage(dash)).toEqual(new Date(2028, 7, 4, 22, 15, 30, 0));
+        expect(annotations.getTimestampFromMessage(dot)).toEqual(new Date(2028, 7, 4, 22, 15, 30, 0));
     });
 });
 

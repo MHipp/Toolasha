@@ -18,6 +18,7 @@ import {
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { createMutationWatcher } from '../../utils/dom-observer-helpers.js';
 import { gameDigitsSource } from '../../utils/number-parser.js';
+import { isDayFirstLocale } from '../../utils/locale-date-order.js';
 import performanceMonitor from '../../utils/performance-monitor.js';
 
 class DungeonTrackerChatAnnotations {
@@ -1042,8 +1043,10 @@ class DungeonTrackerChatAnnotations {
 
     /**
      * Get timestamp from message DOM element
-     * Handles American (M/D HH:MM:SS AM/PM), international (DD-M HH:MM:SS),
-     * and European dot (D.M. HH:MM:SS) formats
+     * Handles slash (M/D or D/M HH:MM:SS AM/PM), international (DD-M HH:MM:SS),
+     * and European dot (D.M. HH:MM:SS) formats. Which way round a slash date
+     * runs comes from the client's locale, overruled by any field over 12; the
+     * year comes from placing the stamp in the recent past.
      * @param {HTMLElement} msg - Message element
      * @param {boolean} warnOnFailure - Whether to log warning if parsing fails (default: false)
      * @returns {Date|null} Parsed timestamp or null
@@ -1083,13 +1086,29 @@ class DungeonTrackerChatAnnotations {
         let month, day, hour, min, sec, period;
 
         if (isAmerican) {
-            // American format: M/D — but if first part > 12 it must be DD/MM (e.g. "16/07")
-            [, month, day, hour, min, sec, period] = match;
-            month = parseInt(month, 10);
-            day = parseInt(day, 10);
-            if (month > 12) {
-                // Swap: first part is day, second part is month
-                [month, day] = [day, month];
+            // Slash format: M/D or D/M, which the digits alone cannot settle.
+            // The client's locale says which the game rendered; the digits
+            // overrule it whenever they can, because a field over 12 is a day
+            // whatever the locale claims and what the page actually rendered is
+            // stronger evidence than what the locale API predicts it would.
+            let first, second;
+            [, first, second, hour, min, sec, period] = match;
+            first = parseInt(first, 10);
+            second = parseInt(second, 10);
+
+            if (first > 12 && second > 12) return null; // no reading of this is a date
+            if (first > 12) {
+                day = first;
+                month = second;
+            } else if (second > 12) {
+                month = first;
+                day = second;
+            } else if (isDayFirstLocale()) {
+                day = first;
+                month = second;
+            } else {
+                month = first;
+                day = second;
             }
         } else {
             // International format: D-M or D.M.
@@ -1106,8 +1125,16 @@ class DungeonTrackerChatAnnotations {
         if (period === 'PM' && hour < 12) hour += 12;
         if (period === 'AM' && hour === 12) hour = 0;
 
+        // A stamp carries no year, and chat is always the recent past: take the
+        // current year unless that would put the message in the future, which
+        // only a log spanning New Year can do. A day of slack absorbs a clock
+        // that is a little behind the game's, so a stamp from moments ago is
+        // never thrown back a year.
         const now = new Date();
-        const dateObj = new Date(now.getFullYear(), month - 1, day, hour, min, sec, 0);
+        let dateObj = new Date(now.getFullYear(), month - 1, day, hour, min, sec, 0);
+        if (dateObj.getTime() - now.getTime() > 24 * 60 * 60 * 1000) {
+            dateObj = new Date(now.getFullYear() - 1, month - 1, day, hour, min, sec, 0);
+        }
         return dateObj;
     }
 
