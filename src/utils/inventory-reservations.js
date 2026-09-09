@@ -178,6 +178,9 @@ const record = createPersistedRecord({
 /** Whose ledger is in memory, so a character switch never spends the other's bag */
 let owner = null;
 
+/** The in-flight or finished load for the character in `owner`, so it happens once */
+let loading = null;
+
 /**
  * Point the record at the character logged in now.
  * @returns {void}
@@ -186,6 +189,13 @@ function claim() {
     const who = dataManager.getCurrentCharacterId?.() || null;
     if (who === owner) return;
     record.reset();
+    // The in-flight read belongs to the character just left. `record.reset()`
+    // has pulled the record out from under it, so it will come back having
+    // loaded nothing — and an `ensureLoaded()` that awaited it would hand the
+    // arriving character an EMPTY ledger that the next overwrite-save would
+    // file under their key, losing every claim they had stored. Dropped here
+    // so the next caller starts a read of its own.
+    loading = null;
     owner = who;
 }
 
@@ -264,9 +274,6 @@ export async function loadReservations() {
     return readLedger();
 }
 
-/** The in-flight or finished load for the character in `owner`, so it happens once */
-let loading = null;
-
 /**
  * Read the ledger back once per character, from wherever first needs it.
  *
@@ -312,8 +319,11 @@ function cleanLines(lines) {
     for (const line of Array.isArray(lines) ? lines : []) {
         const itemHrid = line?.itemHrid;
         if (typeof itemHrid !== 'string' || !itemHrid) continue;
+        // `Number.isFinite`, not just `> 0`: an Infinity that reached the
+        // ledger would claim every copy of the item from every other plan and
+        // print as "∞ reserved", and nothing downstream re-checks it
         const count = Math.floor(Number(line.count) || 0);
-        if (!(count > 0)) continue;
+        if (!Number.isFinite(count) || !(count > 0)) continue;
         const enhancementLevel = Math.max(0, Math.floor(Number(line.enhancementLevel) || 0));
         const key = `${itemHrid}|${enhancementLevel}`;
         const held = byKey.get(key);
@@ -345,6 +355,15 @@ export async function reserve(ownerId, lines, { label = '' } = {}) {
 
     try {
         await ensureLoaded();
+        // Every write below is an `overwrite` one, which takes no probe of its
+        // own — so a ledger that could not be READ would be answered by writing
+        // this one claim over whatever is stored, losing every other plan's.
+        // The record only stays unloaded when the probe was unreadable, which
+        // makes this exactly the "no blind overwrites" rule the record keeps.
+        if (!record.isLoaded()) {
+            console.warn('[InventoryReservations] Not reserving: the ledger could not be read first');
+            return false;
+        }
         const ledger = record.get();
         const now = Date.now();
         sweepExpired(ledger, now);
@@ -623,6 +642,26 @@ config.onSettingsLoaded?.(() => {
 });
 config.onSettingChange?.(RESERVATIONS_SETTING, (on) => {
     if (on) ensureLoaded().catch(() => {});
+    else _resetReservations();
+});
+
+/*
+ * A switch moves the whole ledger: the arriving character's claims are in their
+ * own record and the departing character's are none of their business. Nothing
+ * else announces it — every entry point notices lazily, in `claim()` — and the
+ * paths that ask what is available cannot await, so without this the arriving
+ * character plans against an EMPTY ledger (every claim invisible, every plan
+ * reporting stock another plan has taken) until the next write happens to load
+ * it. Reading it here also bumps the record's generation at the moment of the
+ * switch, which is what makes a save queued by the departing character stand
+ * down instead of landing under the arriving character's key.
+ *
+ * `character_switched` rather than `character_switching`: the id has moved by
+ * then, so the read is of the arriving character's record, and a release the
+ * departing character's teardown started still ran against theirs.
+ */
+dataManager.on?.('character_switched', () => {
+    if (reservationsEnabled()) ensureLoaded().catch(() => {});
     else _resetReservations();
 });
 

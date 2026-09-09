@@ -15,8 +15,11 @@ import { describe, test, expect, beforeEach, vi } from 'vitest';
 const mockDataManager = vi.hoisted(() => ({
     currentCharacterId: 'market123',
     inventory: [],
+    handlers: new Map(),
     getCurrentCharacterId: vi.fn(() => mockDataManager.currentCharacterId),
     getInventory: vi.fn(() => mockDataManager.inventory),
+    on: vi.fn((event, handler) => mockDataManager.handlers.set(event, handler)),
+    off: vi.fn((event) => mockDataManager.handlers.delete(event)),
 }));
 
 const mockConfig = vi.hoisted(() => ({
@@ -82,6 +85,7 @@ const {
     shortfallNote,
     mergeReservations,
     flushReservationWrites,
+    ensureReservationsLoaded,
     _resetReservations,
 } = await import('./inventory-reservations.js');
 
@@ -437,5 +441,83 @@ describe('two devices’ ledgers as one', () => {
     test('a non-object on either side is ignored rather than thrown over', () => {
         expect(mergeReservations(null, undefined)).toEqual({});
         expect(mergeReservations({ 'goal:a': null }, { 'goal:b': 7 })).toEqual({});
+    });
+});
+
+describe('a character switch moves the whole ledger', () => {
+    const IRONCOW = `${RESERVATIONS_KEY}_ironcow456`;
+
+    /**
+     * @param {string} owner - Owner id
+     * @param {number} count - Units of logs claimed
+     * @returns {Object} A stored reservation, stamped now so the TTL keeps it
+     */
+    function storedClaim(owner, count) {
+        return { [owner]: { label: owner, updatedAt: Date.now(), lines: [{ itemHrid: LOGS, count }] } };
+    }
+
+    test('the arriving character’s claims are read back on the switch, not on the next write', async () => {
+        mockStorage.storeFor('settings').set(IRONCOW, storedClaim('goal:theirs', 300));
+        await ensureReservationsLoaded();
+
+        mockDataManager.currentCharacterId = 'ironcow456';
+        await mockDataManager.handlers.get('character_switched')();
+        await flushReservationWrites();
+
+        // A render path cannot await a load; it must already be there
+        expect(reservedElsewhere(LOGS, 0, { excludeOwner: 'goal:mine' })).toBe(300);
+        expect(effectiveInventory(LOGS, 0, { excludeOwner: 'goal:mine' })).toBe(200);
+    });
+
+    test('a load in flight when the character switches is not taken for the arriving character’s', async () => {
+        mockStorage.storeFor('settings').set(KEY, storedClaim('goal:departing', 300));
+        mockStorage.storeFor('settings').set(IRONCOW, storedClaim('goal:theirs', 100));
+
+        // Hold the departing character's read open so the switch lands mid-load
+        let openTheGate;
+        const gate = new Promise((resolve) => {
+            openTheGate = resolve;
+        });
+        const readStore = mockStorage.tryGet.getMockImplementation();
+        mockStorage.tryGet.mockImplementationOnce(async (...args) => {
+            await gate;
+            return readStore(...args);
+        });
+
+        const inFlight = ensureReservationsLoaded();
+        mockDataManager.currentCharacterId = 'ironcow456';
+        const claimed = reserve('goal:new', [{ itemHrid: LOGS, count: 10 }]);
+        openTheGate();
+        await Promise.all([inFlight, claimed]);
+        await flushReservationWrites();
+
+        // The arriving character's own claim is still there: the departing
+        // character's dead load must not have passed for an empty ledger
+        expect(Object.keys(mockStorage.storeFor('settings').get(IRONCOW)).sort()).toEqual(['goal:new', 'goal:theirs']);
+        expect(mockStorage.storeFor('settings').get(KEY)['goal:departing']).toBeTruthy();
+    });
+});
+
+describe('a ledger that could not be read is not a ledger that is empty', () => {
+    test('a claim made while the read fails does not overwrite what is stored', async () => {
+        await reserve('goal:a', [{ itemHrid: LOGS, count: 300 }], { label: 'Goal: A' });
+        await flushReservationWrites();
+        _resetReservations();
+
+        // The read fails and the write would not — a transient failure rather
+        // than a dead store, which is the case a blind overwrite destroys
+        mockStorage.tryGet.mockImplementationOnce(async () => null);
+        expect(await reserve('goal:b', [{ itemHrid: LOGS, count: 10 }])).toBe(false);
+        await flushReservationWrites();
+
+        expect(Object.keys(mockStorage.storeFor('settings').get(KEY))).toEqual(['goal:a']);
+    });
+
+    test('a non-finite count is not a claim on every copy in the bag', async () => {
+        await reserve('goal:a', [
+            { itemHrid: LOGS, count: Infinity },
+            { itemHrid: LOGS, count: 25 },
+        ]);
+        expect(allReservations()['goal:a'].lines).toEqual([{ itemHrid: LOGS, enhancementLevel: 0, count: 25 }]);
     });
 });
