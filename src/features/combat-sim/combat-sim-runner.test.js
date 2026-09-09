@@ -29,7 +29,8 @@ vi.mock('../../utils/mobile.js', () => ({
     isMobileMode: () => settings.mobile,
 }));
 
-const { plannedWorkerCount, runSimulation, runLabyrinthSimulation } = await import('./combat-sim-runner.js');
+const { plannedWorkerCount, runSimulation, runLabyrinthSimulation, cancelSimulation, terminateIdleWorkers } =
+    await import('./combat-sim-runner.js');
 
 /** The bare shape mergeSimResults walks unconditionally */
 const EMPTY_SIM_RESULT = { encounters: 0, deaths: {}, experienceGained: {}, consumablesUsed: {} };
@@ -69,6 +70,9 @@ beforeEach(() => {
     settings.maxThreads = 0;
     settings.mobile = false;
     vi.stubGlobal('navigator', { hardwareConcurrency: 8 });
+    // Workers now outlive the run that built them, so one test's warm pool is
+    // the next one's confusing worker count unless it is emptied here.
+    cancelSimulation();
 });
 
 describe('how wide one simulation spreads itself', () => {
@@ -256,5 +260,199 @@ describe('splitting the requested hours', () => {
 
         expect(messages).toHaveLength(1);
         expect(chunkHours(messages)[0]).toBeCloseTo(0.5, 9);
+    });
+});
+
+/**
+ * Whether a simulation builds a Worker or borrows one.
+ *
+ * A worker costs the whole engine bundle parsed and instantiated, plus a
+ * structured clone of the game data on the thread that draws the game. The
+ * labyrinth live readout replays the fight in progress every four seconds and
+ * was paying both, every time. These describe the pool that stops it: the
+ * worker is kept, and the game data is left out of the message when the worker
+ * it is going to already holds those maps.
+ */
+
+/** Two payloads sharing these maps are the same data to a warm worker. */
+const ITEM_MAP = { '/items/cheese': {} };
+const ACTION_MAP = { '/actions/combat/fly': {} };
+
+/** A game-data payload in the shape `buildGameDataPayload` returns. */
+const gameDataPayload = () => ({ itemDetailMap: ITEM_MAP, actionDetailMap: ACTION_MAP });
+
+/**
+ * Stand in for the browser's Worker plumbing, counting what gets built.
+ * With `deferred`, a worker holds its answer until the test calls `respond`,
+ * which is what lets a test look at work that is still in flight.
+ */
+function stubWorkerPool({ deferred = false } = {}) {
+    const built = [];
+    const messages = [];
+    vi.stubGlobal(
+        'Blob',
+        class {
+            constructor() {}
+        }
+    );
+    vi.stubGlobal('URL', { createObjectURL: () => 'blob:sim', revokeObjectURL: () => {} });
+    vi.stubGlobal(
+        'Worker',
+        class {
+            constructor() {
+                this.terminated = false;
+                built.push(this);
+            }
+            postMessage(message) {
+                messages.push(message);
+                this.respond = (simResult) =>
+                    this.onmessage?.({
+                        data: {
+                            type: 'result',
+                            taskId: message.taskId,
+                            simResult: simResult || { ...EMPTY_SIM_RESULT },
+                        },
+                    });
+                if (!deferred) setTimeout(() => this.respond());
+            }
+            terminate() {
+                this.terminated = true;
+            }
+        }
+    );
+    return { built, messages };
+}
+
+/** One live replay, the shape `labyrinth-clear-rate` sends every four seconds. */
+const replay = (gameData) =>
+    runLabyrinthSimulation({
+        gameData,
+        playerDTOs: [],
+        zoneHrid: '/actions/combat/fly',
+        monsterHrid: '/monsters/gobo_stabby',
+        roomLevel: 30,
+        crates: [],
+        hours: 1,
+        communityBuffs: {},
+    });
+
+describe('keeping a simulation worker warm', () => {
+    test("a second replay borrows the first replay's worker", async () => {
+        const { built } = stubWorkerPool();
+
+        await replay(gameDataPayload());
+        await replay(gameDataPayload());
+        await replay(gameDataPayload());
+
+        expect(built).toHaveLength(1);
+    });
+
+    test('and is sent no game data, because that worker already holds it', async () => {
+        const { messages } = stubWorkerPool();
+
+        await replay(gameDataPayload());
+        await replay(gameDataPayload());
+
+        // The maps are what makes the message expensive to clone; everything
+        // that describes *this* fight is still there
+        expect(messages[0].gameData).toEqual(gameDataPayload());
+        expect(messages[1].gameData).toBeUndefined();
+        expect(messages[1].labyrinth.roomLevel).toBe(30);
+    });
+
+    test('game data that has actually changed gets a worker of its own', async () => {
+        // A reload replaces init_client_data wholesale, so every map in the
+        // payload is a different object - which is the invalidation signal
+        const { built, messages } = stubWorkerPool();
+
+        await replay(gameDataPayload());
+        await replay({ itemDetailMap: { '/items/cheese': {} }, actionDetailMap: { '/actions/combat/fly': {} } });
+
+        expect(built).toHaveLength(2);
+        expect(messages[1].gameData).toBeDefined();
+    });
+
+    test('a run split across four workers still gets four, each with the data', async () => {
+        const { built, messages } = stubWorkerPool();
+
+        const merged = await runSimulation({
+            gameData: gameDataPayload(),
+            zoneHrid: '/actions/combat/fly',
+            difficultyTier: 0,
+            hours: 100,
+        });
+
+        expect(built).toHaveLength(4);
+        // Chunks are acquired before any of them finishes, so none can borrow
+        // another's worker - and none may go without the game data
+        expect(messages.map((m) => Boolean(m.gameData))).toEqual([true, true, true, true]);
+        expect(messages.map((m) => m.simulationTimeLimit / (3600 * 1e9))).toEqual([25, 25, 25, 25]);
+        expect(merged.encounters).toBe(0);
+    });
+
+    test('and the next run borrows one of the four back', async () => {
+        const { built } = stubWorkerPool();
+
+        await runSimulation({
+            gameData: gameDataPayload(),
+            zoneHrid: '/actions/combat/fly',
+            difficultyTier: 0,
+            hours: 100,
+        });
+        await replay(gameDataPayload());
+
+        expect(built).toHaveLength(4);
+    });
+
+    test('the numbers a replay produces do not change', async () => {
+        // The worker is reused; what it answers is passed through untouched,
+        // warm or cold
+        const { built } = stubWorkerPool({ deferred: true });
+        const answer = { ...EMPTY_SIM_RESULT, encounters: 7, labyAttemptCount: 9 };
+
+        const cold = replay(gameDataPayload());
+        built[0].respond(answer);
+        expect(await cold).toEqual(answer);
+
+        const warm = replay(gameDataPayload());
+        built[0].respond(answer);
+        expect(await warm).toEqual(answer);
+        expect(built).toHaveLength(1);
+    });
+});
+
+describe('stopping and tearing down a warm pool', () => {
+    test('cancelling still rejects the work in flight', async () => {
+        const { built } = stubWorkerPool({ deferred: true });
+
+        const inFlight = replay(gameDataPayload());
+        cancelSimulation();
+
+        await expect(inFlight).rejects.toThrow('Cancelled');
+        expect(built[0].terminated).toBe(true);
+    });
+
+    test('and takes the idle workers with it', async () => {
+        // Otherwise a Stop, a character switch or a feature teardown leaves a
+        // thread holding a copy of the game data for the rest of the session
+        const { built } = stubWorkerPool();
+
+        await replay(gameDataPayload());
+        expect(built[0].terminated).toBe(false);
+
+        cancelSimulation();
+
+        expect(built[0].terminated).toBe(true);
+        await replay(gameDataPayload());
+        expect(built).toHaveLength(2);
+    });
+
+    test('the idle sweep the reaper calls empties the pool', async () => {
+        const { built } = stubWorkerPool();
+
+        await replay(gameDataPayload());
+        terminateIdleWorkers();
+
+        expect(built[0].terminated).toBe(true);
     });
 });

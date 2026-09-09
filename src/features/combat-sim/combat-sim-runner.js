@@ -11,15 +11,50 @@
 import WORKER_SCRIPT from './combat-sim-worker-entry.js?worker';
 import config from '../../core/config.js';
 import { isMobileMode } from '../../utils/mobile.js';
+import { createIdlePoolReaper } from '../../utils/worker-pool.js';
 import { deriveSeed } from './engine/rng.js';
 
 let workerBlobURL = null;
+/** Wrappers running a chunk right now. `cancelSimulation` terminates these. */
 let activeWorkers = [];
+/**
+ * Wrappers with nothing to do, kept warm for the next chunk.
+ *
+ * A worker is not cheap to start: the whole engine bundle is parsed and
+ * instantiated, and the first message hands it a structured clone of the game
+ * data. The labyrinth live readout replays the fight in progress every four
+ * seconds, on the thread that draws the game, and was paying both every time.
+ * Each entry is `{ worker, gameData }` - the game-data payload that worker was
+ * last given, so a matching chunk can leave it out of the message entirely.
+ */
+let idleWorkers = [];
 let taskIdCounter = 0;
 let pendingRejects = []; // Track reject functions to abort on cancel
 
 const MIN_HOURS_PER_WORKER = 20;
 const MAX_WORKERS = 4;
+
+/**
+ * Idle workers kept at once. Each holds its own clone of the game data, so the
+ * pool is capped at the widest single run (MAX_WORKERS) and no wider.
+ */
+const MAX_IDLE_WORKERS = MAX_WORKERS;
+
+/**
+ * How long an unused worker is kept. Long enough to span the live replay's
+ * four-second cadence and a user reading one result before asking for the next,
+ * short enough that a session that simulated once does not hold a thread and a
+ * copy of the game data for the rest of the evening.
+ */
+const IDLE_WORKER_MS = 60 * 1000;
+
+const idleReaper = createIdlePoolReaper(
+    () => terminateIdleWorkers(),
+    IDLE_WORKER_MS,
+    // A chunk still running is not idle: its worker is not in the idle list,
+    // but it will be released into it the moment it finishes.
+    () => activeWorkers.length > 0
+);
 
 /**
  * @returns {number} Max worker count from setting, or hardware concurrency if 0/unset
@@ -129,6 +164,74 @@ export function buildExtraBuffs(communityBuffs, guildCombatBuffs) {
 }
 
 /**
+ * Whether two game-data payloads carry the same maps.
+ *
+ * Reference equality per map, not a deep compare: every payload is assembled
+ * from the single `init_client_data` object (see `buildGameDataPayload`), so
+ * identical map references mean identical data, and a reload replaces that
+ * object wholesale - data-manager assigns a new `initClientData` - which shows
+ * up here as a different reference on every map. The compare is fifteen pointer
+ * checks, against a structured clone of tens of megabytes.
+ *
+ * @param {Object|null} a - Payload a worker was last given
+ * @param {Object|null} b - Payload about to be sent
+ * @returns {boolean} True when b can be left out of the message
+ */
+function sameGameData(a, b) {
+    if (!a || !b) return false;
+    const keysA = Object.keys(a);
+    if (keysA.length !== Object.keys(b).length) return false;
+    return keysA.every((key) => a[key] === b[key]);
+}
+
+/**
+ * A worker ready to run this chunk - reused when one is warm, built when not.
+ * @param {Object|null} gameData - The chunk's game-data payload
+ * @returns {{worker: Worker, gameData: Object|null}} Wrapper, removed from the idle list
+ */
+function acquireWorker(gameData) {
+    const index = idleWorkers.findIndex((wrapper) => sameGameData(wrapper.gameData, gameData));
+    if (index >= 0) return idleWorkers.splice(index, 1)[0];
+
+    // Nothing warm holds this game data. Rather than reason about what a run
+    // may have derived from the old data inside that worker, an idle one is
+    // thrown away and a fresh worker built: the worst case is exactly the
+    // previous behaviour, one new worker per chunk.
+    const stale = idleWorkers.pop();
+    if (stale) stale.worker.terminate();
+    return { worker: new Worker(getWorkerURL()), gameData: null };
+}
+
+/**
+ * Hand a finished worker back to the idle list.
+ * @param {{worker: Worker, gameData: Object|null}} wrapper - Wrapper that just finished
+ */
+function releaseWorker(wrapper) {
+    // Detach first: a late message from the run just finished must not reach
+    // the handlers of the run that picks this worker up next.
+    wrapper.worker.onmessage = null;
+    wrapper.worker.onerror = null;
+
+    if (idleWorkers.length >= MAX_IDLE_WORKERS) {
+        wrapper.worker.terminate();
+        return;
+    }
+    idleWorkers.push(wrapper);
+    idleReaper.touch();
+}
+
+/**
+ * Terminate every idle worker. Runs in flight are untouched.
+ */
+export function terminateIdleWorkers() {
+    for (const wrapper of idleWorkers) {
+        wrapper.worker.terminate();
+    }
+    idleWorkers = [];
+    idleReaper.cancel();
+}
+
+/**
  * Run a single simulation chunk in a Worker.
  * @param {Object} message - Worker message payload
  * @param {Function} [onProgress] - Progress callback (0-100 for this chunk)
@@ -136,12 +239,13 @@ export function buildExtraBuffs(communityBuffs, guildCombatBuffs) {
  */
 export function runWorkerChunk(message, onProgress) {
     return new Promise((resolve, reject) => {
-        const worker = new Worker(getWorkerURL());
-        activeWorkers.push(worker);
+        const wrapper = acquireWorker(message.gameData);
+        const worker = wrapper.worker;
+        activeWorkers.push(wrapper);
         pendingRejects.push(reject);
 
         const cleanup = () => {
-            activeWorkers = activeWorkers.filter((w) => w !== worker);
+            activeWorkers = activeWorkers.filter((w) => w !== wrapper);
             pendingRejects = pendingRejects.filter((r) => r !== reject);
         };
 
@@ -152,23 +256,33 @@ export function runWorkerChunk(message, onProgress) {
             if (msg.type === 'progress') {
                 if (onProgress) onProgress(msg.progress);
             } else if (msg.type === 'result') {
-                worker.terminate();
                 cleanup();
+                releaseWorker(wrapper);
                 resolve(msg.simResult);
             } else if (msg.type === 'error') {
-                worker.terminate();
+                // The worker caught this itself and is still healthy - the
+                // per-run state lives on the simulator instance it just dropped
                 cleanup();
+                releaseWorker(wrapper);
                 reject(new Error(msg.error));
             }
         };
 
         worker.onerror = (error) => {
+            // An uncaught worker-level failure says nothing about what state the
+            // worker is in. It does not go back in the pool.
             worker.terminate();
             cleanup();
             reject(new Error(error.message || 'Worker error'));
         };
 
-        worker.postMessage(message);
+        // A warm worker already holds these maps in its engine singleton, and
+        // the game data is by far the largest thing in the message -
+        // structuredClone copies all of it into the worker on every post.
+        // Leaving it out is the whole point of keeping the worker.
+        const outbound = wrapper.gameData ? { ...message, gameData: undefined } : message;
+        if (!wrapper.gameData) wrapper.gameData = message.gameData || null;
+        worker.postMessage(outbound);
     });
 }
 
@@ -720,13 +834,18 @@ export async function runPlayerStatProbe(params) {
 }
 
 /**
- * Terminate all active simulation workers and reject pending promises.
+ * Terminate all simulation workers and reject pending promises.
+ *
+ * Idle workers go too. Cancelling is what a Stop button, a character switch and
+ * a feature teardown all call, and none of them should leave a thread holding a
+ * copy of the game data behind; the next run builds a fresh worker.
  */
 export function cancelSimulation() {
-    for (const worker of activeWorkers) {
-        worker.terminate();
+    for (const wrapper of activeWorkers) {
+        wrapper.worker.terminate();
     }
     activeWorkers = [];
+    terminateIdleWorkers();
 
     const rejects = pendingRejects.slice();
     pendingRejects = [];

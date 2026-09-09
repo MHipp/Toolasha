@@ -11,7 +11,7 @@
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const harness = vi.hoisted(() => ({ labyrinthArgs: [], posted: [] }));
+const harness = vi.hoisted(() => ({ labyrinthArgs: [], posted: [], gameDataSet: [] }));
 
 vi.mock('./engine/labyrinth.js', () => ({
     default: class {
@@ -48,7 +48,7 @@ vi.mock('./engine/combat-simulator.js', () => ({
     getCapturedPlayerDetails: () => null,
 }));
 
-vi.mock('./engine/game-data.js', () => ({ setGameData: () => {} }));
+vi.mock('./engine/game-data.js', () => ({ setGameData: (data) => harness.gameDataSet.push(data) }));
 vi.mock('./engine/rng.js', () => ({ seedSimRng: () => {} }));
 vi.mock('./engine/extra-buffs.js', () => ({ buildPlayerExtraBuffs: () => [] }));
 vi.mock('./engine/combat-unit.js', () => ({ setBuffCapture: () => {}, getCapturedMonsterBuffs: () => ({}) }));
@@ -73,6 +73,7 @@ function startMessage(labyrinth) {
 beforeEach(async () => {
     harness.labyrinthArgs = [];
     harness.posted = [];
+    harness.gameDataSet = [];
     vi.stubGlobal('postMessage', (message) => harness.posted.push(message));
     vi.stubGlobal('onmessage', null);
     vi.resetModules();
@@ -108,5 +109,50 @@ describe('the labyrinth monster the worker builds', () => {
         globalThis.onmessage(startMessage({ monsterHrid: '/monsters/x', roomLevel: 100, fullAbilities: false }));
 
         expect(fullAbilitiesArg()).toBe(false);
+    });
+});
+
+/**
+ * What a worker that is used twice does about the game data.
+ *
+ * The runner keeps a finished worker warm and sends the next chunk without the
+ * game data when that worker was already given the same maps — the payload is
+ * the largest thing in the message and structuredClone copies all of it across
+ * on every post. That only works if the entry leaves the engine singleton alone
+ * when the field is absent; calling `setGameData(undefined)` would blank it and
+ * the second run would fail on the first map it read.
+ */
+describe('game data across two messages to the same worker', () => {
+    /** A minimal run, with the game data included or left out. */
+    const message = (gameData) => ({
+        data: {
+            type: 'start_simulation',
+            taskId: 1,
+            ...(gameData ? { gameData } : {}),
+            playerDTOs: [],
+            zoneHrid: '/actions/combat/fly',
+            difficultyTier: 0,
+            simulationTimeLimit: 1,
+            extraBuffs: [],
+        },
+    });
+
+    test('the first message installs it', () => {
+        const maps = { itemDetailMap: {} };
+
+        globalThis.onmessage(message(maps));
+
+        expect(harness.gameDataSet).toEqual([maps]);
+    });
+
+    test('and a message without it leaves the engine holding what it had', () => {
+        const maps = { itemDetailMap: {} };
+
+        globalThis.onmessage(message(maps));
+        globalThis.onmessage(message(null));
+
+        // Not `[maps, undefined]` — that second call is what would blank it
+        expect(harness.gameDataSet).toEqual([maps]);
+        expect(harness.posted.filter((m) => m.type === 'result')).toHaveLength(2);
     });
 });

@@ -37,8 +37,13 @@ onmessage = function (event) {
             playerCombatBuffs,
         } = event.data;
 
-        // Set game data for the engine singleton
-        setGameData(gameData);
+        // Set game data for the engine singleton. A worker reused for a second
+        // chunk is sent no game data at all (see the runner's worker pool): it
+        // still holds the maps from its first message, and re-cloning tens of
+        // megabytes into it per run is the cost the pool exists to avoid. The
+        // runner only omits it when the maps are the same objects it already
+        // sent this worker, so an absent payload never means stale data.
+        if (gameData) setGameData(gameData);
 
         // Seed this worker's RNG streams. Runs compared against each other pass
         // the same seed so their shared random draws cancel out of the delta;
