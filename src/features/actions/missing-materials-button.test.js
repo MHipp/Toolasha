@@ -623,3 +623,64 @@ describe('the open bill and the reservation ledger', () => {
         expect(ledger.reserved.map((entry) => entry.ownerId)).not.toContain('missingMats');
     });
 });
+
+/**
+ * The live-update path redraws the badge of every pinned tab on each inventory
+ * message. It used to redraw it with a second, private copy of
+ * `updateTabBadge` that had drifted from the exported one the tabs are built
+ * with: the copy dropped the "reserved by …" line, so the note explaining why
+ * visible stock is not this bill's to spend vanished on the first message to
+ * arrive; and it cleared `tab.title`, wiping the Tester-shop tab's own hint.
+ */
+describe('a live inventory update redraws a tab without losing what it says', () => {
+    /** The marketplace strip, with a badge span on the tab material tabs clone. */
+    function marketplaceDomWithBadge() {
+        const dom = buildMarketplaceDom();
+        dom.myListings.innerHTML = '<span class="TabsComponent_badge__x">My Listings</span>';
+        return dom;
+    }
+
+    /** Redraw every pinned tab, the way an inventory websocket message does. */
+    function fireInventoryUpdate() {
+        const [, handler] = state.wsOn.mock.calls.at(-1);
+        handler({ type: 'items_updated' });
+    }
+
+    beforeEach(() => {
+        ledger.claims = {};
+        ledger.reserved = [];
+        ledger.released = [];
+        state.items = { '/items/cedar_lumber': { name: 'Cedar Lumber', isTradable: true } };
+        state.inventory = [{ itemHrid: '/items/cedar_lumber', enhancementLevel: 0, count: 120 }];
+        state.unclaimed = {};
+        state.actionMaterials = [];
+    });
+
+    test('a tab short only because another plan claimed the stock keeps saying so', async () => {
+        const { container } = marketplaceDomWithBadge();
+        // 120 held against 100 needed, all but 20 of it claimed elsewhere: the line is short
+        // for a reason the player can otherwise see no trace of
+        ledger.claims = { 'goal:a': { '/items/cedar_lumber|0': 100 } };
+
+        await openMaterialsList([{ itemHrid: '/items/cedar_lumber', count: 100 }]);
+        const tab = container.querySelector('[data-item-hrid="/items/cedar_lumber"]');
+        expect(tab.innerHTML).toContain('reserved by');
+
+        fireInventoryUpdate();
+
+        expect(tab.innerHTML).toContain('reserved by');
+    });
+
+    test('a tab redrawn keeps the tooltip it was given', async () => {
+        const { container } = marketplaceDomWithBadge();
+
+        await openMaterialsList([{ itemHrid: '/items/cedar_lumber', count: 300 }]);
+        const tab = container.querySelector('[data-item-hrid="/items/cedar_lumber"]');
+        // The Tester-shop strip sets exactly this on a line the shop does not stock
+        tab.title = 'Not sold in the Tester shop — opens the marketplace';
+
+        fireInventoryUpdate();
+
+        expect(tab.title).toBe('Not sold in the Tester shop — opens the marketplace');
+    });
+});

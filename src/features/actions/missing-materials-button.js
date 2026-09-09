@@ -25,7 +25,7 @@ import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { createAutofillManager, findQuantityInput } from '../../utils/marketplace-autofill.js';
 import {
     createMaterialTab,
-    materialTabName,
+    updateTabBadge,
     createClearAllTabsControl,
     removeMaterialTabs,
     setupMarketplaceCleanupObserver,
@@ -1526,65 +1526,6 @@ function updateTabsOnInventoryChange() {
     currentMaterialsTabs.forEach((tab) => {
         if (tab.hasAttribute('data-mwi-buy-next')) tab.dispatchEvent(new Event('mwi-tabs-updated'));
     });
-}
-
-/**
- * Update a single tab's badge with new material data
- * @param {HTMLElement} tab - Tab element to update
- * @param {Object} material - Material object with updated counts
- */
-function updateTabBadge(tab, material) {
-    const badgeSpan = tab.querySelector('[class*="TabsComponent_badge"]');
-    if (!badgeSpan) {
-        return;
-    }
-
-    // Color coding:
-    // - Red: Missing materials (missing > 0)
-    // - Green: Sufficient materials (missing = 0)
-    // - Gray: Not tradeable
-    let statusColor;
-    let statusText;
-
-    if (!material.isTradeable) {
-        statusColor = '#888888'; // Gray - not tradeable
-        statusText = 'Not Tradeable';
-    } else if (material.missing > 0) {
-        statusColor = '#ef4444'; // Red - missing materials
-        // Show queued amount if any materials are reserved by queue
-        const queuedText = material.queued > 0 ? ` (${formatWithSeparator(material.queued)} Q'd)` : '';
-        statusText = `Missing: ${formatWithSeparator(material.missing)}${queuedText}`;
-    } else {
-        statusColor = '#4ade80'; // Green - sufficient materials
-        statusText = `Sufficient (${formatWithSeparator(material.required)})`;
-    }
-
-    // The same name the tab was built with, level and all — a live update that
-    // dropped the "+12" would rename the tab out from under the listing it opens
-    const titleCaseName = materialTabName(material);
-
-    // Update badge HTML
-    badgeSpan.innerHTML = `
-        <div style="text-align: center;">
-            <div>${titleCaseName}</div>
-            <div style="font-size: 0.75em; color: ${statusColor};">
-                ${statusText}
-            </div>
-        </div>
-    `;
-
-    // Keep data-missing-quantity in sync so the click handler autofills the current amount
-    tab.setAttribute('data-missing-quantity', material.missing.toString());
-
-    // Update tab styling based on state
-    if (!material.isTradeable) {
-        tab.style.opacity = '0.5';
-        tab.style.cursor = 'not-allowed';
-    } else {
-        tab.style.opacity = '1';
-        tab.style.cursor = 'pointer';
-        tab.title = '';
-    }
 }
 
 /**
