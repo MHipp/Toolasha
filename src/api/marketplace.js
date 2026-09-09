@@ -239,11 +239,16 @@ class MarketAPI {
             return null;
         }
 
-        // Check if cache is still valid
+        // Check if cache is still valid. A negative age is a stamp from the
+        // future — the clock stepped back (an NTP correction, a manual change)
+        // since the write — and counts as expired rather than as freshness: read
+        // as valid, it pins the snapshot until the clock catches up, which can
+        // be hours of prices quoted as current. The same reading `updatePrices`
+        // makes of a sighting from the future.
         const now = Date.now();
         const age = now - cachedTimestamp;
 
-        if (age > this.CACHE_DURATION) {
+        if (!(age >= 0 && age <= this.CACHE_DURATION)) {
             return null;
         }
 

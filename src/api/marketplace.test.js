@@ -8,11 +8,12 @@ const createMocks = (isConnected) => {
     }));
 
     const getJSON = vi.fn();
+    const get = vi.fn(async () => null);
     vi.doMock('../core/storage.js', () => ({
         default: {
             getJSON,
             setJSON: vi.fn(),
-            get: vi.fn(async () => null),
+            get,
             set: vi.fn(async () => {}),
         },
     }));
@@ -42,7 +43,7 @@ const createMocks = (isConnected) => {
         },
     };
 
-    return { getJSON, show, band };
+    return { getJSON, get, show, band };
 };
 
 describe('MarketAPI fetch', () => {
@@ -507,5 +508,42 @@ describe('MarketAPI price patch notifications', () => {
         vi.advanceTimersByTime(marketAPI.NOTIFY_COALESCE_MS);
 
         expect(listener).toHaveBeenCalledTimes(1);
+    });
+});
+
+/**
+ * The snapshot cache is kept valid by an age, and an age is a subtraction
+ * against a clock that can step backwards.
+ */
+describe('MarketAPI snapshot cache age', () => {
+    beforeEach(() => {
+        vi.resetModules();
+        vi.stubGlobal('fetch', vi.fn());
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    test('a cache stamped in the future is expired, not eternally fresh', async () => {
+        // The clock stepped back an hour after the cache was written (an NTP
+        // correction). `now - stamped` is negative, which is not "younger than
+        // fifteen minutes" — read that way the snapshot is pinned as current
+        // until the clock catches up, and every price quoted off it is an hour
+        // old while claiming to be minutes old.
+        const { getJSON, get } = createMocks(true);
+        get.mockResolvedValue(Date.now() + 60 * 60 * 1000);
+        getJSON.mockResolvedValue({ marketData: { '/items/cheese': { 0: { a: 10, b: 9 } } }, timestamp: 1 });
+        fetch.mockResolvedValue({
+            ok: true,
+            json: async () => ({ marketData: { '/items/cheese': { 0: { a: 20, b: 19 } } }, timestamp: 2 }),
+        });
+
+        const { default: marketAPI } = await import('./marketplace.js');
+        await marketAPI.fetch();
+
+        // It went to the network rather than serving the future-stamped cache
+        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(marketAPI.getPrice('/items/cheese')).toEqual({ ask: 20, bid: 19 });
     });
 });
