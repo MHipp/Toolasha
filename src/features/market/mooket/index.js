@@ -139,6 +139,27 @@ const SERIES = [
     { key: 'avg', label: 'Avg', color: '#e6a23c', dash: [2, 3] },
 ];
 
+/**
+ * Whether one of the game's own modals is covering the page.
+ *
+ * The pin overlay sits at z-index 820 while the game's `Modal_modalContainer`
+ * is a full-screen fixed layer at **200**, so a house or action panel opened
+ * over the marketplace gets a pushpin floating in the middle of it. (The
+ * `Z_FLOATING_PANEL` comment claiming game modals are ~1300 is wrong; measured
+ * against the live client.)
+ *
+ * The container is in the document only while such a modal is open — with the
+ * marketplace open and nothing on top of it there are none at all, verified
+ * live — so its presence is the whole test. The marketplace's own shell is
+ * `MainPanel_marketplaceModalContainer`, which this does not match.
+ *
+ * @param {Document} [doc] - The document to ask; injectable for tests
+ * @returns {boolean}
+ */
+export function gameModalIsOpen(doc = document) {
+    return Boolean(doc?.querySelector('[class*="Modal_modalContainer"]'));
+}
+
 class MarketHistoryPanel {
     constructor() {
         this.isInitialized = false;
@@ -1149,6 +1170,14 @@ class MarketHistoryPanel {
         // panel that was closed on purpose
         const wantPanel = marketplace && this.prefs.open ? 'flex' : 'none';
         if (!marketplace) {
+            this._setDisplay(this.panel, wantPanel);
+            this._setDisplay(this.pinButton, 'none');
+            return;
+        }
+
+        // The pin is anchored to the marketplace's item icon, and a game modal
+        // covers that icon while drawing *under* the pin
+        if (gameModalIsOpen()) {
             this._setDisplay(this.panel, wantPanel);
             this._setDisplay(this.pinButton, 'none');
             return;

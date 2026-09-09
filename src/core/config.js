@@ -80,7 +80,7 @@ class Config {
 
         // Z-index tiers
         this.Z_HUD = 50; // In-game HUD overlays — below game interactive UI
-        this.Z_FLOATING_PANEL = 1100; // Persistent panels — below MUI modals (game = ~1300)
+        this.Z_FLOATING_PANEL = 1100; // Persistent panels — above the game's own modals, which sit at 200
         this.Z_POPUP = 9000; // Contextual popups / short-lived overlays
         this.Z_MODAL = 9000; // Full-screen intentional modals
         this.Z_NOTIFICATION = 99999; // Transient notifications (above everything)

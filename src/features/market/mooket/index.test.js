@@ -102,7 +102,7 @@ vi.mock('./market-history-api.js', () => ({
     },
 }));
 
-const { default: panel, splitLegacyWatchlist } = await import('./index.js');
+const { default: panel, gameModalIsOpen, splitLegacyWatchlist } = await import('./index.js');
 const { _resetAdoptionCache } = await import('../../../utils/character-key.js');
 
 const settings = () => storageMock.storeFor('settings');
@@ -318,5 +318,42 @@ describe('disable() always leaves the feature re-initialisable', () => {
         panel.prefs.open = true;
         await panel.showItem('/items/cheese', 0);
         expect(panel.shown).toBe('/items/cheese:0:7');
+    });
+});
+
+/**
+ * The pushpin is anchored to the marketplace's item icon, and the game draws a
+ * modal *under* it: the pin's overlay is at z-index 820 while the game's own
+ * `Modal_modalContainer` is a full-screen fixed layer at 200. Opening a house
+ * panel over the marketplace therefore left a pushpin floating in the middle of
+ * the Armory's build list.
+ *
+ * Measured against the live client: with the marketplace open and nothing on
+ * top of it, the document holds no `Modal_modalContainer` at all — so its
+ * presence is the whole test, and the marketplace's own shell
+ * (`MainPanel_marketplaceModalContainer`) must not be mistaken for one.
+ */
+describe('a game modal hides the pin', () => {
+    const docWith = (...classNames) => ({
+        querySelector: (selector) =>
+            classNames.some((name) => name.includes(selector.replace('[class*="', '').replace('"]', '')))
+                ? { className: classNames[0] }
+                : null,
+    });
+
+    test('the game’s modal container counts', () => {
+        expect(gameModalIsOpen(docWith('Modal_modalContainer__3B80m'))).toBe(true);
+    });
+
+    test('the marketplace’s own shell does not', () => {
+        expect(gameModalIsOpen(docWith('MainPanel_marketplaceModalContainer__2d3wY'))).toBe(false);
+    });
+
+    test('a page with no modal at all does not', () => {
+        expect(gameModalIsOpen(docWith('MarketplacePanel_marketplacePanel__x'))).toBe(false);
+    });
+
+    test('no document is not an open modal', () => {
+        expect(gameModalIsOpen(null)).toBe(false);
     });
 });
