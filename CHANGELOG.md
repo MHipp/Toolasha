@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The breakdown link raises the panel instead of redrawing one you cannot see
+
+Pressing "breakdown" on a profile card did nothing after a page refresh, and this is why: the Build Score panel is restored open where you left it, at the same default position every unplaced panel uses, so it came back underneath another panel — measured live, the Session Briefing sits at exactly the same spot and a little higher in the stack. With the panel already open, the link only ever redrew it or closed it, and neither raises anything. So the press redrew something invisible, or shut something invisible.
+
+A press is now a request to see that build: the panel is raised and unfolded, and only closes when it was already in front, unfolded, and showing the same profile. And panels that have never been dragged no longer open on the exact same spot — they cascade, while a panel you have placed still opens precisely where you left it.
+
 ### The action bar stops reading a percentage as a number of seconds
 
 On a long action the game writes `59% - 1m 28s` on the progress bar instead of a bare total. The countdown read that with `parseFloat` and stored **59 seconds** as the action's total length, then used it to judge whether the bar's animation could be trusted — so the check passed on some ticks and failed on others, and the label flipped between two different scales several times a second. It now recognises only the bare-seconds form and stands down on the rest, leaving the game's own readout, which has the real figures, in charge.
