@@ -639,6 +639,41 @@ describe('the startup-complete signal', () => {
         expect(fresh.isStartupComplete()).toBe(true);
     });
 
+    test('closes again while a character switch re-initialises, and reopens after', async () => {
+        // The once-only latch left every batch after the first completely
+        // ungated: `initializeFeatures()` runs again on `character_switched`,
+        // and background work handed over during it went straight back to
+        // competing with the arriving character's storage reads.
+        const fresh = await freshRegistry();
+        await fresh.initializeFeatures();
+        expect(fresh.isStartupComplete()).toBe(true);
+
+        let release;
+        fresh.replaceFeatures([
+            {
+                key: 'slow',
+                name: 'Slow',
+                concurrent: true,
+                initialize: () =>
+                    new Promise((resolve) => {
+                        release = resolve;
+                    }),
+            },
+        ]);
+        state.enabledFeatures = new Set(['slow']);
+
+        const second = fresh.initializeFeatures();
+        const waiter = fresh.whenStartupComplete();
+        expect(fresh.isStartupComplete()).toBe(false);
+        expect(await hasResolved(waiter)).toBe(false);
+
+        release();
+        await second;
+
+        expect(fresh.isStartupComplete()).toBe(true);
+        expect(await hasResolved(waiter)).toBe(true);
+    });
+
     test('stays open across a character switch rather than re-arming', async () => {
         // A waiter arriving later must not be parked on the next startup: the
         // re-init after a switch can return early and never complete.

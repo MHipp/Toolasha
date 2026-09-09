@@ -25,21 +25,45 @@ const featureRegistry = [];
  * had finished and cost 268 ms. Nothing in `src/` read this completion signal
  * before; the only trace of it was the `features:done` mark below.
  *
- * Settled once per session, never re-armed. A caller arriving after startup has
- * finished must find it already open — an "await the next startup" signal would
- * strand every feature that starts late (a character switch re-initialises, and
- * its `initializeFeatures()` can return early without ever completing) on a
- * startup that is not coming.
+ * Set once per session and never cleared: a caller arriving after the first
+ * startup must find this half of the gate already open, since an "await the
+ * next startup" signal would strand every caller that arrives late on a startup
+ * that is not coming. Whether a *later* batch is running is the separate,
+ * re-armable question `batchesInFlight` answers.
  */
 let startupSettled = false;
 
-/** Called once to open the gate; replaced by the promise's own resolver below. */
-let releaseStartup = () => {};
+/**
+ * How many `initializeFeatures()` batches are running right now.
+ *
+ * The once-only latch above is not enough on its own. `initializeFeatures()`
+ * runs again on every character switch, and a latch that settles once and is
+ * never re-armed leaves the switch's re-init completely ungated — background
+ * work handed over while the arriving character's features are initialising
+ * goes straight back to competing with them for the same one-key-per-transaction
+ * IndexedDB reads, which is the contention the gate exists to remove.
+ *
+ * Counting instead of re-arming keeps both properties: the gate cannot open
+ * before the *first* startup (a bare "is a batch running" test is open during
+ * the seconds of boot before `initializeFeatures()` is even called, which is the
+ * original bug), and it closes again for as long as any later batch is actually
+ * on the main thread. The early-return path never increments — it starts no
+ * features — so a switch that refuses to initialise strands nobody.
+ * @type {number}
+ */
+let batchesInFlight = 0;
 
-/** Resolves the first time feature startup finishes, or gives up trying. */
-const startupComplete = new Promise((resolve) => {
-    releaseStartup = resolve;
-});
+/** Resolvers waiting for the gate to be open. Drained by `releaseIfOpen`. */
+const startupWaiters = [];
+
+/**
+ * Resolve everyone waiting, if the gate is open right now.
+ * @returns {void}
+ */
+function releaseIfOpen() {
+    if (!isStartupComplete()) return;
+    for (const resolve of startupWaiters.splice(0)) resolve();
+}
 
 /**
  * Open the gate, once.
@@ -53,35 +77,38 @@ const startupComplete = new Promise((resolve) => {
  * @returns {void}
  */
 function settleStartup() {
-    if (startupSettled) return;
     startupSettled = true;
-    releaseStartup();
+    releaseIfOpen();
 }
 
 /**
- * Has feature startup finished (or been given up on) this session?
+ * Is the main thread free of feature startup right now?
  *
- * Lets a caller skip the await entirely rather than yielding a microtask for an
- * answer it can have synchronously.
+ * True once the first startup has settled *and* no later batch — a character
+ * switch's re-init — is running. Lets a caller skip the await entirely rather
+ * than yielding a microtask for an answer it can have synchronously.
  *
- * @returns {boolean} True once startup has settled
+ * @returns {boolean} True when nothing is gating on feature startup
  */
 function isStartupComplete() {
-    return startupSettled;
+    return startupSettled && batchesInFlight === 0;
 }
 
 /**
- * A promise that resolves when feature startup has finished.
+ * A promise that resolves the next time feature startup is out of the way.
  *
- * Already resolved for anyone who asks after the fact. It never rejects: a
+ * Already resolved for anyone who asks between batches. It never rejects: a
  * feature that throws is caught and recorded by `initializeFeatures`, and the
  * gate is about *when* startup stopped occupying the main thread, not whether
- * it went well.
+ * it went well. Callers bound their own wait — see `STARTUP_GATE_TIMEOUT_MS` in
+ * `src/utils/background-work.js` — so a batch that never finishes delays work
+ * rather than losing it.
  *
- * @returns {Promise<void>} Resolves once, then stays resolved
+ * @returns {Promise<void>} Resolves once the gate is open
  */
 function whenStartupComplete() {
-    return startupComplete;
+    if (isStartupComplete()) return Promise.resolve();
+    return new Promise((resolve) => startupWaiters.push(resolve));
 }
 
 /**
@@ -119,9 +146,11 @@ function whenStartupComplete() {
  * @returns {Promise<Array<{key: string, name: string, reason: string}>>} Failures, in registry order
  */
 async function initializeFeatures() {
+    batchesInFlight += 1;
     try {
         return await runFeatureInitialization();
     } finally {
+        batchesInFlight -= 1;
         // Whatever happened — an early return, a throw, a clean pass — startup
         // is no longer occupying the main thread, so anything gated on it runs.
         settleStartup();
