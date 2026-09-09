@@ -888,4 +888,90 @@ describe('the registry entries the entrypoint hands over', () => {
         expect(probe.peak).toBe(2);
         expect(probe.active).toBe(0);
     });
+
+    /**
+     * The features vetted in the second pass over the blocking startup chain,
+     * with what each one was found to wait on. Listed here rather than counted,
+     * because the count is not the point: a flag silently falling off one of
+     * these is a feature quietly back on the critical path, and nothing else in
+     * the suite would notice.
+     */
+    const widenedConcurrent = {
+        combatStats: 'its own consumable trackers and last-run snapshot',
+        dungeonTrackerChatAnnotations: 'its own dungeon run store',
+        labyrinthTracker: 'its own best-levels record',
+        overlayPanel: 'its own panel settings and applied layout',
+        draggableModals: 'its own modal offsets',
+        collectionFilters: 'its own filter record',
+        xpTracker: 'its own XP history',
+    };
+
+    test.each(Object.entries(widenedConcurrent))('%s is handed to the registry marked concurrent', (key, waitsOn) => {
+        const entry = registered.find((feature) => feature.key === key);
+
+        expect(entry, `no feature registered under ${key}`).toBeTruthy();
+        expect(entry.concurrent, `${key} waits on ${waitsOn} and should overlap, not block`).toBe(true);
+    });
+
+    /**
+     * Features on the same blocking list that were vetted and deliberately left
+     * serial, each with the finding that decided it. Asserted so that flagging
+     * one is a deliberate act with a test to change, rather than a tidy-up.
+     */
+    const deliberatelySerial = {
+        taskRerollTracker:
+            'task-reroll-badge.js reads taskRerollData with no server-payload fallback, ' +
+            'and draws from a catch-up pass that fires as soon as it initializes',
+        chatHistoryExtender:
+            'its initialize() has no await at all — the cost is 45 ms of its own CPU, ' +
+            'which the flag cannot move off the critical path',
+        alchemy_actionProtection:
+            'what it installs after its await is the double-confirm guarding an ' +
+            'irreversible decompose, not a readout',
+    };
+
+    test.each(Object.entries(deliberatelySerial))('%s is left serial', (key, reason) => {
+        const entry = registered.find((feature) => feature.key === key);
+
+        expect(entry, `no feature registered under ${key}`).toBeTruthy();
+        expect(entry.concurrent, `${key} was left serial because ${reason}`).toBeUndefined();
+    });
+
+    test('marking a feature concurrent does not move where it starts', async () => {
+        // The whole survey rests on this: a concurrent feature is *started* in
+        // its turn and only the waiting is deferred, so its own post-await work
+        // lands no later in wall-clock than it did before — what moves is only
+        // its position relative to the features after it. If the registry ever
+        // started the flagged ones as a group instead, every "it waits only on
+        // its own record" verdict above would need re-deriving.
+        const keys = Object.keys(widenedConcurrent);
+        const inRegistryOrder = registered.filter((entry) => keys.includes(entry.key)).map((entry) => entry.key);
+        expect(inRegistryOrder).toHaveLength(keys.length);
+
+        const entered = [];
+        const entries = inRegistryOrder.map((key) => {
+            const real = registered.find((entry) => entry.key === key);
+            return {
+                key,
+                name: key,
+                // The real flag, off the real mapping — the point is that these
+                // reorder nothing, so substituting `concurrent: true` here would
+                // test the stand-in rather than the entrypoint.
+                concurrent: real.concurrent,
+                // Suspends for a length that runs backwards through the list, so
+                // completion order is the reverse of start order and an
+                // assertion on `entered` cannot be passing by accident.
+                initialize: async () => {
+                    entered.push(key);
+                    await new Promise((resolve) => setTimeout(resolve, PROBE_AWAIT_MS - entered.length));
+                },
+            };
+        });
+
+        realFeatureRegistry.replaceFeatures(entries);
+        const failures = await realFeatureRegistry.initializeFeatures();
+
+        expect(failures).toEqual([]);
+        expect(entered).toEqual(inRegistryOrder);
+    });
 });

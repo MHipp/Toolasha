@@ -1369,6 +1369,19 @@ function registerFeatures() {
             category: 'Combat',
             module: Combat.dungeonTrackerChatAnnotations,
             async: false,
+            // Waits only on its own run store (a scrub plus a full read). What
+            // it installs afterwards is a chat observer and a batch pass, and
+            // the module already guards its own ordering rather than relying on
+            // the registry's: `annotateAllMessages` polls `initComplete` before
+            // it touches anything, messages carry `data-processed`, and
+            // `chatRunsInCumulative` decides double-counting from the totals
+            // that exist now. It has to be order-agnostic anyway - the same
+            // paths re-run on a character switch and on every party-tab click.
+            //
+            // A chat message that lands before the observer is caught by the
+            // 1.5 s batch pass over what is already on screen, which is the
+            // path restored history arrives on regardless.
+            concurrent: true,
         },
         {
             key: 'combatBattleCounter',
@@ -1460,13 +1473,47 @@ function registerFeatures() {
             async: false,
             customCheck: () => config.getSetting('combatProfileButton'),
         },
-        { key: 'combatStats', name: 'Combat Stats', category: 'Combat', module: Combat.combatStats, async: false },
+        {
+            key: 'combatStats',
+            name: 'Combat Stats',
+            category: 'Combat',
+            module: Combat.combatStats,
+            async: false,
+            // The single largest blocking startup await in the script - 606 ms
+            // of IndexedDB and half a millisecond of our own code - and every
+            // combat feature after it was queued behind that read.
+            //
+            // It waits only on its own two records (the consumable trackers and
+            // the last run's snapshot). What it registers afterwards is a socket
+            // listener pair and a tab button, and neither is order-bound:
+            // `new_battle` is re-sent throughout a fight, so a frame missed in
+            // the window is superseded rather than lost; and the Statistics tab
+            // is appended on a 1 s timer, which stays behind combat-sim's
+            // observer-driven button either way.
+            //
+            // Nothing downstream reads the collector at its own initialize.
+            // Every reader - the consumables and party-loot panels, dungeon ROI,
+            // party luck, the consumable alerts - calls `getLatestData()` on a
+            // render or a tick and is written for it returning null, which is
+            // the same state it is in before any fight has happened.
+            concurrent: true,
+        },
         {
             key: 'labyrinthTracker',
             name: 'Labyrinth Tracker',
             category: 'Combat',
             module: Combat.labyrinthTracker,
             async: false,
+            // Waits only on its own best-levels record, then adds one
+            // `labyrinth_updated` listener whose first message is a seed
+            // (`prevRoomData` starts null and nothing is diffed against it), so
+            // arriving a beat later costs nothing.
+            //
+            // Its one dependent, labyrinth-best-level, registers through
+            // `onUpdate` - a list this initialize never clears, only `disable`
+            // does - and re-reads the bests on a 500 ms catch-up timer, four
+            // times the load it would be racing.
+            concurrent: true,
         },
         {
             key: 'labyrinthRunLedger',
@@ -1651,6 +1698,19 @@ function registerFeatures() {
             category: 'Interface',
             module: UI.overlayPanel,
             async: true,
+            // The row list it resolves after its await is built at *import*
+            // time - `utils/overlay-rows.js` is registered into at module scope
+            // - so it does not depend on which features have initialized, and
+            // `resolveRows` appends anything registered later at draw time.
+            //
+            // The two other things it does post-await are order-free by
+            // construction: the palette entry, because `registeredCommands`
+            // sorts by name precisely so registration order cannot show; and
+            // the panel itself, which registers `managedZ: false` and so takes
+            // no part in the z-order or the cascade. The tab button that
+            // mirrors its open state re-syncs off `VISIBILITY_EVENT`, so it
+            // reads the panel correctly whichever of the two lands first.
+            concurrent: true,
         },
         {
             key: 'overlayTabButton',
@@ -1682,6 +1742,13 @@ function registerFeatures() {
             category: 'UI',
             module: UI.draggableModals,
             async: true,
+            // Waits only on its own offsets record and then registers one
+            // `Modal_modalContent` watcher. The class has other watchers, but
+            // nothing they do collides: the drag bar is always prepended to the
+            // content element, so where it sits does not depend on who ran
+            // first, and everything it touches happens when a modal opens,
+            // long after any startup batch.
+            concurrent: true,
         },
         {
             key: 'altClickNavigation',
@@ -1703,6 +1770,12 @@ function registerFeatures() {
             category: 'Collection',
             module: UI.collectionFilters,
             async: true,
+            // Injects its stylesheet *before* its await, so the one thing here
+            // with a document order keeps it. The await is its own filter
+            // record; afterwards it registers two class watchers it is the sole
+            // watcher of, and a `character_initialized` handler that re-reads
+            // the same record. Nothing outside the module imports it.
+            concurrent: true,
             customCheck: () =>
                 config.isFeatureEnabled('collectionFilters') || config.isFeatureEnabled('collectionFavorites'),
         },
@@ -1723,6 +1796,13 @@ function registerFeatures() {
             category: 'Chat',
             module: UI.chatHistoryExtender,
             async: false,
+            // Not concurrent because the flag would buy nothing. Its
+            // `initialize()` has no await in it at all - the 52 ms it spends is
+            // 45 ms of its own code (hydrating the messages already on screen,
+            // building tab handlers), and the restore it does start is fired
+            // unawaited on purpose. Deferring a promise that is already
+            // resolved moves no work off the critical path; the CPU is the
+            // cost, and it is paid wherever the call happens.
         },
         {
             key: 'taskProfitDisplay',
@@ -1743,6 +1823,16 @@ function registerFeatures() {
             category: 'Tasks',
             module: UI.taskRerollTracker,
             async: false,
+            // Deliberately NOT concurrent, and the reason is one line in
+            // another module. `task-reroll-badge.js` reads
+            // `taskRerollTracker.taskRerollData` directly
+            // (`sumBoardRerollSpend`) with no fallback, and it draws from a
+            // catch-up pass that fires the moment it initializes - so with the
+            // load deferred it would render an empty board as "spent nothing"
+            // and stay that way until the next task-list mutation. Its sibling
+            // task-statistics.js reads the same map but falls back to
+            // `quest.coinRerollCount` off the server payload; give the badge
+            // that same fallback and this becomes markable.
         },
         { key: 'taskSorter', name: 'Task Sorter', category: 'Tasks', module: UI.taskSorter, async: false },
         {
@@ -1852,7 +1942,21 @@ function registerFeatures() {
                 return Boolean(document.querySelector('.mwi-remaining-xp'));
             },
         },
-        { key: 'xpTracker', name: 'XP/hr Tracker', category: 'Skills', module: UI.xpTracker, async: false },
+        {
+            key: 'xpTracker',
+            name: 'XP/hr Tracker',
+            category: 'Skills',
+            module: UI.xpTracker,
+            async: false,
+            // Every listener it owns - `character_initialized`,
+            // `action_completed`, `actions_updated`, `cancel_character_action`
+            // - is registered *before* its first await, so deferring the wait
+            // cannot widen a recording window. What is left after the await is
+            // the nav-bar rate spans and the skill-tooltip watcher, both of
+            // which find or create their own anchors rather than appending in
+            // turn, and neither of which anything else reads.
+            concurrent: true,
+        },
         {
             key: 'housePanelObserver',
             name: 'House Panel Observer',
