@@ -8,6 +8,7 @@ import dataManager from '../../core/data-manager.js';
 import config from '../../core/config.js';
 import { createPersistedRecord } from '../../utils/persisted-record.js';
 import { registerSyncMerge } from '../../utils/sync-merge-registry.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 
 const STORAGE_KEY_PREFIX = 'monsterBestLevels';
 const STORE_NAME = 'labyrinth';
@@ -80,7 +81,15 @@ class LabyrinthTracker {
             return;
         }
 
+        // Taken before the read, checked after it. A `character_switching`
+        // teardown landing inside `loadData()` used to leave both a live
+        // `labyrinth_updated` handler and `isInitialized = true` behind it, and
+        // the switch's own re-initialise then early-returned on that flag — the
+        // tracker recorded nothing for the arriving character until the page was
+        // reloaded.
+        const ticket = captureOwner(this);
         await this.loadData();
+        if (!stillOurs(ticket)) return;
 
         this.handlers.labyrinthUpdated = (data) => this.onLabyrinthUpdated(data);
         webSocketHook.on('labyrinth_updated', this.handlers.labyrinthUpdated);
@@ -92,6 +101,7 @@ class LabyrinthTracker {
      * Disable and clean up
      */
     disable() {
+        noteTeardown(this);
         try {
             if (this.handlers.labyrinthUpdated) {
                 webSocketHook.off('labyrinth_updated', this.handlers.labyrinthUpdated);

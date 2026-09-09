@@ -7,6 +7,9 @@ const game = vi.hoisted(() => ({
     unavailable: false,
     clientData: { combatMonsterDetailMap: {}, skillDetailMap: {} },
     wsHandlers: {},
+    // Set to a promise to hold every storage read open, so a test can land a
+    // teardown inside the read the way a character switch does
+    gate: null,
 }));
 
 vi.mock('../../core/websocket.js', () => ({
@@ -23,6 +26,7 @@ vi.mock('../../core/storage.js', () => ({
     default: {
         get: async (key, storeName, defaultValue) => game.saved[key] ?? defaultValue,
         tryGet: async (key) => {
+            if (game.gate) await game.gate;
             if (game.unavailable) return null;
             return game.saved[key] != null
                 ? { found: true, value: structuredClone(game.saved[key]) }
@@ -76,6 +80,7 @@ describe('labyrinth tracker', () => {
         game.unavailable = false;
         game.clientData = { combatMonsterDetailMap: {}, skillDetailMap: {} };
         game.wsHandlers = {};
+        game.gate = null;
         labyrinthTracker.disable();
         labyrinthTracker.monsterBestLevels = {};
     });
@@ -343,5 +348,67 @@ describe('the best levels survive a failed read and a second tab', () => {
         await labyrinthTracker.saveData();
 
         expect(game.saved[KEY]).toEqual({ '/monsters/a': best(30), '/monsters/b': best(10) });
+    });
+});
+
+describe('a character switch landing inside the initial read', () => {
+    beforeEach(() => {
+        game.setting = true;
+        game.characterId = 'char1';
+        game.saved = {};
+        game.unavailable = false;
+        game.wsHandlers = {};
+        game.gate = null;
+        labyrinthTracker.disable();
+        labyrinthTracker.monsterBestLevels = {};
+    });
+
+    /**
+     * Start an initialize() whose storage read is held open, tear the feature
+     * down inside it the way `disableAllFeatures()` does, then let the read land.
+     * @returns {Promise<void>} Resolves once the interrupted initialize() has finished
+     */
+    async function switchDuringInitialize() {
+        let release;
+        game.gate = new Promise((resolve) => {
+            release = resolve;
+        });
+        const pending = labyrinthTracker.initialize();
+        // `character_switching` — the whole feature layer comes down while the
+        // read is still out
+        labyrinthTracker.disable();
+        // …and the arriving character is current before the read resolves
+        game.characterId = 'char2';
+        release();
+        game.gate = null;
+        await pending;
+    }
+
+    test('the interrupted initialize registers nothing and leaves no initialized flag', async () => {
+        await switchDuringInitialize();
+
+        expect(game.wsHandlers.labyrinth_updated).toBeUndefined();
+        expect(labyrinthTracker.isInitialized).toBe(false);
+    });
+
+    test('the arriving character gets a live tracker rather than one dead until reload', async () => {
+        // Each character has their own recorded best, so whose the tracker is
+        // holding says whether the re-initialise actually ran
+        game.saved.monsterBestLevels_char1 = { '/monsters/chimerical_beast': { name: 'Beast', bestLevel: 40 } };
+        game.saved.monsterBestLevels_char2 = { '/monsters/chimerical_beast': { name: 'Beast', bestLevel: 90 } };
+
+        await switchDuringInitialize();
+
+        // This is the `character_switched` re-initialise
+        await labyrinthTracker.initialize();
+
+        expect(labyrinthTracker.isInitialized).toBe(true);
+        expect(labyrinthTracker.getBestLevel('/monsters/chimerical_beast')).toBe(90);
+        expect(typeof game.wsHandlers.labyrinth_updated).toBe('function');
+        game.wsHandlers.labyrinth_updated({ labyrinth: { roomData: [[combatRoom({ recommendedLevel: 120 })]] } });
+        game.wsHandlers.labyrinth_updated({
+            labyrinth: { roomData: [[combatRoom({ recommendedLevel: 120, isCleared: true })]] },
+        });
+        expect(labyrinthTracker.getBestLevel('/monsters/chimerical_beast')).toBe(120);
     });
 });
