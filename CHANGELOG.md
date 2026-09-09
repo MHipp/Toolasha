@@ -6,6 +6,14 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Startup runs the features that were meant to run together, and a guild trial costs less
+
+Features that were marked as safe to start alongside each other never did. The registry has always supported it, but the list of fields handed over at startup did not include the flag, so it arrived undefined and every feature waited for the one before it — measured across two real startup traces, not one feature's start ever overlapped another's. Fifteen of the sixteen marked features now start together; the sixteenth was deliberately left to wait, because what it installs is the second confirmation between a Decompose click and an item you cannot get back, and starting it late to save a moment is the wrong trade. A test now reads the registry to find every field it depends on and fails if one stops being handed over, which is the thing that would have caught this.
+
+A guild trial streams about forty messages a second, and two pieces of work were being redone on every one of them: the loadout list, sorted and re-judged from scratch each time, and a page-wide search for the fight view that only stops once the fight has been identified — which never happens while you are spectating with the view closed. Both are now computed once and reused, worth several seconds of processor time over a trial. Every attributed number is unchanged, and that is asserted rather than assumed: the same captured trial replays to byte-identical output with the caches on and off.
+
+Two smaller things. The trial export now says what each compared figure actually measures, because Damage Taken compares our post-mitigation number against the game's pre-mitigation one and so reads as a large shortfall on every row for ever — the panel already explained this, the exported file did not. And the diagnostic trace can no longer hold an unbounded queue if stored data never loads: it keeps a bounded window, gives up waiting rather than holding for ever, and the file says outright that it is a window rather than the whole stream.
+
 ### The breakdown link was being read as a drag, not a click
 
 This is why it never opened. The link is a span in the profile card's header, and that header is what you drag the card by. Pressing it started a drag, which captures the pointer and makes the browser deliver the click to the header instead of the link — so the link never heard it. A press that never moved could still get through, which is why it looked intermittent; move the mouse a pixel, as a hand does, and it was gone every time.
