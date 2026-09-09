@@ -80,6 +80,23 @@ function bootsPlan() {
     ]);
 }
 
+/**
+ * One craft step for an action, enough for the walk to stand on.
+ * @param {string} actionHrid - The action
+ * @returns {Object} A walk step
+ */
+function step(actionHrid) {
+    return {
+        key: `craft:${actionHrid}`,
+        kind: 'craft',
+        itemHrid: '/items/x',
+        itemName: 'X',
+        actionHrid,
+        count: 1,
+        actions: 1,
+    };
+}
+
 /** Put a detail panel with a count box on the page. */
 function mountPanel(actionHrid) {
     mocks.panelActionHrid = actionHrid;
@@ -197,6 +214,39 @@ describe('walking a plan', () => {
         expect(seen[1].navigated).toEqual([]);
         expect(mocks.navigatedActions).toEqual(['/actions/tailoring/leather']);
         craftingPlanWalk.onStepAboutToRun = null;
+    });
+
+    /*
+     * The walk is a singleton three surfaces share, and one of them — the
+     * ironcow queue walk — starts a walk without installing a hook of its own.
+     * A hook that outlived its walk would fire for those steps and re-reserve a
+     * plan the player finished with against a bag it has no claim on: the claim
+     * is restamped (so the ledger's TTL never expires it) and recomputed
+     * against an inventory some other walk is spending, so it grows. Every
+     * other plan then reads that stock as taken.
+     */
+    test('the seam hook does not outlive the walk that installed it', () => {
+        const seen = [];
+        craftingPlanWalk.onStepAboutToRun = (step) => seen.push(step.key);
+
+        craftingPlanWalk.start([step('/a')]);
+        expect(seen).toEqual(['craft:/a']);
+        craftingPlanWalk.stop('');
+
+        // Another surface's walk, with no hook of its own
+        craftingPlanWalk.start([step('/b')]);
+        expect(seen).toEqual(['craft:/a']);
+    });
+
+    test('a hook installed for one walk does not carry into the next one started over it', () => {
+        const seen = [];
+        craftingPlanWalk.onStepAboutToRun = (step) => seen.push(step.key);
+
+        craftingPlanWalk.start([step('/a')]);
+        // Started over the running walk rather than after it ends — `start()`
+        // stops the old one itself, and the hook goes with it
+        craftingPlanWalk.start([step('/b')]);
+        expect(seen).toEqual(['craft:/a']);
     });
 
     test('actions_updated naming the step advances it; an unrelated one does not', () => {

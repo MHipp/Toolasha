@@ -195,18 +195,43 @@ class CraftingPlanWalk {
         this.queuedBefore = new Set();
         /** Why the walk ended, shown in the strip until it is dismissed */
         this.message = '';
+        /** @type {((step: Object) => void)|null} The seam hook itself */
+        this._stepHook = null;
         /**
-         * The reservation seam.
-         *
-         * Called once per step, with that step, immediately before the walk
-         * navigates anywhere for it — early enough that a caller can reserve the
-         * step's materials against the inventory ledger before the player is put
-         * in front of the button that spends them. Set it to a function; it is
-         * never called twice for the same visit to a step, and a throw from it is
-         * logged and does not stop the walk.
-         * @type {((step: Object) => void)|null}
+         * Whether {@link _stepHook} was installed for the walk that is about to
+         * start, rather than left behind by the last one. Assigning the hook
+         * raises it; {@link start} lowers it, having kept the hook only if it
+         * was raised; {@link stop} clears both.
          */
-        this.onStepAboutToRun = null;
+        this._stepHookFresh = false;
+    }
+
+    /**
+     * The reservation seam.
+     *
+     * Called once per step, with that step, immediately before the walk
+     * navigates anywhere for it — early enough that a caller can reserve the
+     * step's materials against the inventory ledger before the player is put in
+     * front of the button that spends them. Set it to a function immediately
+     * before {@link start}; it is never called twice for the same visit to a
+     * step, and a throw from it is logged and does not stop the walk.
+     *
+     * Owned by ONE walk. The walk is a singleton three surfaces share and the
+     * third of them — the ironcow queue walk — installs no hook at all, so a
+     * hook that outlived its own walk would fire for somebody else's steps and
+     * re-reserve a finished plan's materials against a bag it has no claim on
+     * — restamping a claim the ledger's TTL was about to expire, and sizing it
+     * against an inventory another walk is spending. So {@link stop} drops it
+     * and {@link start} keeps only a hook installed since the last stop.
+     * @type {((step: Object) => void)|null}
+     */
+    get onStepAboutToRun() {
+        return this._stepHook;
+    }
+
+    set onStepAboutToRun(fn) {
+        this._stepHook = typeof fn === 'function' ? fn : null;
+        this._stepHookFresh = true;
     }
 
     /** Subscribe to the two messages the walk advances on, and to the switch that ends it. */
@@ -255,7 +280,13 @@ class CraftingPlanWalk {
     start(steps) {
         if (!Array.isArray(steps) || steps.length === 0) return false;
         this._listen();
+        // Captured across the reset below, and only when this walk's own caller
+        // installed it: `stop()` drops the hook, and a caller that installs one
+        // does so immediately before starting
+        const hook = this._stepHookFresh ? this._stepHook : null;
         this.stop('');
+        this._stepHook = hook;
+        this._stepHookFresh = false;
         this.steps = steps;
         this.index = 0;
         this.active = true;
@@ -281,6 +312,9 @@ class CraftingPlanWalk {
         this.buyTarget = 0;
         this.queuedBefore = new Set();
         this.message = message;
+        // The hook belonged to the walk that just ended; see its own comment
+        this._stepHook = null;
+        this._stepHookFresh = false;
         this.timerRegistry.clearAll();
         this._clearHighlight();
         if (message) this._render();
@@ -575,7 +609,6 @@ class CraftingPlanWalk {
             }
         }
         this.unregisterHandlers = [];
-        this.onStepAboutToRun = null;
         this.isInitialized = false;
     }
 }
