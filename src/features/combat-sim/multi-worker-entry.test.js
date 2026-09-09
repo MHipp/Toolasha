@@ -7,6 +7,10 @@
  * run when the main thread keeps saying "go" (slots must not retire while
  * chains can still add work), a zone whose tier failed is written off rather
  * than left dangling, and a child that never answers is given up on.
+ *
+ * And that it ends having built one child per slot, not one per zone/tier: the
+ * game data rides along on a child's first start message and is cloned into it
+ * there, so a child built per task pays that clone per task.
  */
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -14,6 +18,8 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 const harness = vi.hoisted(() => ({
     sent: [],
     workers: [],
+    /** Every start message the coordinator posted to a child, in order */
+    childMessages: [],
     /** How a fake child behaves: 'reply' | 'silent' | 'error' per zone hrid */
     behaviour: {},
 }));
@@ -21,9 +27,13 @@ const harness = vi.hoisted(() => ({
 class FakeWorker {
     constructor() {
         this.terminated = false;
+        /** Zone hrids this child was asked to run, in order - it may be reused */
+        this.tasks = [];
         harness.workers.push(this);
     }
     postMessage(msg) {
+        harness.childMessages.push(msg);
+        this.tasks.push(msg.zoneHrid);
         const mode = harness.behaviour[msg.zoneHrid] || 'reply';
         if (mode === 'silent') return;
         setTimeout(() => {
@@ -51,6 +61,7 @@ beforeEach(async () => {
     vi.useFakeTimers();
     harness.sent = [];
     harness.workers = [];
+    harness.childMessages = [];
     harness.behaviour = {};
     globalThis.Worker = FakeWorker;
     // A worker global has `onmessage` as a property; the module assigns to it bare
@@ -121,8 +132,9 @@ describe('the all-zones coordinator', () => {
         expect(done?.type).toBe('all_zones_result');
         expect(done.results).toHaveLength(36);
         expect(done.results.every((r) => r && typeof r.tier === 'number')).toBe(true);
-        // 36 sims ran, not just the six seeded ones
-        expect(harness.workers.length).toBe(36);
+        // 36 sims ran, not just the six seeded ones - on four pooled children
+        expect(harness.childMessages).toHaveLength(36);
+        expect(harness.workers.length).toBe(4);
         const last = [...harness.sent].reverse().find((m) => m.type === 'progress');
         expect(last.progress).toBe(100);
     });
@@ -177,7 +189,61 @@ describe('the all-zones coordinator', () => {
         const zones = [...tiers('a', 3), ...tiers('b', 3)];
         const done = await sweep(zones, { useEarlyExit: false });
         expect(done?.type).toBe('all_zones_result');
-        expect(harness.workers.length).toBe(6);
+        expect(harness.childMessages).toHaveLength(6);
+        expect(harness.workers.length).toBe(4);
         expect(done.results.map((r) => r.tier)).toEqual([0, 1, 2, 0, 1, 2]);
+    });
+});
+
+describe('the coordinator borrows its children instead of building one per task', () => {
+    test('thirty-six zone/tiers run on four children, and the results are unchanged', async () => {
+        const zones = [...tiers('a', 9), ...tiers('b', 9), ...tiers('c', 9), ...tiers('d', 9)];
+
+        const done = await sweep(zones, { useEarlyExit: false, maxWorkers: 4 });
+
+        expect(done?.type).toBe('all_zones_result');
+        expect(harness.workers.length).toBe(4);
+        expect(harness.childMessages).toHaveLength(36);
+        // Every zone/tier still has its own result, in the order it was asked for
+        expect(done.results.map((r) => `${r.zone}${r.tier}`)).toEqual(
+            zones.map((z) => `${z.zoneHrid}${z.difficultyTier}`)
+        );
+    });
+
+    test('and each child is sent the game data once, not once per task', async () => {
+        // The clone this pool exists to avoid: tens of megabytes of maps, copied
+        // into the child on every send that carries them
+        const zones = [...tiers('a', 4), ...tiers('b', 4)];
+
+        await sweep(zones, { useEarlyExit: false, maxWorkers: 2 });
+
+        expect(harness.childMessages).toHaveLength(8);
+        expect(harness.childMessages.filter((m) => m.gameData !== undefined)).toHaveLength(2);
+        // Everything that describes *this* zone/tier still rides on every message
+        expect(harness.childMessages.every((m) => typeof m.zoneHrid === 'string')).toBe(true);
+    });
+
+    test('no child is left running when the sweep ends', async () => {
+        const zones = [...tiers('a', 6), ...tiers('b', 6)];
+
+        const done = await sweep(zones, { useEarlyExit: false, maxWorkers: 3 });
+
+        expect(done?.type).toBe('all_zones_result');
+        expect(harness.workers.every((w) => w.terminated)).toBe(true);
+    });
+
+    test('a child that stalls is thrown away rather than pooled, and the sweep carries on', async () => {
+        harness.behaviour.a = 'silent';
+        const zones = [...tiers('a', 1), ...tiers('b', 3)];
+
+        const done = await sweep(zones, { useEarlyExit: false, ticks: 30_000, maxWorkers: 2 });
+
+        expect(done?.type).toBe('all_zones_result');
+        expect(done.results[0]).toBeNull();
+        expect(done.results.slice(1).map((r) => r.tier)).toEqual([0, 1, 2]);
+        // The stalled child was thrown away, never pooled for another task
+        const stalled = harness.workers.find((w) => w.tasks.includes('a'));
+        expect(stalled.terminated).toBe(true);
+        expect(stalled.tasks).toEqual(['a']);
     });
 });

@@ -26,6 +26,16 @@
  *   memory posts neither result nor error, and a slot awaiting it would wait for
  *   ever; after STALL_MS without a message the child is terminated and its zone
  *   recorded as failed (null), and the sweep carries on.
+ *
+ * Children are pooled, not built per zone/tier. The game data is by far the
+ * largest thing in a child's start message, and `postMessage` structured-clones
+ * all of it - tens of megabytes of item/action/monster maps - into the child on
+ * every send. A sweep of thirty-six zone/tiers on four slots used to pay that
+ * thirty-six times over; a child kept between tasks already holds the maps in
+ * its engine singleton, so every task after a slot's first sends
+ * `gameData: undefined` and the sweep pays the clone once per slot. This
+ * mirrors the idle pool `combat-sim-runner.js` keeps on the main thread, and
+ * cannot share it: a `Worker` handle does not cross a thread boundary.
  */
 
 /** Silence from a child sim worker before it is presumed dead, in ms */
@@ -89,6 +99,42 @@ onmessage = async function (event) {
 
         const poolSize = Math.min(maxWorkers, taskQueue.length);
 
+        /**
+         * Children with nothing to run, each already holding a clone of this
+         * sweep's game data. Capped at the slot count - a fifth warm child is a
+         * fifth copy of the maps that no slot could ever pick up.
+         */
+        let idleChildren = [];
+
+        /**
+         * A child ready to run a task - a warm one when there is one, a fresh
+         * one when there is not.
+         * @returns {{worker: Worker, hasData: boolean}} Child, off the idle list
+         */
+        const acquireChild = () => idleChildren.pop() || { worker: new Worker(workerURL), hasData: false };
+
+        /**
+         * Hand a finished child back to the idle list.
+         * @param {{worker: Worker, hasData: boolean}} child - Child that just finished
+         */
+        const releaseChild = (child) => {
+            // Detach first: a late message from the task just finished must not
+            // reach the handlers of the task that picks this child up next.
+            child.worker.onmessage = null;
+            child.worker.onerror = null;
+            if (idleChildren.length >= poolSize) {
+                child.worker.terminate();
+                return;
+            }
+            idleChildren.push(child);
+        };
+
+        /** Terminate every warm child. Tasks in flight are untouched. */
+        const terminateIdleChildren = () => {
+            for (const child of idleChildren) child.worker.terminate();
+            idleChildren = [];
+        };
+
         // Tasks in flight — running, or awaiting the main thread's go/skip — which
         // may still push more tasks. Idle slots wait on `wake` rather than leaving
         // while this is above zero.
@@ -117,15 +163,28 @@ onmessage = async function (event) {
             reportProgress();
         };
 
-        // Run one zone/tier on a fresh child worker; null when it fails or stalls
+        // Run one zone/tier on a pooled child worker; null when it fails or stalls
         const runTask = (task) => {
             const taskId = ++taskIdCounter;
             return new Promise((resolve, reject) => {
-                const worker = new Worker(workerURL);
+                const child = acquireChild();
+                const worker = child.worker;
                 let stallTimer = null;
-                const settle = (fn, value) => {
+                /**
+                 * Finish the task and decide what becomes of the child.
+                 * @param {Function} fn - resolve or reject
+                 * @param {*} value - Result or error
+                 * @param {boolean} healthy - Whether the child may be reused
+                 */
+                const settle = (fn, value, healthy) => {
                     clearTimeout(stallTimer);
-                    worker.terminate();
+                    // A child that answered - with a result, or with an error it
+                    // caught itself - is still healthy: the per-run state lives
+                    // on the simulator instance it just dropped. A child that
+                    // stalled or failed at the worker level says nothing about
+                    // what state it is in, so it is terminated, not pooled.
+                    if (healthy) releaseChild(child);
+                    else worker.terminate();
                     fn(value);
                 };
                 const armStall = () => {
@@ -133,7 +192,10 @@ onmessage = async function (event) {
                     stallTimer = setTimeout(() => {
                         settle(
                             reject,
-                            new Error(`no word from the sim worker for ${Math.round(STALL_MS / 1000)}s — presumed dead`)
+                            new Error(
+                                `no word from the sim worker for ${Math.round(STALL_MS / 1000)}s — presumed dead`
+                            ),
+                            false
                         );
                     }, STALL_MS);
                 };
@@ -147,21 +209,25 @@ onmessage = async function (event) {
                         zoneProgress[task.index] = msg.progress;
                         reportProgress();
                     } else if (msg.type === 'result') {
-                        settle(resolve, msg.simResult);
+                        settle(resolve, msg.simResult, true);
                     } else if (msg.type === 'error') {
-                        settle(reject, new Error(msg.error));
+                        settle(reject, new Error(msg.error), true);
                     }
                 };
 
                 worker.onerror = (error) => {
-                    settle(reject, new Error(error.message || 'Worker error'));
+                    settle(reject, new Error(error.message || 'Worker error'), false);
                 };
 
                 armStall();
                 worker.postMessage({
                     type: 'start_simulation',
                     taskId,
-                    gameData,
+                    // A warm child already holds these maps in its engine
+                    // singleton, and cloning them again is the cost this pool
+                    // exists to avoid. `hasData` is a plain flag, not a compare:
+                    // one sweep hands one game-data object to every child it has.
+                    gameData: child.hasData ? undefined : gameData,
                     playerDTOs,
                     zoneHrid: task.zoneHrid,
                     difficultyTier: task.difficultyTier,
@@ -172,6 +238,7 @@ onmessage = async function (event) {
                     // and task gear does not inflate the zone rankings
                     isTaskFight: false,
                 });
+                child.hasData = true;
             });
         };
 
@@ -270,7 +337,10 @@ onmessage = async function (event) {
             postMessage({ type: 'error', error: error.message || String(error) });
         }
 
-        // Clean up
+        // Clean up. The warm children go first: the main thread terminates this
+        // coordinator on the result message, which takes its children with it,
+        // but until it does each one is holding a copy of the game data.
+        terminateIdleChildren();
         URL.revokeObjectURL(simWorkerBlobURL);
         simWorkerBlobURL = null;
     } else if (type === 'zone_tier_decision') {
