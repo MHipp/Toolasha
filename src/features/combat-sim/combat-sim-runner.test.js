@@ -29,8 +29,14 @@ vi.mock('../../utils/mobile.js', () => ({
     isMobileMode: () => settings.mobile,
 }));
 
-const { plannedWorkerCount, runSimulation, runLabyrinthSimulation, cancelSimulation, terminateIdleWorkers } =
-    await import('./combat-sim-runner.js');
+const {
+    plannedWorkerCount,
+    runSimulation,
+    runLabyrinthSimulation,
+    cancelSimulation,
+    cancelActiveSimulations,
+    terminateIdleWorkers,
+} = await import('./combat-sim-runner.js');
 
 /** The bare shape mergeSimResults walks unconditionally */
 const EMPTY_SIM_RESULT = { encounters: 0, deaths: {}, experienceGained: {}, consumablesUsed: {} };
@@ -454,5 +460,93 @@ describe('stopping and tearing down a warm pool', () => {
         terminateIdleWorkers();
 
         expect(built[0].terminated).toBe(true);
+    });
+});
+
+describe('stopping the work without throwing away the warm workers', () => {
+    /** One ordinary Simulate press: short enough to be a single chunk. */
+    const simulate = () =>
+        runSimulation({
+            gameData: gameDataPayload(),
+            playerDTOs: [],
+            zoneHrid: '/actions/combat/fly',
+            difficultyTier: 0,
+            hours: 1,
+            communityBuffs: {},
+        });
+
+    test('pressing Simulate again borrows the warm worker instead of starting cold', async () => {
+        // The case a user hits most. `preempt` used to drain the idle pool, so
+        // every repeated press paid the worker startup and the game-data clone
+        const { built, messages } = stubWorkerPool();
+
+        await simulate();
+        await simulate();
+
+        expect(built).toHaveLength(1);
+        expect(messages[1].gameData).toBeUndefined();
+    });
+
+    test('cancelling only the active runs leaves the warm workers alone', async () => {
+        const { built } = stubWorkerPool();
+
+        await replay(gameDataPayload());
+        cancelActiveSimulations();
+
+        expect(built[0].terminated).toBe(false);
+        await replay(gameDataPayload());
+        expect(built).toHaveLength(1);
+    });
+
+    test('and still rejects the chunk that was running', async () => {
+        const { built } = stubWorkerPool({ deferred: true });
+
+        const inFlight = replay(gameDataPayload());
+        cancelActiveSimulations();
+
+        await expect(inFlight).rejects.toThrow('Cancelled');
+        expect(built[0].terminated).toBe(true);
+    });
+
+    test('a feature teardown or character switch still takes everything', async () => {
+        // `cancelSimulation` is the name every caller that has not thought about
+        // the distinction reaches for, so it has to stay the safe one
+        const { built } = stubWorkerPool({ deferred: true });
+
+        const warm = replay(gameDataPayload());
+        built[0].respond();
+        await warm;
+        const inFlight = replay(gameDataPayload());
+
+        cancelSimulation();
+
+        await expect(inFlight).rejects.toThrow('Cancelled');
+        expect(built.every((w) => w.terminated)).toBe(true);
+        // Nothing warm survived to hold the departing character's game data:
+        // the next replay has to build its own
+        const next = replay(gameDataPayload());
+        expect(built).toHaveLength(2);
+        built[1].respond();
+        await next;
+    });
+
+    test('a run spread wider than the idle cap still completes', async () => {
+        // Six chunks against a pool that keeps four: the two that cannot be kept
+        // warm are terminated on release, and the run still merges cleanly
+        settings.maxThreads = 6;
+        const { built } = stubWorkerPool();
+
+        const merged = await runSimulation({
+            gameData: gameDataPayload(),
+            playerDTOs: [],
+            zoneHrid: '/actions/combat/fly',
+            difficultyTier: 0,
+            hours: 600,
+            communityBuffs: {},
+        });
+
+        expect(built).toHaveLength(6);
+        expect(merged.encounters).toBe(0);
+        expect(built.filter((w) => w.terminated)).toHaveLength(2);
     });
 });

@@ -176,6 +176,11 @@ vi.mock('./combat-sim-runner.js', () => ({
         sim.onCall?.(sim.calls.length);
         return { labyAttemptCount: 100, encounters: 70, deaths: {}, simulatedTime: 3 * 3600 * 1e9 };
     },
+    // The Stop buttons take the preempt-shaped path: they stop the run, not the
+    // warm workers behind it
+    cancelActiveSimulations: () => {
+        sim.cancelled++;
+    },
     cancelSimulation: () => {
         sim.cancelled++;
     },
@@ -874,7 +879,7 @@ describe('a house room level reaches the character the simulation is handed', ()
         // in-flight sim has a million-hour budget and no trial cap, so Stop
         // appeared dead: it had been honoured, and was waiting on a sim that was
         // never going to finish. The Single Sim and Skilling Stop buttons have
-        // always called cancelSimulation(); this one did not.
+        // always terminated the running workers; this one did not.
         sim.cancelled = 0;
 
         ui.panel.querySelector('#mwi-labsim-upgrade-stop').dispatchEvent(new Event('click'));

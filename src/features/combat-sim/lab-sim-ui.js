@@ -17,7 +17,7 @@ import {
     getGuildBuffDetailMap,
     guildBuffMaxLevel,
 } from './combat-sim-adapter.js';
-import { runLabyrinthSimulation, cancelSimulation } from './combat-sim-runner.js';
+import { runLabyrinthSimulation, cancelActiveSimulations } from './combat-sim-runner.js';
 import { wilsonInterval } from './engine/wilson.js';
 import { findMaxLabyrinthLevel, defaultThreshold } from './labyrinth-level-finder.js';
 import {
@@ -1365,7 +1365,8 @@ class LabSimUI {
         // Max Level listeners
         this.panel.querySelector('#mwi-labsim-run').addEventListener('click', () => this._onSimulate());
         this.panel.querySelector('#mwi-labsim-stop').addEventListener('click', () => {
-            cancelSimulation();
+            // Stops the run, keeps the warm workers - see the Combat Sim Stop
+            cancelActiveSimulations();
             this.isRunning = false;
             this._setStatus('Labyrinth simulation cancelled.');
             this.panel.querySelector('#mwi-labsim-progress').style.display = 'none';
@@ -1505,7 +1506,7 @@ class LabSimUI {
             // was never going to end. Terminating the workers is what actually
             // stops it, which is what the Single Sim and Skilling Stop buttons
             // have always done.
-            cancelSimulation();
+            cancelActiveSimulations();
             this.panel.querySelector('#mwi-labsim-upgrade-progress')?.style.setProperty('display', 'none');
             this._setStatus('Upgrade analysis cancelled.');
         });
@@ -2378,7 +2379,7 @@ class LabSimUI {
     /** @private */
     async _onSimulate() {
         if (this.isRunning) {
-            cancelSimulation();
+            cancelActiveSimulations();
             this._setStatus('Labyrinth simulation cancelled.');
             return;
         }

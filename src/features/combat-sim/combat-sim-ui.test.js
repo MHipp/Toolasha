@@ -244,6 +244,7 @@ vi.mock('./combat-sim-runner.js', () => ({
     runSimulation: async () => mocks.simResult || {},
     runLabyrinthSimulation: async () => ({}),
     cancelSimulation: () => {},
+    cancelActiveSimulations: () => {},
     getMaxWorkers: () => 4,
     plannedWorkerCount: () => 1,
 }));

@@ -76,7 +76,7 @@ import {
     getGuildBuffDetailMap,
     guildBuffMaxLevel,
 } from './combat-sim-adapter.js';
-import { runSimulation, cancelSimulation } from './combat-sim-runner.js';
+import { runSimulation, cancelActiveSimulations } from './combat-sim-runner.js';
 import { runAllZonesSimulation, cancelAllZonesSimulation } from './all-zones-runner.js';
 import {
     runUpgradeAnalysis,
@@ -4132,8 +4132,12 @@ class CombatSimUI {
      */
     async _onSimulate() {
         if (this.isRunning) {
-            // Stop the running simulation
-            cancelSimulation();
+            // Stop the running simulation. The warm workers stay: Stop here is
+            // almost always "that is not what I meant" followed by an edit and
+            // another Simulate, and the state left behind is the same one a run
+            // that finished normally leaves - bounded by the idle reaper, and
+            // emptied outright by a feature teardown or a character switch.
+            cancelActiveSimulations();
             cancelAllZonesSimulation();
             this._setStatus('Simulation cancelled.');
             this._switchTab('configure');

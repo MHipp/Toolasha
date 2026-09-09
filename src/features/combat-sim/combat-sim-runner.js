@@ -535,7 +535,11 @@ export async function runSimulation(params, onProgress, { preempt = true, worker
     // its own batch must opt out: preempting here would have each of its
     // simulations kill the one before it, which is not a race so much as a
     // guarantee of failure.
-    if (preempt) cancelSimulation();
+    //
+    // Only the running chunks go. The run about to start wants a worker holding
+    // this very game data, and the idle pool is full of them — draining it here
+    // would have every repeated Simulate click start cold.
+    if (preempt) cancelActiveSimulations();
 
     // Determine worker count. A caller running a batch of simulations pins this
     // to one: splitting each run across the whole budget makes every candidate
@@ -682,7 +686,8 @@ export async function runLabyrinthSimulation(params, onProgress) {
     // its own worker, and several background consumers run concurrently (tile
     // badge sims fire on every room switch while skip-recommendation searches
     // are in flight — cancelling here killed the other side's sim mid-run).
-    // Explicit Stop buttons still cancel everything via cancelSimulation().
+    // Explicit Stop buttons still cancel every run in flight, via
+    // cancelActiveSimulations().
     const taskId = ++taskIdCounter;
     const message = {
         type: 'start_simulation',
@@ -834,22 +839,43 @@ export async function runPlayerStatProbe(params) {
 }
 
 /**
- * Terminate all simulation workers and reject pending promises.
+ * Terminate the chunks running right now and reject their promises, leaving the
+ * idle pool warm.
  *
- * Idle workers go too. Cancelling is what a Stop button, a character switch and
- * a feature teardown all call, and none of them should leave a thread holding a
- * copy of the game data behind; the next run builds a fresh worker.
+ * This is the "stop this work, keep the machinery" half of cancelling. A run
+ * being preempted by the next one - the Simulate button pressed twice, a Stop
+ * followed by an edit and another Simulate - is about to want a worker holding
+ * exactly the game data the idle ones already hold, and draining the pool there
+ * made the pool useless for the case a user hits most.
+ *
+ * A terminated worker is dead, not idle: its wrapper is dropped rather than
+ * released, because nothing can say what state a worker killed mid-run is in.
+ *
+ * Callers that must not leave a thread holding a copy of the game data - a
+ * feature teardown, a character switch - want `cancelSimulation` instead.
  */
-export function cancelSimulation() {
+export function cancelActiveSimulations() {
     for (const wrapper of activeWorkers) {
         wrapper.worker.terminate();
     }
     activeWorkers = [];
-    terminateIdleWorkers();
 
     const rejects = pendingRejects.slice();
     pendingRejects = [];
     for (const reject of rejects) {
         reject(new Error('Cancelled'));
     }
+}
+
+/**
+ * Terminate all simulation workers and reject pending promises.
+ *
+ * Idle workers go too. This is the safe default, and the name every caller that
+ * has not thought about the distinction reaches for: a feature teardown and a
+ * character switch must not leave a thread holding a copy of the game data - the
+ * departing character's, in the switch case - so the next run builds fresh.
+ */
+export function cancelSimulation() {
+    cancelActiveSimulations();
+    terminateIdleWorkers();
 }

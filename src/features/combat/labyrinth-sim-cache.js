@@ -618,6 +618,10 @@ export const simCacheMethods = {
             clearTimeout(this._simRetryTimer);
             this._simRetryTimer = null;
         }
+        // The full teardown, not the warm-pool-preserving one: this is the path
+        // a character switch takes (labyrinth-clear-rate's teardown calls it),
+        // and a worker kept warm across a switch holds the departing
+        // character's game data.
         cancelSimulation();
     },
 
