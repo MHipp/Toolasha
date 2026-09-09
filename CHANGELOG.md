@@ -6,6 +6,14 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Leftovers: enhancing rows count their protections, and two modals stop guessing which box is which
+
+An enhancing row's time and its material ledger both ignored protection items, so a climb that runs out of protections halfway still promised the full request. Both sides now charge the expected protection draw per attempt — the same figure the action bar already showed — and both stop at the same count, marked `~` because it is an expectation rather than a promise. Where a protection cannot be quantified at all it caps nothing and the figure is marked as an estimate, rather than reading as unlimited. The action bar's own duplicate cap is gone; there is one place that decides now. Switch it off with the existing protection setting and every figure returns to what it was.
+
+Two modals stopped guessing. When nothing identifies the quantity field, the sell strip refuses the step and says so instead of reading the **price** box, and the buy-side autofill leaves the modal alone instead of writing a material count into the **enhancement level** box and then pressing Buy.
+
+Three smaller ones. The sell queue now empties and gives its claim back on a character switch, before the ledger moves, instead of leaving the departing character's stock claimed and the arriving one's queue full of somebody else's sales. The budget breakdown claims stock only once the window can definitely be closed, so a failure while it opens cannot leave stock claimed for a week with no window to close. And when Loadout Snapshot is off the sell strip says the loadouts were not checked, rather than saying nothing and reading as "nothing to hold back".
+
 ### Audit round: a watchlist crash that never happened, and a shared bag that forgot whose it was
 
 The watchlist measured a price move across the marker that means "nobody is on this side of the book". An item whose ask emptied while its bid never moved was drawn as a 53% fall; one with no book at all came out sign-flipped in the thousands of percent. A move is now measured only over sides both readings actually quote, and where there is no common side it says nothing rather than inventing a figure.
@@ -24,7 +32,7 @@ Two more from the same look. Pressing Start before the loadout list had finished
 
 ### A counted enhancing row shows the time its materials cover
 
-The last place a queued row still promised work its materials could not pay for: enhancing returned its own answer before the cap every other action type had gained. A row that can perform none of its request now reads as no time at all, the same as everywhere else. Protection items stay uncounted, deliberately — they are charged only on a failure and the ledger does not count them either, so binding the display on them would put the row back at odds with the ledger it feeds.
+The last place a queued row still promised work its materials could not pay for: enhancing returned its own answer before the cap every other action type had gained. A row that can perform none of its request now reads as no time at all, the same as everywhere else. Protection items were left uncounted at the time, so that the display and the ledger agreed; they are counted on both sides now (below).
 
 ### Chat history is filed under a tab's name, never its position
 
