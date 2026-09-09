@@ -204,3 +204,74 @@ describe('telling a slow geometry restore that it is out of date', () => {
         expect(grabbed).toHaveBeenCalledWith(panel);
     });
 });
+
+/**
+ * A control sitting in a drag handle must keep receiving clicks.
+ *
+ * Starting a drag captures the pointer on the handle, and a captured pointer
+ * makes the browser dispatch the resulting `click` at the capturing element
+ * rather than the thing under the cursor — so a control inside a handle stops
+ * being clickable at all. The profile card's "breakdown" link is a `<span>` in
+ * the card's header, the header is the handle, and the old guard named only
+ * `button, input, select`: pressing it dragged the card and the link did
+ * nothing. These pin the rule that fixed it.
+ */
+describe('a press aimed at a control in the handle is not a drag', () => {
+    const pressOn = (el, x = 200, y = 200) =>
+        el.dispatchEvent(new MouseEvent('pointerdown', { button: 0, clientX: x, clientY: y, bubbles: true }));
+
+    // Whether the press started a drag. Judged by the interaction stamp, which
+    // `onPointerDown` writes only once it has decided this is a drag — the
+    // panel's own position cannot say, since a zero-sized rect in this
+    // environment makes the computed offset cancel the movement exactly.
+    const dragStarted = () => {
+        const started = grabbed.mock.calls.length > 0;
+        move(300, 300);
+        release();
+        return started;
+    };
+
+    beforeEach(() => grabbed.mockClear());
+
+    test('a span that styles itself as clickable is a control, not drag surface', () => {
+        handle.innerHTML = '<span id="link" style="cursor: pointer;">breakdown</span>';
+        pressOn(document.getElementById('link'));
+        expect(dragStarted()).toBe(false);
+    });
+
+    test('a control nested inside a clickable span counts too', () => {
+        handle.innerHTML = '<span style="cursor: pointer;"><span id="inner">x</span></span>';
+        pressOn(document.getElementById('inner'));
+        expect(dragStarted()).toBe(false);
+    });
+
+    test('a real button is still a control', () => {
+        handle.innerHTML = '<button id="btn">x</button>';
+        pressOn(document.getElementById('btn'));
+        expect(dragStarted()).toBe(false);
+    });
+
+    test('anything marked as not-drag-surface is a control whatever it looks like', () => {
+        handle.innerHTML = '<span id="tagged" data-drag-ignore="">x</span>';
+        pressOn(document.getElementById('tagged'));
+        expect(dragStarted()).toBe(false);
+    });
+
+    test('the bare handle still drags', () => {
+        press(200, 200);
+        expect(dragStarted()).toBe(true);
+    });
+
+    test('a handle that styles itself as a pointer still drags', () => {
+        // The walk stops at the handle, so a handle's own cursor cannot disarm it
+        handle.style.cursor = 'pointer';
+        press(200, 200);
+        expect(dragStarted()).toBe(true);
+    });
+
+    test('plain text in the handle still drags', () => {
+        handle.innerHTML = '<span id="label" style="cursor: move;">Build Score</span>';
+        pressOn(document.getElementById('label'));
+        expect(dragStarted()).toBe(true);
+    });
+});

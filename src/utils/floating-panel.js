@@ -57,6 +57,39 @@ function releaseCapture(el, event) {
 }
 
 /**
+ * Whether a press inside a drag handle was aimed at a control rather than the
+ * handle itself.
+ *
+ * Starting a drag is not free: it captures the pointer on the handle and calls
+ * `preventDefault()`, and a captured pointer makes the browser dispatch the
+ * resulting `click` at the capturing element instead of the thing under the
+ * cursor. So a control inside a handle stops receiving clicks at all. That is
+ * how the profile card's "breakdown" link came to do nothing — it is a `<span>`
+ * in the card's header, the header is the drag handle, and the old test here
+ * named only `button, input, select`.
+ *
+ * Tag names alone cannot answer this: the panels in this script are built from
+ * spans as often as buttons, across 28 handles, and each new one is another
+ * chance to forget. What every control does say is `cursor: pointer`, against
+ * the handle's own `cursor: move` — that is the convention throughout, and it
+ * is what the user sees before they press. The handle itself is excluded from
+ * the walk so a handle that styles itself as a pointer stays draggable.
+ *
+ * @param {EventTarget} target - What the press landed on
+ * @param {HTMLElement} handle - The drag handle
+ * @returns {boolean}
+ */
+function isHandleControl(target, handle) {
+    if (!(target instanceof Element)) return false;
+    if (target.closest('button, input, select, textarea, a, [data-drag-ignore]')) return true;
+
+    for (let el = target; el && el !== handle; el = el.parentElement) {
+        if (getComputedStyle(el).cursor === 'pointer') return true;
+    }
+    return false;
+}
+
+/**
  * Let a panel be dragged by one of its parts.
  *
  * Listeners live on the document rather than the handle, because a fast drag
@@ -114,7 +147,7 @@ export function makeDraggable(panel, handle, onDrop) {
     const onPointerDown = (event) => {
         // Only the primary button, and never a click that was meant for a
         // control sitting in the handle
-        if (event.button !== 0 || event.target.closest('button, input, select')) return;
+        if (event.button !== 0 || isHandleControl(event.target, handle)) return;
 
         bringPanelToFront(panel);
         // Before the panel has moved, so a `restoreGeometry` still waiting on
