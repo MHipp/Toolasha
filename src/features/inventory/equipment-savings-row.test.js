@@ -2417,3 +2417,114 @@ describe('a list written before the key carried the level', () => {
         expect(text()).not.toContain(FAILED);
     });
 });
+
+describe('what one redraw costs', () => {
+    // The equipmentWatch tile redraws whenever the game moves — a loot tick is
+    // enough — and a live pformance export had `overlayRow:equipmentWatch` at
+    // 77ms, the largest single piece of work in its five-second window. Almost
+    // all of it was the protect-from sweep, run from scratch on every redraw:
+    // one Markov chain per protect-from level of every climb, twice a target
+    // (the run and the ladder's run). The sweep reads nothing but the bench,
+    // the material price and the protection price, and a loot tick moves none
+    // of the three.
+    let sweeps = 0;
+    let benches = 0;
+
+    beforeEach(async () => {
+        globalThis.math = await import('mathjs');
+        const { calculateEnhancement } = await import('../../utils/enhancement-calculator.js');
+        sweeps = 0;
+        benches = 0;
+
+        for (const hrid of ['/items/first_cape', '/items/second_cape']) {
+            game.details[hrid] = {
+                name: hrid.split('/').pop(),
+                itemLevel: 50,
+                enhancementCosts: [{ itemHrid: '/items/shard', count: 1 }],
+                equipmentDetail: { type: '/equipment_types/back' },
+            };
+        }
+        game.details['/items/mirror_of_protection'] = { name: 'Mirror of Protection', sellPrice: 240_000 };
+        game.prices['/items/mirror_of_protection:0'] = { ask: 240_000, bid: 220_000 };
+        game.inventory.push(
+            { itemHrid: '/items/first_cape', itemLocationHrid: '/item_locations/back', count: 1, enhancementLevel: 3 },
+            {
+                itemHrid: '/items/second_cape',
+                itemLocationHrid: '/item_locations/inventory',
+                count: 1,
+                enhancementLevel: 2,
+            }
+        );
+
+        window.Toolasha = {
+            Utils: {
+                enhancementCalculator: {
+                    calculateEnhancement: (...args) => {
+                        sweeps++;
+                        return calculateEnhancement(...args);
+                    },
+                },
+                enhancementConfig: {
+                    getAutoDetectedParams: () => {
+                        benches++;
+                        return {
+                            enhancingLevel: 84,
+                            toolBonus: 4,
+                            speedBonus: 0,
+                            teas: { blessed: false },
+                            guzzlingBonus: 1,
+                        };
+                    },
+                },
+            },
+        };
+    }, 30_000);
+
+    afterEach(() => {
+        delete window.Toolasha;
+        delete globalThis.math;
+    });
+
+    test('a redraw nothing moved sweeps nothing, and reports the same figures', () => {
+        watchTarget('/items/first_cape', 7);
+        watchTarget('/items/second_cape', 7);
+
+        const first = everything();
+        expect(sweeps).toBeGreaterThan(0);
+        const swept = sweeps;
+
+        // The output-identical half: the second and third passes are served
+        // from the cache, and what they report has to be what the sweep said
+        expect(everything()).toEqual(first);
+        expect(everything()).toEqual(first);
+        expect(sweeps).toBe(swept);
+    }, 30_000);
+
+    test('a moved material price sweeps again rather than quoting the old run', () => {
+        watchTarget('/items/first_cape', 7);
+
+        const before = watchedTargets()[0].cost;
+        const swept = sweeps;
+
+        game.prices['/items/shard:0'] = { ask: 4_000_000, bid: 3_600_000 };
+        const after = watchedTargets()[0].cost;
+
+        expect(sweeps).toBeGreaterThan(swept);
+        expect(after).toBeGreaterThan(before);
+    }, 30_000);
+
+    test('the bench is resolved once a target, not once a figure', () => {
+        watchTarget('/items/first_cape', 7);
+        watchTarget('/items/second_cape', 7);
+
+        // Warm first: this is about the repetition inside one pass, not about
+        // the sweep cache under it
+        everything();
+        benches = 0;
+        everything();
+
+        // Three resolutions a target before this: the direct run, the ladder's
+        // run, and the chip naming the bench on the card
+        expect(benches).toBeLessThanOrEqual(2);
+    }, 30_000);
+});

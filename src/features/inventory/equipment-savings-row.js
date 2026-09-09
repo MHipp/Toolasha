@@ -61,6 +61,7 @@ import networthHistory from '../networth/networth-history.js';
 import { getItemPrices } from '../../utils/market-data.js';
 import { getItemHridFromName } from '../../utils/game-lookups.js';
 import { shopPurchasePrice } from '../../utils/token-valuation.js';
+import { findProducingAction } from '../../utils/production-index.js';
 import { calculateArtisanBonus } from '../../utils/material-calculator.js';
 import { explainAbilityLevelUpCost } from '../../utils/ability-cost-calculator.js';
 import { formatWithSeparator, formatKMB } from '../../utils/formatters.js';
@@ -281,6 +282,64 @@ let gameRevision = 0;
 marketAPI.on(() => {
     gameRevision++;
 });
+
+/**
+ * Reads that cannot change inside one synchronous costing pass.
+ *
+ * A list of eight enhancing targets asked the same questions over and over for
+ * one draw: the character's enhancing bench was resolved twenty-four times (the
+ * run, the ladder's run and the chip on each card), the recipe behind a piece
+ * was looked up twice, and the shop that sells its base was walked twice. None
+ * of those answers can move while the pass is running — nothing awaits — so the
+ * repeats were pure cost.
+ *
+ * Held for the pass rather than on a clock or an event: the map is thrown away
+ * before control returns to the game, so a memo here can never answer with a
+ * figure the game has since moved past.
+ */
+let passMemo = null;
+
+/** Nesting depth, so `everything()` calling `watchedTargets()` keeps one memo */
+let passDepth = 0;
+
+/**
+ * Run a costing pass with a memo covering it.
+ * @param {Function} pass - The work, run immediately
+ * @returns {*} Whatever `pass` returns
+ */
+function inPass(pass) {
+    passDepth++;
+    if (passDepth === 1) passMemo = new Map();
+    try {
+        return pass();
+    } finally {
+        passDepth--;
+        if (!passDepth) passMemo = null;
+    }
+}
+
+/**
+ * A value computed at most once per pass, and normally when there is no pass.
+ * @param {string} key - What is being remembered
+ * @param {Function} compute - Produces it
+ * @returns {*} The value
+ */
+function oncePerPass(key, compute) {
+    if (!passMemo) return compute();
+    if (passMemo.has(key)) return passMemo.get(key);
+    const value = compute();
+    passMemo.set(key, value);
+    return value;
+}
+
+/**
+ * The bench every enhancement figure on this card is run on.
+ * @param {string} itemHrid - The piece being costed
+ * @returns {Object} Enhancement parameters
+ */
+function savingsParams(itemHrid) {
+    return oncePerPass(`params:${itemHrid}`, () => enhancementParamsFor('savings', itemHrid));
+}
 
 /**
  * The savings list itself, as a string.
@@ -1046,11 +1105,17 @@ export function spendable() {
  * @returns {Object|null} `{inputItems, upgradeItemHrid, outputCount}`
  */
 export function recipeFor(itemHrid) {
-    const actions = dataManager.getInitClientData?.()?.actionDetailMap || {};
-
-    for (const [actionHrid, action] of Object.entries(actions)) {
-        const output = action?.outputItems?.find((entry) => entry.itemHrid === itemHrid);
-        if (!output) continue;
+    return oncePerPass(`recipe:${itemHrid}`, () => {
+        // The shared reverse index rather than a scan of the whole action table.
+        // `production-index.js` exists because several features answered this
+        // question by walking every action in the game; this one walked it once
+        // per target per redraw, and once more for the ladder's base, and the
+        // walk allocates an entry array per action every time. The index answers
+        // in the same order — first producing action, its matching output — so
+        // the recipe picked cannot change.
+        const producer = findProducingAction(itemHrid);
+        if (!producer) return null;
+        const { actionHrid, action, output } = producer;
 
         // Artisan tea takes a fraction off every input, so a recipe priced at
         // its printed cost is priced for somebody else's tea. The game's own
@@ -1071,8 +1136,7 @@ export function recipeFor(itemHrid) {
             retainAllEnhancement: Boolean(action.retainAllEnhancement),
             outputCount: output.count || 1,
         };
-    }
-    return null;
+    });
 }
 
 /**
@@ -1109,6 +1173,19 @@ function ownsBase(itemHrid) {
 }
 
 /**
+ * Protect-from sweeps already run, per enhancement engine.
+ *
+ * Keyed by the calculator object rather than held in one table so a reloaded
+ * bundle — or a suite standing its own calculator up — never reads answers the
+ * previous one produced.
+ * @type {WeakMap<Function, Map<string, number|null>>}
+ */
+const sweptRuns = new WeakMap();
+
+/** Sweeps remembered per engine before the table is dropped and refilled */
+const SWEPT_RUN_LIMIT = 400;
+
+/**
  * What taking a piece you already own from one enhancement level to another costs.
  *
  * Capes, quivers and the rest of the untradable gear cannot be bought at any
@@ -1136,7 +1213,7 @@ export function enhancementCost(itemHrid, targetLevel, startLevel = 0) {
     // that cannot be made on this player's behalf. The card's rule is the `savings`
     // entry in `SURFACE_RULES` (`ownBench: 'always'`), and the parity suite pins that
     // it ignores the manual panel and the Pro toggle alike.
-    const params = enhancementParamsFor('savings', itemHrid);
+    const params = savingsParams(itemHrid);
     const details = dataManager.getItemDetails?.(itemHrid);
     const calculate = enhancementCalculator()?.calculateEnhancement;
     if (!params || !details || !calculate) return null;
@@ -1154,6 +1231,38 @@ export function enhancementCost(itemHrid, targetLevel, startLevel = 0) {
     // copy to buy at any price, and the fallback would quote the vendor sell
     // price — which is not an offer anyone will honour.
     const protection = getCheapestProtectionPrice(itemHrid, { includeSelf: false });
+
+    // Nothing below this line reads the game again: the sweep is a pure function
+    // of the numbers gathered above, and it is the expensive half of this whole
+    // card — a run sweeps one Markov chain per protect-from level of the climb,
+    // and a list of eight enhancing targets costs two runs each, which was ~190
+    // chains solved on every redraw of a list nothing had touched. Keyed on
+    // those numbers rather than on a clock or an event, so a hit is the same
+    // answer a recomputation would give: a moved bench, material price or
+    // protection price is a different key. Per engine, so a rebuilt bundle
+    // starts clean.
+    const key = [
+        itemHrid,
+        targetLevel,
+        startLevel,
+        params.enhancingLevel || 0,
+        params.toolBonus || 0,
+        params.speedBonus || 0,
+        details.itemLevel || 0,
+        params.teas?.blessed ? 1 : 0,
+        params.guzzlingBonus || 1,
+        params.blessedTeaBonus ?? '',
+        materials.cost,
+        materials.hasMissingPrices ? 1 : 0,
+        protection.itemHrid || '',
+        protection.price,
+    ].join('|');
+    let swept = sweptRuns.get(calculate);
+    if (!swept) {
+        swept = new Map();
+        sweptRuns.set(calculate, swept);
+    }
+    if (swept.has(key)) return swept.get(key);
 
     try {
         // Falling all the way back to +0 on every failure is what "no
@@ -1189,7 +1298,14 @@ export function enhancementCost(itemHrid, targetLevel, startLevel = 0) {
             calculate,
         });
 
-        return plan?.cost ?? null;
+        const cost = plan?.cost ?? null;
+        // Bounded rather than grown forever: a player editing a target's level
+        // walks through twenty keys a piece, and nothing here is worth holding
+        // an unbounded table for. A failed sweep is not cached — the next draw
+        // should try it again rather than repeat the failure.
+        if (swept.size >= SWEPT_RUN_LIMIT) swept.clear();
+        swept.set(key, cost);
+        return cost;
     } catch (error) {
         console.error('[EquipmentSavings] Costing an enhancement run failed:', error);
         return null;
@@ -1316,12 +1432,17 @@ function ladderOption(itemHrid, enhancementLevel) {
  * @returns {number} Coins, or 0 when nowhere sells it
  */
 function basePrice(itemHrid) {
-    const ask = getItemPrices(itemHrid, 0)?.ask || 0;
-    if (ask > 0) return ask;
+    return oncePerPass(`base:${itemHrid}`, () => {
+        const ask = getItemPrices(itemHrid, 0)?.ask || 0;
+        if (ask > 0) return ask;
 
-    const data = dataManager.getInitClientData?.() || {};
-    const shops = [data.shopItemDetailMap, data.taskShopItemDetailMap, data.labyrinthShopItemDetailMap];
-    return shopPurchasePrice(itemHrid, shops, (hrid) => getItemPrices(hrid, 0)?.ask || 0) || 0;
+        // The shop walk below prices every line in the shop to value the token
+        // the base is bought with, which for a cape is a few hundred market
+        // lookups — once per target and again for its ladder before this memo
+        const data = dataManager.getInitClientData?.() || {};
+        const shops = [data.shopItemDetailMap, data.taskShopItemDetailMap, data.labyrinthShopItemDetailMap];
+        return shopPurchasePrice(itemHrid, shops, (hrid) => getItemPrices(hrid, 0)?.ask || 0) || 0;
+    });
 }
 
 /**
@@ -1371,7 +1492,7 @@ function costOf(itemHrid, enhancementLevel) {
                     // Whose bench every enhancement figure on this card was run
                     // on — the same resolver `enhancementCost` asked, so the chip
                     // and the number can never name different benches.
-                    enhanceSource: describeEnhancementSource(enhancementParamsFor('savings', itemHrid)),
+                    enhanceSource: describeEnhancementSource(savingsParams(itemHrid)),
                     // Whichever one is not the basis is still worth a line, so
                     // the card always carries both
                     direct,
@@ -1556,6 +1677,14 @@ export function upgradeBaseRoute(recipe, enhancementLevel, priceBase) {
  * @returns {Array<Object>} `{itemHrid, name, enhancementLevel, ask, cost, ...}`
  */
 export function watchedTargets() {
+    return inPass(costEveryTarget);
+}
+
+/**
+ * The body of {@link watchedTargets}, run inside a pass.
+ * @returns {Array<Object>} Same shape as `watchedTargets`
+ */
+function costEveryTarget() {
     const coins = spendable();
     const perDay = incomePerDay();
 
@@ -1632,6 +1761,15 @@ export function watchedTargets() {
 
 /** @returns {Object} The whole list against your coins */
 export function everything() {
+    return inPass(costEverything);
+}
+
+/**
+ * The body of {@link everything}, run inside a pass so the targets under it and
+ * the totals over them share one memo rather than one each.
+ * @returns {Object} Same shape as `everything`
+ */
+function costEverything() {
     const targets = watchedTargets();
     const abilities = watchedAbilityGoals();
     const houses = watchedHouseGoals();
