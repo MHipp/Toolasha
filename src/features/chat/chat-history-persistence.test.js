@@ -81,6 +81,7 @@ import chatHistoryPersistence, {
     CHAT_HISTORY_STORE,
     MAX_MESSAGES_PER_TAB,
     MAX_TOTAL_CHARS,
+    parseStoredMessage,
     rewireRestoredMessage,
     serializeMessage,
 } from './chat-history-persistence.js';
@@ -367,5 +368,102 @@ describe('chat history persistence', () => {
         const buffer = container.querySelector('.mwi-history-buffer');
         const texts = [...buffer.querySelectorAll('[class*="ChatMessage_chatMessage"]')].map((el) => el.textContent);
         expect(texts).toEqual(['older', 'newer']);
+    });
+});
+
+/**
+ * What a restored message may not bring back with it.
+ *
+ * The markup was the game's own when it was written, but it spent a session on
+ * disk in between and `innerHTML` re-parses whatever it is handed. The `on*`
+ * sweep was never the whole job: a URL attribute and an SMIL element both carry
+ * script past an attribute-only pass, and an inline `url()` fires a request at
+ * a third party with no click at all.
+ */
+describe('restored markup cannot execute or phone home', () => {
+    test('a javascript: URL is dropped, however it is spelled', () => {
+        const el = parseStoredMessage(
+            '<div class="ChatMessage_chatMessage__z">' +
+                '<a href="javascript:alert(1)">a</a>' +
+                '<a id="padded" href="  java	script:alert(2)">b</a>' +
+                '<a id="fine" href="#anchor">c</a>' +
+                '</div>'
+        );
+
+        expect(el.querySelector('a').hasAttribute('href')).toBe(false);
+        expect(el.querySelector('#padded').hasAttribute('href')).toBe(false);
+        // A real link is left alone — the sanitizer must not eat the markup
+        expect(el.querySelector('#fine').getAttribute('href')).toBe('#anchor');
+    });
+
+    test('an item icon’s sprite reference survives it', () => {
+        const el = parseStoredMessage(
+            '<div class="ChatMessage_chatMessage__z"><div class="Item_itemContainer__1">' +
+                '<svg><use href="/static/media/items_sprite.svg#cheese"></use></svg></div></div>'
+        );
+        expect(rewireRestoredMessage(el)).toBe(1);
+    });
+
+    test('SMIL animation is removed — it rewrites attributes after any sweep', () => {
+        const el = parseStoredMessage(
+            '<div class="ChatMessage_chatMessage__z"><svg><a>' +
+                '<animate attributeName="href" to="javascript:alert(1)"></animate>' +
+                '<set attributeName="href" to="javascript:alert(2)"></set>' +
+                '</a></svg></div>'
+        );
+        expect(el.querySelector('animate')).toBeNull();
+        expect(el.querySelector('set')).toBeNull();
+    });
+
+    test('a base element, a meta refresh and a srcdoc are all removed', () => {
+        const el = parseStoredMessage(
+            '<div class="ChatMessage_chatMessage__z">' +
+                '<base href="https://example.invalid/">' +
+                '<meta http-equiv="refresh" content="0;url=https://example.invalid/">' +
+                '<img srcdoc="<script>1</script>" alt="x">' +
+                '</div>'
+        );
+        expect(el.querySelector('base')).toBeNull();
+        expect(el.querySelector('meta')).toBeNull();
+        expect(el.querySelector('img').hasAttribute('srcdoc')).toBe(false);
+    });
+
+    test('an inline style that fetches is dropped; one that only paints is kept', () => {
+        const el = parseStoredMessage(
+            '<div class="ChatMessage_chatMessage__z">' +
+                '<span id="beacon" style="background:url(https://example.invalid/?seen)">a</span>' +
+                '<span id="paint" style="color: red">b</span>' +
+                '</div>'
+        );
+        expect(el.querySelector('#beacon').hasAttribute('style')).toBe(false);
+        expect(el.querySelector('#paint').getAttribute('style')).toBe('color: red');
+    });
+
+    test('a nested chat message is marked restored too, not just the root', () => {
+        // The dungeon tracker queries `[class*="ChatMessage_chatMessage"]` over
+        // the whole document and skips only what carries the mark, so a nested
+        // match with no mark is a restored line it reads as live.
+        const el = parseStoredMessage(
+            '<div class="ChatMessage_chatMessage__z">outer' +
+                '<div class="ChatMessage_chatMessage__z">inner</div></div>'
+        );
+        expect(el.dataset.mwiRestored).toBe('1');
+        expect(el.querySelector('.ChatMessage_chatMessage__z').dataset.mwiRestored).toBe('1');
+    });
+});
+
+describe('a corrupt record costs its own contents and nothing else', () => {
+    test('applyCaps drops entries that are not strings rather than throwing', () => {
+        const tabs = { 'tab:General': ['<div>ok</div>', null, 7, undefined, '<div>also ok</div>'] };
+        expect(() => applyCaps(tabs, MAX_MESSAGES_PER_TAB)).not.toThrow();
+        expect(tabs['tab:General']).toEqual(['<div>ok</div>', '<div>also ok</div>']);
+    });
+
+    test('a load over such a record still resolves, and recording still works', async () => {
+        db.settings[STORAGE_KEY] = { v: 1, savedAt: 1, tabs: { 'tab:General': [null, '<div>kept</div>'] } };
+        chatHistoryPersistence.enable(() => MAX_MESSAGES_PER_TAB);
+
+        await expect(chatHistoryPersistence.load()).resolves.toEqual({ 'tab:General': ['<div>kept</div>'] });
+        expect(() => chatHistoryPersistence.record('tab:General', '<div>new</div>')).not.toThrow();
     });
 });

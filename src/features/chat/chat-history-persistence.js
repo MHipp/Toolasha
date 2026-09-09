@@ -141,13 +141,96 @@ export function serializeMessage(node) {
 }
 
 /**
+ * Elements removed from restored markup outright.
+ *
+ * The first five execute or load; `base` and `meta` rewrite how every URL
+ * around them resolves; and the SMIL trio (`animate`, `animateTransform`,
+ * `set`) is the one that gets missed — they run *after* a sanitizer has been
+ * over the tree and put back the attribute it just took, so
+ * `<svg><a><animate attributeName="href" to="javascript:…"/></a></svg>`
+ * survives an attribute-only pass. Chat markup animates nothing, so there is
+ * nothing to lose by removing them.
+ */
+const UNSAFE_ELEMENT_SELECTOR =
+    'script, iframe, object, embed, link, style, base, meta, animate, animateTransform, set';
+
+/**
+ * Attributes naming something the browser fetches or navigates to.
+ *
+ * `xlink:href` is here because that is how the game's item icons reference the
+ * sprite sheet, so it is the one attribute in restored markup that reliably
+ * carries a URL; the values kept are the fragment references those icons use
+ * (`#itemName`), which no scheme test can match.
+ */
+const URL_ATTRIBUTES = ['href', 'xlink:href', 'src', 'action', 'formaction', 'ping', 'srcdoc'];
+
+/** Schemes that run code when the URL is followed, tested after {@link normalizeURL}. */
+const SCRIPTABLE_SCHEME = /^(?:javascript|vbscript):/i;
+
+/**
+ * A URL attribute's value reduced to what the browser will actually resolve.
+ *
+ * Leading whitespace and C0 control characters are ignored by the URL parser
+ * and stripped from anywhere inside the scheme, so a tab-split `javascript:`
+ * and a newline-padded one both navigate — and both walk past a naive
+ * `startsWith('javascript:')`.
+ *
+ * @param {string} value - Raw attribute value
+ * @returns {string} The value with whitespace and control characters removed
+ */
+function normalizeURL(value) {
+    return String(value || '').replace(/[\x00-\x20]/g, '');
+}
+
+/**
+ * Strip everything scriptable from one restored element, in place.
+ *
+ * Attribute-only sanitizing is not enough on its own — see
+ * {@link UNSAFE_ELEMENT_SELECTOR} — so the elements go first and the
+ * attributes second, over what is left.
+ *
+ * @param {Element} el - Parsed message element, still inside its template
+ */
+function sanitizeRestoredMarkup(el) {
+    el.querySelectorAll(UNSAFE_ELEMENT_SELECTOR).forEach((bad) => bad.remove());
+
+    for (const node of [el, ...el.querySelectorAll('*')]) {
+        for (const attribute of [...(node.attributes || [])]) {
+            const name = attribute.name;
+            if (/^on/i.test(name)) {
+                node.removeAttribute(name);
+                continue;
+            }
+            const lower = name.toLowerCase();
+            if (lower === 'srcdoc') {
+                // A whole document's worth of markup that no pass over *this*
+                // tree can reach, because it is parsed in the frame instead.
+                node.removeAttribute(name);
+                continue;
+            }
+            if (URL_ATTRIBUTES.includes(lower) && SCRIPTABLE_SCHEME.test(normalizeURL(attribute.value))) {
+                node.removeAttribute(name);
+                continue;
+            }
+            // An inline `url()` is a request to a third party the moment the
+            // node is laid out — a read receipt on restored scrollback, fired
+            // without a click. Colours and spacing are why chat markup carries
+            // `style` at all, so only the ones with a fetch in them go.
+            if (lower === 'style' && /url\s*\(/i.test(attribute.value || '')) node.removeAttribute(name);
+        }
+    }
+}
+
+/**
  * Parse stored HTML back into an element, with the parts that could execute
  * removed.
  *
  * The markup came from the game's own React render, so it should hold nothing
  * scriptable — but it has been round-tripped through storage since, and
  * `innerHTML` re-parses whatever is handed to it. `<script>` inserted this way
- * does not run; an `onerror` on an `<img>` does. Both go.
+ * does not run; an `onerror` on an `<img>` does. Both go, along with the
+ * element and URL forms an `on*` sweep alone would walk straight past — see
+ * {@link sanitizeRestoredMarkup}.
  *
  * @param {string} html - Stored message markup
  * @returns {Element|null} The message element, or null when it does not parse
@@ -166,12 +249,7 @@ export function parseStoredMessage(html) {
     const el = template.content.firstElementChild;
     if (!el) return null;
 
-    el.querySelectorAll('script, iframe, object, embed, link, style').forEach((bad) => bad.remove());
-    for (const node of [el, ...el.querySelectorAll('*')]) {
-        for (const attribute of [...(node.attributes || [])]) {
-            if (/^on/i.test(attribute.name)) node.removeAttribute(attribute.name);
-        }
-    }
+    sanitizeRestoredMarkup(el);
 
     // Mark it as scrollback from a previous session. The dungeon tracker scans
     // every `ChatMessage_chatMessage` in the document, buffer included, and
@@ -181,7 +259,15 @@ export function parseStoredMessage(html) {
     // lines already counted, but a reset clears that marker from the whole
     // document; this one is a property of where the node came from, so it
     // survives.
+    //
+    // Every node the tracker's own query would match is marked, not just the
+    // root: it queries `[class*="ChatMessage_chatMessage"]` over the whole
+    // document, which finds a nested one too, and a nested one carrying no mark
+    // is a restored line the tracker reads as live.
     el.dataset.mwiRestored = '1';
+    for (const nested of el.querySelectorAll('[class*="ChatMessage_chatMessage"]')) {
+        nested.dataset.mwiRestored = '1';
+    }
 
     return el;
 }
@@ -291,12 +377,25 @@ export function applyCaps(tabs, perTab = MAX_MESSAGES_PER_TAB) {
 
     let total = 0;
     for (const key of Object.keys(tabs)) {
-        const list = tabs[key];
+        let list = tabs[key];
         if (!Array.isArray(list)) {
             delete tabs[key];
             continue;
         }
+        // Everything this module writes is a non-empty string, but a record
+        // read back off disk is whatever is on disk — and one entry that is not
+        // a string makes `html.length` throw out of here, which is the eviction
+        // handler on the recording path and an unhandled rejection on the load
+        // path. A corrupt record costs its own contents, nothing else.
+        if (list.some((html) => typeof html !== 'string')) {
+            list = list.filter((html) => typeof html === 'string');
+            tabs[key] = list;
+        }
         if (list.length > limit) list.splice(0, list.length - limit);
+        if (!list.length) {
+            delete tabs[key];
+            continue;
+        }
         total += list.reduce((sum, html) => sum + html.length, 0);
     }
 
