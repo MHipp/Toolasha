@@ -133,6 +133,11 @@ class DataManager {
         // Per-action-type scroll simulation (Set of buffTypeHrids to simulate)
         this.scrollSimulationByActionType = {};
 
+        // Handle to the "we missed this login's character data" toast, so the
+        // offer can be taken back if a late init_character_data does arrive.
+        // Null means no offer is standing; it is only ever set once per page.
+        this.missedCharacterDataPrompt = null;
+
         // Retry interval for loading static game data
         this.loadRetryInterval = null;
         this.fallbackInterval = null;
@@ -202,12 +207,110 @@ class DataManager {
 
             // Give up after max attempts
             if (fallbackAttempts >= maxAttempts) {
-                console.error(
-                    '[DataManager] Character data not received after 30 seconds. WebSocket hook may have failed.'
-                );
+                this._reportMissingCharacterData();
                 stopFallbackInterval();
             }
         }, 500); // Check every 500ms
+    }
+
+    /**
+     * Say why the character payload never arrived, telling the two causes apart.
+     *
+     * `init_character_data` is sent once, right after the socket opens, and
+     * nothing ever replays it. If our `MessageEvent.data` getter was installed a
+     * moment late — a slow start, several userscripts sharing the page — that one
+     * message is gone for the whole session, while the very same hook goes on
+     * delivering every later message perfectly. The script then looks completely
+     * dead (no character id, empty inventory) with a working hook underneath.
+     *
+     * So the state is decided by whether *any* frame has reached the hook:
+     * - nothing at all: the hook really may have failed, and the original
+     *   wording is the right one;
+     * - frames arriving, no character payload: the hook is fine and the one-shot
+     *   message was missed. Saying "WebSocket hook may have failed" here sends
+     *   the reader hunting a hook that is demonstrably working — that sentence
+     *   is why this failure needed a live probe to diagnose.
+     * @private
+     */
+    _reportMissingCharacterData() {
+        // Number() rather than a truthiness check so a hook stub without the
+        // counter (older build, a test double) is read as "unknown", i.e. zero,
+        // and keeps the conservative original message.
+        const messagesSeen = Number(this.webSocketHook?.messagesSeen) || 0;
+
+        if (messagesSeen === 0) {
+            console.error(
+                '[DataManager] Character data not received after 30 seconds. WebSocket hook may have failed.'
+            );
+            return;
+        }
+
+        console.error(
+            `[DataManager] Character data not received after 30 seconds, but ${messagesSeen} other WebSocket messages have arrived — the hook is working. init_character_data is sent once, just after the socket opens, and this page started listening too late to catch it; nothing replays it. Reload the page to recover.`
+        );
+
+        this._offerReloadForMissedCharacterData();
+    }
+
+    /**
+     * Offer — never perform — the reload that recovers a missed character payload.
+     *
+     * Reloading is the only recovery we have (see the commit body for the routes
+     * that were ruled out), but it is the player's call: an automatic
+     * `location.reload()` could land mid-dungeon. One persistent toast, shown at
+     * most once per page, dismissed the moment a real `init_character_data`
+     * turns up late.
+     * @private
+     */
+    _offerReloadForMissedCharacterData() {
+        if (this.missedCharacterDataPrompt) return;
+
+        try {
+            if (typeof window === 'undefined') return;
+
+            // Late-bound through the published global on purpose: this module is
+            // in the Core bundle, which loads before Utils, so importing the
+            // toast here would either fail or duplicate it into both bundles.
+            const showToast = window.Toolasha?.Utils?.toast?.showToast;
+            if (typeof showToast !== 'function') return;
+
+            this.missedCharacterDataPrompt =
+                showToast(
+                    "Toolasha missed this login's character data, so its panels are empty. The game itself is unaffected — reload the page when convenient to bring Toolasha back.",
+                    {
+                        kind: 'warn',
+                        duration: 0,
+                        action: {
+                            label: 'Reload the page',
+                            onClick: () => window.location.reload(),
+                        },
+                    }
+                ) || null;
+        } catch (error) {
+            // A page with no DOM, or a Utils bundle that never loaded, must not
+            // turn a diagnostic into a thrown error inside an interval callback.
+            console.error('[DataManager] Could not offer the recovery reload:', error);
+        }
+    }
+
+    /**
+     * Take the reload offer away once genuine character data lands.
+     *
+     * The real `init_character_data` always wins: if it turns up after the
+     * 30-second mark the prompt is stale, and leaving it up would tell the
+     * player to reload a session that has just recovered on its own.
+     * @private
+     */
+    _dismissMissedCharacterDataPrompt() {
+        const prompt = this.missedCharacterDataPrompt;
+        if (!prompt) return;
+
+        this.missedCharacterDataPrompt = null;
+        try {
+            prompt.dismiss?.();
+        } catch {
+            // Already gone (dismissed by hand, or its container removed)
+        }
     }
 
     /**
@@ -496,6 +599,12 @@ class DataManager {
         // messages showed up, not when the queue got round to them.
         this.webSocketHook.on('init_character_data', (data, context) => {
             const arrivedAt = Date.now();
+
+            // Genuine data always beats the recovery offer, however late it is:
+            // taken back here, synchronously, rather than after the queued
+            // handler runs, so the player is never told to reload a session
+            // that has already recovered.
+            this._dismissMissedCharacterDataPrompt();
 
             // Bind ownership HERE, synchronously, and not inside
             // _handleInitCharacterData. That handler runs deferred behind

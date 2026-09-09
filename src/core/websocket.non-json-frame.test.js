@@ -106,3 +106,28 @@ describe('a frame that is not JSON', () => {
         expect(errorSpy).toHaveBeenCalled();
     });
 });
+
+/**
+ * The startup diagnostic in DataManager reads this counter to tell "the hook
+ * never installed" apart from "the hook is fine but the one-shot
+ * init_character_data arrived before it was listening" — two states that used
+ * to print the same, wrong, message.
+ */
+describe('messagesSeen', () => {
+    test('counts every string frame, and no non-string one', () => {
+        webSocketHook.messagesSeen = 0;
+        const socket = gameSocket();
+
+        void new FakeMessageEvent(new Uint8Array([0]), socket).data;
+        expect(webSocketHook.messagesSeen).toBe(0);
+
+        void new FakeMessageEvent(JSON.stringify({ type: 'battle_updated', battleId: 1 }), socket).data;
+        void new FakeMessageEvent(JSON.stringify({ type: 'battle_updated', battleId: 2 }), socket).data;
+        // Deduplicated types still count: the question is whether frames are
+        // arriving, not whether they were acted on
+        void new FakeMessageEvent(JSON.stringify({ type: 'guild_updated', id: 1 }), socket).data;
+        void new FakeMessageEvent(JSON.stringify({ type: 'guild_updated', id: 1 }), socket).data;
+
+        expect(webSocketHook.messagesSeen).toBe(4);
+    });
+});

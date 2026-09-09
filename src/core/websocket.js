@@ -177,6 +177,16 @@ class WebSocketHook {
         this.nativeDataGet = undefined;
         /** The foreign-hook diagnostic is said once, not per message */
         this.notedForeignHookFailure = false;
+        /**
+         * How many string frames have reached {@link processMessage} on this page.
+         *
+         * Only ever read as "has anything at all arrived": it is what separates a
+         * hook that never installed from a hook that is delivering fine but missed
+         * the one-shot `init_character_data` — see DataManager's startup
+         * diagnostic. Counted before deduplication, because the question is
+         * whether frames are being observed, not whether they were acted on.
+         */
+        this.messagesSeen = 0;
         this.messageCleanupInterval = null;
         this.isSocketWrapped = false;
         this.originalWebSocket = null;
@@ -506,6 +516,10 @@ class WebSocketHook {
         if (typeof message !== 'string') {
             return;
         }
+
+        // Before any dedup or parse: the startup diagnostic needs to know that
+        // frames are arriving at all, even ones we go on to drop as duplicates.
+        this.messagesSeen++;
 
         // Parse message type first to determine deduplication strategy
         let messageType;
