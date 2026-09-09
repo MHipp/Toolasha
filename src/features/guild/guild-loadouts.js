@@ -301,13 +301,69 @@ export function isMonsterUnit(unit) {
         .trim()
         .toLowerCase();
     if (!raw) return false;
-    if (monsterNames().has(raw)) return true;
+    return monsterByName(raw);
+}
+
+/** How many name verdicts are held before the memo is dropped and rebuilt */
+const NAME_VERDICT_LIMIT = 500;
+
+/** Lowercased name to verdict, valid only for the monster-name set it was built against */
+let nameVerdicts = { names: null, verdicts: new Map() };
+
+/**
+ * The name half of {@link isMonsterUnit}, memoised.
+ *
+ * The three name tests are not free: a regex `replace`, a regex `test`, and
+ * then a fresh `split` per combat encounter — about five regex passes per name.
+ * {@link loadoutList} runs them over every stored player, and the trials
+ * feature asked for that list on every `guild_battle_updated` tick, forty times
+ * a second. The verdict for a given spelling can only change when the game's own
+ * monster list changes, so it is cached against the identity of that set — the
+ * same invalidation {@link monsterNames} already uses, one level up.
+ *
+ * The key space is "every name this session has spelled", which is a guild
+ * roster plus the monsters it fought. The cap exists only so a stream that
+ * somehow spelled unbounded names cannot grow it without limit; clearing
+ * wholesale is right because there is no useful recency order among verdicts
+ * that each cost microseconds to recompute.
+ *
+ * @param {string} raw - A trimmed, lowercased name
+ * @returns {boolean} True when the name says monster
+ */
+function monsterByName(raw) {
+    const names = monsterNames();
+    if (nameVerdicts.names !== names) nameVerdicts = { names, verdicts: new Map() };
+
+    const held = nameVerdicts.verdicts.get(raw);
+    if (held !== undefined) return held;
+
+    const verdict = judgeMonsterName(raw, names);
+    if (nameVerdicts.verdicts.size >= NAME_VERDICT_LIMIT) nameVerdicts.verdicts.clear();
+    nameVerdicts.verdicts.set(raw, verdict);
+    return verdict;
+}
+
+/**
+ * The uncached name tests, in the order they were written.
+ *
+ * @param {string} raw - A trimmed, lowercased name
+ * @param {Set<string>} names - Every monster name the game knows, lowercased
+ * @returns {boolean} True when the name says monster
+ */
+function judgeMonsterName(raw, names) {
+    if (names.has(raw)) return true;
 
     const name = raw.replace(/[/_-]+/g, ' ');
     if (/\btrial\b/.test(name)) return true;
 
-    return COMBAT_ENCOUNTERS.some((encounter) => name.split(/\s+/).includes(encounter));
+    // Split once rather than once per encounter: the same string was being
+    // re-split five times per name, which is where the tick cost lived
+    const words = name.split(/\s+/);
+    return COMBAT_ENCOUNTERS.some((encounter) => words.includes(encounter));
 }
+
+/** Stands in for the monster names before the game data arrives; never written to */
+const NO_MONSTER_NAMES = new Set();
 
 /** The last `combatMonsterDetailMap` seen, and the names read off it */
 let monsterNameCache = { map: null, names: new Set() };
@@ -324,7 +380,10 @@ let monsterNameCache = { map: null, names: new Set() };
  */
 export function monsterNames() {
     const map = dataManager.getInitClientData?.()?.combatMonsterDetailMap;
-    if (!map || typeof map !== 'object') return new Set();
+    // One shared set rather than a fresh one per call: the memos below cache
+    // against the identity of what this returns, and a new empty set every time
+    // would invalidate them on every tick before the game data lands
+    if (!map || typeof map !== 'object') return NO_MONSTER_NAMES;
     if (monsterNameCache.map === map) return monsterNameCache.names;
 
     const names = new Set();
@@ -548,16 +607,50 @@ registerSyncMerge({
     label: 'Guild loadout sightings',
 });
 
+/** The last list built, and the two inputs it was built from */
+let loadoutListCache = { record: null, names: null, list: null };
+
 /**
  * The record as a list, most recently seen first.
+ *
+ * ## Why this is cached, and against what
+ *
+ * `Object.values` + `filter` + `sort`, with a monster test on every entry — a
+ * few microseconds at ten stored players, twenty at sixty. That is nothing
+ * once, and it was being asked for on every `guild_battle_updated` tick:
+ * `guild-trial-damage.js` passed `guildLoadoutCapture.seen()` into its name
+ * resolution as an unconditional argument, and a real trial carries 150,642 of
+ * those messages in an hour. Roughly three seconds of a trial's CPU went into
+ * rebuilding a list that changes only when a stat sheet is captured.
+ *
+ * The cache is keyed on **identity, not time**, which is exact rather than
+ * approximate: every path that changes the capture's record replaces the object
+ * (`foldLoadout` and `mergeLoadoutRecords` both build a new one, `loadLoadouts`
+ * returns a fresh read, and a reset assigns a new empty record), so a record
+ * that is `===` the last one has the same contents. The verdicts also depend on
+ * the game's monster list, which arrives after the first ticks of a session, so
+ * the identity of {@link monsterNames}' set is part of the key too — otherwise
+ * a list built before the client data landed would outlive it.
+ *
+ * The array is shared between callers rather than copied. No caller mutates it;
+ * a caller that needs to sort or splice must take its own copy.
+ *
  * @param {Object|null} record - A stored record
  * @returns {Array<Object>} Snapshots
  */
 export function loadoutList(record) {
+    const names = monsterNames();
+    if (loadoutListCache.list && loadoutListCache.record === record && loadoutListCache.names === names) {
+        return loadoutListCache.list;
+    }
+
     const players = record?.players && typeof record.players === 'object' ? record.players : {};
-    return Object.values(players)
+    const list = Object.values(players)
         .filter((entry) => entry && entry.name && !isMonsterUnit(entry))
         .sort((a, b) => (b.at || 0) - (a.at || 0));
+
+    loadoutListCache = { record, names, list };
+    return list;
 }
 
 /**

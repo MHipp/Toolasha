@@ -390,6 +390,67 @@ describe('loadoutList', () => {
     });
 });
 
+describe('the list is not rebuilt per tick', () => {
+    beforeEach(() => {
+        game.store = {};
+        game.clientData = {};
+    });
+
+    test('the same record gives back the same list, however often it is asked', () => {
+        // `guild-trial-damage.js` asks for this on every `guild_battle_updated`
+        // message, and a real trial carries 150,642 of them in an hour. The
+        // record changes only when a stat sheet is captured
+        const record = { players: { a: { name: 'A', at: 1 }, b: { name: 'B', at: 2 } } };
+
+        const first = loadoutList(record);
+        expect(loadoutList(record)).toBe(first);
+        expect(loadoutList(record)).toBe(first);
+        expect(first.map((entry) => entry.name)).toEqual(['B', 'A']);
+    });
+
+    test('a capture that changes the record is a different list', () => {
+        // Every path that writes the capture's record replaces the object, so
+        // identity is the invalidation — `foldLoadout` is the one a sighting
+        // takes
+        const record = { players: { a: { name: 'A', at: 1 } } };
+        const first = loadoutList(record);
+
+        const folded = foldLoadout(record, { name: 'B', at: 2, rows: [], stats: {} });
+        const second = loadoutList(folded);
+
+        expect(second).not.toBe(first);
+        expect(second.map((entry) => entry.name)).toEqual(['B', 'A']);
+    });
+
+    test('the game data arriving mid-session rebuilds it', () => {
+        // A list built before `combatMonsterDetailMap` landed judged its
+        // entries without it; the same record must not keep that answer once
+        // the game can say "Salamander is a monster"
+        const record = { players: { s: { name: 'Salamander', at: 1 }, t: { name: 'Tib', at: 2 } } };
+        expect(loadoutList(record).map((entry) => entry.name)).toEqual(['Tib', 'Salamander']);
+
+        game.clientData = { combatMonsterDetailMap: { '/monsters/salamander': { name: 'Salamander' } } };
+        expect(loadoutList(record).map((entry) => entry.name)).toEqual(['Tib']);
+    });
+
+    test('a name already judged is not parsed again', () => {
+        // The name half of `isMonsterUnit` was a regex `replace`, a regex
+        // `test`, and then a fresh `split` per combat encounter — five regex
+        // passes for an answer that cannot change while the game data holds
+        const split = vi.spyOn(String.prototype, 'split');
+        try {
+            expect(isMonsterUnit({ name: 'Giant Mantis' })).toBe(false);
+            expect(split.mock.calls.length).toBeGreaterThan(0);
+
+            split.mockClear();
+            expect(isMonsterUnit({ name: 'Giant Mantis' })).toBe(false);
+            expect(split.mock.calls.length).toBe(0);
+        } finally {
+            split.mockRestore();
+        }
+    });
+});
+
 describe('describeLoadoutAge', () => {
     test('says when, and says so even when it cannot', () => {
         expect(describeLoadoutAge(now - 60_000, now)).toMatch(/^seen /);
