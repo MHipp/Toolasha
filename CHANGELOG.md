@@ -6,6 +6,14 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Features that a character switch used to break, and a lighter start
+
+Switching character while a feature was still reading its own saved data could leave that feature registered to nobody and marked as started, so the arriving character's copy never ran and the feature stayed dead until the page was reloaded. Nine are fixed, five of them in that worst state: the labyrinth tracker, the leaderboard and XP trackers, the task reroll tracker, the alchemy and enhancement pins, and the inventory sort. Two more turned out to be doing something different and worse than expected — the trade history could end up recording every fill twice for the rest of the session, and a modal drag could keep running after being switched off. A survey of all 87 feature initialisers found 38 that register something after a read and 29 exposed to this; the rest accumulate a duplicate registration per switch and are the next pass.
+
+Startup reads less. Where a feature read several of its own records one after another, they now go in a single request instead of one apiece — five reads become one for the task reroll walk, ten become four for the collection filters. And the collection filters' rename of some long-retired keys now records that it has run, rather than checking, and sometimes writing, on every single load since. This matters most where several features start at once, which is now the normal case.
+
+The pformance panel can also finally tell anonymous timers apart. Every timer created before the panel opened landed in one row called `anon@?`, so the largest line in a live capture was an unknown number of different timers added together; each now gets its own row with a word lifted from its own source, so the next capture names them.
+
 ### Audit round: a buy price that could go down, and a character switch that left the wrong things behind
 
 The Buy Now price cover could **lower** a price, which is the one thing it promised never to do. It decided whether to raise before waking the price control and wrote the answer a moment later — and waking that control hands you a live field, so pressing ×2 in between meant the script wrote its older, smaller number over yours. It also read the sleeping display, which shows a rounded figure, so a price of 470,432 looked like 470,000 and anything in between passed as a raise. Two more: it applied the _bottom_ of the tradable band as well as the top, which on a cheap ladder pushed the price up past the rung that covered the order, and a modal whose item it could not identify was priced off the ladder of whatever it had been armed for. All four are fixed, and the decision now happens against the field it is about to write.
