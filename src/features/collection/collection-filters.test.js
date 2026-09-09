@@ -18,7 +18,7 @@
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
-const store = vi.hoisted(() => ({ collections: {}, settings: {}, unavailable: false }));
+const store = vi.hoisted(() => ({ collections: {}, settings: {}, unavailable: false, transactions: [] }));
 
 const mockDataManager = vi.hoisted(() => ({
     characterId: 'market123',
@@ -57,11 +57,44 @@ vi.mock('../../utils/adoption-consent.js', () => ({
     getAdoptionTargetId: async () => 'market123',
     requestAdoptionConsent: () => Promise.resolve(null),
 }));
+/**
+ * Every transaction this feature opens, so a test can count them.
+ *
+ * Each entry is one IndexedDB transaction's worth of work: `getMany` counts
+ * once however many keys it carries, which is the whole point of it.
+ */
+function record(mode, storeName, keys) {
+    store.transactions.push({ mode, store: storeName, keys });
+}
+
 vi.mock('../../core/storage.js', () => ({
     default: {
         ready: Promise.resolve(true),
-        get: async (key, name = 'settings', fallback = null) => store[name]?.[key] ?? fallback,
+        get: async (key, name = 'settings', fallback = null) => {
+            record('readonly', name, [key]);
+            return store[name]?.[key] ?? fallback;
+        },
+        getMany: async (keys, name = 'settings') => {
+            record('readonly', name, [...keys]);
+            // Lets a test land a character switch inside a load's reads
+            store.onRead?.();
+            const read = new Map();
+            // Read through the same property access a single `get` uses, so a
+            // test can still land a character switch inside the batch
+            for (const key of keys) read.set(key, store[name]?.[key] ?? null);
+            return read;
+        },
+        parseJSON: (raw, _key, fallback = null) => {
+            if (raw === null) return fallback;
+            if (typeof raw === 'object') return raw;
+            try {
+                return JSON.parse(raw);
+            } catch {
+                return fallback;
+            }
+        },
         tryGet: async (key, name = 'settings') => {
+            record('readonly', name, [key]);
             if (store.unavailable) return null;
             const held = store[name]?.[key];
             return held === undefined || held === null
@@ -69,20 +102,24 @@ vi.mock('../../core/storage.js', () => ({
                 : { found: true, value: structuredClone(held) };
         },
         set: async (key, value, name = 'settings') => {
+            record('readwrite', name, [key]);
             if (store.unavailable) return false;
             store[name][key] = structuredClone(value);
             return true;
         },
         delete: async (key, name = 'settings') => {
+            record('readwrite', name, [key]);
             delete store[name][key];
             return true;
         },
         getJSON: async (key, name = 'settings', fallback = null) => {
+            record('readonly', name, [key]);
             // Lets a test land a character switch inside a load's reads
             store.onRead?.();
             return store[name]?.[key] ?? fallback;
         },
         setJSON: async (key, value, name = 'settings') => {
+            record('readwrite', name, [key]);
             store[name][key] = value;
             return true;
         },
@@ -97,6 +134,7 @@ beforeEach(async () => {
     store.settings = {};
     store.unavailable = false;
     store.onRead = null;
+    store.transactions = [];
     mockDataManager.characterId = 'market123';
     mockDataManager.clientData = null;
     mockConfig.settings = {};
@@ -115,6 +153,10 @@ beforeEach(async () => {
     collectionFilters._loadedFor = null;
     await collectionFilters._load();
     collectionFilters._renamedFor = null;
+    // The priming load leaves the rename's persisted marker behind; a test that
+    // stages colon keys expects a character the migration has never run for
+    store.collections = {};
+    store.transactions = [];
     collectionFilters.collections = {};
     collectionFilters.favorites = {};
     collectionFilters.collectionsLastUpdated = null;
@@ -212,6 +254,114 @@ describe('the colon keys becoming underscore keys', () => {
         await collectionFilters._saveFavorites();
 
         expect(store.collections.favorites_market123).toEqual({ '/items/milk': true, '/items/log': true });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// What a load costs
+// ---------------------------------------------------------------------------
+
+/**
+ * The migration used to be guarded only in memory, so every load re-ran it:
+ * five reads against the `collections` store, and a readwrite `delete` on the
+ * load that found anything — while startup's fan-out is at its widest and
+ * every readonly transaction on that store queues behind it.
+ */
+describe('what a load costs the collections store', () => {
+    /** @returns {Array<Object>} Transactions opened against the collections store */
+    const opened = () => store.transactions.filter((t) => t.store === 'collections');
+
+    /** A character whose migration has already run, as a reload would find it. */
+    function settled() {
+        store.collections.legacyKeysRenamed_market123 = true;
+        // Present, so the curated records' probes answer without falling
+        // through to `readScoped`'s own legacy lookup — a different question
+        // from the one being counted here
+        store.collections.flags_market123 = { 'cf-c1-9': true };
+        store.collections.favorites_market123 = { '/items/milk': true };
+        store.collections.collections_market123 = { '/items/milk': 12 };
+        store.collections.showUncollected_market123 = true;
+        store.collections.collectionsUpdatedAt_market123 = 1700;
+        collectionFilters._renamedFor = null;
+        store.transactions = [];
+    }
+
+    test('a settled character reads its plain records in one transaction', async () => {
+        settled();
+
+        await collectionFilters._load();
+
+        const reads = opened().filter((t) => t.mode === 'readonly');
+        // One `getMany` for the two plain records, plus the three curated
+        // records' own probes — not five rename reads on top of them
+        expect(reads).toHaveLength(4);
+        expect(reads.filter((t) => t.keys.length > 1)).toHaveLength(1);
+    });
+
+    test('and opens no readwrite transaction at all', async () => {
+        settled();
+
+        await collectionFilters._load();
+
+        expect(opened().filter((t) => t.mode === 'readwrite')).toEqual([]);
+    });
+
+    test('with the marker set, no colon key is read', async () => {
+        settled();
+
+        await collectionFilters._load();
+
+        const read = opened().flatMap((t) => t.keys);
+        expect(read.filter((key) => key.includes(':'))).toEqual([]);
+    });
+
+    test('a character that has never migrated still does, and marks it', async () => {
+        store.collections['favorites:market123'] = { '/items/milk': true };
+        store.transactions = [];
+
+        await collectionFilters._load();
+
+        expect(store.collections.favorites_market123).toEqual({ '/items/milk': true });
+        expect(store.collections['favorites:market123']).toBeUndefined();
+        expect(store.collections.legacyKeysRenamed_market123).toBe(true);
+        // Every read the rename needed came out of the load's own batch
+        expect(opened().filter((t) => t.mode === 'readonly' && t.keys.length === 1 && t.keys[0].includes(':'))).toEqual(
+            []
+        );
+    });
+
+    test('and the next load after it does no storage work for the migration', async () => {
+        store.collections['favorites:market123'] = { '/items/milk': true };
+        await collectionFilters._load();
+
+        // A reload: the in-memory guard is gone, only the persisted one is left
+        collectionFilters._renamedFor = null;
+        store.transactions = [];
+        await collectionFilters._load();
+
+        expect(opened().filter((t) => t.mode === 'readwrite')).toEqual([]);
+        expect(
+            opened()
+                .flatMap((t) => t.keys)
+                .filter((key) => key.includes(':'))
+        ).toEqual([]);
+    });
+
+    test('a switch inside the batched read leaves the marker unset, so the migration is not lost', async () => {
+        store.collections['favorites:market123'] = { '/items/milk': true };
+        store.onRead = () => {
+            mockDataManager.characterId = 'iron456';
+            store.onRead = null;
+        };
+
+        await collectionFilters._renameLegacyKeys();
+
+        // Nothing was moved and nothing was marked: the market character's
+        // colon key is still there for the load that speaks for it
+        expect(store.collections['favorites:market123']).toEqual({ '/items/milk': true });
+        expect(store.collections.legacyKeysRenamed_market123).toBeUndefined();
+        expect(store.collections.legacyKeysRenamed_iron456).toBeUndefined();
+        expect(store.collections.favorites_iron456).toBeUndefined();
     });
 });
 

@@ -166,6 +166,18 @@ const ACTION_TO_ITEM = {
 const STORED_KEYS = ['flags', 'favorites', 'collections', 'showUncollected', 'collectionsUpdatedAt'];
 
 /**
+ * Base of the record that says this character's colon keys have already moved.
+ *
+ * The rename is a one-time migration, but it used to be guarded only by an
+ * in-memory flag that resets with the page: every single load paid five reads
+ * against the `collections` store — and, on the load that found something, a
+ * readwrite `delete` that barriers every readonly transaction on that store —
+ * for a migration that finished months ago. Persisted, the second load onward
+ * does no storage work for it at all.
+ */
+const RENAME_MARKER = 'legacyKeysRenamed';
+
+/**
  * A curated record in the collections store: flag states, favourites and the
  * scanned counts are each user-marked or rebuilt on sight, so once read back
  * memory is the truth and an un-starring sticks; before that, saves fold in
@@ -645,11 +657,97 @@ class CollectionFilters {
     }
 
     /**
-     * Rename this character's colon keys to the underscore form, once.
+     * Every key `_load` wants in one go, for one character.
+     *
+     * The rename's marker rides along when the migration has still to be
+     * considered, so a settled character learns it has nothing to do without
+     * opening a transaction of its own for the question.
+     * @param {string} scope - The character's id, or `'default'`, as `characterKey` scopes it
+     * @param {boolean} renamePending - Whether the rename still has to be considered
+     * @returns {Array<string>} Keys for a single `getMany`
+     */
+    _loadKeys(scope, renamePending) {
+        const keys = [`showUncollected_${scope}`, `collectionsUpdatedAt_${scope}`];
+        if (renamePending) keys.push(`${RENAME_MARKER}_${scope}`);
+        return keys;
+    }
+
+    /**
+     * Both forms of every stored key, for the one transaction the migration reads.
+     * @param {string} scope - The character's id
+     * @returns {Array<string>} Keys for a single `getMany`
+     */
+    _renameKeys(scope) {
+        return STORED_KEYS.flatMap((key) => [`${key}_${scope}`, `${key}:${scope}`]);
+    }
+
+    /**
+     * Rename this character's colon keys to the underscore form, once ever.
      *
      * A straight rename with no adoption question to answer: the colon keys were
      * already per character, so each character takes its own and nobody inherits
      * anybody's.
+     *
+     * `values` carries the marker from the caller's own batch, so a character
+     * the migration has already run for does no storage work here at all — in
+     * particular no readwrite `delete`, which barriers every readonly
+     * transaction on the `collections` store while startup's fan-out is at its
+     * widest. On the one load per character that still has to look, the ten
+     * records it compares come out of a single further transaction, and what
+     * it read is merged back into `values` so the caller need not read again.
+     * @param {Map<string, *>} values - The batched read from `_loadKeys`, extended in place
+     * @param {string|null} charId - The character, captured before the read
+     * @returns {Promise<void>}
+     */
+    async _applyLegacyRename(values, charId) {
+        if (!charId || values.get(`${RENAME_MARKER}_${charId}`) != null) return;
+
+        // Both keys are built from `charId`, captured by the caller before the
+        // read, and not from `characterKey()`/`getCurrentCharacterId()` again
+        // after an await. Rebuilt late, a character switch landing inside the
+        // read made the read and the write name different characters: the
+        // departing character's favourites were written under the ARRIVING
+        // character's key (which is empty for a character whose rename has not
+        // run, so the `stored == null` guard waves it through) and the arriving
+        // character's own un-renamed colon key deleted before it was ever read.
+        // The marker is subject to the same rule — it is written only for the
+        // character the reads were made for, and only on a pass that was still
+        // speaking for that character by the time it wrote.
+        const read = await storage.getMany(this._renameKeys(charId), 'collections');
+        if (dataManager.getCurrentCharacterId() !== charId) return;
+        for (const [key, value] of read) values.set(key, value);
+
+        const moves = STORED_KEYS.filter((key) => read.get(`${key}:${charId}`) != null);
+
+        // Each key's move touches only that key's own two records, so the keys
+        // have nothing to serialize against each other — only the steps within
+        // one key have an order.
+        const renameOne = async (key) => {
+            const currentKey = `${key}_${charId}`;
+            const legacyKey = `${key}:${charId}`;
+            if (read.get(currentKey) == null) {
+                await storage.set(currentKey, read.get(legacyKey), 'collections', true);
+            }
+            await storage.delete(legacyKey, 'collections');
+        };
+
+        try {
+            await Promise.all(moves.map(renameOne));
+            // Written last, and only after the moves it vouches for landed: a
+            // marker set ahead of a failed move would retire the migration with
+            // keys still under their colon form, unreachable forever.
+            if (dataManager.getCurrentCharacterId() !== charId) return;
+            await storage.set(`${RENAME_MARKER}_${charId}`, true, 'collections', true);
+        } catch (error) {
+            console.error('[CollectionFilters] Renaming legacy collection keys failed:', error);
+        }
+    }
+
+    /**
+     * Rename this character's colon keys to the underscore form, once.
+     *
+     * The read-and-apply path for a caller with no batch in hand; `_load` folds
+     * the marker into its own read instead.
      * @returns {Promise<void>}
      */
     async _renameLegacyKeys() {
@@ -657,41 +755,8 @@ class CollectionFilters {
         if (!charId || this._renamedFor === charId) return;
         this._renamedFor = charId;
 
-        // Each key's legacy → current move touches only that key's own two
-        // storage records, so the five keys have nothing to serialize against
-        // each other — only the three steps *within* one key have an order.
-        // Run in parallel: on a character whose legacy keys have already been
-        // renamed (the common case, since this only fires once per character
-        // per session) that turns five round trips of IndexedDB latency into
-        // one; on a first-touch character with keys still to move, five sets
-        // of up to three.
-        // Both keys are built from `charId`, captured above, and not from
-        // `characterKey()`/`getCurrentCharacterId()` again after each await.
-        // Rebuilt late, a character switch landing inside either read made the
-        // read and the write name different characters: the departing
-        // character's favourites were written under the ARRIVING character's
-        // key (which is empty for a character whose rename has not run, so the
-        // `current === null` guard waves it through) and the arriving
-        // character's own un-renamed colon key deleted before it was ever
-        // read. `_renamedFor` is already set, so nothing retries it.
-        const renameOne = async (key) => {
-            const currentKey = `${key}_${charId}`;
-            const legacyKey = `${key}:${charId}`;
-            const legacy = await storage.get(legacyKey, 'collections', null);
-            if (legacy === null) return;
-
-            const stored = await storage.get(currentKey, 'collections', null);
-            if (stored === null) {
-                await storage.set(currentKey, legacy, 'collections', true);
-            }
-            await storage.delete(legacyKey, 'collections');
-        };
-
-        try {
-            await Promise.all(STORED_KEYS.map(renameOne));
-        } catch (error) {
-            console.error('[CollectionFilters] Renaming legacy collection keys failed:', error);
-        }
+        const values = await storage.getMany(this._loadKeys(charId, true), 'collections');
+        await this._applyLegacyRename(values, charId);
     }
 
     /**
@@ -714,16 +779,30 @@ class CollectionFilters {
         // Reset flags to defaults before loading saved state
         this.flags = buildFlags(this._filtersEnabled, this._favoritesEnabled);
 
-        await this._renameLegacyKeys();
+        // One transaction for the migration's records and the two plain ones
+        // this load reads, instead of five rename reads and two more after
+        // them. Keys are built from `who`, captured above, for the same reason
+        // the rename builds its own from it.
+        const renamePending = Boolean(who) && this._renamedFor !== who;
+        if (renamePending) this._renamedFor = who;
+        const scope = who || 'default';
+        const batch = await storage.getMany(this._loadKeys(scope, renamePending), 'collections');
+        if (renamePending) await this._applyLegacyRename(batch, who);
+
+        // What the rename would have left under the current key: it writes the
+        // colon value across only when the underscore key is empty, so the
+        // resolution is the same either way and needs no re-read.
+        const renamed = (key) =>
+            batch.get(`${key}_${scope}`) ?? (renamePending ? (batch.get(`${key}:${scope}`) ?? null) : null);
 
         for (const record of Object.values(this.records)) record.reset();
-        const [flagsRead, favoritesRead, collectionsRead, savedShowUncollected, savedTimestamp] = await Promise.all([
+        const [flagsRead, favoritesRead, collectionsRead] = await Promise.all([
             this.records.flags.load(),
             this.records.favorites.load(),
             this.records.collections.load(),
-            storage.getJSON(this._charKey('showUncollected'), 'collections', false),
-            storage.get(this._charKey('collectionsUpdatedAt'), 'collections', null),
         ]);
+        const savedShowUncollected = storage.parseJSON(renamed('showUncollected'), 'showUncollected', false);
+        const savedTimestamp = renamed('collectionsUpdatedAt');
         // A switch inside those reads means everything here is another
         // character's. The curated records already refuse to adopt a superseded
         // read — their generation is bumped by the `reset()` above — but that
