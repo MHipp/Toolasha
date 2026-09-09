@@ -60,6 +60,10 @@ function formatCompletionTime(completionTime, includeDate) {
 // Marks a native QueuedActions edit-menu once Toolasha has enhanced it, so the width contract
 // below and the row-wrapping rules only ever apply to that specific popup - never to unrelated
 // MUI tooltips/poppers elsewhere in the game.
+// The one protection item that is spent on every attempt rather than only on a failure: it
+// guarantees the enhancement, so both the attempt count and its cost are exact.
+const PHILOSOPHERS_MIRROR_HRID = '/items/philosophers_mirror';
+
 const QUEUE_EDIT_MENU_MARKER_CLASS = 'toolasha-queue-edit-menu-enhanced';
 const QUEUE_EDIT_MENU_STYLE_ID = 'toolasha-queue-edit-menu-width-styles';
 
@@ -610,7 +614,12 @@ class ActionTimeDisplay {
                 if (enhancingTime.limitType) {
                     materialLimit = enhancingTime.count;
                     limitType = enhancingTime.limitType;
-                    materialLimitIsEstimated = enhancingTime.materialLimitIsEstimated === true;
+                }
+                // Independent of the label: an uncounted row's figure comes straight from the
+                // material limit, which counts the expected protection draw, so it can rest on
+                // an estimate without any channel being named as what bound it.
+                if (enhancingTime.materialLimitIsEstimated === true) {
+                    materialLimitIsEstimated = true;
                 }
             } else if (isInfinite) {
                 isTrulyInfinite = true;
@@ -1450,7 +1459,7 @@ class ActionTimeDisplay {
         if (!protectionItemHrid && action.enhancingProtectionItemHrid) {
             protectionItemHrid = action.enhancingProtectionItemHrid;
         }
-        const usesMirror = protectionItemHrid === '/items/philosophers_mirror';
+        const usesMirror = protectionItemHrid === PHILOSOPHERS_MIRROR_HRID;
 
         const effectiveAttempts = usesMirror ? targetLevel - currentLevel : expectedAttempts;
         const effectiveProtections = usesMirror ? 0 : expectedProtections;
@@ -1459,62 +1468,28 @@ class ActionTimeDisplay {
         const baseRate = currentLevel < BASE_SUCCESS_RATES.length ? BASE_SUCCESS_RATES[currentLevel] : 30;
         const actualSuccessRate = usesMirror ? 100 : Math.min(100, baseRate * successMultiplier);
 
-        // Determine queue count
-        let queuedActions;
+        // Determine the material limit. The count itself is not displayed — an enhancing
+        // action is always Repeat ∞ in practice — only the time it buys.
         let materialLimit = null;
         let limitingItemHrid = null;
+        // A limit that rests on the expected protection draw is not an exact count of actions
+        let materialLimitIsEstimated = false;
 
-        if (action.hasMaxCount) {
-            queuedActions = action.maxCount - action.currentCount;
-        } else {
-            // Infinite action — calculate material limit from enhancementCosts
+        if (!action.hasMaxCount) {
+            // Infinite action — one limit, covering both the per-attempt enhancement costs and
+            // the expected protection draw (and the Philosopher's Mirror, spent every attempt).
+            // Computing a second protection cap here is what let the action bar and the queue
+            // ledger drift; `calculateMaterialLimit` is now the only place that decides.
             const inventory = dataManager.getInventory();
             const inventoryLookup = this.buildInventoryLookup(inventory);
             const limitResult = this.calculateMaterialLimit(actionDetails, inventoryLookup, 0, action);
             if (limitResult) {
                 materialLimit = limitResult.maxActions;
-                queuedActions = materialLimit;
                 // Extract item HRID from limitType (e.g. "material:/items/foo" → "/items/foo")
                 if (limitResult.limitType?.startsWith('material:')) {
                     limitingItemHrid = limitResult.limitType.slice('material:'.length);
                 }
-            } else {
-                queuedActions = Infinity;
-            }
-
-            // Also check protection item availability if protection is active
-            if (
-                protectFrom > 0 &&
-                effectiveProtections > 0 &&
-                config.getSetting('actionPanel_enhanceMatLimitProtections')
-            ) {
-                if (protectionItemHrid) {
-                    const byHrid = inventoryLookup?.byHrid || {};
-                    const availableProtections = byHrid[protectionItemHrid] || 0;
-
-                    if (availableProtections < effectiveProtections) {
-                        const protectionRatio = effectiveProtections / effectiveAttempts;
-                        const maxAttemptsFromProtection =
-                            protectionRatio > 0 ? Math.floor(availableProtections / protectionRatio) : Infinity;
-
-                        if (maxAttemptsFromProtection < queuedActions) {
-                            queuedActions = maxAttemptsFromProtection;
-                            materialLimit = maxAttemptsFromProtection;
-                            limitingItemHrid = protectionItemHrid;
-                        }
-                    }
-                }
-            }
-
-            // Philosopher's Mirror is consumed 1 per action — treat as material limit
-            if (usesMirror) {
-                const byHrid = inventoryLookup?.byHrid || {};
-                const availableMirrors = byHrid['/items/philosophers_mirror'] || 0;
-                if (availableMirrors < queuedActions) {
-                    queuedActions = availableMirrors;
-                    materialLimit = availableMirrors;
-                    limitingItemHrid = '/items/philosophers_mirror';
-                }
+                materialLimitIsEstimated = limitResult.isEstimated === true;
             }
         }
 
@@ -1588,7 +1563,7 @@ class ActionTimeDisplay {
 
             const itemIconHtml = this.getItemIconHtml(limitingItemHrid);
             const matsLabel = itemIconHtml ? `${itemIconHtml}:` : 'Mats:';
-            this.displayElement.innerHTML = `<span style="display: inline-flex; flex-wrap: nowrap; align-items: baseline; gap: 0.25em;"><span>⏱</span>${matsLabel} ${timeStr} → ${clockTime} (${formatWithSeparator(materialLimit)} actions)</span>`;
+            this.displayElement.innerHTML = `<span style="display: inline-flex; flex-wrap: nowrap; align-items: baseline; gap: 0.25em;"><span>⏱</span>${matsLabel} ${timeStr} → ${clockTime} (${materialLimitIsEstimated ? '~' : ''}${formatWithSeparator(materialLimit)} actions)</span>`;
         } else {
             this.displayElement.innerHTML = '';
         }
@@ -1599,10 +1574,13 @@ class ActionTimeDisplay {
      * Uses enhancement predictions to determine realistic time based on min(queued, expected attempts)
      *
      * What limits an enhancing row is its per-attempt bill: `enhancementCosts` on the item
-     * being enhanced, which is what `calculateMaterialLimit` and `deductQueueActionMaterials`
-     * both cost it against. The item itself is not consumed (it comes back at a new level),
-     * and a protection item is charged only on the attempts that fail — neither is a channel
-     * either side counts, so neither can bind here without disagreeing with the ledger.
+     * being enhanced, plus the expected protection draw (`getEnhancingProtectionDraw`).
+     * `calculateMaterialLimit` and `deductQueueActionMaterials` cost it against both, from the
+     * same helper, so nothing that binds here can disagree with what the ledger charges. The
+     * item itself is not consumed — it comes back at a new level — so it is not a channel.
+     *
+     * A protection draw is an expectation, so a figure it bound carries `materialLimitIsEstimated`
+     * and is rendered with the `~` marker rather than as an exact count.
      *
      * @param {Object} actionObj - Action object from dataManager
      * @param {Object} actionDetails - Action details
@@ -1643,7 +1621,7 @@ class ActionTimeDisplay {
         // A row's figure and the time built on it, capped by materials where the caller asked
         // for it. `elapsed` belongs to the attempt already running, so it is subtracted after
         // the cap rather than scaled with it.
-        const settle = (rawCount) => {
+        const settle = (rawCount, estimatedFromLimit = false) => {
             let finalCount = Number.isFinite(rawCount) ? Math.max(0, rawCount) : 0;
             let cap = null;
             if (options.limitCountedByMaterials && actionObj.hasMaxCount) {
@@ -1667,30 +1645,38 @@ class ActionTimeDisplay {
                 perActionTime
             );
             const totalTime = Math.max(0, finalCount * perActionTime - elapsed);
-            if (!cap) return { count: finalCount, totalTime };
+            // An uncapped row can still rest on an estimate: an uncounted row's figure comes
+            // from the material limit directly, and that limit counts the protection draw.
+            if (!cap) {
+                return estimatedFromLimit
+                    ? { count: finalCount, totalTime, materialLimitIsEstimated: true }
+                    : { count: finalCount, totalTime };
+            }
             return {
                 count: finalCount,
                 totalTime,
                 limitType: cap.limitType,
-                materialLimitIsEstimated: cap.isEstimated,
+                materialLimitIsEstimated: cap.isEstimated || estimatedFromLimit,
             };
         };
 
-        if (usesMirror) {
-            let actions = targetLevel - currentLevel;
-            if (actionObj.hasMaxCount) {
-                actions = Math.min(actions, actionObj.maxCount - actionObj.currentCount);
-            }
-            return settle(actions);
-        }
-
-        // Determine queue count
+        // An uncounted row's figure is the material limit itself; a counted one asks for what
+        // the player typed and `settle` caps it. The mirror path takes the same two steps, so
+        // a "Repeat ∞" mirror row is bounded by its bill the way every other row is.
         let queuedActions;
+        let estimatedFromLimit = false;
         if (actionObj.hasMaxCount) {
             queuedActions = actionObj.maxCount - actionObj.currentCount;
         } else {
             const limitResult = this.calculateMaterialLimit(actionDetails, inventoryLookup, 0, actionObj);
             queuedActions = limitResult?.maxActions ?? Infinity;
+            estimatedFromLimit = limitResult?.isEstimated === true;
+        }
+
+        if (usesMirror) {
+            // A mirror guarantees the attempt, so exactly one attempt per level remains
+            const actions = Math.min(targetLevel - currentLevel, queuedActions);
+            return settle(actions, estimatedFromLimit);
         }
 
         const realisticActions =
@@ -1698,7 +1684,7 @@ class ActionTimeDisplay {
                 ? predictions.expectedAttempts
                 : Math.min(queuedActions, predictions.expectedAttempts);
 
-        return settle(realisticActions);
+        return settle(realisticActions, estimatedFromLimit);
     }
 
     parseActionNameFromDom(actionNameText) {
@@ -2064,6 +2050,81 @@ class ActionTimeDisplay {
     }
 
     /**
+     * The protection item one attempt of an enhancing row draws, and how much of it.
+     *
+     * A protection item is not a flat per-attempt cost like `enhancementCosts`: it is spent
+     * only on an attempt that fails, so what an attempt costs is an expectation. The
+     * enhancement prediction already produces one for the whole start→target climb —
+     * `expectedProtections`, the Markov expectation of failures at or above the protect
+     * level — and dividing it by `expectedAttempts` gives the per-attempt draw. Deriving a
+     * second estimate here would let the two drift.
+     *
+     * `calculateMaterialLimit` and `deductQueueActionMaterials` both read this one helper, so
+     * the count a row is displayed for and the count the ledger charges it cannot disagree.
+     * That mutual dependence is the whole reason protections were left out until now: a limit
+     * that counted them against a ledger that did not would contradict itself.
+     *
+     * The Philosopher's Mirror is the exception. It guarantees the attempt, so it is consumed
+     * once per attempt whatever happens — a flat cost, and the only protection channel that
+     * is exact rather than estimated.
+     *
+     * @param {Object} actionDetails - Action detail object for the row
+     * @param {Object} actionObj - Character action object (carries the item hashes and the
+     *      protection configuration)
+     * @returns {{itemHrid: string, perAction: number, isEstimated: boolean}|null} The draw,
+     *      or null when no protection is configured — in which case nothing about the row
+     *      changes. `perAction` is 0 for a protection that is configured but cannot be
+     *      quantified: it caps nothing, and `isEstimated` says the figure is not a promise.
+     */
+    getEnhancingProtectionDraw(actionDetails, actionObj) {
+        if (actionDetails?.type !== '/action_types/enhancing') return null;
+        if (!actionObj?.primaryItemHash) return null;
+
+        // The secondary slot is where the game puts the item actually loaded into the action;
+        // `enhancingProtectionItemHrid` is the configured fallback. Same precedence the action
+        // bar's own enhancing readout uses.
+        let protectionItemHrid = null;
+        if (actionObj.secondaryItemHash) {
+            protectionItemHrid = this.parseItemHash(actionObj.secondaryItemHash).itemHrid;
+        }
+        if (!protectionItemHrid) {
+            protectionItemHrid = actionObj.enhancingProtectionItemHrid || null;
+        }
+        // No protection configured — every figure stays exactly what it was
+        if (!protectionItemHrid) return null;
+
+        if (protectionItemHrid === PHILOSOPHERS_MIRROR_HRID) {
+            return { itemHrid: protectionItemHrid, perAction: 1, isEstimated: false };
+        }
+
+        // A protection item the client data does not know is not evidence of unlimited
+        // protection, and capping the row at zero over it would be worse still. It caps
+        // nothing and marks the figure instead, so the row never reads as an exact promise.
+        const unquantified = { itemHrid: protectionItemHrid, perAction: 0, isEstimated: true };
+        if (!config.getSetting('actionPanel_enhanceMatLimitProtections')) return null;
+        if (!dataManager.getItemDetails(protectionItemHrid)) return unquantified;
+
+        const { itemHrid, level: currentLevel } = this.parseItemHash(actionObj.primaryItemHash);
+        const targetLevel = actionObj.enhancingMaxLevel || 0;
+        const protectFrom = actionObj.enhancingProtectionMinLevel || 0;
+        if (!itemHrid || targetLevel <= currentLevel) return unquantified;
+
+        // Protection is configured but never reached on this climb: genuinely zero draws, not
+        // an unknown one, so the row is exactly what it was without protection.
+        if (protectFrom <= 0 || protectFrom >= targetLevel) return null;
+
+        const predictions = calculateEnhancementPredictions(itemHrid, currentLevel, targetLevel, protectFrom);
+        const attempts = predictions?.expectedAttempts;
+        const protections = predictions?.expectedProtections;
+        if (!Number.isFinite(attempts) || attempts <= 0) return unquantified;
+        if (!Number.isFinite(protections) || protections <= 0) return unquantified;
+
+        const perAction = protections / attempts;
+        if (!Number.isFinite(perAction) || perAction <= 0) return unquantified;
+        return { itemHrid: protectionItemHrid, perAction, isEstimated: true };
+    }
+
+    /**
      * Calculate maximum actions possible based on inventory materials
      * @param {Object} actionDetails - Action detail object
      * @param {Object|Array} inventoryLookup - Inventory lookup maps or raw inventory array
@@ -2100,9 +2161,10 @@ class ActionTimeDisplay {
             if (itemHrid) {
                 const itemData = dataManager.getItemDetails(itemHrid);
                 const costs = itemData?.enhancementCosts;
-                if (costs && Array.isArray(costs) && costs.length > 0) {
-                    let minLimit = Infinity;
-                    let limitingType = 'unknown';
+                let minLimit = Infinity;
+                let limitingType = 'unknown';
+
+                if (Array.isArray(costs) && costs.length > 0) {
                     for (const cost of costs) {
                         noteProvenance(cost.itemHrid);
                         const available = byHrid[cost.itemHrid] || 0;
@@ -2112,9 +2174,28 @@ class ActionTimeDisplay {
                             limitingType = cost.itemHrid.includes('coin') ? 'gold' : `material:${cost.itemHrid}`;
                         }
                     }
-                    if (minLimit !== Infinity) {
-                        return { maxActions: minLimit, limitType: limitingType, isEstimated: usedEstimate };
+                }
+
+                // The protection channel. `deductQueueActionMaterials` spends the same draw
+                // from the same helper, so what binds here is also what is charged.
+                const protection = this.getEnhancingProtectionDraw(actionDetails, actionObj);
+                if (protection?.isEstimated) {
+                    // Sticky even when protections are not what binds: a draw that turns out
+                    // heavier than expected could bind after all.
+                    usedEstimate = true;
+                }
+                if (protection && protection.perAction > 0) {
+                    noteProvenance(protection.itemHrid);
+                    const availableProtections = byHrid[protection.itemHrid] || 0;
+                    const maxFromProtection = Math.floor(availableProtections / protection.perAction);
+                    if (maxFromProtection < minLimit) {
+                        minLimit = maxFromProtection;
+                        limitingType = `material:${protection.itemHrid}`;
                     }
+                }
+
+                if (minLimit !== Infinity) {
+                    return { maxActions: minLimit, limitType: limitingType, isEstimated: usedEstimate };
                 }
             }
         }
@@ -2503,9 +2584,20 @@ class ActionTimeDisplay {
         if (actionDetails.type === '/action_types/enhancing' && actionObj?.primaryItemHash) {
             const { itemHrid } = this.parseItemHash(actionObj.primaryItemHash);
             const costs = itemHrid ? dataManager.getItemDetails(itemHrid)?.enhancementCosts : null;
-            if (Array.isArray(costs) && costs.length > 0) {
-                for (const cost of costs) {
-                    spend(cost.itemHrid, cost.count * performed);
+            const hasCosts = Array.isArray(costs) && costs.length > 0;
+            // The same draw the limit was computed from, so the row is charged for exactly
+            // the attempts it was displayed for. A fractional balance is fine — the ledger
+            // already carries expected quantities, and the limit floors at the point of use.
+            const protection = this.getEnhancingProtectionDraw(actionDetails, actionObj);
+            const drawsProtection = protection ? protection.perAction > 0 : false;
+            if (hasCosts || drawsProtection) {
+                if (hasCosts) {
+                    for (const cost of costs) {
+                        spend(cost.itemHrid, cost.count * performed);
+                    }
+                }
+                if (drawsProtection) {
+                    spend(protection.itemHrid, protection.perAction * performed);
                 }
                 return performed;
             }
@@ -2906,7 +2998,11 @@ class ActionTimeDisplay {
                         if (enhancingTime.limitType) {
                             materialLimit = enhancingTime.count;
                             limitType = enhancingTime.limitType;
-                            materialLimitIsEstimated = enhancingTime.materialLimitIsEstimated === true;
+                        }
+                        // As in the shared helper: the estimate marker is not tied to a named
+                        // channel, because an uncounted row's figure is the material limit itself
+                        if (enhancingTime.materialLimitIsEstimated === true) {
+                            materialLimitIsEstimated = true;
                         }
                     } else if (isInfinite) {
                         isTrulyInfinite = true;
