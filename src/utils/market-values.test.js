@@ -78,6 +78,41 @@ describe('bandFromValue', () => {
     });
 });
 
+/**
+ * The ladder's floating-point behaviour is the game's, not an error to correct.
+ *
+ * `value * 1.1` and `value / 1.1` are inexact for most values — 1821000 * 1.1 is
+ * 2003100.0000000002, and 100000 * 1.1 is 110000.00000000001 — so `Math.ceil`
+ * over the increment lands a whole tick wider than exact arithmetic would. That
+ * looks like a bug worth fixing, and an audit did write the epsilon correction
+ * before reverting it.
+ *
+ * Reverting was right, and this is the measurement that settles it. On
+ * 2026-09-08 the live client showed **"Tradable range: 1650K – 2010K"** for
+ * White Key Fragment at a published value of 1,821,000 — both ends exactly what
+ * this module already returns. Exact arithmetic gives 1,655,455 and 2,003,100,
+ * and the game shows neither. The ladder was read out of the game's own bundle,
+ * which is JavaScript and hits the identical artefact, so reproducing it is what
+ * being right means here.
+ *
+ * It is not rare: of 356 distinct unenhanced items in one real inventory, 87 —
+ * about a quarter — have a value where this bites. An epsilon "fix" would put
+ * this module at odds with the game on all of them, and in the unsafe direction
+ * on the max side, where a too-narrow band would reject a price the game accepts.
+ */
+describe('the band reproduces the game, floating point and all', () => {
+    test('a live-measured band matches on both ends', () => {
+        expect(bandFromValue(1821000)).toEqual({ min: 1650000, max: 2010000 });
+    });
+
+    test('and exact arithmetic would disagree with the game on both', () => {
+        // Stated so a future reader can see what the "correction" would produce
+        const band = bandFromValue(1821000);
+        expect(band.max).not.toBe(2003100);
+        expect(band.min).not.toBe(1655455);
+    });
+});
+
 describe('reading the official value map', () => {
     test('marketValueFor reads the cached map by item and level', () => {
         mocks.payload = payload(1, { '/items/cheese': { 0: 500, 3: 9000 } });

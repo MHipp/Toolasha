@@ -6,6 +6,16 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Audit round: a watchlist crash that never happened, and a shared bag that forgot whose it was
+
+The watchlist measured a price move across the marker that means "nobody is on this side of the book". An item whose ask emptied while its bid never moved was drawn as a 53% fall; one with no book at all came out sign-flipped in the thousands of percent. A move is now measured only over sides both readings actually quote, and where there is no common side it says nothing rather than inventing a figure.
+
+The shared inventory ledger did not notice a character switch. Until some unrelated write happened to load it, every plan on the arriving character read stock the departing one had claimed as free — reporting no shortfall where there was one. Worse, a load still in flight across the switch could return having loaded nothing and then be saved, filing that emptiness under the arriving character's name and silently dropping every goal and crafting-plan claim they had. Three more around it: an unreadable ledger was answered by overwriting it, the guided crafting walk's step hook outlived the walk that installed it and quietly re-claimed an abandoned plan for another feature's walk, and deleting a goal while the ledger was switched off left its claim behind to reappear when switched on again.
+
+Enhancement tooltips say when a quote is missing a price instead of leaving the line out — an unpriced material used to make the total come in under the item's own asking price and be coloured as profit. A sell-queue add whose session was torn down mid-wait now stands down rather than re-arming listeners on a disabled feature. And a marketplace snapshot cache stamped in the future is treated as expired rather than fresh, so a clock that steps backwards cannot pin hours-old prices as current.
+
+Also checked and deliberately left alone: the price band's floating-point rounding, which widens a band by one increment on about a quarter of real items. Measured against the live client — a published value of 1,821,000 shows a tradable range of 1650K to 2010K, exactly what this reproduces, where exact arithmetic gives neither end. The game's own ladder carries the same rounding, so matching it is what being right means; a test now records the measurement so it is not "corrected" later.
+
 ### Bulk Sell checked an enhancement level it was never actually reading
 
 The strip's Confirm compares the enhancement level in the modal against the one it queued, but the read never found the game's label — it looked inside the input's own wrapper, where the game puts it in a sibling. So it answered "+0" for every modal. Enhanced items could therefore never be confirmed from the strip at all; and a plain item queued against a modal showing an enhanced copy of the same thing at the same count passed every check, the level being the only thing that told them apart. It reads the real field now, and an enhanced step refuses outright when no level can be read rather than assuming zero.
