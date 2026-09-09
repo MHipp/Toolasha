@@ -1915,9 +1915,21 @@ function registerFeatures() {
             category: 'Alchemy',
             module: UI.alchemyActionProtection,
             async: true,
-            // Waits only on its own protection map; the other users of its
-            // anchor are registered earlier and its click guard is its own.
-            concurrent: true,
+            // Deliberately NOT concurrent, though it satisfies the ordering
+            // rule the flag is about (it waits only on its own protection map,
+            // the other users of its anchor are registered earlier, and its
+            // click guard is its own).
+            //
+            // What it registers after that await is an interlock: the
+            // double-confirm that stands between a Decompose click and an
+            // irreversible loss of protected items. Deferring it moves that
+            // guard from "up shortly after this feature's own storage read" to
+            // "up when the slowest member of the whole concurrent batch has
+            // finished", which is several hundred milliseconds later on a cold
+            // start. Every other flagged feature pays for a late arrival in a
+            // readout that fills in a moment; this one pays in an item the
+            // player cannot get back. Its await is a single settings read, so
+            // it is one of the cheapest members of the batch to give up.
         },
         {
             key: 'enhancementFeature',
@@ -2217,7 +2229,23 @@ function registerFeatures() {
                       return teardown(current);
                   }
                 : undefined,
-            async: feature.async,
+            // Forwarded, and it has to be listed here: this mapping builds each
+            // registry entry from an explicit field list, so anything the
+            // definitions above set and this object does not name is dropped on
+            // the way in. `concurrent` was dropped for its whole life —
+            // `initializeFeatures` read `feature.concurrent`, found `undefined`
+            // on every entry, and awaited all sixteen flagged features one after
+            // another, which is the ~1.3 s of blocking startup the flag exists
+            // to remove. `src/entrypoint.test.js` now derives the field list
+            // from what `feature-registry.js` actually reads, so the next field
+            // added there fails a test instead of arriving dead.
+            //
+            // (`async:` used to be forwarded here too. Nothing has ever read it
+            // off a registry entry — the registry decides on the returned value,
+            // not on a flag — so it is not carried across. The annotations on
+            // the definitions above are left as documentation of which module
+            // initializers are async.)
+            concurrent: feature.concurrent || undefined,
             customCheck: feature.customCheck || undefined,
             // Without this the checks above would be dropped on the way into the
             // registry, and `checkFeatureHealth` would go on finding nothing

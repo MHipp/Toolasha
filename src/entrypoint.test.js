@@ -18,7 +18,75 @@
  */
 
 import { describe, test, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import process from 'node:process';
+import { resolve } from 'node:path';
 import { GAME } from './utils/selectors.js';
+
+// The real feature registry, imported alongside the entrypoint so the mapping
+// can be tested against the thing that consumes it rather than against a copy
+// of the field list. The entrypoint itself reads everything off
+// `window.Toolasha.*` and imports no `src/core` module, so these mocks are
+// invisible to it — they exist only to keep `feature-registry.js` off real
+// config, real IndexedDB-backed data and the real performance monitor.
+vi.mock('./core/config.js', () => ({
+    default: {
+        isFeatureEnabled: () => true,
+        clearSettingsCache: () => {},
+        loadSettings: async () => {},
+        applyColorSettings: () => {},
+    },
+}));
+
+vi.mock('./core/data-manager.js', () => ({
+    default: {
+        getIsCharacterSwitching: () => false,
+        getCurrentCharacterId: () => null,
+        on: () => {},
+    },
+}));
+
+vi.mock('./utils/performance-monitor.js', () => ({
+    default: { mark: () => {}, sinceBoot: () => 0, snapshot: () => {} },
+}));
+
+const realFeatureRegistry = (await import('./core/feature-registry.js')).default;
+
+/** How long the two probe initializers park, in ms. Long enough to interleave, short enough to run. */
+const PROBE_AWAIT_MS = 20;
+
+/**
+ * Live count of probe initializers between their first and last statement, and
+ * the high-water mark. Serial initialization can never push the mark above 1.
+ */
+const probe = { active: 0, peak: 0 };
+
+/**
+ * The two `concurrent: true` UI features whose stand-in modules really suspend.
+ * Both are flagged in the registry list, so a mapping that forwards the flag
+ * lets them overlap and one that drops it cannot.
+ */
+const probeModules = { tabReorder: makeProbeModule(), sessionBriefing: makeProbeModule() };
+
+/**
+ * A module stand-in whose `initialize()` genuinely suspends.
+ *
+ * The library stubs below answer every call with another stub, which resolves
+ * in a microtask and so cannot show the difference between awaiting sixteen
+ * features and overlapping them. These two do.
+ *
+ * @returns {{initialize: Function}} A feature module
+ */
+function makeProbeModule() {
+    return {
+        initialize: async () => {
+            probe.active += 1;
+            probe.peak = Math.max(probe.peak, probe.active);
+            await new Promise((resolve) => setTimeout(resolve, PROBE_AWAIT_MS));
+            probe.active -= 1;
+        },
+    };
+}
 
 /** Settings the fake config answers with; mutated per test */
 const settings = {};
@@ -118,7 +186,17 @@ beforeAll(async () => {
         Market: makeStub(),
         Actions: makeStub(),
         Combat: makeStub(),
-        UI: makeStub(),
+        // Two of the UI library's members are real modules that suspend, so the
+        // registry entries the entrypoint builds for them can be run for real
+        // below; everything else is the usual stub.
+        UI: new Proxy(function stub() {}, {
+            get: (target, prop) => {
+                if (prop === 'then') return undefined;
+                if (Object.hasOwn(probeModules, prop)) return probeModules[prop];
+                return makeStub();
+            },
+            apply: () => makeStub(),
+        }),
     };
 
     entrypointModule = await import('./entrypoint.js');
@@ -722,5 +800,92 @@ describe('checkMwiToolsWithRetries', () => {
         await vi.advanceTimersByTimeAsync(10_000);
 
         expect(mwiToastShown()).toBe(true);
+    });
+});
+
+/**
+ * The seam between the entrypoint's feature list and the registry that runs it.
+ *
+ * The registry's own tests call `replaceFeatures()` with hand-written entries,
+ * which is why they never noticed that `concurrent: true` — set on sixteen
+ * features and read by `initializeFeatures()` — was being dropped by the
+ * entrypoint's mapping and had never once reached production. The mapping
+ * builds each entry from an explicit field list, so any field the registry
+ * learns to read is dead until somebody remembers to add it here too.
+ *
+ * These tests close that gap from both ends: one derives the field list from
+ * `feature-registry.js` itself so a newly-read field fails until it is
+ * forwarded, and one runs two entrypoint-built entries through the real
+ * registry and watches them overlap.
+ */
+describe('the registry entries the entrypoint hands over', () => {
+    /**
+     * Every field `feature-registry.js` reads off a registry entry, taken from
+     * its source rather than from a list kept alongside it — a list would go
+     * stale in exactly the way the mapping did.
+     * @returns {Array<string>} Field names, sorted
+     */
+    function fieldsTheRegistryReads() {
+        // Resolved off the vitest root rather than `import.meta.url`: under the
+        // transform this file runs through, `import.meta.url` is not a file: URL.
+        const source = readFileSync(resolve(process.cwd(), 'src/core/feature-registry.js'), 'utf8');
+        const fields = new Set();
+        for (const match of source.matchAll(/\b(?:feature|featureInstance|f)\.([A-Za-z_$][\w$]*)/g)) {
+            fields.add(match[1]);
+        }
+        return [...fields].sort();
+    }
+
+    /**
+     * Fields the registry reads that the mapping deliberately does not forward,
+     * each with the reason it is not an oversight.
+     */
+    const notForwarded = {
+        // `getFeatureInstance()` reads `feature.module || feature`, and the
+        // fallback is the point: teardown has to go through the entry's own
+        // `disable` closure, which clears the instance the initializer stored.
+        // Forwarding the raw module would hand teardown the module instead and
+        // strand that instance.
+        module: 'getFeatureInstance falls back to the entry, which carries the disable closure',
+    };
+
+    test('every field the registry reads survives the mapping', () => {
+        const missing = fieldsTheRegistryReads().filter(
+            (field) => !(field in notForwarded) && !registered.some((entry) => entry[field] !== undefined)
+        );
+
+        expect(
+            missing,
+            `feature-registry.js reads ${missing.join(', ')} but no registered entry carries it — ` +
+                'either forward it in the entrypoint mapping or record why not in `notForwarded`'
+        ).toEqual([]);
+    });
+
+    test('a feature marked concurrent is still marked concurrent by the time the registry sees it', () => {
+        const tabReorder = registered.find((entry) => entry.key === 'tabReorder');
+
+        expect(tabReorder, 'tabReorder is no longer registered').toBeTruthy();
+        expect(tabReorder.concurrent).toBe(true);
+        // Not a count assertion: the point is that the flag is not being
+        // silently dropped for the whole list, which one surviving flag could
+        // still hide if it were the only one hand-written.
+        expect(registered.filter((entry) => entry.concurrent).length).toBeGreaterThan(1);
+    });
+
+    test('two concurrent features run through the real registry overlap', async () => {
+        probe.active = 0;
+        probe.peak = 0;
+
+        const entries = registered.filter((entry) => entry.key in probeModules);
+        expect(entries).toHaveLength(2);
+
+        realFeatureRegistry.replaceFeatures(entries);
+        const failures = await realFeatureRegistry.initializeFeatures();
+
+        expect(failures).toEqual([]);
+        // 1 means the registry awaited the first before starting the second,
+        // which is what a dropped `concurrent` flag produces.
+        expect(probe.peak).toBe(2);
+        expect(probe.active).toBe(0);
     });
 });
