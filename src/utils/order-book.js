@@ -137,15 +137,21 @@ export function estimateFillSeconds(listings, count) {
  * said what the rest of the batch is worth. Callers report the shortfall rather
  * than extrapolating past it.
  *
+ * `price` is the level the walk stopped on — the worst price a buyer of the
+ * whole quantity has to accept, and so the lowest price whose *cumulative*
+ * supply covers it. Null when nothing was taken.
+ *
  * @param {Array<{price: number, quantity: number}>} listings - One side of the book, best first
  * @param {number} quantity - How many units to walk for
- * @returns {{filled: number, gold: number, covered: boolean}} Units the book covered,
- *   what they come to, and whether the whole quantity was covered
+ * @returns {{filled: number, gold: number, covered: boolean, price: number|null}} Units the
+ *   book covered, what they come to, whether the whole quantity was covered, and the
+ *   price level the walk ended on
  */
 export function walkForQuantity(listings, quantity) {
     const wanted = Number(quantity) > 0 ? Number(quantity) : 0;
     let filled = 0;
     let gold = 0;
+    let last = null;
 
     for (const listing of listings || []) {
         if (filled >= wanted) break;
@@ -155,9 +161,53 @@ export function walkForQuantity(listings, quantity) {
         const take = Math.min(wanted - filled, available);
         filled += take;
         gold += take * price;
+        last = price;
     }
 
-    return { filled, gold, covered: wanted > 0 && filled >= wanted };
+    return { filled, gold, covered: wanted > 0 && filled >= wanted, price: last };
+}
+
+/**
+ * The lowest price at which a side's cumulative supply first covers a quantity.
+ *
+ * What a "Buy Now" at the best ask has to be raised to for the whole order to
+ * go through: the top of the book only ever holds the units listed at the top
+ * price, so a larger order has to reach down to the level where the running
+ * total finally meets it.
+ *
+ * Null when the known ladder never gets there — the game sends only its top
+ * rows, so a book that runs out has not said what the covering price is, and
+ * guessing one would raise a price for no stated gain.
+ *
+ * @param {Array<{price: number, quantity: number}>} listings - Ask side, best first
+ * @param {number} quantity - Units wanted
+ * @returns {number|null} The covering price, or null when the book does not cover it
+ */
+export function priceCoveringQuantity(listings, quantity) {
+    const walk = walkForQuantity(listings, quantity);
+    return walk.covered ? walk.price : null;
+}
+
+/**
+ * The next distinct price above a level on one side of a book.
+ *
+ * The step the verify loop takes when the modal still says the order is not
+ * covered — the cached book was older than the modal, so the next rung of the
+ * ladder is the next thing worth trying.
+ *
+ * @param {Array<{price: number, quantity: number}>} listings - Ask side, best first
+ * @param {number} price - The level already tried
+ * @returns {number|null} The next higher listed price, or null when there is none
+ */
+export function nextPriceAbove(listings, price) {
+    const floor = Number(price);
+    let best = null;
+    for (const listing of listings || []) {
+        const candidate = Number(listing?.price);
+        if (!(candidate > 0) || !(candidate > floor)) continue;
+        if (best === null || candidate < best) best = candidate;
+    }
+    return best;
 }
 
 /**

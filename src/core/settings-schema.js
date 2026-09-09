@@ -1233,6 +1233,17 @@ export const settingsGroups = {
                 type: 'checkbox',
                 default: true,
             },
+            market_raiseBuyPriceToCoverQuantity: {
+                id: 'market_raiseBuyPriceToCoverQuantity',
+                label: 'Buy Now: raise the price until it covers the whole quantity',
+                type: 'checkbox',
+                default: false,
+                help:
+                    'When a filled buy quantity is more than the best ask has in stock, raise the price to the ' +
+                    'lowest one whose listings add up to the whole amount. You pay more per unit — every unit, ' +
+                    'not just the extra ones — in exchange for the order filling completely. Never goes above ' +
+                    "the modal's tradable range, never lowers a price, and never presses the buy button.",
+            },
             market_autoFillSellStrategy: {
                 id: 'market_autoFillSellStrategy',
                 label: 'Auto-fill sell price strategy',

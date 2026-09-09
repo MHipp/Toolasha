@@ -1,5 +1,13 @@
 import { describe, test, expect } from 'vitest';
-import { bestPrice, queueAt, estimateFillSeconds, walkForQuantity, walkForBudget } from './order-book.js';
+import {
+    bestPrice,
+    queueAt,
+    estimateFillSeconds,
+    walkForQuantity,
+    walkForBudget,
+    priceCoveringQuantity,
+    nextPriceAbove,
+} from './order-book.js';
 
 /**
  * A side of the book, newest listing last.
@@ -101,11 +109,11 @@ describe('walkForQuantity', () => {
     ];
 
     test('takes from each level in turn rather than quoting the top price', () => {
-        expect(walkForQuantity(bids, 10)).toEqual({ filled: 10, gold: 5 * 100 + 5 * 90, covered: true });
+        expect(walkForQuantity(bids, 10)).toEqual({ filled: 10, gold: 5 * 100 + 5 * 90, covered: true, price: 90 });
     });
 
     test('a quantity inside the first level is that level alone', () => {
-        expect(walkForQuantity(bids, 3)).toEqual({ filled: 3, gold: 300, covered: true });
+        expect(walkForQuantity(bids, 3)).toEqual({ filled: 3, gold: 300, covered: true, price: 100 });
     });
 
     test('a book that runs out reports the shortfall instead of extrapolating', () => {
@@ -116,17 +124,59 @@ describe('walkForQuantity', () => {
     });
 
     test('an empty or absent side covers nothing', () => {
-        expect(walkForQuantity([], 5)).toEqual({ filled: 0, gold: 0, covered: false });
-        expect(walkForQuantity(null, 5)).toEqual({ filled: 0, gold: 0, covered: false });
+        expect(walkForQuantity([], 5)).toEqual({ filled: 0, gold: 0, covered: false, price: null });
+        expect(walkForQuantity(null, 5)).toEqual({ filled: 0, gold: 0, covered: false, price: null });
     });
 
     test('rows with no price or no size are skipped', () => {
         const rows = [{ price: 0, quantity: 5 }, { quantity: 5 }, { price: 50, quantity: 4 }];
-        expect(walkForQuantity(rows, 4)).toEqual({ filled: 4, gold: 200, covered: true });
+        expect(walkForQuantity(rows, 4)).toEqual({ filled: 4, gold: 200, covered: true, price: 50 });
     });
 
     test('asking for nothing is covered by nothing', () => {
-        expect(walkForQuantity(bids, 0)).toEqual({ filled: 0, gold: 0, covered: false });
+        expect(walkForQuantity(bids, 0)).toEqual({ filled: 0, gold: 0, covered: false, price: null });
+    });
+});
+
+describe('priceCoveringQuantity', () => {
+    // The screenshot's ask ladder: only 15 units sit at the best price
+    const asks = [
+        { price: 470_000, quantity: 15 },
+        { price: 471_000, quantity: 1078 },
+        { price: 472_000, quantity: 417 },
+    ];
+
+    test('a quantity the best ask holds is covered at the best ask', () => {
+        expect(priceCoveringQuantity(asks, 15)).toBe(470_000);
+    });
+
+    test('one unit more reaches down to the next rung', () => {
+        expect(priceCoveringQuantity(asks, 16)).toBe(471_000);
+        expect(priceCoveringQuantity(asks, 24)).toBe(471_000);
+    });
+
+    test('a quantity past the known ladder has no stated covering price', () => {
+        expect(priceCoveringQuantity(asks, 5_000)).toBeNull();
+        expect(priceCoveringQuantity([], 5)).toBeNull();
+        expect(priceCoveringQuantity(asks, 0)).toBeNull();
+    });
+});
+
+describe('nextPriceAbove', () => {
+    const asks = [
+        { price: 470_000, quantity: 15 },
+        { price: 471_000, quantity: 1078 },
+        { price: 473_000, quantity: 200 },
+    ];
+
+    test('is the next distinct rung, not the next row', () => {
+        expect(nextPriceAbove(asks, 470_000)).toBe(471_000);
+        expect(nextPriceAbove(asks, 471_500)).toBe(473_000);
+    });
+
+    test('the top of the ladder has nothing above it', () => {
+        expect(nextPriceAbove(asks, 473_000)).toBeNull();
+        expect(nextPriceAbove([], 1)).toBeNull();
     });
 });
 

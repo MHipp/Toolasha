@@ -5,6 +5,21 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
 const observerState = vi.hoisted(() => ({ handlers: {}, registrations: 0, unregistrations: 0 }));
+const settingsState = vi.hoisted(() => ({ values: {} }));
+const bookState = vi.hoisted(() => ({ books: {} }));
+
+vi.mock('../core/config.js', () => ({
+    default: { getSetting: (id) => settingsState.values[id] },
+}));
+
+vi.mock('./bundle-bridge.js', () => ({
+    estimatedListingAge: () => ({
+        cachedBookSide: (itemHrid, enhancementLevel, isSell) => {
+            const listings = bookState.books[`${itemHrid}|${enhancementLevel}|${isSell}`];
+            return listings ? { listings, lastUpdated: Date.now() } : null;
+        },
+    }),
+}));
 
 vi.mock('../core/dom-observer.js', () => ({
     default: {
@@ -19,7 +34,8 @@ vi.mock('../core/dom-observer.js', () => ({
     },
 }));
 
-const { createAutofillManager, findQuantityInput, modalItemHrid } = await import('./marketplace-autofill.js');
+const { createAutofillManager, findQuantityInput, modalItemHrid, availableAtPriceFrom } =
+    await import('./marketplace-autofill.js');
 
 function buildModal({ headerText = 'Buy Now', inputs = [{ label: 'Quantity' }], itemHrid = null } = {}) {
     const modal = document.createElement('div');
@@ -59,6 +75,8 @@ describe('createAutofillManager', () => {
         observerState.handlers = {};
         observerState.registrations = 0;
         observerState.unregistrations = 0;
+        settingsState.values = {};
+        bookState.books = {};
     });
 
     test('initialize() registers a domObserver handler under the given id', () => {
@@ -455,5 +473,339 @@ describe('findQuantityInput refuses rather than guesses', () => {
         });
         const inputs = modal.querySelectorAll('input');
         expect(findQuantityInput(modal)).toBe(inputs[1]);
+    });
+});
+
+/**
+ * A Buy Now modal shaped like the game's: a price row that may be asleep, a
+ * quantity row whose label states how much the shown price actually supplies,
+ * and the item icon the arming is matched against.
+ */
+function buildBuyNowModal({
+    price = '470,000',
+    available = 15,
+    itemHrid = '/items/wooden_bow',
+    tradableRange = null,
+    sleepingPrice = false,
+    enhancementLevel = null,
+} = {}) {
+    const modal = document.createElement('div');
+    const header = document.createElement('div');
+    header.className = 'MarketplacePanel_header';
+    header.textContent = 'Buy Now';
+    modal.appendChild(header);
+
+    const icon = document.createElement('div');
+    icon.innerHTML = `<svg><use href="/static/media/items_sprite.svg#${itemHrid.split('/').pop()}"></use></svg>`;
+    modal.appendChild(icon);
+
+    if (enhancementLevel !== null) {
+        const enhRow = document.createElement('div');
+        enhRow.className = 'MarketplacePanel_enhancementLevelInputs';
+        const label = document.createElement('div');
+        label.textContent = 'Enhancement Level';
+        const enhInput = document.createElement('input');
+        enhInput.type = 'text';
+        enhInput.value = String(enhancementLevel);
+        enhRow.append(label, enhInput);
+        modal.appendChild(enhRow);
+    }
+
+    const priceRow = document.createElement('div');
+    priceRow.className = 'MarketplacePanel_priceInputs';
+    if (sleepingPrice) {
+        const display = document.createElement('div');
+        display.className = 'MarketplacePanel_priceDisplay';
+        display.textContent = price;
+        display.addEventListener('click', () => {
+            display.remove();
+            const woken = document.createElement('input');
+            woken.type = 'text';
+            woken.value = price;
+            priceRow.appendChild(woken);
+        });
+        priceRow.appendChild(display);
+    } else {
+        const priceInput = document.createElement('input');
+        priceInput.type = 'text';
+        priceInput.value = price;
+        priceRow.appendChild(priceInput);
+    }
+    modal.appendChild(priceRow);
+
+    const quantityRow = document.createElement('div');
+    quantityRow.className = 'MarketplacePanel_quantityInputs';
+    const availabilityLabel = document.createElement('div');
+    availabilityLabel.textContent = `Quantity (Available At Price: ${available})`;
+    const quantityInput = document.createElement('input');
+    quantityInput.type = 'text';
+    quantityRow.append(availabilityLabel, quantityInput);
+    modal.appendChild(quantityRow);
+
+    if (tradableRange) {
+        const range = document.createElement('div');
+        range.textContent = `Tradable range: ${tradableRange}`;
+        modal.appendChild(range);
+    }
+
+    document.body.appendChild(modal);
+    return {
+        modal,
+        priceValue: () => priceRow.querySelector('input')?.value ?? priceRow.textContent,
+        quantityValue: () => quantityInput.value,
+        setAvailable: (n) => {
+            availabilityLabel.textContent = `Quantity (Available At Price: ${n})`;
+        },
+    };
+}
+
+describe('availableAtPriceFrom', () => {
+    test('reads the modal’s own availability line', () => {
+        expect(availableAtPriceFrom('Quantity (Available At Price: 15)')).toBe(15);
+        expect(availableAtPriceFrom('Available At Price: 1,093')).toBe(1093);
+    });
+
+    test('a modal that does not state it reads as unstated, not as zero', () => {
+        expect(availableAtPriceFrom('Quantity')).toBeNull();
+        expect(availableAtPriceFrom('')).toBeNull();
+    });
+});
+
+describe('raising the buy price until it covers the quantity', () => {
+    const ITEM = '/items/wooden_bow';
+    // The ladder off the screenshot: 15 at 470K, then depth at every rung above
+    const LADDER = [
+        { price: 470_000, quantity: 15 },
+        { price: 471_000, quantity: 1078 },
+        { price: 472_000, quantity: 417 },
+        { price: 473_000, quantity: 200 },
+    ];
+
+    /** Arm the cache with an ask ladder for the item and level a modal shows */
+    function cacheAsks(listings, { itemHrid = ITEM, enhancementLevel = 0 } = {}) {
+        bookState.books[`${itemHrid}|${enhancementLevel}|true`] = listings;
+    }
+
+    beforeEach(() => {
+        document.body.innerHTML = '';
+        observerState.handlers = {};
+        bookState.books = {};
+        settingsState.values = { market_raiseBuyPriceToCoverQuantity: true };
+    });
+
+    test('raises to the lowest ask whose cumulative supply covers the wanted quantity', () => {
+        cacheAsks(LADDER);
+        const manager = createAutofillManager('Test-Observer');
+        manager.setQuantity(24, { itemHrid: ITEM });
+        manager.initialize();
+
+        const view = buildBuyNowModal({ price: '470,000', available: 15 });
+        observerState.handlers['Test-Observer'](view.modal);
+
+        expect(view.priceValue()).toBe('471000');
+        expect(view.quantityValue()).toBe('24');
+    });
+
+    test('wakes a sleeping price control and writes into the input it reveals', () => {
+        vi.useFakeTimers();
+        try {
+            cacheAsks(LADDER);
+            const manager = createAutofillManager('Test-Observer');
+            manager.setQuantity(24, { itemHrid: ITEM });
+            manager.initialize();
+
+            const view = buildBuyNowModal({ price: '470,000', available: 15, sleepingPrice: true });
+            observerState.handlers['Test-Observer'](view.modal);
+            vi.advanceTimersByTime(200);
+
+            expect(view.priceValue()).toBe('471000');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    test('a modal that already covers the quantity is not written to at all', () => {
+        cacheAsks(LADDER);
+        const manager = createAutofillManager('Test-Observer');
+        manager.setQuantity(10, { itemHrid: ITEM });
+        manager.initialize();
+
+        const view = buildBuyNowModal({ price: '470,000', available: 15 });
+        observerState.handlers['Test-Observer'](view.modal);
+
+        expect(view.priceValue()).toBe('470,000');
+        expect(view.quantityValue()).toBe('10');
+    });
+
+    test('a covering price above the tradable maximum is clamped, and nothing is written above the range', () => {
+        cacheAsks(LADDER);
+        const manager = createAutofillManager('Test-Observer');
+        manager.setQuantity(24, { itemHrid: ITEM });
+        manager.initialize();
+
+        // The band tops out at the price already shown, so the covering rung is
+        // not admitted and the price is left where it is
+        const view = buildBuyNowModal({ price: '470,000', available: 15, tradableRange: '400,000 – 470,000' });
+        observerState.handlers['Test-Observer'](view.modal);
+
+        expect(view.priceValue()).toBe('470,000');
+        expect(view.quantityValue()).toBe('24');
+    });
+
+    test('an uncached book leaves the price alone and the quantity fill unchanged', () => {
+        const manager = createAutofillManager('Test-Observer');
+        manager.setQuantity(24, { itemHrid: ITEM });
+        manager.initialize();
+
+        const view = buildBuyNowModal({ price: '470,000', available: 15 });
+        observerState.handlers['Test-Observer'](view.modal);
+
+        expect(view.priceValue()).toBe('470,000');
+        expect(view.quantityValue()).toBe('24');
+    });
+
+    test('a stale book that still falls short steps to the next rung, then stops once covered', () => {
+        vi.useFakeTimers();
+        try {
+            cacheAsks(LADDER);
+            const manager = createAutofillManager('Test-Observer');
+            manager.setQuantity(24, { itemHrid: ITEM });
+            manager.initialize();
+
+            const view = buildBuyNowModal({ price: '470,000', available: 15 });
+            observerState.handlers['Test-Observer'](view.modal);
+            expect(view.priceValue()).toBe('471000');
+
+            // The cached 1078 at 471K was sold out of before the modal opened
+            view.setAvailable(20);
+            vi.advanceTimersByTime(200);
+            expect(view.priceValue()).toBe('472000');
+
+            view.setAvailable(500);
+            vi.advanceTimersByTime(1000);
+            expect(view.priceValue()).toBe('472000');
+            expect(view.quantityValue()).toBe('24');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    test('a book that never catches up stops after a bounded number of steps', () => {
+        vi.useFakeTimers();
+        try {
+            // Six rungs, so the ladder cannot be what ends the walk
+            cacheAsks([
+                { price: 470_000, quantity: 15 },
+                { price: 471_000, quantity: 1078 },
+                { price: 472_000, quantity: 417 },
+                { price: 473_000, quantity: 200 },
+                { price: 474_000, quantity: 200 },
+                { price: 475_000, quantity: 200 },
+            ]);
+            const manager = createAutofillManager('Test-Observer');
+            manager.setQuantity(24, { itemHrid: ITEM });
+            manager.initialize();
+
+            // The availability line never improves, however high the price goes
+            const view = buildBuyNowModal({ price: '470,000', available: 15 });
+            observerState.handlers['Test-Observer'](view.modal);
+            vi.advanceTimersByTime(60_000);
+
+            // The first write plus MAX_COVER_STEPS = 3 more, and then it stops
+            expect(view.priceValue()).toBe('474000');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    test('the price is never lowered, even when the cached ladder sits below the modal', () => {
+        cacheAsks(LADDER);
+        const manager = createAutofillManager('Test-Observer');
+        manager.setQuantity(24, { itemHrid: ITEM });
+        manager.initialize();
+
+        const view = buildBuyNowModal({ price: '475,000', available: 5 });
+        observerState.handlers['Test-Observer'](view.modal);
+
+        expect(view.priceValue()).toBe('475,000');
+        expect(view.quantityValue()).toBe('24');
+    });
+
+    test('with the setting off, nothing about today’s behaviour changes', () => {
+        settingsState.values.market_raiseBuyPriceToCoverQuantity = false;
+        cacheAsks(LADDER);
+        const manager = createAutofillManager('Test-Observer');
+        manager.setQuantity(24, { itemHrid: ITEM });
+        manager.initialize();
+
+        const view = buildBuyNowModal({ price: '470,000', available: 15 });
+        observerState.handlers['Test-Observer'](view.modal);
+
+        expect(view.priceValue()).toBe('470,000');
+        expect(view.quantityValue()).toBe('24');
+    });
+
+    test('a modal showing a different item is refused, price included', () => {
+        cacheAsks(LADDER);
+        const manager = createAutofillManager('Test-Observer');
+        manager.setQuantity(24, { itemHrid: ITEM });
+        manager.initialize();
+
+        const view = buildBuyNowModal({ price: '470,000', available: 15, itemHrid: '/items/oak_log' });
+        observerState.handlers['Test-Observer'](view.modal);
+
+        expect(view.priceValue()).toBe('470,000');
+        expect(view.quantityValue()).toBe('');
+    });
+
+    test('the level the modal shows is the book that is read, not +0', () => {
+        cacheAsks(LADDER, { enhancementLevel: 3 });
+        cacheAsks([{ price: 470_000, quantity: 9_999 }], { enhancementLevel: 0 });
+        const manager = createAutofillManager('Test-Observer');
+        manager.setQuantity(24, { itemHrid: ITEM });
+        manager.initialize();
+
+        const view = buildBuyNowModal({ price: '470,000', available: 15, enhancementLevel: 3 });
+        observerState.handlers['Test-Observer'](view.modal);
+
+        // The +0 book would have said 470,000 covers it; the +3 book is the truth
+        expect(view.priceValue()).toBe('471000');
+    });
+
+    test('the Shop’s own buy dialog is filled but never repriced — it has no order book', () => {
+        cacheAsks(LADDER);
+        const manager = createAutofillManager('Test-Observer');
+        manager.setQuantity(24, { itemHrid: ITEM });
+        manager.initialize();
+
+        const modal = document.createElement('div');
+        modal.innerHTML =
+            `<div><svg><use href="/static/media/items_sprite.svg#wooden_bow"></use></svg></div>` +
+            '<div class="MarketplacePanel_priceInputs"><input type="text" value="470,000"></div>' +
+            '<div class="MarketplacePanel_quantityInputs"><div>Quantity (Available At Price: 15)</div>' +
+            '<input type="text"></div><div>You Pay: 10,000,000 Coin</div><button>Buy</button>';
+        document.body.appendChild(modal);
+        observerState.handlers['Test-Observer'](modal);
+
+        expect(modal.querySelector('[class*="MarketplacePanel_priceInputs"] input').value).toBe('470,000');
+        expect(modal.querySelector('[class*="MarketplacePanel_quantityInputs"] input').value).toBe('24');
+    });
+
+    test('a modal with no price field at all degrades to the plain quantity fill', () => {
+        cacheAsks(LADDER);
+        const manager = createAutofillManager('Test-Observer');
+        manager.setQuantity(24, { itemHrid: ITEM });
+        manager.initialize();
+
+        const modal = document.createElement('div');
+        modal.innerHTML =
+            '<div class="MarketplacePanel_header">Buy Now</div>' +
+            `<div><svg><use href="/static/media/items_sprite.svg#wooden_bow"></use></svg></div>` +
+            '<div class="MarketplacePanel_quantityInputs"><div>Quantity (Available At Price: 15)</div>' +
+            '<input type="text"></div>';
+        document.body.appendChild(modal);
+        expect(() => observerState.handlers['Test-Observer'](modal)).not.toThrow();
+
+        expect(modal.querySelector('[class*="MarketplacePanel_quantityInputs"] input').value).toBe('24');
     });
 });
