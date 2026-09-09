@@ -6,6 +6,14 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Leftovers: a faster start, a warm simulation worker, and your own name where it belongs
+
+Seven more features now start alongside each other rather than queueing — about a second and a half of waiting on stored data, removed from every load. Two more were looked at and deliberately left as they are, with the reason written beside them: one has a badge that reads its figures with no fallback and would show an empty board as "spent nothing", and the other has nothing to wait for in the first place. Background work also now waits for startup to finish rather than for the browser's next idle moment, which in Chrome was landing in the middle of it and making both slower.
+
+A labyrinth fight re-ran its clear-chance replay every few seconds, and every replay built a new simulation worker and copied the whole game's data into it. The worker is kept warm between replays now and keeps the data it already holds, so only the first one pays. A worker holding data that has actually changed is thrown away rather than reused, so the answers cannot go stale, and everything that stops a simulation now also releases the warm ones.
+
+In guild trials, the last place your own name could be put on somebody else's row is closed: the rung that names the final unclaimed slot by elimination now goes through the same guard as every other one, and declines rather than guessing. And your own slot is found from a stored map of slots to character ids, so your row keeps your name through a refresh instead of falling back to "Player N" — a map another character recorded is refused outright.
+
 ### The trial scoreboard stops claiming every row is confirmed, and a lone attacker no longer takes a whole tick
 
 The game changed what it streams during a guild trial: action counters used to arrive for your own character only, and now arrive for every player present. Nothing was reporting a wrong total because of it — a full trial still reconciles to within 0.006% of the game's own figure — but two things quietly started meaning something else.
