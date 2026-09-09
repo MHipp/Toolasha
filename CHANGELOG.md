@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### When the script starts too late to catch your character, it says so instead of blaming itself
+
+Your character's data is sent once, in the moment after the game connects, and nothing ever sends it again. A page that loads the script a fraction too late — likelier when other userscripts are loading alongside — misses it, and every panel then sits empty for the rest of the session while the game plays on perfectly. The message it printed said the connection hook may have failed, which was the one thing that was definitely fine: messages were arriving the whole time.
+
+It now tells the two apart. If nothing at all has come through, the old warning stands, because then the hook really may be at fault. If messages are arriving and only your character is missing, it says that plainly, says why nothing will fix it on its own, and offers a reload — offers, never performs one, since a reload lands wherever you happen to be. Real character data arriving late takes the offer back.
+
 ### The performance panel can say how much of the hitching was not ours
 
 Three additions, all behind a switch on the panel's own header and off until you turn them on.
