@@ -351,6 +351,12 @@ function setupInventoryListener() {
 /**
  * Handle cleanup when user leaves the marketplace.
  */
+/**
+ * Tear the queue's session down and give its stock back.
+ *
+ * @returns {Promise<boolean>} The release write, so a caller that must not let
+ *   the session outlive it — the character switch below — can await it
+ */
 function handleMarketplaceCleanup() {
     // Anything mid-await belongs to the session being torn down, not the next one
     generation += 1;
@@ -359,7 +365,7 @@ function handleMarketplaceCleanup() {
     currentTabs.length = 0;
     queue.length = 0;
     // Nothing is queued any more, so nothing is on its way out of the bag
-    release(RESERVATION_OWNER);
+    const released = release(RESERVATION_OWNER);
     // The watchdog goes with the session it was watching. Left running, the next
     // queued item took the first-item path again and registered a second one over
     // the top of it — the first was then unreachable, polling `currentTabs`
@@ -373,6 +379,7 @@ function handleMarketplaceCleanup() {
         webSocketHook.off('*', inventoryUpdateHandler);
         inventoryUpdateHandler = null;
     }
+    return released;
 }
 
 /**
@@ -506,6 +513,45 @@ function cleanup() {
         isActive = false;
     }
 }
+
+/*
+ * A queue belongs to the character that built it.
+ *
+ * Everything the queue holds is module state — the entries, the injected tabs,
+ * the websocket subscriber and the claim it publishes into the shared
+ * reservation ledger under `sellQueue` — and none of it is keyed by character.
+ * Nothing announced a switch to it, so a queue built on one character survived
+ * onto the next: the arriving character's marketplace strip carried the
+ * departing one's tabs, and the departing one's claim held the ARRIVING
+ * character's stock back from every crafting plan, until the ledger's seven-day
+ * sweep or a marketplace-leave that might never come.
+ *
+ * `character_switching`, not `character_switched`, for two reasons that point
+ * the same way. The ledger resolves whose record it is from
+ * `getCurrentCharacterId()` at the moment of the call, and that id has already
+ * moved by `character_switched` — a release then deletes the `sellQueue` owner
+ * from the ARRIVING character's ledger and leaves the departing character's
+ * claim exactly where it was. And `character_switched` is deferred a macrotask
+ * (see data-manager's `emit`), which is long enough for the arriving
+ * character's data to land and for the websocket subscriber still installed
+ * here to act on it. `inventory-reservations.js` subscribes to the other event
+ * for the mirrored reason — it is re-reading the arriving character's ledger,
+ * and says in as many words that a departing teardown's release is expected to
+ * have run against theirs already.
+ *
+ * The promise is returned because `character_switching` is data-manager's one
+ * awaited emit: the release must land before the switch moves the ledger's
+ * idea of whose record is open.
+ */
+dataManager.on?.('character_switching', () => {
+    clearPendingNavigation();
+    // The tracked hover belongs to the departing character's tooltip
+    currentItemHrid = null;
+    // Bumps `generation`, so a claim still awaiting inside `addToQueue` sees a
+    // dead era, releases what it wrote and does not navigate — the arriving
+    // character must not have the panel yanked to an item they never queued
+    return handleMarketplaceCleanup();
+});
 
 config.onSettingChange('sellQueue', (value) => {
     if (value) initialize();

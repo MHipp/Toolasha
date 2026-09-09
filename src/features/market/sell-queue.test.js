@@ -16,6 +16,8 @@ const tabsState = vi.hoisted(() => ({
 }));
 /** The `*` websocket subscriber the queue installs for its first item */
 const socketState = vi.hoisted(() => ({ handler: null }));
+/** Handlers the queue registers for the character-switch lifecycle, by event */
+const switchState = vi.hoisted(() => ({ handlers: new Map() }));
 const dataManagerMock = vi.hoisted(() => ({
     getInitClientData: () => ({
         itemDetailMap: { '/items/cheese': { name: 'Cheese', isTradable: true } },
@@ -23,6 +25,11 @@ const dataManagerMock = vi.hoisted(() => ({
     // Nothing in the bag by default: addToQueue returns before touching the marketplace
     inventory: [],
     getInventory: () => dataManagerMock.inventory,
+    on: (event, handler) => {
+        const held = switchState.handlers.get(event) || [];
+        held.push(handler);
+        switchState.handlers.set(event, held);
+    },
 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -71,12 +78,18 @@ vi.mock('../../utils/marketplace-tabs.js', () => ({
     createMaterialTab: vi.fn((material) => {
         const tab = document.createElement('div');
         tab.setAttribute('data-item-hrid', material.itemHrid);
+        // The marker the real `removeMaterialTabs` sweeps by
+        tab.setAttribute('data-mwi-custom-tab', 'true');
         const badge = document.createElement('span');
         badge.className = 'TabsComponent_badge__1Ei-x';
         tab.appendChild(badge);
         return tab;
     }),
-    removeMaterialTabs: vi.fn(),
+    // Sweeps the same marker the real one does, so a teardown's DOM clearing is
+    // observable here rather than asserted only as a call
+    removeMaterialTabs: vi.fn(() => {
+        document.querySelectorAll('[data-mwi-custom-tab="true"]').forEach((tab) => tab.remove());
+    }),
     setupMarketplaceCleanupObserver: vi.fn((onCleanup) => {
         tabsState.cleanups.push(onCleanup);
         const unregister = vi.fn();
@@ -445,5 +458,83 @@ describe('the tab badge and the sold-out check count plain copies only', () => {
 
         expect(document.querySelector('[data-item-hrid="/items/cheese"]')).toBeNull();
         expect(ledger.reserved).toHaveLength(0);
+    });
+});
+
+/*
+ * The queue is module state — the entries, the injected tabs and the claim it
+ * publishes into the shared reservation ledger. Nothing announced a character
+ * switch to it, so a queue built on one character survived onto the next: the
+ * arriving character's panel showed the departing one's items, and the
+ * departing one's claim held the arriving one's stock back from every plan.
+ */
+describe('a character switch takes the queue with it', () => {
+    /** A marketplace tab strip the queue accepts as "already in the market" */
+    function marketplaceStrip() {
+        const container = document.createElement('div');
+        const myListings = document.createElement('button');
+        myListings.textContent = 'My Listings';
+        const marketListings = document.createElement('button');
+        marketListings.textContent = 'Market Listings';
+        container.append(myListings, marketListings);
+        document.body.appendChild(container);
+        return container;
+    }
+
+    /** Fire every `character_switching` listener the queue registered. */
+    function switchCharacter() {
+        return Promise.all((switchState.handlers.get('character_switching') || []).map((handler) => handler()));
+    }
+
+    beforeEach(() => {
+        ledger.reserved = [];
+        ledger.released = [];
+        tabsState.container = marketplaceStrip();
+        dataManagerMock.inventory = [
+            { itemHrid: '/items/cheese', itemLocationHrid: '/item_locations/inventory', count: 12 },
+        ];
+    });
+
+    test('the switch clears the queue, its tabs, and the departing claim', async () => {
+        observerState.handler(popper('<a href="/items/cheese">Cheese</a>'));
+        shiftRightClickInventory();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(document.querySelector('[data-item-hrid="/items/cheese"]')).not.toBeNull();
+
+        await switchCharacter();
+
+        // The arriving character's panel must not show the departing one's queue
+        expect(document.querySelector('[data-item-hrid="/items/cheese"]')).toBeNull();
+        // …and the departing character's stock is given back rather than left
+        // spoken for until the ledger's seven-day sweep
+        expect(ledger.released).toContain('sellQueue');
+    });
+
+    test('the switch is announced before the reservation ledger moves', () => {
+        // `character_switching` and not `character_switched`: the release has to
+        // run while `getCurrentCharacterId()` is still the departing character,
+        // or it deletes an owner from the ARRIVING character's ledger and leaves
+        // the departing one's claim standing
+        expect(switchState.handlers.has('character_switching')).toBe(true);
+    });
+
+    test('a claim in flight across a switch does not land under the arriving character', async () => {
+        const { navigateToMarketplace } = await import('../../utils/marketplace-tabs.js');
+        navigateToMarketplace.mockClear();
+
+        observerState.handler(popper('<a href="/items/cheese">Cheese</a>'));
+        shiftRightClickInventory();
+        // The switch happens while `addToQueue`'s claim is still awaiting
+        await switchCharacter();
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        // The panel is not yanked to an item the arriving character never queued
+        expect(navigateToMarketplace).not.toHaveBeenCalled();
+        // And the claim that landed after the switch's release is given straight
+        // back, so it cannot sit on the arriving character's bag
+        expect(ledger.released.filter((owner) => owner === 'sellQueue').length).toBeGreaterThan(1);
     });
 });
