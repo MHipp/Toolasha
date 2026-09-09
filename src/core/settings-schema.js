@@ -1237,7 +1237,7 @@ export const settingsGroups = {
                 id: 'market_raiseBuyPriceToCoverQuantity',
                 label: 'Buy Now: raise the price until it covers the whole quantity',
                 type: 'checkbox',
-                default: false,
+                default: true,
                 help:
                     'When a filled buy quantity is more than the best ask has in stock, raise the price to the ' +
                     'lowest one whose listings add up to the whole amount. The price is a limit, not what every ' +
