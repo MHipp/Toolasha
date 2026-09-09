@@ -2637,53 +2637,49 @@ The simulator valued every drop at its gross market price, so profit ignored the
 
 ## [3.45.0](https://github.com/Millennium44/Toolasha/compare/v3.44.0...v3.45.0) (2026-09-09)
 
-
 ### Features
 
-* let a feature register its own count with the leak canary ([1e8244b](https://github.com/Millennium44/Toolasha/commit/1e8244be7a5a089703f21c335fd02cd137e511cd))
-
+- let a feature register its own count with the leak canary ([1e8244b](https://github.com/Millennium44/Toolasha/commit/1e8244be7a5a089703f21c335fd02cd137e511cd))
 
 ### Bug Fixes
 
-* a counted enhancing row shows the time its materials cover ([59c0c30](https://github.com/Millennium44/Toolasha/commit/59c0c308bd92fa98c3dbab6c2d7f9b0f9e7e27a2))
-* abandon a sell-queue add whose session was torn down mid-await ([1889ed9](https://github.com/Millennium44/Toolasha/commit/1889ed94c88840b923d92babebe651ff807fe69d))
-* **chat:** close the gaps an on*-only sweep leaves in restored chat markup ([46acf69](https://github.com/Millennium44/Toolasha/commit/46acf69104d58c289860ba190573096241d413ee))
-* claim budget calculator stock only after the modal can close ([b1f34f3](https://github.com/Millennium44/Toolasha/commit/b1f34f3103da6db62f952898ec5be8c1ee4703a2))
-* clear the sell queue and release its claim on a character switch ([c6e5873](https://github.com/Millennium44/Toolasha/commit/c6e5873fec72232af4d2c567ac29f40ff5b4bcaa))
-* count the expected protection draw in an enhancing row's limit and ledger ([b7009d9](https://github.com/Millennium44/Toolasha/commit/b7009d9da0af5750c999dca2115a23c21134ad24))
-* **crafting-plan:** pin the merged task walk to the character that started it ([4ff5dad](https://github.com/Millennium44/Toolasha/commit/4ff5dad97874286c99b700530735f780f45cd60a))
-* **crafting-plan:** scope the walk's step hook to the walk that installed it ([442864f](https://github.com/Millennium44/Toolasha/commit/442864ffdc7cd9b9377e2856341ae05e9126f8e4))
-* **dungeon-tracker:** three ways the chat average could be wrong ([c91028f](https://github.com/Millennium44/Toolasha/commit/c91028fb0e01c2ba812f92bfa1346321e082ae78))
-* **enhancement:** floor the worker action time like the calculator ([16fdd1b](https://github.com/Millennium44/Toolasha/commit/16fdd1b33baca13b738ea0dae5f31785353cc6aa))
-* **enhancement:** say when a tooltip quote is missing a price ([6b9e9b2](https://github.com/Millennium44/Toolasha/commit/6b9e9b2c405d296c2795696a08820ca63bb372bc))
-* find the sell modal's confirm button by the name the game gives it ([d6b71f6](https://github.com/Millennium44/Toolasha/commit/d6b71f6ebf882b842cc9db5766a95bba4a4a4f9c))
-* key chat history by tab name, never by tab position ([64f3b38](https://github.com/Millennium44/Toolasha/commit/64f3b38606f851568ccd4fafcdb9757aa21244ba))
-* leave a buy modal alone when the quantity box cannot be identified ([726d5b3](https://github.com/Millennium44/Toolasha/commit/726d5b303f4dce3ffc02b1cd71ea46eff9108599))
-* measure a watchlist price move only over sides both readings quote ([a3fec32](https://github.com/Millennium44/Toolasha/commit/a3fec3223250543cb2160af84e5a33ed41faeeff))
-* one updateTabBadge, so a tab keeps its reservation note ([2e60324](https://github.com/Millennium44/Toolasha/commit/2e6032406bdc4255d19748b1cf3196e9246a5c78))
-* open the marketplace at the enhancement level a watched craft was costed at ([aa18e1e](https://github.com/Millennium44/Toolasha/commit/aa18e1eae4e1e360aa6e49b45f9fdbafad17d50b))
-* **planner:** sweep deleted goals' claims even while the ledger is off ([114ba97](https://github.com/Millennium44/Toolasha/commit/114ba976ba0c51e44f6324c51bbb4b2958158160))
-* **privacy:** honour the device-local key prefix in every store and on import ([bad60e3](https://github.com/Millennium44/Toolasha/commit/bad60e3b9c39d64705d3f6c6edae1ed562c044c9))
-* refuse a quantity the modal cannot be read for, rather than reading the price ([aa3abb4](https://github.com/Millennium44/Toolasha/commit/aa3abb48a66d0735382a05cd41c009689d5fb3ae))
-* **reservations:** stop a character switch emptying the arriving ledger ([afb30c0](https://github.com/Millennium44/Toolasha/commit/afb30c0af339686393c45defc169bcea2728cab6))
-* say when the loadout hold list was not checked at all ([5c78eb7](https://github.com/Millennium44/Toolasha/commit/5c78eb7764cefb3cea80cb5964c02e1d94f67b85))
-* the average marker targets the dungeon the panel is showing ([432a49f](https://github.com/Millennium44/Toolasha/commit/432a49fedfde77f902831ac0561e09cb6e38dc14))
-* the breakdown link opens the panel on the first press ([b22a31e](https://github.com/Millennium44/Toolasha/commit/b22a31e6ca752d9ba47323c31fbd264189c23511))
-* the strip's confirm checks the level the modal is really showing ([50a1ca7](https://github.com/Millennium44/Toolasha/commit/50a1ca7140ca54042a3b6defe7b9cd6f888ec5bf))
-* treat a future-stamped marketplace snapshot cache as expired ([c125015](https://github.com/Millennium44/Toolasha/commit/c125015403a5bca00534d6d3bf78f0d202371b27))
-
+- a counted enhancing row shows the time its materials cover ([59c0c30](https://github.com/Millennium44/Toolasha/commit/59c0c308bd92fa98c3dbab6c2d7f9b0f9e7e27a2))
+- abandon a sell-queue add whose session was torn down mid-await ([1889ed9](https://github.com/Millennium44/Toolasha/commit/1889ed94c88840b923d92babebe651ff807fe69d))
+- **chat:** close the gaps an on\*-only sweep leaves in restored chat markup ([46acf69](https://github.com/Millennium44/Toolasha/commit/46acf69104d58c289860ba190573096241d413ee))
+- claim budget calculator stock only after the modal can close ([b1f34f3](https://github.com/Millennium44/Toolasha/commit/b1f34f3103da6db62f952898ec5be8c1ee4703a2))
+- clear the sell queue and release its claim on a character switch ([c6e5873](https://github.com/Millennium44/Toolasha/commit/c6e5873fec72232af4d2c567ac29f40ff5b4bcaa))
+- count the expected protection draw in an enhancing row's limit and ledger ([b7009d9](https://github.com/Millennium44/Toolasha/commit/b7009d9da0af5750c999dca2115a23c21134ad24))
+- **crafting-plan:** pin the merged task walk to the character that started it ([4ff5dad](https://github.com/Millennium44/Toolasha/commit/4ff5dad97874286c99b700530735f780f45cd60a))
+- **crafting-plan:** scope the walk's step hook to the walk that installed it ([442864f](https://github.com/Millennium44/Toolasha/commit/442864ffdc7cd9b9377e2856341ae05e9126f8e4))
+- **dungeon-tracker:** three ways the chat average could be wrong ([c91028f](https://github.com/Millennium44/Toolasha/commit/c91028fb0e01c2ba812f92bfa1346321e082ae78))
+- **enhancement:** floor the worker action time like the calculator ([16fdd1b](https://github.com/Millennium44/Toolasha/commit/16fdd1b33baca13b738ea0dae5f31785353cc6aa))
+- **enhancement:** say when a tooltip quote is missing a price ([6b9e9b2](https://github.com/Millennium44/Toolasha/commit/6b9e9b2c405d296c2795696a08820ca63bb372bc))
+- find the sell modal's confirm button by the name the game gives it ([d6b71f6](https://github.com/Millennium44/Toolasha/commit/d6b71f6ebf882b842cc9db5766a95bba4a4a4f9c))
+- key chat history by tab name, never by tab position ([64f3b38](https://github.com/Millennium44/Toolasha/commit/64f3b38606f851568ccd4fafcdb9757aa21244ba))
+- leave a buy modal alone when the quantity box cannot be identified ([726d5b3](https://github.com/Millennium44/Toolasha/commit/726d5b303f4dce3ffc02b1cd71ea46eff9108599))
+- measure a watchlist price move only over sides both readings quote ([a3fec32](https://github.com/Millennium44/Toolasha/commit/a3fec3223250543cb2160af84e5a33ed41faeeff))
+- one updateTabBadge, so a tab keeps its reservation note ([2e60324](https://github.com/Millennium44/Toolasha/commit/2e6032406bdc4255d19748b1cf3196e9246a5c78))
+- open the marketplace at the enhancement level a watched craft was costed at ([aa18e1e](https://github.com/Millennium44/Toolasha/commit/aa18e1eae4e1e360aa6e49b45f9fdbafad17d50b))
+- **planner:** sweep deleted goals' claims even while the ledger is off ([114ba97](https://github.com/Millennium44/Toolasha/commit/114ba976ba0c51e44f6324c51bbb4b2958158160))
+- **privacy:** honour the device-local key prefix in every store and on import ([bad60e3](https://github.com/Millennium44/Toolasha/commit/bad60e3b9c39d64705d3f6c6edae1ed562c044c9))
+- refuse a quantity the modal cannot be read for, rather than reading the price ([aa3abb4](https://github.com/Millennium44/Toolasha/commit/aa3abb48a66d0735382a05cd41c009689d5fb3ae))
+- **reservations:** stop a character switch emptying the arriving ledger ([afb30c0](https://github.com/Millennium44/Toolasha/commit/afb30c0af339686393c45defc169bcea2728cab6))
+- say when the loadout hold list was not checked at all ([5c78eb7](https://github.com/Millennium44/Toolasha/commit/5c78eb7764cefb3cea80cb5964c02e1d94f67b85))
+- the average marker targets the dungeon the panel is showing ([432a49f](https://github.com/Millennium44/Toolasha/commit/432a49fedfde77f902831ac0561e09cb6e38dc14))
+- the breakdown link opens the panel on the first press ([b22a31e](https://github.com/Millennium44/Toolasha/commit/b22a31e6ca752d9ba47323c31fbd264189c23511))
+- the strip's confirm checks the level the modal is really showing ([50a1ca7](https://github.com/Millennium44/Toolasha/commit/50a1ca7140ca54042a3b6defe7b9cd6f888ec5bf))
+- treat a future-stamped marketplace snapshot cache as expired ([c125015](https://github.com/Millennium44/Toolasha/commit/c125015403a5bca00534d6d3bf78f0d202371b27))
 
 ### Documentation
 
-* changelog for the audit round, and pin the live-measured price band ([113899c](https://github.com/Millennium44/Toolasha/commit/113899c64df799584d945e7d37db259e857a46e9))
-* changelog for the confirm button, watched-upgrade listing, dungeon average and privacy fixes ([d517519](https://github.com/Millennium44/Toolasha/commit/d517519939b9c1e01d331265c865d0a67c59cd93))
-* changelog for the leftovers round ([446bd8b](https://github.com/Millennium44/Toolasha/commit/446bd8b72931b6a7a40a4f69e70bffb36980716b))
-* changelog for the leftovers round ([e0f75e9](https://github.com/Millennium44/Toolasha/commit/e0f75e9519fb2202aaa8f12937257702db30fcb2))
-
+- changelog for the audit round, and pin the live-measured price band ([113899c](https://github.com/Millennium44/Toolasha/commit/113899c64df799584d945e7d37db259e857a46e9))
+- changelog for the confirm button, watched-upgrade listing, dungeon average and privacy fixes ([d517519](https://github.com/Millennium44/Toolasha/commit/d517519939b9c1e01d331265c865d0a67c59cd93))
+- changelog for the leftovers round ([446bd8b](https://github.com/Millennium44/Toolasha/commit/446bd8b72931b6a7a40a4f69e70bffb36980716b))
+- changelog for the leftovers round ([e0f75e9](https://github.com/Millennium44/Toolasha/commit/e0f75e9519fb2202aaa8f12937257702db30fcb2))
 
 ### Tests
 
-* lock the two refusals the audit could not break ([63690b7](https://github.com/Millennium44/Toolasha/commit/63690b731b1a93cc845ff775a93248c724fabe78))
+- lock the two refusals the audit could not break ([63690b7](https://github.com/Millennium44/Toolasha/commit/63690b731b1a93cc845ff775a93248c724fabe78))
 
 ## [3.44.0](https://github.com/Millennium44/Toolasha/compare/v3.43.0...v3.44.0) (2026-09-09)
 
