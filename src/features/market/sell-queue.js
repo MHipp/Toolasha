@@ -59,6 +59,19 @@ let tooltipObserverUnregister = null;
 let contextMenuHandler = null;
 let isActive = false;
 
+/**
+ * Bumped by every teardown, so work that awaited across one can tell.
+ *
+ * `addToQueue` awaits the marketplace opening (up to five seconds) and then the
+ * reservation write, and the queue it is building is module state anybody can
+ * tear down meanwhile — the setting toggled off, or the cleanup observer firing
+ * because the player left the marketplace. Resuming blind re-armed the websocket
+ * listener and the cleanup observer that teardown had just removed, on a feature
+ * that is no longer running, and yanked the panel to an item nobody is queueing
+ * any more. Capture the era before the await, verify it after.
+ */
+let generation = 0;
+
 /** The item an auto-advance is waiting to navigate to, once the way is clear */
 let pendingNavigationHrid = null;
 /** The poller watching for the obstruction to clear */
@@ -339,6 +352,8 @@ function setupInventoryListener() {
  * Handle cleanup when user leaves the marketplace.
  */
 function handleMarketplaceCleanup() {
+    // Anything mid-await belongs to the session being torn down, not the next one
+    generation += 1;
     clearPendingNavigation();
     removeMaterialTabs();
     currentTabs.length = 0;
@@ -372,6 +387,7 @@ async function addToQueue(itemHrid, itemName) {
     if (count === 0) return;
 
     const isFirstItem = queue.length === 0;
+    const era = generation;
     queue.push({ itemHrid, itemName });
 
     if (isFirstItem) {
@@ -382,6 +398,7 @@ async function addToQueue(itemHrid, itemName) {
 
         if (!alreadyInMarket) {
             const success = await openMarketplacePage();
+            if (era !== generation) return;
             if (!success) {
                 queue.length = 0;
                 return;
@@ -389,6 +406,7 @@ async function addToQueue(itemHrid, itemName) {
             await new Promise((resolve) => {
                 timerRegistry.registerTimeout(setTimeout(resolve, 200));
             });
+            if (era !== generation) return;
         }
 
         cleanupObserver = setupMarketplaceCleanupObserver(handleMarketplaceCleanup, currentTabs);
@@ -397,6 +415,13 @@ async function addToQueue(itemHrid, itemName) {
 
     injectTabs();
     await claimQueue();
+    if (era !== generation) {
+        // The claim was in flight while the teardown released, so it can have
+        // landed on top of that release — hold nothing back for a queue that is
+        // gone rather than leaving stock spoken for until the seven-day sweep
+        release(RESERVATION_OWNER);
+        return;
+    }
     navigateToMarketplace(itemHrid, 0);
 }
 

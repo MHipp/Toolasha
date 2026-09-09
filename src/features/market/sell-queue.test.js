@@ -327,6 +327,30 @@ describe('what the queue holds back from every other plan', () => {
         tabsState.cleanups.at(-1)();
         expect(ledger.released).toContain('sellQueue');
     });
+
+    /*
+     * `addToQueue` awaits the reservation write (and, on a cold start, the
+     * marketplace opening) while the queue it is building is module state
+     * anybody can tear down. Resuming blind acted on a session that is gone.
+     */
+    test('a teardown mid-claim abandons the add rather than acting on a dead session', async () => {
+        const { navigateToMarketplace } = await import('../../utils/marketplace-tabs.js');
+        navigateToMarketplace.mockClear();
+
+        observerState.handler(popper('<a href="/items/cheese">Cheese</a>'));
+        shiftRightClickInventory();
+        // The player leaves the marketplace while the claim is still in flight
+        tabsState.cleanups.at(-1)();
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        // No yanking the panel back to an item nobody is queueing any more
+        expect(navigateToMarketplace).not.toHaveBeenCalled();
+        // And the claim that landed after the teardown's release is given back,
+        // rather than holding stock for a queue that no longer exists
+        expect(ledger.released.filter((owner) => owner === 'sellQueue').length).toBeGreaterThan(1);
+    });
 });
 
 /*
