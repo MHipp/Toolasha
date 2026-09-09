@@ -5,6 +5,7 @@
  */
 
 import domObserver from '../core/dom-observer.js';
+import { setReactInputValue } from './react-input.js';
 
 /**
  * Find the quantity input in the buy modal
@@ -176,22 +177,12 @@ function handleBuyModal(modal, activeQuantity, pendingCalculation) {
         return false;
     }
 
-    // Set the quantity value through the prototype setter React does not own
-    const previous = String(quantityInput.value ?? '');
-    const next = quantity.toString();
-    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    nativeInputValueSetter.call(quantityInput, next);
-
-    // Rewind React's value tracker so the input event below reads as a real
-    // change. Without it a strictly-controlled input (as the typable marketplace
-    // fields now are) can snap straight back to its own value on the next render.
-    if (previous !== next) {
-        quantityInput._valueTracker?.setValue?.(previous);
-    }
-
-    // Trigger input (and change, for a field that commits on blur) to notify React
-    quantityInput.dispatchEvent(new Event('input', { bubbles: true }));
-    quantityInput.dispatchEvent(new Event('change', { bubbles: true }));
+    // The shared React-input helper does the same value-tracker rewind this
+    // carried inline: set the value, rewind the tracker so a strictly-controlled
+    // input reads the event as a real change rather than snapping back, then
+    // dispatch input and change (the fields commit on blur). `focus: false`
+    // keeps the fill from stealing the caret, which the inline copy did not do.
+    setReactInputValue(quantityInput, quantity.toString(), { focus: false, dispatchChange: true });
     return true;
 }
 
