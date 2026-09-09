@@ -48,6 +48,21 @@ const MAX_IDLE_WORKERS = MAX_WORKERS;
  */
 const IDLE_WORKER_MS = 60 * 1000;
 
+/**
+ * Silence from a simulation worker before it is presumed dead.
+ *
+ * A worker the browser kills for memory - or one wedged in a loop - posts
+ * neither a result nor an error, and its promise would never settle. That is
+ * worse than one lost result with a pool: the wrapper stays in `activeWorkers`
+ * for the life of the page, and the idle reaper is busy-guarded on exactly that
+ * list, so every warm worker and its clone of the game data is held for ever.
+ *
+ * Measured against silence, not elapsed time: every message for the task -
+ * a progress tick included - re-arms it, so a legitimately long run is never
+ * cut short. Same window the all-zones coordinator gives its children.
+ */
+const WORKER_STALL_MS = 120_000;
+
 const idleReaper = createIdlePoolReaper(
     () => terminateIdleWorkers(),
     IDLE_WORKER_MS,
@@ -211,6 +226,9 @@ function releaseWorker(wrapper) {
     // the handlers of the run that picks this worker up next.
     wrapper.worker.onmessage = null;
     wrapper.worker.onerror = null;
+    // Drop the finished run's closure too - it holds that run's message, and an
+    // idle wrapper would otherwise keep the whole payload alive.
+    wrapper.disarmStall = null;
 
     if (idleWorkers.length >= MAX_IDLE_WORKERS) {
         wrapper.worker.terminate();
@@ -244,14 +262,38 @@ export function runWorkerChunk(message, onProgress) {
         activeWorkers.push(wrapper);
         pendingRejects.push(reject);
 
+        let stallTimer = null;
+        const disarmStall = () => {
+            if (stallTimer !== null) clearTimeout(stallTimer);
+            stallTimer = null;
+        };
+        // So a cancel can drop this chunk's deadline along with its worker
+        wrapper.disarmStall = disarmStall;
+
         const cleanup = () => {
+            disarmStall();
             activeWorkers = activeWorkers.filter((w) => w !== wrapper);
             pendingRejects = pendingRejects.filter((r) => r !== reject);
+        };
+
+        const armStall = () => {
+            disarmStall();
+            stallTimer = setTimeout(() => {
+                stallTimer = null;
+                // Nothing can say what state a worker that stopped answering is
+                // in, so it is terminated rather than pooled.
+                worker.terminate();
+                cleanup();
+                reject(new Error(`No word from the simulation worker for ${Math.round(WORKER_STALL_MS / 1000)}s`));
+            }, WORKER_STALL_MS);
+            // Never hold a test runner or a node process open on our account
+            if (typeof stallTimer === 'object' && stallTimer?.unref) stallTimer.unref();
         };
 
         worker.onmessage = (event) => {
             const msg = event.data;
             if (msg.taskId !== message.taskId) return;
+            armStall();
 
             if (msg.type === 'progress') {
                 if (onProgress) onProgress(msg.progress);
@@ -282,7 +324,17 @@ export function runWorkerChunk(message, onProgress) {
         // Leaving it out is the whole point of keeping the worker.
         const outbound = wrapper.gameData ? { ...message, gameData: undefined } : message;
         if (!wrapper.gameData) wrapper.gameData = message.gameData || null;
-        worker.postMessage(outbound);
+        armStall();
+        try {
+            worker.postMessage(outbound);
+        } catch (error) {
+            // A payload that will not structured-clone throws here. Without this
+            // the wrapper never leaves `activeWorkers` and the reaper, guarded on
+            // that list, stops reaping for the rest of the session.
+            worker.terminate();
+            cleanup();
+            reject(error instanceof Error ? error : new Error(String(error)));
+        }
     });
 }
 
@@ -855,10 +907,14 @@ export async function runPlayerStatProbe(params) {
  * feature teardown, a character switch - want `cancelSimulation` instead.
  */
 export function cancelActiveSimulations() {
-    for (const wrapper of activeWorkers) {
+    const running = activeWorkers;
+    activeWorkers = [];
+    for (const wrapper of running) {
+        // The chunk's stall deadline goes with its worker: left armed it would
+        // fire minutes later against a wrapper that was dropped here.
+        wrapper.disarmStall?.();
         wrapper.worker.terminate();
     }
-    activeWorkers = [];
 
     const rejects = pendingRejects.slice();
     pendingRejects = [];

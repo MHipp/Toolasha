@@ -15,7 +15,7 @@
  * rule is: fan out a single run, queue a batch.
  */
 
-import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const settings = vi.hoisted(() => ({ maxThreads: 0, mobile: false }));
 
@@ -292,7 +292,7 @@ const gameDataPayload = () => ({ itemDetailMap: ITEM_MAP, actionDetailMap: ACTIO
  * With `deferred`, a worker holds its answer until the test calls `respond`,
  * which is what lets a test look at work that is still in flight.
  */
-function stubWorkerPool({ deferred = false } = {}) {
+function stubWorkerPool({ deferred = false, postFails = false } = {}) {
     const built = [];
     const messages = [];
     vi.stubGlobal(
@@ -307,9 +307,11 @@ function stubWorkerPool({ deferred = false } = {}) {
         class {
             constructor() {
                 this.terminated = false;
+                this.terminateCount = 0;
                 built.push(this);
             }
             postMessage(message) {
+                if (postFails) throw new DOMExceptionStub('could not be cloned');
                 messages.push(message);
                 this.respond = (simResult) =>
                     this.onmessage?.({
@@ -323,11 +325,15 @@ function stubWorkerPool({ deferred = false } = {}) {
             }
             terminate() {
                 this.terminated = true;
+                this.terminateCount++;
             }
         }
     );
     return { built, messages };
 }
+
+/** Stands in for the DOMException `postMessage` throws on an uncloneable payload. */
+class DOMExceptionStub extends Error {}
 
 /** One live replay, the shape `labyrinth-clear-rate` sends every four seconds. */
 const replay = (gameData) =>
@@ -548,5 +554,97 @@ describe('stopping the work without throwing away the warm workers', () => {
         expect(built).toHaveLength(6);
         expect(merged.encounters).toBe(0);
         expect(built.filter((w) => w.terminated)).toHaveLength(2);
+    });
+});
+
+/**
+ * A worker that stops answering, and the pool it would otherwise freeze.
+ *
+ * The chunk promise settles only from a message or an `error` event. A worker
+ * the browser kills for memory fires neither, so the promise used to hang for
+ * the life of the page — and worse than one lost result, its wrapper stayed in
+ * `activeWorkers`, which is exactly what the idle reaper is busy-guarded on. One
+ * dead worker and every warm worker plus its clone of the game data was held for
+ * the rest of the session.
+ */
+describe('a simulation worker that goes quiet', () => {
+    beforeEach(() => {
+        vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    test('is given up on rather than awaited for ever', async () => {
+        const { built } = stubWorkerPool({ deferred: true });
+
+        const inFlight = replay(gameDataPayload());
+        vi.advanceTimersByTime(120_000);
+
+        await expect(inFlight).rejects.toThrow('No word from the simulation worker');
+        expect(built[0].terminated).toBe(true);
+    });
+
+    test('and leaves nothing behind in the active list', async () => {
+        // The list the reaper reads. A wrapper stranded here is a pool that
+        // never reaps again — invisible except that the worker gets terminated
+        // a second time when something does walk the list.
+        const { built } = stubWorkerPool({ deferred: true });
+
+        const inFlight = replay(gameDataPayload());
+        vi.advanceTimersByTime(120_000);
+        await expect(inFlight).rejects.toThrow('No word');
+
+        cancelActiveSimulations();
+
+        expect(built[0].terminateCount).toBe(1);
+    });
+
+    test('but a run still talking is never cut short', async () => {
+        // The window is silence, not elapsed time: a progress tick re-arms it,
+        // so a legitimately long simulation runs as long as it needs to
+        const { built, messages } = stubWorkerPool({ deferred: true });
+
+        const inFlight = replay(gameDataPayload());
+        const { taskId } = messages[0];
+        for (let i = 0; i < 5; i++) {
+            vi.advanceTimersByTime(119_000);
+            built[0].onmessage({ data: { type: 'progress', taskId, progress: i * 20 } });
+        }
+        vi.advanceTimersByTime(119_000);
+        built[0].respond();
+
+        await expect(inFlight).resolves.toEqual(EMPTY_SIM_RESULT);
+        expect(built[0].terminated).toBe(false);
+    });
+
+    test('and a cancel takes the deadline with the worker', async () => {
+        // Otherwise the timer fires two minutes later against a wrapper that
+        // was dropped, terminating a worker nothing owns any more
+        const { built } = stubWorkerPool({ deferred: true });
+
+        const inFlight = replay(gameDataPayload());
+        cancelActiveSimulations();
+        await expect(inFlight).rejects.toThrow('Cancelled');
+
+        vi.advanceTimersByTime(120_000);
+
+        expect(built[0].terminateCount).toBe(1);
+    });
+});
+
+describe('a payload the browser refuses to clone', () => {
+    test('rejects the caller instead of stranding the wrapper', async () => {
+        // `postMessage` throws synchronously on an uncloneable value. It used to
+        // throw straight out of the Promise executor, leaving the wrapper in
+        // `activeWorkers` for good and the reaper permanently busy.
+        const { built } = stubWorkerPool({ postFails: true });
+
+        await expect(replay(gameDataPayload())).rejects.toThrow('could not be cloned');
+        expect(built[0].terminated).toBe(true);
+
+        cancelActiveSimulations();
+        expect(built[0].terminateCount).toBe(1);
     });
 });
