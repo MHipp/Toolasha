@@ -72,6 +72,14 @@ describe('generated worker sources', () => {
 
         expect(fromWorker.attempts).toBeCloseTo(fromMain.attempts, 9);
         expect(fromWorker.protectionCount).toBeCloseTo(fromMain.protectionCount, 9);
+        expect(fromWorker.perActionTime).toBeCloseTo(fromMain.perActionTime, 9);
+
+        // The game floors an action at MIN_ACTION_TIME_SECONDS. The worker's copy of the time
+        // formula was a bare 12 / speedMultiplier with no floor, so a fast enough run quoted a
+        // per-action time the game will not do — the drift the serialised chain exists to stop.
+        const fast = { enhancingLevel: 400, toolBonus: 0, speedBonus: 0, itemLevel: 1, targetLevel: 3 };
+        expect(calculateEnhancement(fast).perActionTime).toBe(3);
+        expect(calculateEnhancement(fast).perActionTime).toBeCloseTo(mainThread(fast).perActionTime, 9);
     });
 
     test('the networth worker parses and pulls in no CDN library', async () => {

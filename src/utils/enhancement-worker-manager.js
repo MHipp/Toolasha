@@ -5,6 +5,7 @@
 
 import WorkerPool, { createIdlePoolReaper } from './worker-pool.js';
 import { BASE_SUCCESS_RATES, BLESSED_TEA_BASE_CHANCE, buildEnhancementMarkov } from './enhancement-calculator.js';
+import { MIN_ACTION_TIME_SECONDS } from './profit-constants.js';
 import { createMatrixMath } from './matrix-inverse.js';
 
 // Worker pool instance
@@ -30,6 +31,10 @@ const calculationCache = new Map();
 
 const BASE_SUCCESS_RATES = ${JSON.stringify(BASE_SUCCESS_RATES)};
 const DEFAULT_BLESSED_TEA_CHANCE = ${BLESSED_TEA_BASE_CHANCE};
+// The game's floor on an action's duration. Serialised in for the same reason the base rates
+// are: the worker cannot import it, and a hand-written copy of the formula that omits it is
+// exactly how this script drifted from the calculator before.
+const MIN_ACTION_TIME_SECONDS = ${MIN_ACTION_TIME_SECONDS};
 const buildEnhancementMarkov = ${buildEnhancementMarkov.toString()};
 
 function getCacheKey(params) {
@@ -92,7 +97,7 @@ function calculateEnhancement(params) {
         speedMultiplier = 1 + speedBonus / 100;
     }
 
-    const perActionTime = baseActionTime / speedMultiplier;
+    const perActionTime = Math.max(MIN_ACTION_TIME_SECONDS, baseActionTime / speedMultiplier);
     const totalTime = perActionTime * attempts;
 
     return {
