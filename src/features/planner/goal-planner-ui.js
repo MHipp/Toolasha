@@ -521,10 +521,17 @@ class GoalPlannerPanel {
      * @returns {Promise<void>}
      */
     async _recordReservations(gone) {
-        if (!reservationsEnabled() || gone()) return;
+        if (gone()) return;
         try {
             const live = this.plans.map((plan) => `${RESERVATION_OWNER_PREFIX}${plan.goalId}`);
+            // The sweep runs whether or not the ledger is switched on, as the
+            // ledger's own release paths do: it can only ever REMOVE a claim, so
+            // it cannot make a figure wrong, and a deleted goal's claim left in
+            // storage while the setting is off is a phantom that holds stock
+            // back from every plan the moment it is switched on again. Only the
+            // claims below need the setting, and `reserve()` gates on it itself.
             await releaseMissing(RESERVATION_OWNER_PREFIX, live);
+            if (!reservationsEnabled() || gone()) return;
             for (const plan of this.plans) {
                 if (gone()) return;
                 await reserve(`${RESERVATION_OWNER_PREFIX}${plan.goalId}`, reservationLines(plan), {

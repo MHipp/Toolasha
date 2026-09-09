@@ -320,6 +320,26 @@ describe('the character-switch boundary', () => {
         expect(plannerContext.builds).toBe(2);
     });
 
+    /*
+     * A claim can only be removed by rewriting the record it lives in, so a
+     * sweep refused while the setting is off leaves a deleted goal holding
+     * stock — invisible until the player switches the ledger back on, when it
+     * comes back as a phantom claiming materials for a goal that is gone. The
+     * ledger's own release paths run either way for this reason; so must the
+     * caller that is the only thing able to see which goals still exist.
+     */
+    test('the orphan sweep runs while the ledger is off, so a deleted goal leaves nothing behind', async () => {
+        ledger.enabled = false;
+
+        goalPlannerPanel.show();
+        await goalPlannerPanel.load();
+        await goalPlannerPanel.refresh();
+
+        expect(ledger.swept).toHaveLength(1);
+        // ...and nothing is claimed while it is off
+        expect(ledger.reserved).toEqual([]);
+    });
+
     test('a switch during the reservation write leaves no claim under the arriving character', async () => {
         ledger.enabled = true;
         // The switch lands inside the orphan sweep — after replan() checked
