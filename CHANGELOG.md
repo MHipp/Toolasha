@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The breakdown link was being read as a drag, not a click
+
+This is why it never opened. The link is a span in the profile card's header, and that header is what you drag the card by. Pressing it started a drag, which captures the pointer and makes the browser deliver the click to the header instead of the link — so the link never heard it. A press that never moved could still get through, which is why it looked intermittent; move the mouse a pixel, as a hand does, and it was gone every time.
+
+A press aimed at a control inside a drag handle is now a click. The rule is the one already visible on screen: a handle says `cursor: move` and a control says `cursor: pointer`, so anything from the press target up to the handle that reads as clickable is a control. That covers every panel in the script at once — there are 28 drag handles — rather than the previous list of tag names, which named only real buttons and inputs and missed every span.
+
 ### The breakdown link raises the panel instead of redrawing one you cannot see
 
 Pressing "breakdown" on a profile card did nothing after a page refresh, and this is why: the Build Score panel is restored open where you left it, at the same default position every unplaced panel uses, so it came back underneath another panel — measured live, the Session Briefing sits at exactly the same spot and a little higher in the stack. With the panel already open, the link only ever redrew it or closed it, and neither raises anything. So the press redrew something invisible, or shut something invisible.
