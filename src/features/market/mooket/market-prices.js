@@ -92,10 +92,26 @@ export function foldPrice(existing, next) {
     // move yet, so there is no span for one either
     let riseSpanMs = 0;
     if (existing) {
-        const before = existing.ask + existing.bid;
-        const after = next.ask + next.bid;
-        if (before !== 0) rise = after / before - 1;
-        riseSpanMs = Math.max(0, next.at - existing.at);
+        // Only sides quoted in BOTH readings count. `-1` is "nobody is on this
+        // side", not a price, and summing it in made an emptying book look like
+        // a crash: 120/100 followed by -1/100 folded to 89/190, a chip reading
+        // "▼53.2%" with the bid untouched. Both sides gone was worse still —
+        // -2 as a denominator prints thousands of percent, with a sign flip.
+        let before = 0;
+        let after = 0;
+        for (const side of ['ask', 'bid']) {
+            if (existing[side] > 0 && next[side] > 0) {
+                before += existing[side];
+                after += next[side];
+            }
+        }
+        // No side common to the two readings is no move at all, and so no span:
+        // `describeMove` declines to draw a move it cannot date, which is the
+        // right outcome for a step that was never measured.
+        if (before > 0) {
+            rise = after / before - 1;
+            riseSpanMs = Math.max(0, next.at - existing.at);
+        }
     }
 
     return { ...next, rise, riseSpanMs };

@@ -51,6 +51,41 @@ describe('foldPrice', () => {
         expect(next.rise).toBeCloseTo(0.1, 9);
     });
 
+    /*
+     * `-1` on a side is "nobody is quoting it", not a price. Folding it into the
+     * sum made an emptying ask look like a crash, and an item that had no book
+     * at all print thousands of percent when one appeared.
+     */
+    test('a side only one of the two readings quotes is not a move', () => {
+        // The ask empties; the bid has not budged. Summing -1 in read this as
+        // 89/190 — a chip announcing "▼53.2%" with nothing having happened.
+        const emptied = foldPrice(existing, { ask: -1, bid: 100, askQty: 0, bidQty: 1, at: 2000 });
+        // The bid is quoted in both readings and has not moved, so it — and it
+        // alone — is the measurement
+        expect(emptied.rise).toBe(0);
+        expect(emptied.riseSpanMs).toBe(1000);
+
+        // And the same ask coming back at the price it left at
+        const restored = foldPrice(emptied, { ask: 120, bid: 100, askQty: 1, bidQty: 1, at: 3000 });
+        expect(restored.rise).toBe(0);
+    });
+
+    test('an item with no book at all, then a book, is not a move of thousands of percent', () => {
+        // Both sides -1 summed to -2, so the first real reading divided by a
+        // negative denominator: a sign-flipped figure in the thousands
+        const unquoted = { ask: -1, bid: -1, askQty: 0, bidQty: 0, at: 1000 };
+        const next = foldPrice(unquoted, { ask: 120, bid: 100, askQty: 1, bidQty: 1, at: 2000 });
+        expect(next.rise).toBe(0);
+        expect(next.riseSpanMs).toBe(0);
+    });
+
+    test('one side quoted in both readings still measures that side', () => {
+        const askless = { ask: -1, bid: 100, askQty: 0, bidQty: 1, at: 1000 };
+        const next = foldPrice(askless, { ask: -1, bid: 110, askQty: 0, bidQty: 1, at: 2000 });
+        expect(next.rise).toBeCloseTo(0.1, 9);
+        expect(next.riseSpanMs).toBe(1000);
+    });
+
     test('a first reading has moved by nothing', () => {
         expect(foldPrice(undefined, { ask: 1, bid: 1, askQty: 0, bidQty: 0, at: 1 }).rise).toBe(0);
     });
