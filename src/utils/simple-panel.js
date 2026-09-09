@@ -14,7 +14,12 @@
 
 import config from '../core/config.js';
 import dataManager from '../core/data-manager.js';
-import { registerFloatingPanel, unregisterFloatingPanel, bringPanelToFront } from './panel-z-index.js';
+import {
+    registerFloatingPanel,
+    unregisterFloatingPanel,
+    bringPanelToFront,
+    isPanelFrontmost,
+} from './panel-z-index.js';
 import { makeDraggable, makeResizable } from './floating-panel.js';
 import { restoreGeometry, saveGeometry, saveOpenState, reopenIfLeftOpen } from './panel-geometry.js';
 import { attachMinimize } from './panel-minimize.js';
@@ -288,6 +293,39 @@ export function createPanel({
          * @returns {boolean}
          */
         isOpen,
+        /**
+         * Whether the panel is folded to its header strip.
+         *
+         * Same reason as `isOpen`: a caller deciding what a click on its own
+         * control should mean needs to know whether there is anything for the
+         * user to see, and the fold lives in the minimize control's closure.
+         * A minimized panel redrawn is as invisible as one that never opened.
+         * @returns {boolean}
+         */
+        isMinimized() {
+            return Boolean(isOpen() && minimizeCtl?.collapsed);
+        },
+        /**
+         * Whether the panel is the front-most of the floating panels.
+         *
+         * Asks the z-index manager, which owns the stacking order, rather than
+         * keeping a second idea of "in front" here. False for a panel that is
+         * not on the page at all — nothing buried is in front.
+         * @returns {boolean}
+         */
+        isFrontmost() {
+            return Boolean(isOpen() && isPanelFrontmost(panel));
+        },
+        /**
+         * Unfold a minimized panel, if it is one.
+         *
+         * The counterpart to `isMinimized` and, like it, exposed so a caller
+         * that means "show me this" can say so without reaching into the
+         * minimize control. A no-op on a panel that is already expanded.
+         */
+        expand() {
+            if (minimizeCtl?.collapsed) minimizeCtl.setCollapsed(false);
+        },
         get panel() {
             return panel;
         },

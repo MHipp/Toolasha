@@ -243,7 +243,9 @@ class CombatScore {
      *
      * Re-pointing an already-open panel redraws it instead of toggling it shut:
      * clicking "breakdown" on a profile is a request to see *that* build, and
-     * closing the window would read as the link having failed.
+     * closing the window would read as the link having failed. The same reason
+     * makes every press raise and unfold the panel, and reserves the toggle for
+     * a panel the user could already see.
      *
      * @param {Object} profileData - Profile data from WebSocket
      * @param {Object} scoreData - The score already computed for this profile
@@ -261,13 +263,34 @@ class CombatScore {
         // had been built, and only the first press after opening a profile was
         // swallowed.
         if (buildScorePanel.isOpen()) {
-            // Same profile twice is "put it away"; a different profile is "show
-            // me this one instead" and must never read as the link failing.
-            if (!changed) {
+            // "Open" is not "visible", and that gap is the whole of the second
+            // report. Panels are restored open after a refresh, and every panel
+            // used to be restored to the same default corner — so the Build
+            // Score panel came back underneath another panel at the identical
+            // position, and a press either redrew something buried or closed
+            // something buried. Either way nothing appeared to happen.
+            //
+            // Visible here means: front-most of the floating panels, and not
+            // folded to its header. Both are things the panel can answer about
+            // itself; neither is a guess about which pixels are covered, which
+            // is not knowable reliably and would be the wrong thing to stake a
+            // toggle on.
+            const visible = buildScorePanel.isFrontmost() && !buildScorePanel.isMinimized();
+
+            // Same profile, and the user can see it: "put it away", which is the
+            // deliberate toggle and stays.
+            if (!changed && visible) {
                 buildScorePanel.hide();
                 return;
             }
-            buildScorePanel.render();
+
+            // Otherwise the press is a request to *see* this build — a different
+            // profile, or the same one the user could not actually see. `show()`
+            // on a live panel raises it and moves Escape's idea of the front
+            // panel with it, which is why it is preferred to a bare raise.
+            buildScorePanel.show();
+            buildScorePanel.expand();
+            if (changed) buildScorePanel.render();
             return;
         }
         buildScorePanel.show();

@@ -31,10 +31,14 @@ vi.mock('../core/data-manager.js', () => ({
     },
 }));
 
+// The stacking order is panel-z-index's own test; here it only needs to be
+// askable
+const stacking = vi.hoisted(() => ({ frontmost: true }));
 vi.mock('./panel-z-index.js', () => ({
     registerFloatingPanel: vi.fn(),
     unregisterFloatingPanel: vi.fn(),
     bringPanelToFront: vi.fn(),
+    isPanelFrontmost: vi.fn(() => stacking.frontmost),
 }));
 
 vi.mock('./floating-panel.js', () => ({
@@ -44,14 +48,16 @@ vi.mock('./floating-panel.js', () => ({
 
 // The real minimize control folds the panel and persists the choice; the tests
 // below only need to say whether it is folded, and to be handed the toggle
-const minimize = vi.hoisted(() => ({ collapsed: false, onToggle: null }));
+const minimize = vi.hoisted(() => ({ collapsed: false, onToggle: null, setCollapsed: null }));
 vi.mock('./panel-minimize.js', () => ({
     attachMinimize: ({ onToggle }) => {
         minimize.onToggle = onToggle;
+        minimize.setCollapsed = vi.fn();
         return {
             get collapsed() {
                 return minimize.collapsed;
             },
+            setCollapsed: minimize.setCollapsed,
             destroy: vi.fn(),
         };
     },
@@ -72,6 +78,8 @@ const SIZE = { width: 300, height: 200 };
 beforeEach(() => {
     minimize.collapsed = false;
     minimize.onToggle = null;
+    minimize.setCollapsed = null;
+    stacking.frontmost = true;
 });
 
 describe('createPanel', () => {
@@ -478,5 +486,46 @@ describe('switching character', () => {
 
         expect(panel.panel).not.toBe(null);
         expect(geometry.saveOpenState).not.toHaveBeenCalled();
+    });
+});
+
+describe('what a panel can say about itself', () => {
+    beforeEach(() => {
+        vi.useFakeTimers();
+        document.body.replaceChildren();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    test('a folded panel says it is minimized, and expand unfolds it', () => {
+        const panel = createPanel({ id: 'folded', title: 'Folded', size: SIZE, draw: () => {} });
+        panel.show();
+        minimize.collapsed = true;
+
+        expect(panel.isMinimized()).toBe(true);
+
+        panel.expand();
+
+        expect(minimize.setCollapsed).toHaveBeenCalledWith(false);
+    });
+
+    test('a closed panel is neither minimized nor in front', () => {
+        const panel = createPanel({ id: 'shut', title: 'Shut', size: SIZE, draw: () => {} });
+
+        expect(panel.isMinimized()).toBe(false);
+        expect(panel.isFrontmost()).toBe(false);
+    });
+
+    test('an open panel takes its idea of "in front" from the stacking order', () => {
+        const panel = createPanel({ id: 'stacked', title: 'Stacked', size: SIZE, draw: () => {} });
+        panel.show();
+
+        expect(panel.isFrontmost()).toBe(true);
+
+        stacking.frontmost = false;
+
+        expect(panel.isFrontmost()).toBe(false);
     });
 });

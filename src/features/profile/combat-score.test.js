@@ -17,6 +17,9 @@ const stub = vi.hoisted(() => ({
     hides: 0,
     open: false,
     ownerChanged: false,
+    frontmost: true,
+    minimized: false,
+    expands: 0,
 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -57,6 +60,12 @@ vi.mock('./build-score-panel.js', () => ({
     buildScorePanel: {
         panel: null,
         isOpen: () => stub.open,
+        isFrontmost: () => stub.open && stub.frontmost,
+        isMinimized: () => stub.open && stub.minimized,
+        expand: () => {
+            stub.expands += 1;
+            stub.minimized = false;
+        },
         render: () => {
             stub.renders += 1;
         },
@@ -371,6 +380,9 @@ describe('the breakdown link', () => {
         stub.hides = 0;
         stub.open = false;
         stub.ownerChanged = false;
+        stub.frontmost = true;
+        stub.minimized = false;
+        stub.expands = 0;
         combatScore.currentPanel = null;
     });
 
@@ -409,7 +421,36 @@ describe('the breakdown link', () => {
         expect(stub.hides).toBe(1);
     });
 
-    test('an open panel pointed at another profile redraws rather than closing', () => {
+    test('a press on a panel the user cannot see shows it instead of putting it away', () => {
+        // Restored open after a refresh, underneath another panel at the same
+        // default position: hiding it here is indistinguishable from the link
+        // doing nothing, which is exactly how this was reported
+        stub.open = true;
+        stub.ownerChanged = false;
+        stub.frontmost = false;
+        const { profileData, scoreData } = profile(7);
+        combatScore.showScorePanel(profileData, scoreData, document.createElement('div'));
+
+        document.querySelector('#mwi-score-breakdown-link').click();
+
+        expect(stub.hides).toBe(0);
+        expect(stub.shows).toBe(1);
+    });
+
+    test('a press on a minimized panel unfolds it instead of putting it away', () => {
+        stub.open = true;
+        stub.ownerChanged = false;
+        stub.minimized = true;
+        const { profileData, scoreData } = profile(7);
+        combatScore.showScorePanel(profileData, scoreData, document.createElement('div'));
+
+        document.querySelector('#mwi-score-breakdown-link').click();
+
+        expect(stub.hides).toBe(0);
+        expect(stub.expands).toBe(1);
+    });
+
+    test('an open panel pointed at another profile redraws, and is raised, rather than closing', () => {
         // Closing here would read as the link failing, on the press where the
         // player most expects to see something
         stub.open = true;
@@ -421,6 +462,8 @@ describe('the breakdown link', () => {
 
         expect(stub.renders).toBe(1);
         expect(stub.hides).toBe(0);
+        // Redrawing a buried panel is the same nothing as closing one
+        expect(stub.shows).toBe(1);
     });
 
     test("another player's profile offers the same link, named after them", () => {

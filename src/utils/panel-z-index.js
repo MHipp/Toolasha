@@ -118,6 +118,37 @@ export function bringPanelToFront(el) {
 }
 
 /**
+ * Whether a panel is the front-most of the registered floating panels.
+ *
+ * "In front" is the stacking order this module already keeps, asked rather
+ * than guessed: a panel is in front when no other managed panel sits at a
+ * higher z-index. Panels that manage their own z-index are not part of the
+ * order and are not consulted — the overlay in particular sits below the
+ * game's UI at rest and would answer for a layer nobody is competing in.
+ *
+ * Deliberately not a hit-test. Whether one panel visually covers another
+ * depends on sizes and positions that are only knowable once the browser has
+ * laid the page out, and a wrong answer there is worse than a coarse one: the
+ * caller uses this to decide whether a click means "show me" or "put it away".
+ * Equal z-indexes therefore count as front-most, which is honest — two panels
+ * that have never been raised are ordered by nothing but DOM order.
+ *
+ * @param {HTMLElement} el - The panel to ask about
+ * @returns {boolean} True when nothing managed is stacked above it
+ */
+export function isPanelFrontmost(el) {
+    if (!el || !panels.has(el) || selfManaged.has(el)) return false;
+
+    const base = config.Z_FLOATING_PANEL;
+    const mine = parseInt(el.style.zIndex) || base;
+    for (const p of panels) {
+        if (p === el || selfManaged.has(p)) continue;
+        if ((parseInt(p.style.zIndex) || base) > mine) return false;
+    }
+    return true;
+}
+
+/**
  * Nudge every registered panel that is now out of bounds back on screen.
  *
  * A panel remembers where it was left, and a resize does not go through

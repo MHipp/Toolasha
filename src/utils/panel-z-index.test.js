@@ -7,7 +7,13 @@
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import config from '../core/config.js';
-import { registerFloatingPanel, unregisterFloatingPanel, bringPanelToFront, PANEL_Z_CAP } from './panel-z-index.js';
+import {
+    registerFloatingPanel,
+    unregisterFloatingPanel,
+    bringPanelToFront,
+    isPanelFrontmost,
+    PANEL_Z_CAP,
+} from './panel-z-index.js';
 import { askChoice } from './choice-dialog.js';
 
 /** A minimal stand-in for a floating panel, positioned and sized like a real one */
@@ -299,5 +305,68 @@ describe('window resize re-clamp', () => {
 
         const left = parseFloat(panel.style.left);
         expect(left).toBeLessThanOrEqual(700 - 60);
+    });
+});
+
+describe('isPanelFrontmost', () => {
+    const registered = [];
+
+    afterEach(() => {
+        registered.forEach((el) => {
+            unregisterFloatingPanel(el);
+            el.remove();
+        });
+        registered.length = 0;
+    });
+
+    /** @param {Object} [opts] - Registration options @returns {HTMLElement} */
+    function keep(opts) {
+        const el = makePanel();
+        registerFloatingPanel(el, opts);
+        registered.push(el);
+        return el;
+    }
+
+    test('a panel raised over another is the front-most one', () => {
+        const under = keep();
+        const over = keep();
+
+        bringPanelToFront(over);
+
+        expect(isPanelFrontmost(over)).toBe(true);
+        expect(isPanelFrontmost(under)).toBe(false);
+    });
+
+    test('raising the buried one puts it in front', () => {
+        const a = keep();
+        const b = keep();
+        bringPanelToFront(b);
+
+        bringPanelToFront(a);
+
+        expect(isPanelFrontmost(a)).toBe(true);
+        expect(isPanelFrontmost(b)).toBe(false);
+    });
+
+    test('a panel nobody has raised is front-most', () => {
+        const only = keep();
+        keep();
+
+        expect(isPanelFrontmost(only)).toBe(true);
+    });
+
+    test('a panel that was never registered is not in front of anything', () => {
+        const loose = makePanel();
+
+        expect(isPanelFrontmost(loose)).toBe(false);
+
+        loose.remove();
+    });
+
+    test('a panel that keeps its own z-index is not part of the order', () => {
+        const overlay = keep({ managedZ: false });
+        overlay.style.zIndex = String(config.Z_HUD);
+
+        expect(isPanelFrontmost(overlay)).toBe(false);
     });
 });

@@ -72,6 +72,8 @@ vi.mock('./build-score-row.js', () => ({ readOwnScore: () => stub.ownScore }));
 
 const combatScore = (await import('./combat-score.js')).default;
 const { buildScorePanel, resetBuildScorePanel } = await import('./build-score-panel.js');
+const { registerFloatingPanel, unregisterFloatingPanel, bringPanelToFront } =
+    await import('../../utils/panel-z-index.js');
 
 /**
  * A scored profile, in the shape `showScorePanel` draws.
@@ -227,5 +229,84 @@ describe('the breakdown for someone else', () => {
         clickBreakdown();
 
         expect(openPanel()).toBeNull();
+    });
+});
+
+/**
+ * A rival floating panel, registered and raised over everything else — the
+ * session briefing panel, in the report this came from.
+ * @returns {HTMLElement} The panel, already in front
+ */
+function panelInFront() {
+    const other = document.createElement('div');
+    other.style.position = 'fixed';
+    other.style.zIndex = '1100';
+    document.body.appendChild(other);
+    registerFloatingPanel(other);
+    bringPanelToFront(other);
+    return other;
+}
+
+/** @returns {number} The Build Score panel's z-index */
+const panelZ = () => parseInt(openPanel().style.zIndex, 10);
+
+describe('a breakdown press on a panel the user cannot see', () => {
+    test('a minimized panel is unfolded rather than put away', () => {
+        openBreakdownFor(7, 'Me');
+        openPanel().querySelector('.toolasha-minimize-btn').click();
+        expect(openPanel().dataset.minimized).toBe('true');
+
+        clickBreakdown();
+
+        // Hiding here is what the report was: the panel was already folded to a
+        // header strip, so redrawing or closing it both look like a dead link
+        expect(openPanel()).not.toBeNull();
+        expect(openPanel().dataset.minimized).toBe('false');
+    });
+
+    test('a panel buried under another is raised rather than put away', () => {
+        openBreakdownFor(7, 'Me');
+        const other = panelInFront();
+        expect(panelZ()).toBeLessThan(parseInt(other.style.zIndex, 10));
+
+        clickBreakdown();
+
+        expect(openPanel()).not.toBeNull();
+        expect(panelZ()).toBeGreaterThan(parseInt(other.style.zIndex, 10));
+
+        unregisterFloatingPanel(other);
+        other.remove();
+    });
+
+    test('the panel it just had to raise is not closed by that same press', () => {
+        openBreakdownFor(7, 'Me');
+        const other = panelInFront();
+
+        clickBreakdown();
+        expect(openPanel()).not.toBeNull();
+
+        // ...and it is now front-most and expanded, so the next press is the
+        // ordinary toggle again
+        clickBreakdown();
+        expect(openPanel()).toBeNull();
+
+        unregisterFloatingPanel(other);
+        other.remove();
+    });
+
+    test('a different profile re-points, redraws and raises', () => {
+        openBreakdownFor(99, 'Ada');
+        const other = panelInFront();
+        document.querySelector('#mwi-combat-score-panel').remove();
+        combatScore.currentPanel = null;
+
+        openBreakdownFor(101, 'Babbage', { total: 12, skillerTotal: 3 });
+
+        expect(panelTitle()).toBe('Build Score — Babbage');
+        expect(openPanel().textContent).toContain('12.0');
+        expect(panelZ()).toBeGreaterThan(parseInt(other.style.zIndex, 10));
+
+        unregisterFloatingPanel(other);
+        other.remove();
     });
 });
