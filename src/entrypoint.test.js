@@ -69,6 +69,36 @@ const probe = { active: 0, peak: 0 };
 const probeModules = { tabReorder: makeProbeModule(), sessionBriefing: makeProbeModule() };
 
 /**
+ * What the character-switch race module did, per test.
+ *
+ * `instances` are the objects its `initialize()` returned; `disabledWith` is
+ * what the mapping's `disable` closure handed its teardown each time.
+ */
+const race = { instances: [], disabledWith: [], release: () => {} };
+
+/**
+ * A module stand-in that returns an instance and takes one back on teardown —
+ * the shape the mapping's comment calls out ("some cleanup(instance)
+ * implementations expect the instance returned by initialize()") and the only
+ * shape in which the mid-flight teardown race is observable.
+ */
+const raceModules = {
+    overlayPanel: {
+        initialize: async () => {
+            await new Promise((resolve) => {
+                race.release = resolve;
+            });
+            const instance = { id: race.instances.length + 1 };
+            race.instances.push(instance);
+            return instance;
+        },
+        disable: (instance) => {
+            race.disabledWith.push(instance);
+        },
+    },
+};
+
+/**
  * A module stand-in whose `initialize()` genuinely suspends.
  *
  * The library stubs below answer every call with another stub, which resolves
@@ -193,6 +223,7 @@ beforeAll(async () => {
             get: (target, prop) => {
                 if (prop === 'then') return undefined;
                 if (Object.hasOwn(probeModules, prop)) return probeModules[prop];
+                if (Object.hasOwn(raceModules, prop)) return raceModules[prop];
                 return makeStub();
             },
             apply: () => makeStub(),
@@ -933,6 +964,30 @@ describe('the registry entries the entrypoint hands over', () => {
 
         expect(entry, `no feature registered under ${key}`).toBeTruthy();
         expect(entry.concurrent, `${key} was left serial because ${reason}`).toBeUndefined();
+    });
+
+    test('a teardown that lands mid-initialize does not hand the late instance to the next one', async () => {
+        // The concurrency change widened this from one in-flight initializer to
+        // fifteen: a `character_switching` teardown now lands in the middle of a
+        // whole batch. The teardown reads the instance slot and empties it; the
+        // late-resolving initializer used to fill it back in, so the *arriving*
+        // character's `disable()` was handed the departing character's instance
+        // and the arriving one's was never torn down at all.
+        race.instances = [];
+        race.disabledWith = [];
+        const entry = registered.find((feature) => feature.key === 'overlayPanel');
+        expect(entry, 'overlayPanel is no longer registered').toBeTruthy();
+
+        const initializing = entry.initialize();
+        // The switch's teardown, while the initializer is still parked.
+        entry.disable();
+        race.release();
+        await initializing;
+        // The arriving character's teardown, one switch later.
+        entry.disable();
+
+        expect(race.instances).toHaveLength(1);
+        expect(race.disabledWith).toEqual([null, null]);
     });
 
     test('marking a feature concurrent does not move where it starts', async () => {

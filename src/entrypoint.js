@@ -2326,6 +2326,9 @@ function registerFeatures() {
                   ? (instance) => feature.module.cleanup(instance)
                   : undefined;
         let instance = null;
+        // Bumped by every teardown, so a late-landing initialize() can tell that
+        // the instance slot it is about to fill is no longer its own.
+        let teardownGeneration = 0;
         return {
             key: feature.key,
             name: feature.name,
@@ -2334,10 +2337,24 @@ function registerFeatures() {
             // registered without the async flag would otherwise store a
             // pending Promise as the instance and escape error handling
             initialize: async () => {
-                instance = await feature.module.initialize();
+                const generation = teardownGeneration;
+                const started = await feature.module.initialize();
+                // A `character_switching` teardown that lands while this is in
+                // flight — now up to fifteen initializers wide, since the
+                // concurrent batch defers all of their awaits to the end — has
+                // already read the slot and handed what it found to the module.
+                // Writing the late result in anyway leaves the departing
+                // character's instance sitting where the *arriving* character's
+                // disable() will find it, and hand it to a `cleanup(instance)`
+                // that expects its own. Drop it: the module keeps whatever
+                // internal state it built, and the switch's re-initialise is
+                // what puts a live instance back in the slot.
+                if (generation !== teardownGeneration) return;
+                instance = started;
             },
             disable: teardown
                 ? () => {
+                      teardownGeneration += 1;
                       const current = instance;
                       instance = null;
                       return teardown(current);
