@@ -12,6 +12,7 @@ import {
     unregisterFloatingPanel,
     bringPanelToFront,
     isPanelFrontmost,
+    cascadedPanelPosition,
     PANEL_Z_CAP,
 } from './panel-z-index.js';
 import { askChoice } from './choice-dialog.js';
@@ -348,7 +349,7 @@ describe('isPanelFrontmost', () => {
         expect(isPanelFrontmost(b)).toBe(false);
     });
 
-    test('a panel nobody has raised is front-most', () => {
+    test('a panel nobody has raised is front-most; the cascade keeps the tie harmless', () => {
         const only = keep();
         keep();
 
@@ -368,5 +369,67 @@ describe('isPanelFrontmost', () => {
         overlay.style.zIndex = String(config.Z_HUD);
 
         expect(isPanelFrontmost(overlay)).toBe(false);
+    });
+});
+
+describe('cascadedPanelPosition', () => {
+    const registered = [];
+    const viewport = { width: 1400, height: 900 };
+    const size = { width: 300, height: 200 };
+
+    afterEach(() => {
+        registered.forEach((el) => {
+            unregisterFloatingPanel(el);
+            el.remove();
+        });
+        registered.length = 0;
+    });
+
+    /** @param {Object} at - `{left, top}` @returns {HTMLElement} */
+    function keepAt(at) {
+        const el = makePanel({ ...at, ...size });
+        registerFloatingPanel(el);
+        registered.push(el);
+        return el;
+    }
+
+    test('the first panel opens at the default corner', () => {
+        expect(cascadedPanelPosition(size, viewport)).toEqual({ left: 170, top: 170 });
+    });
+
+    test('a second panel does not open on top of the first', () => {
+        const first = cascadedPanelPosition(size, viewport);
+        keepAt(first);
+
+        const second = cascadedPanelPosition(size, viewport);
+
+        expect(second).not.toEqual(first);
+        expect(second.left).toBeGreaterThan(first.left);
+        expect(second.top).toBeGreaterThan(first.top);
+    });
+
+    test('a third panel clears both of the first two', () => {
+        keepAt(cascadedPanelPosition(size, viewport));
+        keepAt(cascadedPanelPosition(size, viewport));
+
+        const third = cascadedPanelPosition(size, viewport);
+
+        expect(registered.some((el) => parseFloat(el.style.left) === third.left)).toBe(false);
+    });
+
+    test('a panel the user has dragged elsewhere does not push the next one along', () => {
+        keepAt({ left: 800, top: 400 });
+
+        expect(cascadedPanelPosition(size, viewport)).toEqual({ left: 170, top: 170 });
+    });
+
+    test('the cascade stays on screen rather than walking off the bottom right', () => {
+        const small = { width: 600, height: 500 };
+        for (let i = 0; i < 20; i++) {
+            const at = cascadedPanelPosition(size, small);
+            expect(at.left + size.width).toBeLessThanOrEqual(small.width);
+            expect(at.top + size.height).toBeLessThanOrEqual(small.height);
+            keepAt(at);
+        }
     });
 });

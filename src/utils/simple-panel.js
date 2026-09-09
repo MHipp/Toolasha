@@ -19,6 +19,7 @@ import {
     unregisterFloatingPanel,
     bringPanelToFront,
     isPanelFrontmost,
+    cascadedPanelPosition,
 } from './panel-z-index.js';
 import { makeDraggable, makeResizable } from './floating-panel.js';
 import { restoreGeometry, saveGeometry, saveOpenState, reopenIfLeftOpen } from './panel-geometry.js';
@@ -120,10 +121,16 @@ export function createPanel({
     function create() {
         panel = document.createElement('div');
         panel.id = `toolasha-${id}-panel`;
+        // Not a fixed corner. Every panel used to open at the same coordinates,
+        // so two panels the user had never dragged sat exactly on top of one
+        // another and the one underneath may as well not have opened. Saved
+        // geometry still wins — `restoreGeometry` below overwrites this — so
+        // this only ever places a panel nobody has placed themselves.
+        const opening = cascadedPanelPosition(size);
         Object.assign(panel.style, {
             position: 'fixed',
-            top: '170px',
-            left: '170px',
+            top: `${opening.top}px`,
+            left: `${opening.left}px`,
             zIndex: String(config.Z_FLOATING_PANEL),
             width: `${size.width}px`,
             height: `${size.height}px`,

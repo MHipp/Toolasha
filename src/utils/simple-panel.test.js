@@ -31,14 +31,15 @@ vi.mock('../core/data-manager.js', () => ({
     },
 }));
 
-// The stacking order is panel-z-index's own test; here it only needs to be
-// askable
-const stacking = vi.hoisted(() => ({ frontmost: true }));
+// The stacking order and the opening cascade are panel-z-index's own tests;
+// here they only need to be askable and to be seen to be used
+const stacking = vi.hoisted(() => ({ frontmost: true, opening: { left: 170, top: 170 } }));
 vi.mock('./panel-z-index.js', () => ({
     registerFloatingPanel: vi.fn(),
     unregisterFloatingPanel: vi.fn(),
     bringPanelToFront: vi.fn(),
     isPanelFrontmost: vi.fn(() => stacking.frontmost),
+    cascadedPanelPosition: vi.fn(() => stacking.opening),
 }));
 
 vi.mock('./floating-panel.js', () => ({
@@ -64,8 +65,9 @@ vi.mock('./panel-minimize.js', () => ({
 }));
 
 const { createPanel, panelCard, panelLine, panelNote } = await import('./simple-panel.js');
+const { restoreGeometry } = await import('./panel-geometry.js');
 const { holdEscapeWhile } = await import('./panel-escape.js');
-const { bringPanelToFront } = await import('./panel-z-index.js');
+const { bringPanelToFront, cascadedPanelPosition } = await import('./panel-z-index.js');
 const { default: dataManager } = await import('../core/data-manager.js');
 
 const SIZE = { width: 300, height: 200 };
@@ -80,6 +82,8 @@ beforeEach(() => {
     minimize.onToggle = null;
     minimize.setCollapsed = null;
     stacking.frontmost = true;
+    stacking.opening = { left: 170, top: 170 };
+    restoreGeometry.mockReset();
 });
 
 describe('createPanel', () => {
@@ -486,6 +490,46 @@ describe('switching character', () => {
 
         expect(panel.panel).not.toBe(null);
         expect(geometry.saveOpenState).not.toHaveBeenCalled();
+    });
+});
+
+describe('a panel that opens where nothing is already sitting', () => {
+    beforeEach(() => {
+        vi.useFakeTimers();
+        document.body.replaceChildren();
+        cascadedPanelPosition.mockClear();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    test('opens at the cascaded position rather than a hardcoded corner', () => {
+        // Every panel used to open at 170,170, so two panels the user had never
+        // dragged sat exactly on top of each other and the newer one was
+        // invisible unless something happened to raise it
+        stacking.opening = { left: 230, top: 230 };
+        const panel = createPanel({ id: 'cascaded', title: 'Cascaded', size: SIZE, draw: () => {} });
+
+        panel.show();
+
+        expect(cascadedPanelPosition).toHaveBeenCalledWith(SIZE);
+        expect(panel.panel.style.left).toBe('230px');
+        expect(panel.panel.style.top).toBe('230px');
+    });
+
+    test('saved geometry still wins over the cascade', () => {
+        stacking.opening = { left: 230, top: 230 };
+        restoreGeometry.mockImplementation((el) => {
+            el.style.left = '640px';
+            el.style.top = '80px';
+        });
+        const panel = createPanel({ id: 'remembered', title: 'Remembered', size: SIZE, draw: () => {} });
+
+        panel.show();
+
+        expect(panel.panel.style.left).toBe('640px');
+        expect(panel.panel.style.top).toBe('80px');
     });
 });
 

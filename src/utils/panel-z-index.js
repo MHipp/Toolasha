@@ -35,6 +35,17 @@ export const PANEL_Z_CAP = config.Z_FLOATING_PANEL + 99;
 /** How long to wait after the last resize event before re-clamping panels */
 const RESIZE_DEBOUNCE_MS = 200;
 
+/** Where the first panel with nothing saved about it opens */
+const DEFAULT_PANEL_LEFT = 170;
+const DEFAULT_PANEL_TOP = 170;
+
+/**
+ * How far each subsequent default-position panel is pushed down and right.
+ * Wide enough that the header and its buttons of the panel underneath stay
+ * visible and grabbable, which is the whole point of cascading.
+ */
+const CASCADE_STEP = 30;
+
 /**
  * Register a floating panel element for z-index management.
  *
@@ -131,7 +142,9 @@ export function bringPanelToFront(el) {
  * laid the page out, and a wrong answer there is worse than a coarse one: the
  * caller uses this to decide whether a click means "show me" or "put it away".
  * Equal z-indexes therefore count as front-most, which is honest — two panels
- * that have never been raised are ordered by nothing but DOM order.
+ * that have never been raised are ordered by nothing but DOM order, and the
+ * companion cascade in `simple-panel` keeps two such panels from opening on
+ * the same spot in the first place.
  *
  * @param {HTMLElement} el - The panel to ask about
  * @returns {boolean} True when nothing managed is stacked above it
@@ -146,6 +159,68 @@ export function isPanelFrontmost(el) {
         if ((parseInt(p.style.zIndex) || base) > mine) return false;
     }
     return true;
+}
+
+/**
+ * Where a panel with nothing saved about it should open.
+ *
+ * Every panel used to open at the same hardcoded corner, so two panels the
+ * user had never dragged sat exactly on top of each other and the one
+ * underneath was invisible — which is indistinguishable from the control that
+ * opens it doing nothing. Each already-open panel therefore pushes the next
+ * one down and right by a step, the way a window manager cascades.
+ *
+ * Only panels currently at the default column are counted, so a screen full of
+ * panels the user has arranged themselves does not push a new one into the
+ * corner of the page. The cascade wraps once it would run off the bottom or
+ * right, and the result is never persisted: this is only ever the *opening*
+ * position, and a saved geometry applied afterwards is what wins.
+ *
+ * @param {{width: number, height: number}} size - The opening size
+ * @param {{width: number, height: number}} [viewport] - The window
+ * @returns {{left: number, top: number}} Pixels from the top left
+ */
+export function cascadedPanelPosition(size, viewport) {
+    const view = viewport ||
+        (typeof window !== 'undefined' ? { width: window.innerWidth, height: window.innerHeight } : null) || {
+            width: DEFAULT_PANEL_LEFT * 2 + size.width,
+            height: DEFAULT_PANEL_TOP * 2 + size.height,
+        };
+
+    // How many steps still leave the whole panel on screen; at least none
+    const maxAcross = Math.max(0, Math.floor((view.width - DEFAULT_PANEL_LEFT - size.width) / CASCADE_STEP));
+    const maxDown = Math.max(0, Math.floor((view.height - DEFAULT_PANEL_TOP - size.height) / CASCADE_STEP));
+    const steps = Math.min(maxAcross, maxDown);
+
+    for (let step = 0; step <= steps; step++) {
+        const left = DEFAULT_PANEL_LEFT + step * CASCADE_STEP;
+        const top = DEFAULT_PANEL_TOP + step * CASCADE_STEP;
+        if (!occupied(left, top)) return { left, top };
+    }
+    // Every slot taken — the corner again is no worse than anywhere else, and
+    // wrapping keeps the panel on screen, which is the part that matters
+    return { left: DEFAULT_PANEL_LEFT, top: DEFAULT_PANEL_TOP };
+}
+
+/**
+ * Whether a registered panel already has its top left corner here.
+ * @param {number} left - Candidate left, in pixels
+ * @param {number} top - Candidate top, in pixels
+ * @returns {boolean}
+ */
+function occupied(left, top) {
+    for (const p of panels) {
+        if (!p.isConnected) continue;
+        // Inline style rather than a measured rect: a panel is positioned by
+        // the inline `left`/`top` these modules write, and a measured rect is
+        // all zeroes until the browser has laid the panel out — which it has
+        // not, at the moment a panel is being appended.
+        const pLeft = parseFloat(p.style.left);
+        const pTop = parseFloat(p.style.top);
+        if (!Number.isFinite(pLeft) || !Number.isFinite(pTop)) continue;
+        if (Math.abs(pLeft - left) < CASCADE_STEP && Math.abs(pTop - top) < CASCADE_STEP) return true;
+    }
+    return false;
 }
 
 /**
