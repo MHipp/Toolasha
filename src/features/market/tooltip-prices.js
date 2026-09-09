@@ -219,14 +219,18 @@ export function ownUseLine(comparison) {
     if (comparison.cheaper === 'even') {
         return { text: `Own use: make ≈${make} vs buy ${buy} — even`, color: config.COLOR_TOOLTIP_INFO };
     }
-    // "save" without a verb: both prices are on the line, so the saving can
-    // only mean taking the cheaper of them. The percent is of the price
-    // avoided — the side the cheaper choice spares you.
+    // The winning action is the subject of "saves". An unqualified "save" was
+    // read as an endorsement of the bench the line sits on, so a line telling
+    // you to buy still read as "crafting is worth it". The colour repeats the
+    // same answer and never carries it alone: profit green when the bench
+    // wins, loss red when it does not. The percent is of the price avoided —
+    // the side the cheaper choice spares you.
+    const wins = comparison.cheaper === 'make' ? 'make' : 'buy';
     const avoided = comparison.cheaper === 'make' ? comparison.buy : comparison.make;
     const pct = ((comparison.saves / avoided) * 100).toFixed(0);
     return {
-        text: `Own use: make ≈${make} vs buy ${buy} — save ${formatKMB(comparison.saves)} (${pct}%)`,
-        color: config.COLOR_TOOLTIP_PROFIT,
+        text: `Own use: make ≈${make} vs buy ${buy} — ${wins} saves ${formatKMB(comparison.saves)} (${pct}%)`,
+        color: comparison.cheaper === 'make' ? config.COLOR_TOOLTIP_PROFIT : config.COLOR_TOOLTIP_LOSS,
     };
 }
 

@@ -355,11 +355,48 @@ describe('own-use make vs buy', () => {
 
     test('the line carries the saving and the percent of the price avoided', () => {
         expect(ownUseLine(ownUseCompare(data())).text).toBe(
-            'Own use: make ≈40.0K vs buy 50.0K (ask) — save 10.0K (20%)'
+            'Own use: make ≈40.0K vs buy 50.0K (ask) — make saves 10.0K (20%)'
         );
         // Buying at 50K instead of making at 80K avoids the 80K — the saving
         // is measured against what the cheaper choice spares you
         const buyingWins = ownUseCompare(data({ materialCostPerHour: 7_500_000 }));
-        expect(ownUseLine(buyingWins).text).toContain('save 30.0K (38%)');
+        expect(ownUseLine(buyingWins).text).toContain('saves 30.0K (38%)');
+    });
+
+    test('a line where the bench wins names making and takes the profit color', () => {
+        const line = ownUseLine(ownUseCompare(data()));
+        expect(line.text).toContain('— make saves 10.0K (20%)');
+        expect(line.color).toBe('#0f0');
+    });
+
+    test('a line where buying wins names buying and takes the loss color', () => {
+        // The line sits on a crafting tooltip, so an unsubjected "save" in the
+        // bench's own colour read as an endorsement of crafting even when the
+        // figures said buy. The word and the colour both have to turn over.
+        const line = ownUseLine(ownUseCompare(data({ materialCostPerHour: 7_500_000 })));
+        expect(line.text).toBe('Own use: make ≈80.0K vs buy 50.0K (ask) — buy saves 30.0K (38%)');
+        expect(line.text).not.toContain('make saves');
+        expect(line.color).toBe('#f00');
+    });
+
+    test('an even line still names no winner and stays informational', () => {
+        const line = ownUseLine(ownUseCompare(data({ itemPrice: { ask: 40_000, bid: 1 } })));
+        expect(line.text).toBe('Own use: make ≈40.0K vs buy 40.0K (ask) — even');
+        expect(line.color).toBe('#abc');
+    });
+
+    test('an unbuyable item is untouched by the direction wording', () => {
+        const line = ownUseLine(ownUseCompare(data({ itemPrice: { ask: 0, bid: 9_999 } })));
+        expect(line.text).toBe('Own use: make ≈40.0K (no asks)');
+        expect(line.color).toBe('#abc');
+    });
+
+    test('the bid basis still qualifies the buy figure on a directed line', () => {
+        const line = ownUseLine(ownUseCompare(data({ pricingMode: 'optimistic' })));
+        expect(line.text).toBe('Own use: make ≈40.0K vs buy 45.0K (bid) — make saves 5.0K (11%)');
+        expect(line.color).toBe('#0f0');
+        const buyWins = ownUseLine(ownUseCompare(data({ pricingMode: 'optimistic', materialCostPerHour: 7_500_000 })));
+        expect(buyWins.text).toBe('Own use: make ≈80.0K vs buy 45.0K (bid) — buy saves 35.0K (44%)');
+        expect(buyWins.color).toBe('#f00');
     });
 });
