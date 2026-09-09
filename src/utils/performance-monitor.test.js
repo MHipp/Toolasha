@@ -1,13 +1,15 @@
 /**
  * Tests for Performance Monitor
  */
-import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import performanceMonitor, {
     installIntervalTracing,
     timerCallSite,
     timerCounters,
     stallCoverage,
     createLeakCanary,
+    createHeapTrend,
+    heapMemorySupported,
 } from './performance-monitor.js';
 
 describe('PerformanceMonitor', () => {
@@ -1055,5 +1057,97 @@ describe('leak canary', () => {
 
             expect(canary.getReport().map((r) => r.source)).toEqual(['ok']);
         });
+    });
+});
+
+describe('heap trend', () => {
+    let saved;
+
+    beforeEach(() => {
+        saved = Object.getOwnPropertyDescriptor(performance, 'memory');
+    });
+
+    afterEach(() => {
+        if (saved) Object.defineProperty(performance, 'memory', saved);
+        else delete performance.memory;
+    });
+
+    /**
+     * Pretend to be Chrome, with a heap we control.
+     * @param {{used: number}} state - Mutable heap state
+     */
+    const fakeMemory = (state) => {
+        Object.defineProperty(performance, 'memory', {
+            configurable: true,
+            get: () => ({ usedJSHeapSize: state.used }),
+        });
+    };
+
+    test('with performance.memory absent nothing is reported and nothing throws', () => {
+        delete performance.memory;
+
+        expect(heapMemorySupported()).toBe(false);
+        const trend = createHeapTrend();
+        expect(() => trend.sample()).not.toThrow();
+        expect(trend.sample()).toBe(null);
+        expect(trend.getTrend()).toBe(null);
+    });
+
+    test('with performance present but memory absent it still degrades rather than throwing', () => {
+        Object.defineProperty(performance, 'memory', { configurable: true, get: () => undefined });
+
+        expect(heapMemorySupported()).toBe(false);
+        expect(createHeapTrend().getTrend()).toBe(null);
+    });
+
+    test('a single reading is a number, not yet a trend', () => {
+        const state = { used: 50 * 1048576 };
+        fakeMemory(state);
+        const trend = createHeapTrend();
+        trend.sample();
+
+        expect(trend.getTrend()).toBe(null);
+    });
+
+    test('a climbing heap reports how far it climbed and how fast', () => {
+        const state = { used: 50 * 1048576 };
+        fakeMemory(state);
+        const trend = createHeapTrend();
+
+        trend.sample();
+        state.used = 80 * 1048576;
+        trend.sample();
+
+        const report = trend.getTrend();
+        expect(report.usedMb).toBeCloseTo(80, 5);
+        expect(report.changeMb).toBeCloseTo(30, 5);
+        expect(report.samples).toBe(2);
+    });
+
+    test('the retained readings are capped, and the trend still spans them', () => {
+        const state = { used: 0 };
+        fakeMemory(state);
+        const trend = createHeapTrend({ maxSamples: 10 });
+
+        for (let i = 0; i < 500; i++) {
+            state.used = i * 1048576;
+            trend.sample();
+        }
+
+        // 500 readings taken, at most 10 kept
+        expect(trend.getTrend().samples).toBe(10);
+        expect(trend.getTrend().usedMb).toBeCloseTo(499, 5);
+        expect(trend.getTrend().changeMb).toBeCloseTo(9, 5);
+    });
+
+    test('reset drops the readings', () => {
+        const state = { used: 1048576 };
+        fakeMemory(state);
+        const trend = createHeapTrend();
+        trend.sample();
+        trend.sample();
+        trend.reset();
+
+        expect(trend.getTrend()).toBe(null);
     });
 });

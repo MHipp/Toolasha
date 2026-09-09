@@ -121,6 +121,7 @@ class PFormancePanel {
         // Created on the first sample and dropped when the panel closes, so
         // nothing the canary retains outlives the panel
         this.leakCanary = null;
+        this.heapTrend = null;
         // Read once per open, in show(); a mocked or absent config must not
         // take the panel with it
         this.attributionEnabled = false;
@@ -363,6 +364,8 @@ class PFormancePanel {
         // closed panel holds nothing
         this.leakCanary?.reset();
         this.leakCanary = null;
+        this.heapTrend?.reset();
+        this.heapTrend = null;
         this._churnSample = null;
         if (this.panel) {
             unregisterFloatingPanel(this.panel);
@@ -470,6 +473,8 @@ class PFormancePanel {
             const unattributed = this._createUnattributedLine(pm);
             if (unattributed) this.contentEl.appendChild(unattributed);
             this.contentEl.appendChild(this._createLeakSection(pm));
+            const heap = this._createHeapLine(pm);
+            if (heap) this.contentEl.appendChild(heap);
         }
     }
 
@@ -504,6 +509,49 @@ class PFormancePanel {
         return this._createSection('Leak canary', entries, this.leakSectionCollapsed, (v) => {
             this.leakSectionCollapsed = v;
         });
+    }
+
+    /**
+     * The tab's heap, where the browser will say — and nothing at all where it
+     * will not.
+     *
+     * Chrome only: `performance.memory` has no equivalent in Firefox or
+     * Safari. The row is omitted rather than shown as a zero or a dash,
+     * because "we cannot see it" and "it is not growing" are opposite answers
+     * and a placeholder reads as the second.
+     *
+     * What it is worth when it is there: the figure covers the whole tab — the
+     * game, this script, and every other content script share one heap — and
+     * Chrome quantises it deliberately. It can establish that something is
+     * leaking and roughly how fast. It can never say whose.
+     * @param {Object} pm - The performance monitor
+     * @returns {HTMLElement|null} The line, or null where there is no heap figure
+     * @private
+     */
+    _createHeapLine(pm) {
+        if (!pm.heapMemorySupported?.()) return null;
+        if (!this.heapTrend) this.heapTrend = pm.createHeapTrend?.() || null;
+        if (!this.heapTrend) return null;
+        this.heapTrend.sample();
+
+        const trend = this.heapTrend.getTrend();
+        // Before the second reading there is no trend, only a number
+        if (!trend) return null;
+
+        const direction = trend.changeMb >= 0 ? '+' : '';
+        const line = document.createElement('div');
+        line.textContent =
+            `Tab heap: ${trend.usedMb.toFixed(1)}MB, ${direction}${trend.changeMb.toFixed(1)}MB over ` +
+            `${(trend.spanMs / 1000).toFixed(0)}s (${direction}${trend.perMinuteMb.toFixed(1)}MB/min). ` +
+            'Whole tab — the game and every other extension share this heap — and Chrome rounds it. ' +
+            'It can show that something leaks, never whose.';
+        Object.assign(line.style, {
+            padding: '2px 6px 6px',
+            fontSize: '11px',
+            color: COLORS.textDim,
+            whiteSpace: 'normal',
+        });
+        return line;
     }
 
     /**

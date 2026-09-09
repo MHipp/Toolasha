@@ -193,6 +193,93 @@ export function createLeakCanary(options = {}) {
     return { sample, getReport, reset, limits };
 }
 
+/**
+ * Readings kept for the heap trend. 120 at the panel's 1s cadence is two
+ * minutes; only the first and the last are used, the rest are there so the
+ * trend survives a moment of noise. Hard cap.
+ */
+const HEAP_TREND_MAX_SAMPLES = 120;
+
+/**
+ * Whether this browser will say anything about the heap at all.
+ *
+ * `performance.memory` is Chrome's and nobody else's — Firefox and Safari have
+ * no equivalent, and there is no polyfill. Callers must omit their heap row
+ * entirely when this is false: a zero or a dash reads like a measurement, and
+ * "we cannot see it" and "it is not growing" are opposite answers.
+ *
+ * `measureUserAgentSpecificMemory()` is deliberately not used as a fallback —
+ * it requires cross-origin isolation, which the game page does not have.
+ *
+ * @returns {boolean} True only where a heap figure can actually be read
+ */
+export function heapMemorySupported() {
+    return typeof performance !== 'undefined' && typeof performance.memory?.usedJSHeapSize === 'number';
+}
+
+/**
+ * The tab's heap over the session, as a trend and nothing finer.
+ *
+ * Two things this cannot do, both of which matter more than the number:
+ *
+ * 1. **It covers the whole tab.** The game, this script, and every other
+ *    content script share one JS heap. A rising figure establishes that
+ *    something is leaking and roughly how fast; it can never say whose.
+ * 2. **It is coarse.** Chrome quantises `usedJSHeapSize` deliberately (it is a
+ *    fingerprinting and cross-origin-leak vector), so small movements are not
+ *    resolvable and a flat reading is not proof of a flat heap.
+ *
+ * Sampling is a single property read, taken on whatever cadence the caller
+ * already has — this adds no timer of its own.
+ *
+ * @param {Object} [options] - `{ maxSamples }`
+ * @returns {{sample: Function, getTrend: Function, reset: Function}} The trend
+ */
+export function createHeapTrend(options = {}) {
+    const maxSamples = options.maxSamples || HEAP_TREND_MAX_SAMPLES;
+    /** @type {Array<{at: number, bytes: number}>} */
+    let samples = [];
+
+    /**
+     * Take one reading, where there is one to take.
+     * @returns {number|null} Bytes in use, or null on a browser that will not say
+     */
+    const sample = () => {
+        if (!heapMemorySupported()) return null;
+        const bytes = performance.memory.usedJSHeapSize;
+        samples.push({ at: Date.now(), bytes });
+        if (samples.length > maxSamples) samples.shift();
+        return bytes;
+    };
+
+    /**
+     * Where the heap has gone since the trend started watching.
+     * @returns {{usedMb: number, changeMb: number, perMinuteMb: number, samples: number,
+     *   spanMs: number}|null} Null where the heap cannot be read, or before two readings
+     */
+    const getTrend = () => {
+        if (!heapMemorySupported() || samples.length < 2) return null;
+        const first = samples[0];
+        const last = samples[samples.length - 1];
+        const spanMs = last.at - first.at;
+        const changeMb = (last.bytes - first.bytes) / 1048576;
+        return {
+            usedMb: last.bytes / 1048576,
+            changeMb,
+            perMinuteMb: spanMs > 0 ? (changeMb / spanMs) * 60000 : 0,
+            samples: samples.length,
+            spanMs,
+        };
+    };
+
+    /** Forget everything. */
+    const reset = () => {
+        samples = [];
+    };
+
+    return { sample, getTrend, reset, maxSamples };
+}
+
 class PerformanceMonitor {
     constructor() {
         this.measurements = new Map();
@@ -774,6 +861,8 @@ performanceMonitor.timerCounters = timerCounters;
 // module only through the published singleton, so the canary factory has to be
 // reachable from the instance rather than as a bare named import.
 performanceMonitor.createLeakCanary = createLeakCanary;
+performanceMonitor.createHeapTrend = createHeapTrend;
+performanceMonitor.heapMemorySupported = heapMemorySupported;
 
 /**
  * The best name a timer can be given at tick time, when its creation stack is

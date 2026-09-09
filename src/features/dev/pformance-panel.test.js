@@ -264,3 +264,69 @@ describe('the leak canary in the panel', () => {
         expect(leakReset).toBe(1);
     });
 });
+
+/**
+ * The heap row. Chrome-only, and where it is not available the row must be
+ * absent rather than zeroed — "we cannot see it" and "it is flat" are opposite
+ * answers.
+ */
+describe('the heap trend in the panel', () => {
+    let heapSupported = true;
+    let trendValue = null;
+
+    beforeEach(() => {
+        heapSupported = true;
+        trendValue = { usedMb: 412.5, changeMb: 30.25, perMinuteMb: 6.1, samples: 30, spanMs: 300000 };
+        window.Toolasha = {
+            Core: {
+                performanceMonitor: {
+                    ...richMonitor,
+                    heapMemorySupported: () => heapSupported,
+                    createHeapTrend: () => ({
+                        sample: () => (heapSupported ? 1 : null),
+                        getTrend: () => trendValue,
+                        reset: () => {},
+                    }),
+                },
+            },
+        };
+    });
+
+    test('is absent while the extras are off', () => {
+        pformancePanel.show();
+
+        expect(onScreen().children[1].textContent).not.toContain('Tab heap');
+    });
+
+    test('shows the trend, and says it covers the whole tab', () => {
+        settings.pformanceAttribution = true;
+        pformancePanel.show();
+
+        const body = onScreen().children[1].textContent;
+        expect(body).toContain('Tab heap: 412.5MB');
+        expect(body).toContain('+30.3MB');
+        expect(body).toContain('Whole tab');
+        expect(body).toContain('never whose');
+    });
+
+    test('is omitted entirely where the browser has no heap figure — not zeroed, not dashed', () => {
+        settings.pformanceAttribution = true;
+        heapSupported = false;
+        pformancePanel.show();
+
+        const body = onScreen().children[1].textContent;
+        expect(body).not.toContain('Tab heap');
+        expect(body).not.toContain('0.0MB');
+        expect(body).not.toContain('—MB');
+        // and the rest of the panel is unharmed
+        expect(body).toContain('Leak canary');
+    });
+
+    test('is omitted before there are two readings to compare', () => {
+        settings.pformanceAttribution = true;
+        trendValue = null;
+        pformancePanel.show();
+
+        expect(onScreen().children[1].textContent).not.toContain('Tab heap');
+    });
+});
