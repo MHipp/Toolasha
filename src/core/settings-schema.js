@@ -1240,9 +1240,10 @@ export const settingsGroups = {
                 default: false,
                 help:
                     'When a filled buy quantity is more than the best ask has in stock, raise the price to the ' +
-                    'lowest one whose listings add up to the whole amount. You pay more per unit — every unit, ' +
-                    'not just the extra ones — in exchange for the order filling completely. Never goes above ' +
-                    "the modal's tradable range, never lowers a price, and never presses the buy button.",
+                    'lowest one whose listings add up to the whole amount. The price is a limit, not what every ' +
+                    'unit costs: each listing still sells at its own price, so only the units the cheapest ' +
+                    "listings could not cover pay more. Never goes above the modal's tradable range, never " +
+                    'lowers a price, and never presses the buy button.',
             },
             market_autoFillSellStrategy: {
                 id: 'market_autoFillSellStrategy',

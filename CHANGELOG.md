@@ -60,7 +60,7 @@ On a long action the game writes `59% - 1m 28s` on the progress bar instead of a
 
 Missing Materials fills in 24, the top ask has 15, and pressing the button bought 15. The modal can now walk up the ask ladder to the lowest price whose cumulative supply covers the whole quantity — 470K to 471K in the case that prompted this — and stops there. It never climbs past the rung it needs and never past the tradable maximum, it only ever raises, and it reads the modal's own "Available At Price" line as the authority, stepping again only if a stale order book left it short. You still press Post Buy Order, with "You Pay" already showing what it will cost.
 
-It pays more per unit — on every unit, not just the extra ones — so it is **off by default**: turn on "raise a Buy Now price to cover the quantity" in the marketplace settings. It applies to every panel that fills a buy quantity, not just Missing Materials.
+The price is a limit rather than what every unit costs — each listing still sells at its own price, so only the units the cheapest listings could not cover pay more. It is still **off by default**, as new features are: turn on "raise a Buy Now price to cover the quantity" in the marketplace settings. It applies to every panel that fills a buy quantity, not just Missing Materials.
 
 Alongside it: the marketplace pushpin no longer draws on top of a house or action panel opened over the marketplace. The game's own modals sit far below where a comment in this repo claimed they did, so the pin was winning a contest it should never have been in.
 
