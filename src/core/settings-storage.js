@@ -76,6 +76,25 @@ const DEFAULT_REWRITE_FLAG_KEY = 'settings_default_rewrites_v1';
 // with the map so "make this alt like my main" carries the task lists too
 const TASK_CHARACTER_SCOPED_PREFIXES = ['taskProtectedHrids', 'taskAutoRerollHrids'];
 
+/**
+ * Key prefixes that must never travel in a settings file, in or out.
+ *
+ * The literal is repeated from `utils/full-backup.js`'s
+ * `DEVICE_LOCAL_KEY_PREFIXES` rather than imported: this is a Core module and
+ * Core loads before Utils, so a module-level import of the shared constant
+ * would be undefined at load. A test pins the two lists together instead.
+ *
+ * `toolasha_local_` holds the preserved chat history
+ * (`features/chat/chat-history-persistence.js`) — every chat tab's markup,
+ * whisper tabs included. Out, because a settings export is exactly the file
+ * people paste into a chat when they want help with a setting. In, because a
+ * file written by an older build (or by another player) can still carry the
+ * key, and importing it would plant someone else's whispers on this machine
+ * exactly as if they had been typed here — the same both-directions rule the
+ * sync payload and the full backup already follow.
+ */
+const DEVICE_LOCAL_KEY_PREFIXES = ['toolasha_local_'];
+
 class SettingsStorage {
     constructor() {
         this.storageKey = 'script_settingsMap'; // Legacy global key (used as template)
@@ -766,20 +785,13 @@ class SettingsStorage {
     async exportSettings() {
         const allData = await storage.getAll(this.storageArea);
 
-        // Transient caches, and anything device-local.
-        //
-        // `toolasha_local_` is the prefix the sync payload and the full backup
-        // both strip (`LOCAL_ONLY_KEY_PREFIXES` in features/sync/sync-payload.js,
-        // `EXCLUDED_STORE_KEY_PREFIXES` in utils/full-backup.js). This export is
+        // Transient caches, and anything device-local. `toolasha_local_` is the
+        // prefix the sync payload and the full backup both strip
+        // (`LOCAL_ONLY_KEY_PREFIXES` in features/sync/sync-payload.js,
+        // `DEVICE_LOCAL_KEY_PREFIXES` in utils/full-backup.js); this export is
         // the third way the settings store leaves the machine and was the one
-        // still carrying them: persisted chat history lives under that prefix and
-        // includes whisper tabs, and a settings export is exactly the file people
-        // paste into a chat when they want help with a setting.
-        //
-        // Listed here rather than imported: this is a Core module and Core loads
-        // before Utils, so a module-level import of the shared constant would be
-        // undefined at load. A test pins the two lists together instead.
-        const EXCLUDE_PREFIXES = ['marketplace_cache', 'toolasha_local_'];
+        // still carrying them. See DEVICE_LOCAL_KEY_PREFIXES above.
+        const EXCLUDE_PREFIXES = ['marketplace_cache', ...DEVICE_LOCAL_KEY_PREFIXES];
         const exported = {};
 
         for (const [key, value] of Object.entries(allData)) {
@@ -812,6 +824,12 @@ class SettingsStorage {
             }
 
             for (const [key, value] of Object.entries(data)) {
+                // Excluded on the way out and just as much on the way in; see
+                // DEVICE_LOCAL_KEY_PREFIXES. Not counted as skipped — skipped is
+                // "belongs to another character", which the summary offers to
+                // explain, and this is "never travels" with nothing to explain.
+                if (DEVICE_LOCAL_KEY_PREFIXES.some((prefix) => key.startsWith(prefix))) continue;
+
                 const charIdMatch =
                     key.match(/_([0-9a-f]{24})$/i) ||
                     key.match(/_(\d{10,})$/) ||

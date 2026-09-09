@@ -12,6 +12,26 @@ import storage from '../core/storage.js';
 const FORMAT_VERSION = 1;
 
 /**
+ * Key prefixes that are device-local in EVERY store, not just the one that
+ * happens to use them today.
+ *
+ * `toolasha_local_` currently holds the preserved chat history
+ * (`features/chat/chat-history-persistence.js`), which is every chat tab's
+ * markup — whispers and private messages included. The maintainer chose to keep
+ * that on disk; a backup file is the thing people paste into a Discord thread
+ * when they want help, and the sync uploads to a GitHub gist, so it is kept out
+ * of both.
+ *
+ * Scoped to every store rather than to `settings` on purpose. The chat record
+ * lives in `settings` only because a new object store would mean a `dbVersion`
+ * bump — a constraint that can lift, and `buildPayloadJSON('everything')` walks
+ * every store `listStores()` reports. A store-scoped rule would then let the
+ * same record out through the same upload without a line of it changing here.
+ * The prefix means "never leaves this device" wherever it is written.
+ */
+export const DEVICE_LOCAL_KEY_PREFIXES = ['toolasha_local_'];
+
+/**
  * Storage keys left out of every export, scoped to the store they live in.
  *
  * The guild trial diagnostic trace (`features/guild/guild-trial-trace.js`) is
@@ -24,33 +44,38 @@ const FORMAT_VERSION = 1;
  * point a gist can hold. The literal prefixes are duplicated from that file
  * rather than imported from it — a feature reaching down into a util it is
  * built on is the wrong direction, so the two are kept in step by hand.
+ *
+ * `settings` names the device-local prefix as well, redundantly with
+ * {@link DEVICE_LOCAL_KEY_PREFIXES}: it is the list `core/settings-storage.js`
+ * is pinned against, and that module cannot import this one (Core loads before
+ * Utils), so the store the chat record actually lives in stays named here.
  */
 export const EXCLUDED_STORE_KEY_PREFIXES = {
     guildHistory: ['trialTraceManifest', 'trialTraceChunk_'],
-    // Device-local by construction. `toolasha_local_` currently holds the
-    // preserved chat history (`features/chat/chat-history-persistence.js`),
-    // which is every chat tab's markup — whispers and private messages
-    // included. The maintainer chose to keep that on disk; a backup file is the
-    // thing people paste into a Discord thread when they want help, so it is
-    // kept out of one. `features/sync/sync-payload.js` keeps the same prefix out
-    // of an upload and out of an import, by the same reasoning.
-    settings: ['toolasha_local_'],
+    settings: [...DEVICE_LOCAL_KEY_PREFIXES],
 };
 
 /**
  * Drop every key in `entries` whose store excludes it.
  * @param {string} storeName
  * @param {Record<string, *>} entries
- * @returns {Record<string, *>} A new object; `entries` is not mutated
+ * @returns {Record<string, *>} `entries` itself when it has nothing to drop, otherwise a
+ *   filtered copy; `entries` is never mutated
  */
 export function stripExcludedKeys(storeName, entries) {
-    const prefixes = EXCLUDED_STORE_KEY_PREFIXES[storeName];
-    if (!prefixes) return entries;
+    const prefixes = [...DEVICE_LOCAL_KEY_PREFIXES, ...(EXCLUDED_STORE_KEY_PREFIXES[storeName] || [])];
+
+    // Scanned before anything is allocated: every store now has prefixes to
+    // check, and this runs one store at a time precisely so a backup never
+    // holds two copies of one. A store with nothing to drop hands its own
+    // object straight back.
+    const keys = Object.keys(entries || {});
+    if (!keys.some((key) => prefixes.some((prefix) => key.startsWith(prefix)))) return entries;
 
     const kept = {};
-    for (const [key, value] of Object.entries(entries || {})) {
+    for (const key of keys) {
         if (prefixes.some((prefix) => key.startsWith(prefix))) continue;
-        kept[key] = value;
+        kept[key] = entries[key];
     }
     return kept;
 }

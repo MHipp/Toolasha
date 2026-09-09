@@ -23,6 +23,14 @@ vi.mock('../../core/storage.js', () => ({
     default: {
         listStores: async () => Object.keys(state.stores),
         getAll: async (name) => ({ ...(state.stores[name] || {}) }),
+        getJSON: async (key, name, fallback = null) => {
+            const store = state.stores[name] || {};
+            return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : fallback;
+        },
+        setJSON: async (key, value, name) => {
+            state.written[name] = { ...(state.written[name] || {}), [key]: value };
+            return true;
+        },
         tryGet: async (key, name) => {
             const store = state.stores[name] || {};
             return Object.prototype.hasOwnProperty.call(store, key)
@@ -42,7 +50,8 @@ vi.mock('../../core/storage.js', () => ({
 import { CHAT_HISTORY_KEY_BASE, CHAT_HISTORY_STORE } from './chat-history-persistence.js';
 import { applyPayload, buildPayloadJSON } from '../sync/sync-payload.js';
 import { readFileSync } from 'node:fs';
-import { EXCLUDED_STORE_KEY_PREFIXES } from '../../utils/full-backup.js';
+import settingsStorage from '../../core/settings-storage.js';
+import { DEVICE_LOCAL_KEY_PREFIXES } from '../../utils/full-backup.js';
 
 const HISTORY_KEY = `${CHAT_HISTORY_KEY_BASE}_char1`;
 const WHISPER = 'meet me at the tower';
@@ -118,26 +127,104 @@ describe('chat history never reaches a sync payload', () => {
 });
 
 /**
- * The settings export is the third way the settings store leaves the machine,
- * after the sync payload and the full backup. It was the one still carrying
- * device-local records, and persisted chat history — whispers included — is
- * exactly what now lives under that prefix.
+ * The exclusion is a key-prefix rule, and the prefix means "never leaves this
+ * device" — not "never leaves this device while it happens to live in the
+ * settings store".
  *
- * `settings-storage.js` is a Core module and Core loads before Utils, so it
- * cannot import the shared prefix list at module level. It repeats the prefix
- * instead, and this pins the repeat to the original so the two cannot drift.
+ * The record is in `settings` today only because a new object store would mean
+ * a `dbVersion` bump this database cannot take on its own. That constraint can
+ * lift, and `buildPayloadJSON('everything')` walks every store `listStores()`
+ * reports; a store-scoped rule would then upload the same whispers without a
+ * line of the exclusion changing. So the rule is applied to every store.
  */
-describe('the settings export excludes what the backup excludes', () => {
-    test('every device-local prefix the backup strips is stripped here too', async () => {
-        const source = readFileSync(new URL('../../core/settings-storage.js', import.meta.url), 'utf8');
-        const block = source.slice(source.indexOf('async exportSettings()'));
-        const listed = block.slice(
-            block.indexOf('EXCLUDE_PREFIXES = ['),
-            block.indexOf(']', block.indexOf('EXCLUDE_PREFIXES = ['))
+describe('the device-local prefix is honoured in every store, not just settings', () => {
+    const OTHER_STORE = 'dungeonRuns';
+    const OTHER_KEY = `${CHAT_HISTORY_KEY_BASE}_char1`;
+
+    beforeEach(() => {
+        state.written = {};
+        state.stores = {
+            settings: { script_settingsMap: JSON.stringify({ chatHistoryExtender: true }) },
+            [OTHER_STORE]: { runs_char1: [], [OTHER_KEY]: { tabs: { 'tab:Whispers': [WHISPER] } } },
+        };
+    });
+
+    test('an upload leaves it behind wherever it is written', async () => {
+        const json = await buildPayloadJSON('everything');
+        expect(json).not.toContain(WHISPER);
+        expect(json).not.toContain('toolasha_local_');
+        expect(JSON.parse(json).stores[OTHER_STORE].runs_char1).toBeDefined();
+    });
+
+    test('a backup file leaves it behind wherever it is written', async () => {
+        const { exportEverythingJSON } = await import('../../utils/full-backup.js');
+        const json = await exportEverythingJSON();
+        expect(json).not.toContain(WHISPER);
+        expect(json).not.toContain('toolasha_local_');
+    });
+
+    test('an import does not plant it into another store either', async () => {
+        await applyPayload(
+            JSON.stringify({
+                formatVersion: 1,
+                exportedAt: new Date().toISOString(),
+                stores: { [OTHER_STORE]: { runs_char1: [], [OTHER_KEY]: { tabs: { x: ['someone else'] } } } },
+            })
         );
 
-        for (const prefix of EXCLUDED_STORE_KEY_PREFIXES.settings || []) {
-            expect(listed, `exportSettings must also drop "${prefix}"`).toContain(prefix);
+        expect(Object.keys(state.written[OTHER_STORE] || {})).not.toContain(OTHER_KEY);
+        expect(JSON.stringify(state.written)).not.toContain('someone else');
+    });
+});
+
+/**
+ * The settings file's import side.
+ *
+ * The sync payload and the full backup both strip the prefix on the way in as
+ * well as on the way out, for the same reason: a file written by an older build
+ * — or by another player, which is what a shared settings file is — still
+ * carries the key, and writing it here plants their whispers on this machine
+ * exactly as if they had been typed into it. `importSettings` was the one
+ * inbound path with no such guard.
+ */
+describe('a settings file cannot plant someone else’s chat history', () => {
+    beforeEach(() => {
+        state.written = {};
+        state.stores = { settings: {} };
+    });
+
+    test('importSettings drops the device-local keys and imports the rest', async () => {
+        const result = await settingsStorage.importSettings(
+            JSON.stringify({
+                script_settingsMap: JSON.stringify({ chatHistoryExtender: true }),
+                [HISTORY_KEY]: { v: 1, savedAt: 3, tabs: { 'tab:Whispers': [WHISPER] } },
+            })
+        );
+
+        expect(Object.keys(state.written.settings || {})).not.toContain(HISTORY_KEY);
+        expect(JSON.stringify(state.written)).not.toContain(WHISPER);
+        expect(state.written.settings.script_settingsMap).toContain('chatHistoryExtender');
+        expect(result.imported).toBe(1);
+    });
+
+    test('the repeated prefix list matches the shared one, in both directions', () => {
+        // `settings-storage.js` is a Core module and Core loads before Utils, so
+        // it repeats the literal rather than importing it. This is what keeps
+        // the repeat honest.
+        const source = readFileSync(new URL('../../core/settings-storage.js', import.meta.url), 'utf8');
+        const listed = source.slice(
+            source.indexOf('const DEVICE_LOCAL_KEY_PREFIXES = ['),
+            source.indexOf(']', source.indexOf('const DEVICE_LOCAL_KEY_PREFIXES = ['))
+        );
+
+        for (const prefix of DEVICE_LOCAL_KEY_PREFIXES) {
+            expect(listed, `settings-storage must also know "${prefix}"`).toContain(prefix);
         }
+        // Both paths in that module consult it — the export and the import.
+        expect(source).toContain("const EXCLUDE_PREFIXES = ['marketplace_cache', ...DEVICE_LOCAL_KEY_PREFIXES]");
+        expect(
+            source.slice(source.indexOf('async importSettings(')),
+            'importSettings must drop the device-local keys too'
+        ).toContain('DEVICE_LOCAL_KEY_PREFIXES.some((prefix) => key.startsWith(prefix))');
     });
 });
