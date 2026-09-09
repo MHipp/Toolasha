@@ -7,6 +7,7 @@ import performanceMonitor, {
     timerCallSite,
     timerCounters,
     stallCoverage,
+    createLeakCanary,
 } from './performance-monitor.js';
 
 describe('PerformanceMonitor', () => {
@@ -919,5 +920,140 @@ describe('unattributed stall time', () => {
 
         expect(performanceMonitor.getStalls()).toHaveLength(200);
         expect(performanceMonitor.getStallAttribution(Infinity).stalls).toBe(200);
+    });
+});
+
+describe('leak canary', () => {
+    /**
+     * Feed the canary a series of counts for one source.
+     * @param {Object} canary - The canary
+     * @param {string} name - Source name
+     * @param {number[]} series - Counts, oldest first
+     */
+    const feed = (canary, name, series) => {
+        for (const value of series) canary.sample({ [name]: value });
+    };
+
+    test('a count that only ever climbs past the floor is flagged', () => {
+        const canary = createLeakCanary();
+        feed(
+            canary,
+            'chat:processedMessages',
+            Array.from({ length: 20 }, (_, i) => 20 + i * 5)
+        );
+
+        const row = canary.getReport().find((r) => r.source === 'chat:processedMessages');
+        expect(row.growing).toBe(true);
+        expect(row.latest).toBe(115);
+        expect(row.lowest).toBe(20);
+    });
+
+    test('a count that rises and falls is not', () => {
+        const canary = createLeakCanary();
+        feed(canary, 'dom:pendingDebounces', [20, 40, 60, 80, 30, 90, 120, 160, 200, 240, 280, 320]);
+
+        expect(canary.getReport()[0].growing).toBe(false);
+        expect(canary.getReport()[0].decreases).toBe(1);
+    });
+
+    test('one decrease disqualifies a source for the rest of the session', () => {
+        const canary = createLeakCanary();
+        feed(canary, 'cleanup:listeners', [50, 10]);
+        feed(
+            canary,
+            'cleanup:listeners',
+            Array.from({ length: 40 }, (_, i) => 20 + i * 10)
+        );
+
+        expect(canary.getReport()[0].growing).toBe(false);
+    });
+
+    test('a small count that climbs stays quiet — the floor stops it crying wolf', () => {
+        const canary = createLeakCanary();
+        feed(canary, 'timers:intervals', [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+
+        expect(canary.getReport()[0].growing).toBe(false);
+        expect(canary.getReport()[0].latest).toBe(12);
+    });
+
+    test('a big but flat count stays quiet too — growth is the signal, not size', () => {
+        const canary = createLeakCanary();
+        feed(
+            canary,
+            'dom:handlers',
+            Array.from({ length: 30 }, () => 150)
+        );
+
+        expect(canary.getReport()[0].growing).toBe(false);
+    });
+
+    test('a source with too few samples is not judged yet', () => {
+        const canary = createLeakCanary();
+        feed(canary, 'cleanup:listeners', [20, 60, 200]);
+
+        expect(canary.getReport()[0].growing).toBe(false);
+    });
+
+    test('every source is reported separately, not as one total', () => {
+        const canary = createLeakCanary();
+        for (let i = 0; i < 15; i++) {
+            canary.sample({ 'cleanup:listeners': 30 + i * 10, 'dom:handlers': 150 });
+        }
+
+        const report = canary.getReport();
+        expect(report).toHaveLength(2);
+        expect(report.map((r) => r.source).sort()).toEqual(['cleanup:listeners', 'dom:handlers']);
+        // Growing ones sort first so the actionable row is at the top
+        expect(report[0].source).toBe('cleanup:listeners');
+        expect(report[0].growing).toBe(true);
+        expect(report[1].growing).toBe(false);
+    });
+
+    test('the thresholds are tunable rather than baked in', () => {
+        const canary = createLeakCanary({ floor: 2, minSamples: 3, growthFactor: 1.1 });
+        feed(canary, 'tiny', [2, 3, 4]);
+
+        expect(canary.getReport()[0].growing).toBe(true);
+    });
+
+    describe('what the canary retains is capped', () => {
+        test('the per-source history never exceeds maxSamples', () => {
+            const canary = createLeakCanary({ maxSamples: 10 });
+            feed(
+                canary,
+                'cleanup:listeners',
+                Array.from({ length: 500 }, (_, i) => i)
+            );
+
+            const row = canary.getReport()[0];
+            expect(row.samples).toBe(500);
+            expect(row.latest).toBe(499);
+            // The verdict still covers the whole session even though only the
+            // last 10 readings are kept
+            expect(row.lowest).toBe(0);
+        });
+
+        test('the number of tracked sources never exceeds maxSources', () => {
+            const canary = createLeakCanary({ maxSources: 4 });
+            for (let i = 0; i < 200; i++) canary.sample({ [`source${i}`]: i });
+
+            expect(canary.getReport()).toHaveLength(4);
+        });
+
+        test('reset drops everything, so a closed panel holds nothing', () => {
+            const canary = createLeakCanary();
+            feed(canary, 'cleanup:listeners', [10, 20, 30]);
+            canary.reset();
+
+            expect(canary.getReport()).toEqual([]);
+        });
+
+        test('a non-numeric or missing reading is ignored rather than thrown on', () => {
+            const canary = createLeakCanary();
+            expect(() => canary.sample(null)).not.toThrow();
+            canary.sample({ ok: 5, bad: undefined, worse: NaN });
+
+            expect(canary.getReport().map((r) => r.source)).toEqual(['ok']);
+        });
     });
 });

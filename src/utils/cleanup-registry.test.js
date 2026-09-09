@@ -2,7 +2,7 @@
  * Tests for Cleanup Registry Utility
  */
 import { describe, test, expect, vi } from 'vitest';
-import { createCleanupRegistry } from './cleanup-registry.js';
+import { createCleanupRegistry, getCleanupRegistryCensus } from './cleanup-registry.js';
 
 function makeTarget() {
     return {
@@ -142,5 +142,45 @@ describe('cleanupAll idempotency', () => {
         registry.cleanupAll();
 
         expect(fn).toHaveBeenCalledTimes(1);
+    });
+});
+
+/**
+ * The census the leak canary samples. Counters only — nothing here retains a
+ * reference the registry was not already holding.
+ */
+describe('getCleanupRegistryCensus', () => {
+    test('counts what live registries hold, by kind rather than in total', () => {
+        const before = getCleanupRegistryCensus();
+        const registry = createCleanupRegistry();
+
+        registry.registerListener(makeTarget(), 'click', () => {});
+        registry.registerListener(makeTarget(), 'click', () => {});
+        registry.registerObserver({ disconnect: () => {} });
+        registry.registerCleanup(() => {});
+
+        const after = getCleanupRegistryCensus();
+        expect(after.listeners - before.listeners).toBe(2);
+        expect(after.observers - before.observers).toBe(1);
+        expect(after.cleanups - before.cleanups).toBe(1);
+        expect(after.intervals - before.intervals).toBe(0);
+    });
+
+    test('cleanupAll takes the count back down, so a registry that is torn down cannot read as a leak', () => {
+        const before = getCleanupRegistryCensus();
+        const registry = createCleanupRegistry();
+        registry.registerListener(makeTarget(), 'click', () => {});
+        registry.registerObserver({ disconnect: () => {} });
+
+        registry.cleanupAll();
+
+        expect(getCleanupRegistryCensus()).toEqual(before);
+    });
+
+    test('the snapshot is a copy, not the live object', () => {
+        const snapshot = getCleanupRegistryCensus();
+        snapshot.listeners = 999;
+
+        expect(getCleanupRegistryCensus().listeners).not.toBe(999);
     });
 });

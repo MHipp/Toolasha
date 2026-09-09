@@ -2,7 +2,7 @@
  * Tests for Timer Registry Utility
  */
 import { describe, test, expect, vi } from 'vitest';
-import { createTimerRegistry } from './timer-registry.js';
+import { createTimerRegistry, getTimerRegistryCensus } from './timer-registry.js';
 
 describe('createTimerRegistry', () => {
     test('clears registered intervals and timeouts', () => {
@@ -60,5 +60,22 @@ describe('createTimerRegistry', () => {
 
         expect(clearIntervalSpy).not.toHaveBeenCalled();
         vi.useRealTimers();
+    });
+});
+
+describe('getTimerRegistryCensus', () => {
+    test('counts held timers by kind and drops back to zero on clearAll', () => {
+        const before = getTimerRegistryCensus();
+        const registry = createTimerRegistry();
+        registry.registerInterval(1);
+        registry.registerInterval(2);
+        registry.registerTimeout(3);
+
+        const held = getTimerRegistryCensus();
+        expect(held.intervals - before.intervals).toBe(2);
+        expect(held.timeouts - before.timeouts).toBe(1);
+
+        registry.clearAll();
+        expect(getTimerRegistryCensus()).toEqual(before);
     });
 });

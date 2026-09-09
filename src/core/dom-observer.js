@@ -525,6 +525,29 @@ class DOMObserver {
     }
 
     /**
+     * Just the counts, with nothing allocated per handler.
+     *
+     * `getStats()` below builds an object per registered handler, which is
+     * right for a one-off inspection and wrong for something sampled every
+     * second — the leak canary wants four numbers, not 150 objects a tick.
+     * Additive: nothing else changed to add it.
+     * @returns {{handlers: number, readyHandlers: number, pendingDebounces: number, classNameCache: number}}
+     */
+    getCounts() {
+        let handlers = this.handlers.length;
+        if (this._hasDeadHandlers) {
+            handlers = 0;
+            for (const handler of this.handlers) if (!handler.dead) handlers += 1;
+        }
+        return {
+            handlers,
+            readyHandlers: this.readyHandlers.length,
+            pendingDebounces: this.debounceTimers.size,
+            classNameCache: this._handlersByClassName.size,
+        };
+    }
+
+    /**
      * Get stats about registered handlers
      */
     getStats() {

@@ -90,6 +90,109 @@ export function stallCoverage(stall) {
     return { coverage, verdict };
 }
 
+/**
+ * The leak canary's tunables, in one place rather than as magic numbers spread
+ * through the rule below.
+ *
+ * - `maxSamples`: history kept per source, for the "was" figure and nothing
+ *   else. 60 samples at the panel's 1s cadence is a minute. Hard cap.
+ * - `maxSources`: how many distinct sources are tracked at all. A caller that
+ *   invented a fresh name every tick would otherwise be the leak. Hard cap.
+ * - `minSamples`: below this there is no trend, only noise.
+ * - `floor`: a count under this never raises a flag. Three listeners becoming
+ *   five is not a leak, and without a floor every registry cries wolf at boot.
+ * - `growthFactor`: how far above its lowest-ever count a source must have
+ *   climbed. Multiplicative so it scales with the registry's natural size.
+ */
+export const LEAK_CANARY_LIMITS = {
+    maxSamples: 60,
+    maxSources: 32,
+    minSamples: 10,
+    floor: 20,
+    growthFactor: 1.5,
+};
+
+/**
+ * Watch per-source counts for growth that only ever goes one way.
+ *
+ * The rule, stated once: **a source is flagged when it has never decreased
+ * since sampling began, has been sampled at least `minSamples` times, is at or
+ * above `floor`, and stands at least `growthFactor` times its lowest count
+ * ever seen.** A count that rises and falls — a debounce map during combat, a
+ * panel's listeners while it is open — is normal and is never flagged, because
+ * one decrease disqualifies it for the rest of the session.
+ *
+ * "Never decreased" is tracked as a counter and "lowest ever" as a running
+ * minimum, so the verdict covers the whole session while the retained history
+ * stays capped at `maxSamples` per source. That is the only thing this holds:
+ * numbers, never the objects being counted, so the canary cannot itself be the
+ * leak it is looking for.
+ *
+ * @param {Object} [options] - Overrides for `LEAK_CANARY_LIMITS`
+ * @returns {{sample: Function, getReport: Function, reset: Function}} The canary
+ */
+export function createLeakCanary(options = {}) {
+    const limits = { ...LEAK_CANARY_LIMITS, ...options };
+    /** @type {Map<string, {history: number[], samples: number, min: number, decreases: number}>} */
+    const sources = new Map();
+
+    /**
+     * Take one reading of every source.
+     * @param {Object<string, number>} counts - Source name to current count
+     */
+    const sample = (counts) => {
+        if (!counts) return;
+        for (const [name, value] of Object.entries(counts)) {
+            if (!Number.isFinite(value)) continue;
+            let source = sources.get(name);
+            if (!source) {
+                // The source cap is what stops a caller with generated names
+                // turning the canary into the leak
+                if (sources.size >= limits.maxSources) continue;
+                source = { history: [], samples: 0, min: value, decreases: 0 };
+                sources.set(name, source);
+            }
+            const previous = source.history[source.history.length - 1];
+            if (previous !== undefined && value < previous) source.decreases += 1;
+            source.samples += 1;
+            if (value < source.min) source.min = value;
+            source.history.push(value);
+            if (source.history.length > limits.maxSamples) source.history.shift();
+        }
+    };
+
+    /**
+     * What each source looks like, growing ones first.
+     * @returns {Array<{source: string, latest: number, lowest: number, samples: number,
+     *   decreases: number, growing: boolean}>} One row per source
+     */
+    const getReport = () => {
+        const rows = [];
+        for (const [name, source] of sources) {
+            const latest = source.history[source.history.length - 1] ?? 0;
+            const growing =
+                source.decreases === 0 &&
+                source.samples >= limits.minSamples &&
+                latest >= limits.floor &&
+                latest >= source.min * limits.growthFactor;
+            rows.push({
+                source: name,
+                latest,
+                lowest: source.min,
+                samples: source.samples,
+                decreases: source.decreases,
+                growing,
+            });
+        }
+        return rows.sort((a, b) => Number(b.growing) - Number(a.growing) || b.latest - a.latest);
+    };
+
+    /** Forget everything; called when the panel that owns the canary closes. */
+    const reset = () => sources.clear();
+
+    return { sample, getReport, reset, limits };
+}
+
 class PerformanceMonitor {
     constructor() {
         this.measurements = new Map();
@@ -666,6 +769,11 @@ export const timerCounters = {
 // through the published global (`bundle-bridge.js`), not through this module,
 // because it can be opened from a popped-out window with its own module graph.
 performanceMonitor.timerCounters = timerCounters;
+
+// Same reason: the pformance panel lives in a later bundle and reaches this
+// module only through the published singleton, so the canary factory has to be
+// reachable from the instance rather than as a bare named import.
+performanceMonitor.createLeakCanary = createLeakCanary;
 
 /**
  * The best name a timer can be given at tick time, when its creation stack is

@@ -5,7 +5,9 @@
  */
 
 import config from '../../core/config.js';
-import { createTimerRegistry } from '../../utils/timer-registry.js';
+import { createTimerRegistry, getTimerRegistryCensus } from '../../utils/timer-registry.js';
+import { getCleanupRegistryCensus } from '../../utils/cleanup-registry.js';
+import domObserver from '../../core/dom-observer.js';
 import { registerFloatingPanel, unregisterFloatingPanel, bringPanelToFront } from '../../utils/panel-z-index.js';
 import { formatReport, reportData, gapsBetween, initTimeline, initSummary } from '../../utils/performance-report.js';
 import { downloadFile } from '../../utils/csv-export.js';
@@ -115,6 +117,10 @@ class PFormancePanel {
         this.stallSectionCollapsed = false;
         this.startupCollapsed = false;
         this.attributionSectionCollapsed = false;
+        this.leakSectionCollapsed = false;
+        // Created on the first sample and dropped when the panel closes, so
+        // nothing the canary retains outlives the panel
+        this.leakCanary = null;
         // Read once per open, in show(); a mocked or absent config must not
         // take the panel with it
         this.attributionEnabled = false;
@@ -353,6 +359,11 @@ class PFormancePanel {
     _removePanel() {
         this._stopUpdating();
         setMonitorEnabled(false);
+        // The canary's history is bounded, but it is still the panel's, and a
+        // closed panel holds nothing
+        this.leakCanary?.reset();
+        this.leakCanary = null;
+        this._churnSample = null;
         if (this.panel) {
             unregisterFloatingPanel(this.panel);
             this.panel.remove();
@@ -458,7 +469,66 @@ class PFormancePanel {
         if (this.attributionEnabled) {
             const unattributed = this._createUnattributedLine(pm);
             if (unattributed) this.contentEl.appendChild(unattributed);
+            this.contentEl.appendChild(this._createLeakSection(pm));
         }
+    }
+
+    /**
+     * What our own registries are holding, and which of them only ever climbs.
+     *
+     * Sampled on the panel's existing 1s refresh — no second interval, no DOM
+     * walk. Every source is a counter the registry already maintains, so a
+     * sample is a handful of property reads.
+     *
+     * The counts are per source on purpose: one total would say "something is
+     * growing" and stop exactly where the useful part starts.
+     * @param {Object} pm - The performance monitor, which owns the canary factory
+     * @returns {HTMLElement} The section
+     * @private
+     */
+    _createLeakSection(pm) {
+        if (!this.leakCanary) this.leakCanary = pm.createLeakCanary?.() || null;
+        if (!this.leakCanary) {
+            return this._createSection('Leak canary', [], this.leakSectionCollapsed, (v) => {
+                this.leakSectionCollapsed = v;
+            });
+        }
+        this.leakCanary.sample(this._registryCounts());
+
+        const entries = this.leakCanary.getReport().map((row) => ({
+            name: (row.growing ? '⚠ ' : '') + row.source,
+            at: row.lowest,
+            stallMs: row.latest,
+            growing: row.growing,
+        }));
+        return this._createSection('Leak canary', entries, this.leakSectionCollapsed, (v) => {
+            this.leakSectionCollapsed = v;
+        });
+    }
+
+    /**
+     * One reading of every registry of ours that can say what it holds.
+     *
+     * Anything a feature keeps in a plain Map or Set of its own is invisible
+     * here — the canary can only see collections that report a count. A
+     * feature that wants watching registers a counter of its own; nothing is
+     * discovered automatically, because discovery would mean walking the heap.
+     * @returns {Object<string, number>} Source name to current count
+     * @private
+     */
+    _registryCounts() {
+        const counts = {};
+        for (const [kind, value] of Object.entries(getCleanupRegistryCensus())) {
+            counts[`cleanup:${kind}`] = value;
+        }
+        for (const [kind, value] of Object.entries(getTimerRegistryCensus())) {
+            counts[`timers:${kind}`] = value;
+        }
+        const dom = domObserver?.getCounts?.();
+        if (dom) {
+            for (const [kind, value] of Object.entries(dom)) counts[`dom:${kind}`] = value;
+        }
+        return counts;
     }
 
     /**
@@ -749,14 +819,16 @@ class PFormancePanel {
                 ? ['Name', 'Started', 'Time (ms)']
                 : title === 'Main-thread Stalls'
                   ? ['Suspects', 'At', 'Stall ms']
-                  : ['Name', 'Calls/s', 'Total ms', 'CPU %'];
+                  : title === 'Leak canary'
+                    ? ['Source', 'Lowest', 'Now']
+                    : ['Name', 'Calls/s', 'Total ms', 'CPU %'];
 
         for (const col of columns) {
             const th = document.createElement('th');
             th.textContent = col;
             Object.assign(th.style, {
                 padding: '3px 5px',
-                textAlign: col === 'Name' ? 'left' : 'right',
+                textAlign: col === 'Name' || col === 'Source' || col === 'Suspects' ? 'left' : 'right',
                 borderBottom: `1px solid ${COLORS.borderDim}`,
                 color: COLORS.textDim,
                 fontWeight: 'normal',
@@ -775,6 +847,13 @@ class PFormancePanel {
                 row.appendChild(this._cell((entry.startedAt / 1000).toFixed(1) + 's', 'right'));
                 row.appendChild(this._cell(entry.totalMs.toFixed(1), 'right'));
                 if (entry.background) row.style.color = COLORS.textDim;
+            } else if (title === 'Leak canary') {
+                row.appendChild(this._cell(entry.name, 'left'));
+                row.appendChild(this._cell(String(entry.at), 'right'));
+                row.appendChild(this._cell(String(entry.stallMs), 'right'));
+                // Only monotonic growth is coloured; a count that has ever
+                // fallen is normal and stays quiet
+                if (entry.growing) row.style.color = COLORS.warning;
             } else if (title === 'Main-thread Stalls') {
                 row.appendChild(this._cell(entry.who, 'left'));
                 row.appendChild(this._cell((entry.at / 1000).toFixed(1) + 's', 'right'));

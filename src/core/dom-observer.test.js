@@ -530,3 +530,24 @@ describe('DOMObserver readiness lifecycle (TLA-025)', () => {
         spy.mockRestore();
     });
 });
+
+describe('getCounts', () => {
+    test('reports the held collections of the observer as plain numbers', () => {
+        const counts = domObserver.getCounts();
+
+        expect(typeof counts.handlers).toBe('number');
+        expect(typeof counts.readyHandlers).toBe('number');
+        expect(typeof counts.pendingDebounces).toBe('number');
+        expect(typeof counts.classNameCache).toBe('number');
+    });
+
+    test('registering a handler raises the count and unregistering lowers it again', () => {
+        const before = domObserver.getCounts().handlers;
+        const unregister = domObserver.register('leak-canary-probe', () => false);
+
+        expect(domObserver.getCounts().handlers).toBe(before + 1);
+
+        unregister();
+        expect(domObserver.getCounts().handlers).toBe(before);
+    });
+});

@@ -4,6 +4,34 @@
  */
 
 /**
+ * How many things every live cleanup registry in this bundle is holding right
+ * now, by kind.
+ *
+ * Additive and O(1): each `register*` increments, `cleanupAll` decrements by
+ * what it released. Nothing is retained here that the registries were not
+ * already retaining — these are counters, not references — so reading them
+ * cannot itself leak, and sampling them costs a property read.
+ *
+ * The point of counting by kind rather than in total is that "which of our
+ * registries is growing" is the only actionable half of a leak report.
+ */
+const census = {
+    listeners: 0,
+    observers: 0,
+    intervals: 0,
+    timeouts: 0,
+    cleanups: 0,
+};
+
+/**
+ * A snapshot of what the live cleanup registries hold.
+ * @returns {{listeners: number, observers: number, intervals: number, timeouts: number, cleanups: number}}
+ */
+export function getCleanupRegistryCensus() {
+    return { ...census };
+}
+
+/**
  * Create a cleanup registry for deterministic teardown.
  * @returns {{
  *   registerListener: (target: EventTarget, event: string, handler: Function, options?: Object) => void,
@@ -29,6 +57,7 @@ export function createCleanupRegistry() {
 
         target.addEventListener(event, handler, options);
         listeners.push({ target, event, handler, options });
+        census.listeners += 1;
     };
 
     const registerObserver = (observer) => {
@@ -38,6 +67,7 @@ export function createCleanupRegistry() {
         }
 
         observers.push(observer);
+        census.observers += 1;
     };
 
     const registerInterval = (intervalId) => {
@@ -47,6 +77,7 @@ export function createCleanupRegistry() {
         }
 
         intervals.push(intervalId);
+        census.intervals += 1;
     };
 
     const registerTimeout = (timeoutId) => {
@@ -56,6 +87,7 @@ export function createCleanupRegistry() {
         }
 
         timeouts.push(timeoutId);
+        census.timeouts += 1;
     };
 
     const registerCleanup = (cleanupFn) => {
@@ -65,6 +97,7 @@ export function createCleanupRegistry() {
         }
 
         customCleanups.push(cleanupFn);
+        census.cleanups += 1;
     };
 
     const cleanupAll = () => {
@@ -75,6 +108,7 @@ export function createCleanupRegistry() {
                 console.error('[CleanupRegistry] Failed to remove listener:', error);
             }
         });
+        census.listeners -= listeners.length;
         listeners.length = 0;
 
         observers.forEach((observer) => {
@@ -84,6 +118,7 @@ export function createCleanupRegistry() {
                 console.error('[CleanupRegistry] Failed to disconnect observer:', error);
             }
         });
+        census.observers -= observers.length;
         observers.length = 0;
 
         intervals.forEach((intervalId) => {
@@ -93,6 +128,7 @@ export function createCleanupRegistry() {
                 console.error('[CleanupRegistry] Failed to clear interval:', error);
             }
         });
+        census.intervals -= intervals.length;
         intervals.length = 0;
 
         timeouts.forEach((timeoutId) => {
@@ -102,6 +138,7 @@ export function createCleanupRegistry() {
                 console.error('[CleanupRegistry] Failed to clear timeout:', error);
             }
         });
+        census.timeouts -= timeouts.length;
         timeouts.length = 0;
 
         customCleanups.forEach((cleanupFn) => {
@@ -111,6 +148,7 @@ export function createCleanupRegistry() {
                 console.error('[CleanupRegistry] Custom cleanup failed:', error);
             }
         });
+        census.cleanups -= customCleanups.length;
         customCleanups.length = 0;
     };
 

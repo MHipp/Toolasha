@@ -100,45 +100,59 @@ describe('opening and closing', () => {
  * and the heap trend. All three are one setting, off by default, and with it
  * off the panel must render exactly what it rendered before they existed.
  */
-describe('attribution extras', () => {
-    /** A monitor that can answer the extras' questions */
-    const richMonitor = {
-        ...monitor,
-        windowMs: 5000,
-        getStalls: () => [
-            { duration: 300, coveredMs: 0, sinceBoot: 1000, time: Date.now(), suspects: [], recentEvents: [] },
-            {
-                duration: 200,
-                coveredMs: 100,
-                sinceBoot: 2000,
-                time: Date.now(),
-                suspects: [{ name: 'networth', ms: 100 }],
-                recentEvents: [],
-            },
-        ],
-        stallCoverage: (stall) => {
-            const coverage = (stall.coveredMs || 0) / stall.duration;
-            return {
-                coverage,
-                verdict: coverage >= 0.8 ? 'ours' : coverage <= 0.2 ? 'not-ours' : 'partly-ours',
-            };
-        },
-        getStallAttribution: () => ({
-            windowMs: 5000,
-            stalls: 2,
-            totalMs: 500,
-            ourStalls: 0,
-            partlyOursStalls: 1,
-            unattributedStalls: 1,
-            unattributedMs: 400,
-        }),
-    };
+let leakSamples = [];
+let leakReport = [];
+let leakReset = 0;
 
+/** A monitor that can answer the extras' questions */
+const richMonitor = {
+    ...monitor,
+    windowMs: 5000,
+    getStalls: () => [
+        { duration: 300, coveredMs: 0, sinceBoot: 1000, time: Date.now(), suspects: [], recentEvents: [] },
+        {
+            duration: 200,
+            coveredMs: 100,
+            sinceBoot: 2000,
+            time: Date.now(),
+            suspects: [{ name: 'networth', ms: 100 }],
+            recentEvents: [],
+        },
+    ],
+    stallCoverage: (stall) => {
+        const coverage = (stall.coveredMs || 0) / stall.duration;
+        return {
+            coverage,
+            verdict: coverage >= 0.8 ? 'ours' : coverage <= 0.2 ? 'not-ours' : 'partly-ours',
+        };
+    },
+    createLeakCanary: () => ({
+        sample: (counts) => leakSamples.push(counts),
+        getReport: () => leakReport,
+        reset: () => {
+            leakReset += 1;
+        },
+    }),
+    getStallAttribution: () => ({
+        windowMs: 5000,
+        stalls: 2,
+        totalMs: 500,
+        ourStalls: 0,
+        partlyOursStalls: 1,
+        unattributedStalls: 1,
+        unattributedMs: 400,
+    }),
+};
+
+describe('attribution extras', () => {
     /** @returns {string} Everything the panel body currently says */
     const body = () => onScreen().children[1].textContent;
 
     beforeEach(() => {
         window.Toolasha = { Core: { performanceMonitor: richMonitor } };
+        leakSamples = [];
+        leakReport = [];
+        leakReset = 0;
     });
 
     test('with the setting off the panel body says nothing about attribution', () => {
@@ -196,5 +210,57 @@ describe('attribution extras', () => {
         } finally {
             if (saved) globalThis.PerformanceObserver = saved;
         }
+    });
+});
+
+describe('the leak canary in the panel', () => {
+    beforeEach(() => {
+        window.Toolasha = { Core: { performanceMonitor: richMonitor } };
+        leakSamples = [];
+        leakReport = [];
+        leakReset = 0;
+    });
+
+    test('is not sampled at all while the extras are off', () => {
+        pformancePanel.show();
+
+        expect(leakSamples).toEqual([]);
+    });
+
+    test('samples each of our registries separately on the panel refresh', () => {
+        settings.pformanceAttribution = true;
+        pformancePanel.show();
+
+        expect(leakSamples).toHaveLength(1);
+        const keys = Object.keys(leakSamples[0]);
+        expect(keys).toContain('cleanup:listeners');
+        expect(keys).toContain('timers:intervals');
+        expect(keys).toContain('dom:handlers');
+        expect(keys).toContain('dom:pendingDebounces');
+        // Per source, never one total
+        expect(keys.length).toBeGreaterThan(5);
+    });
+
+    test('a growing source is marked, a stable one is not', () => {
+        settings.pformanceAttribution = true;
+        leakReport = [
+            { source: 'chat:processedMessages', latest: 4200, lowest: 12, samples: 90, decreases: 0, growing: true },
+            { source: 'dom:handlers', latest: 151, lowest: 150, samples: 90, decreases: 3, growing: false },
+        ];
+        pformancePanel.show();
+
+        const body = onScreen().children[1].textContent;
+        expect(body).toContain('Leak canary');
+        expect(body).toContain('⚠ chat:processedMessages');
+        expect(body).toContain('4200');
+        expect(body).not.toContain('⚠ dom:handlers');
+    });
+
+    test('closing the panel drops what the canary held', () => {
+        settings.pformanceAttribution = true;
+        pformancePanel.show();
+        pformancePanel.hide();
+
+        expect(leakReset).toBe(1);
     });
 });
