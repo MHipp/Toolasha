@@ -1148,7 +1148,7 @@ class DungeonTrackerStorage {
                     outlierIndices.add(index);
                     console.warn(
                         `[DungeonTrackerStorage] Scrubbing outlier run: ${groupKey} ` +
-                            `duration=${Math.round(duration)}s median=${Math.round(median)}s threshold=${Math.round(threshold)}s`
+                            `duration=${Math.round(duration / 1000)}s median=${Math.round(median / 1000)}s threshold=${Math.round(threshold / 1000)}s`
                     );
                 }
             }
