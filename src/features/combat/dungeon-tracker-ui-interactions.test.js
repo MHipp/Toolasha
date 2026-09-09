@@ -14,15 +14,29 @@ import { describe, test, expect, beforeEach, vi } from 'vitest';
 
 const askChoiceMock = vi.fn();
 
-vi.mock('./dungeon-tracker.js', () => ({ default: { backfillFromChatHistory: vi.fn() } }));
+vi.mock('./dungeon-tracker.js', () => ({
+    default: {
+        backfillFromChatHistory: vi.fn(),
+        getCurrentRun: vi.fn(() => null),
+        getPendingDungeon: vi.fn(() => null),
+    },
+}));
 vi.mock('./dungeon-tracker-chat-annotations.js', () => ({ default: { refreshRunCounts: vi.fn() } }));
 vi.mock('../../core/config.js', () => ({ default: { Z_NOTIFICATION: 9999 } }));
-vi.mock('./dungeon-tracker-storage.js', () => ({ default: { clearAllRuns: vi.fn(async () => true) } }));
+vi.mock('./dungeon-tracker-storage.js', () => ({
+    default: {
+        clearAllRuns: vi.fn(async () => true),
+        getRunsForCharacter: vi.fn(async () => []),
+        latestStatsKey: vi.fn(async () => null),
+        setAverageBaseline: vi.fn(async () => true),
+    },
+}));
 vi.mock('../../utils/panel-z-index.js', () => ({ bringPanelToFront: vi.fn() }));
 vi.mock('../../utils/choice-dialog.js', () => ({ askChoice: (...args) => askChoiceMock(...args) }));
 
 const { default: DungeonTrackerUIInteractions } = await import('./dungeon-tracker-ui-interactions.js');
 const { default: dungeonTrackerStorage } = await import('./dungeon-tracker-storage.js');
+const { default: dungeonTracker } = await import('./dungeon-tracker.js');
 
 /**
  * Build a minimal DOM container plus a fake state object. Only the elements
@@ -40,6 +54,8 @@ function makeState(overrides = {}) {
     return {
         filterDungeon: 'all',
         filterTeam: 'all',
+        filterTier: 'all',
+        filterCharacter: 'mine',
         position: null,
         hasActiveFilters() {
             return this.filterDungeon !== 'all' || this.filterTeam !== 'all';
@@ -58,6 +74,11 @@ beforeEach(() => {
     document.body.innerHTML = '';
     askChoiceMock.mockReset();
     dungeonTrackerStorage.clearAllRuns.mockClear();
+    dungeonTrackerStorage.setAverageBaseline.mockClear();
+    dungeonTrackerStorage.getRunsForCharacter.mockReset().mockResolvedValue([]);
+    dungeonTrackerStorage.latestStatsKey.mockReset().mockResolvedValue(null);
+    dungeonTracker.getCurrentRun.mockReset().mockReturnValue(null);
+    dungeonTracker.getPendingDungeon.mockReset().mockReturnValue(null);
 });
 
 describe('filter indicator', () => {
@@ -220,5 +241,128 @@ describe('global Ctrl+Shift+D shortcut removal', () => {
         expect(keydownRegistrations).toHaveLength(0);
 
         addSpy.mockRestore();
+    });
+});
+
+describe('average baseline marker target', () => {
+    const DEN = 'A,B::Chimerical Den';
+    const CIRCUS = 'C,D::Sinister Circus';
+
+    /** Stored runs, newest first, covering both a filtered and an unfiltered dungeon */
+    const runs = [
+        { teamKey: 'C,D', dungeonName: 'Sinister Circus', tier: 3 },
+        { teamKey: 'A,B', dungeonName: 'Chimerical Den', tier: 2 },
+    ];
+
+    /** Wire up the button with a given panel state and click it */
+    async function press(state) {
+        const container = buildContainer('<button id="mwi-dt-avg-reset"></button>');
+        const interactions = new DungeonTrackerUIInteractions(state, null, null);
+        interactions.container = container;
+        interactions.callbacks = {};
+        interactions.setupAverageBaseline();
+        container.querySelector('#mwi-dt-avg-reset').click();
+        return container;
+    }
+
+    test('marks the dungeon the panel is filtered to, not the newest stored run', async () => {
+        dungeonTrackerStorage.getRunsForCharacter.mockResolvedValue(runs);
+        dungeonTrackerStorage.latestStatsKey.mockResolvedValue(CIRCUS);
+        askChoiceMock.mockResolvedValue('mark');
+
+        await press(makeState({ filterDungeon: 'Chimerical Den', filterTeam: 'A,B' }));
+        await vi.waitFor(() => expect(dungeonTrackerStorage.setAverageBaseline).toHaveBeenCalledTimes(1));
+
+        expect(dungeonTrackerStorage.setAverageBaseline.mock.calls[0][0]).toBe(DEN);
+    });
+
+    test('the confirm names the dungeon that will actually be marked', async () => {
+        dungeonTrackerStorage.getRunsForCharacter.mockResolvedValue(runs);
+        dungeonTrackerStorage.latestStatsKey.mockResolvedValue(CIRCUS);
+        askChoiceMock.mockResolvedValue(null);
+
+        await press(makeState({ filterDungeon: 'Chimerical Den', filterTeam: 'A,B' }));
+        await vi.waitFor(() => expect(askChoiceMock).toHaveBeenCalledTimes(1));
+
+        const { message } = askChoiceMock.mock.calls[0][0];
+        expect(message).toContain('Chimerical Den');
+        expect(message).not.toContain('Sinister Circus');
+        expect(message).toContain('Nothing is deleted');
+        expect(dungeonTrackerStorage.setAverageBaseline).not.toHaveBeenCalled();
+    });
+
+    test('a run in progress outranks both the filters and the newest stored run', async () => {
+        dungeonTracker.getCurrentRun.mockReturnValue({
+            dungeonName: 'Chimerical Den',
+            keyCountsMap: { B: 1, A: 1 },
+        });
+        dungeonTrackerStorage.getRunsForCharacter.mockResolvedValue(runs);
+        dungeonTrackerStorage.latestStatsKey.mockResolvedValue(CIRCUS);
+        askChoiceMock.mockResolvedValue('mark');
+
+        await press(makeState({ filterDungeon: 'Sinister Circus', filterTeam: 'C,D' }));
+        await vi.waitFor(() => expect(dungeonTrackerStorage.setAverageBaseline).toHaveBeenCalledTimes(1));
+
+        expect(dungeonTrackerStorage.setAverageBaseline.mock.calls[0][0]).toBe(DEN);
+    });
+
+    test('an ambiguous panel offers the choice and marks nothing when it is dismissed', async () => {
+        // A tier filter alone leaves two team-and-dungeon pairs on screen
+        dungeonTrackerStorage.getRunsForCharacter.mockResolvedValue([
+            { teamKey: 'C,D', dungeonName: 'Sinister Circus', tier: 2 },
+            { teamKey: 'A,B', dungeonName: 'Chimerical Den', tier: 2 },
+        ]);
+        dungeonTrackerStorage.latestStatsKey.mockResolvedValue(CIRCUS);
+        askChoiceMock.mockResolvedValue(null);
+
+        await press(makeState({ filterTier: '2' }));
+        await vi.waitFor(() => expect(askChoiceMock).toHaveBeenCalledTimes(1));
+
+        const [ask] = askChoiceMock.mock.calls[0];
+        expect(ask.choices.map((c) => c.value)).toContain(DEN);
+        expect(ask.choices.map((c) => c.value)).toContain(CIRCUS);
+        expect(ask.message).toContain('Nothing is deleted');
+        expect(dungeonTrackerStorage.setAverageBaseline).not.toHaveBeenCalled();
+    });
+
+    test('picking one of the ambiguous choices marks exactly that one', async () => {
+        dungeonTrackerStorage.getRunsForCharacter.mockResolvedValue([
+            { teamKey: 'C,D', dungeonName: 'Sinister Circus', tier: 2 },
+            { teamKey: 'A,B', dungeonName: 'Chimerical Den', tier: 2 },
+        ]);
+        askChoiceMock.mockResolvedValue(DEN);
+
+        await press(makeState({ filterTier: '2' }));
+        await vi.waitFor(() => expect(dungeonTrackerStorage.setAverageBaseline).toHaveBeenCalledTimes(1));
+
+        expect(dungeonTrackerStorage.setAverageBaseline.mock.calls[0][0]).toBe(DEN);
+    });
+
+    test('a panel with no state at all falls back to the newest run and says so in the confirm', async () => {
+        dungeonTrackerStorage.getRunsForCharacter.mockResolvedValue(runs);
+        dungeonTrackerStorage.latestStatsKey.mockResolvedValue(CIRCUS);
+        askChoiceMock.mockResolvedValue('mark');
+
+        await press(makeState());
+        await vi.waitFor(() => expect(dungeonTrackerStorage.setAverageBaseline).toHaveBeenCalledTimes(1));
+
+        expect(dungeonTrackerStorage.setAverageBaseline.mock.calls[0][0]).toBe(CIRCUS);
+        const { message } = askChoiceMock.mock.calls[0][0];
+        expect(message).toContain('Sinister Circus');
+        expect(message).toContain('most recent');
+    });
+
+    test('a filter matching no stored run refuses instead of marking something else', async () => {
+        dungeonTrackerStorage.getRunsForCharacter.mockResolvedValue(runs);
+        dungeonTrackerStorage.latestStatsKey.mockResolvedValue(CIRCUS);
+        const alertMock = vi.fn();
+        vi.stubGlobal('alert', alertMock);
+
+        await press(makeState({ filterDungeon: 'Aqua Planet' }));
+        await vi.waitFor(() => expect(alertMock).toHaveBeenCalledTimes(1));
+
+        expect(askChoiceMock).not.toHaveBeenCalled();
+        expect(dungeonTrackerStorage.setAverageBaseline).not.toHaveBeenCalled();
+        vi.unstubAllGlobals();
     });
 });

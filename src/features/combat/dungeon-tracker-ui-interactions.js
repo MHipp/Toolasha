@@ -11,6 +11,39 @@ import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { bringPanelToFront } from '../../utils/panel-z-index.js';
 import { askChoice } from '../../utils/choice-dialog.js';
 
+/**
+ * How many team-and-dungeon pairs may be offered as buttons before the panel is
+ * too vague to answer at all. Six fills the dialog; a longer list is a filter
+ * the player has not set yet, not a choice they can read.
+ */
+const MAX_BASELINE_CHOICES = 6;
+
+/** Why the confirm names what it names, so the target is never a silent pick */
+const RUN_NOTE = 'This is the run in progress.';
+const FILTER_NOTE = 'This is what the run history is filtered to.';
+const FALLBACK_NOTE =
+    'The panel is not filtered to one dungeon and no run is in progress, so this is your most recent run.';
+
+/**
+ * The team half of a `teamKey::dungeonName` marker key.
+ * @param {string} statsKey - Marker key
+ * @returns {string} Comma-separated player names, or '' when malformed
+ */
+function teamOfStatsKey(statsKey) {
+    const at = statsKey.indexOf('::');
+    return at === -1 ? '' : statsKey.slice(0, at);
+}
+
+/**
+ * The dungeon half of a `teamKey::dungeonName` marker key.
+ * @param {string} statsKey - Marker key
+ * @returns {string} Dungeon name
+ */
+function dungeonOfStatsKey(statsKey) {
+    const at = statsKey.indexOf('::');
+    return at === -1 ? statsKey : statsKey.slice(at + 2);
+}
+
 class DungeonTrackerUIInteractions {
     constructor(state, chartRef, historyRef) {
         this.state = state;
@@ -325,29 +358,9 @@ class DungeonTrackerUIInteractions {
 
         resetBtn.addEventListener('click', async () => {
             try {
-                // The newest stored run names the dungeon; with no runs at all
-                // there is nothing to mark and nothing to guess from
-                const statsKey = await dungeonTrackerStorage.latestStatsKey();
-                if (!statsKey) {
-                    alert('No runs recorded yet, so there is no average to restart.');
-                    return;
-                }
-                const dungeonName = statsKey.slice(statsKey.indexOf('::') + 2);
-
-                const confirmed = await askChoice({
-                    title: 'Start the average here',
-                    message:
-                        `Start the party chat average for ${dungeonName} from now on?
-
-` +
-                        'Earlier runs stop counting toward the average. Nothing is deleted — ' +
-                        'every run keeps its number and stays in the history.',
-                    choices: [
-                        { value: 'mark', label: 'Start here' },
-                        { value: null, label: 'Cancel' },
-                    ],
-                });
-                if (!confirmed) return;
+                const target = await this._averageBaselineTargets();
+                const statsKey = await this._chooseAverageBaselineTarget(target);
+                if (!statsKey) return;
 
                 await dungeonTrackerStorage.setAverageBaseline(statsKey, Date.now());
                 // Re-annotate so the chat lines already on screen recompute
@@ -357,6 +370,143 @@ class DungeonTrackerUIInteractions {
                 alert('Failed to set the average baseline. Check console for details.');
             }
         });
+    }
+
+    /**
+     * Which team-and-dungeon the panel is actually showing.
+     *
+     * In order of how strongly it states what the player means:
+     *  1. the run in progress — the header names it, and nothing on screen is a
+     *     louder statement of intent than the dungeon being run right now;
+     *  2. the run-history filters the player set, which is what the run list,
+     *     the chart and the stats above the button are all describing;
+     *  3. nothing at all, which is not resolved here — the caller falls back to
+     *     the newest stored run and says in the confirm that it did.
+     *
+     * A live run only names a team once the party's key counts have arrived
+     * (the same roster the save path files the finished run under). Until then
+     * — and for the provisional card shown for a run that was already going at
+     * page load — the dungeon is still known, so it narrows the candidates
+     * rather than naming one outright.
+     *
+     * @returns {Promise<{keys: string[], source: 'run'|'filters'|'none'}>}
+     *   Distinct `teamKey::dungeonName` keys, newest run first, and what named
+     *   them. More than one key means the panel is genuinely ambiguous.
+     */
+    async _averageBaselineTargets() {
+        const state = this.state || {};
+        const run = dungeonTracker.getCurrentRun?.() || dungeonTracker.getPendingDungeon?.() || null;
+        const liveDungeon = run?.dungeonName && run.dungeonName !== 'Unknown' ? run.dungeonName : null;
+        const liveTeam = Object.keys(run?.keyCountsMap || {}).sort();
+        if (liveDungeon && liveTeam.length > 0) {
+            return { keys: [`${liveTeam.join(',')}::${liveDungeon}`], source: 'run' };
+        }
+
+        // The live dungeon acts as a filter the player did not have to set
+        const filterDungeon = liveDungeon || state.filterDungeon || 'all';
+        const filterTeam = state.filterTeam || 'all';
+        const filterTier = state.filterTier || 'all';
+        const narrowed = filterDungeon !== 'all' || filterTeam !== 'all' || filterTier !== 'all';
+
+        // The same runs the panel is listing, narrowed the same way, so a
+        // candidate can never be something the player is not looking at
+        const runs = await dungeonTrackerStorage.getRunsForCharacter(state.filterCharacter);
+        const keys = [];
+        for (const stored of runs || []) {
+            if (!stored?.teamKey || !stored?.dungeonName) continue;
+            if (filterDungeon !== 'all' && stored.dungeonName !== filterDungeon) continue;
+            if (filterTeam !== 'all' && stored.teamKey !== filterTeam) continue;
+            if (filterTier !== 'all' && String(stored.tier) !== filterTier) continue;
+            const key = `${stored.teamKey}::${stored.dungeonName}`;
+            if (!keys.includes(key)) keys.push(key);
+        }
+        return { keys, source: narrowed ? 'filters' : 'none' };
+    }
+
+    /**
+     * Confirm the marker's target with the player, and never mark one they were
+     * not shown. One candidate is confirmed by name; several are offered as the
+     * choice itself, because silently picking one of them is the bug this
+     * replaced. Returns null for every answer that must not write.
+     *
+     * @param {{keys: string[], source: 'run'|'filters'|'none'}} target - From
+     *   {@link DungeonTrackerUIInteractions#_averageBaselineTargets}
+     * @returns {Promise<string|null>} The `teamKey::dungeonName` to mark, or null
+     */
+    async _chooseAverageBaselineTarget({ keys, source }) {
+        // A panel saying nothing about what it shows still has a defensible
+        // answer — the run that just finished — but the confirm has to admit
+        // that is where the name came from, since the panel did not supply it
+        if (source === 'none' && keys.length !== 1) {
+            const latest = await dungeonTrackerStorage.latestStatsKey();
+            if (!latest) {
+                alert('No runs recorded yet, so there is no average to restart.');
+                return null;
+            }
+            return (await this._confirmAverageBaseline(latest, FALLBACK_NOTE)) ? latest : null;
+        }
+
+        if (keys.length === 0) {
+            alert("No runs match the panel's filters, so there is no average to restart.");
+            return null;
+        }
+
+        if (keys.length === 1) {
+            const note = source === 'run' ? RUN_NOTE : source === 'filters' ? FILTER_NOTE : '';
+            return (await this._confirmAverageBaseline(keys[0], note)) ? keys[0] : null;
+        }
+
+        // Too many to read as buttons: narrowing the filters is the fix, and
+        // guessing on the player's behalf is exactly what must not happen
+        if (keys.length > MAX_BASELINE_CHOICES) {
+            alert(
+                `The panel is showing ${keys.length} different team-and-dungeon combinations, ` +
+                    'so there is no single average to restart. Filter the run history down to the ' +
+                    'one you mean, then press this again.'
+            );
+            return null;
+        }
+
+        const chosen = await askChoice({
+            title: 'Which average should start here?',
+            message:
+                'The panel is showing more than one team and dungeon, so pick the one to start ' +
+                'from now on.\n\nEarlier runs of it stop counting toward its average. Nothing is ' +
+                'deleted — every run keeps its number and stays in the history.',
+            choices: [
+                ...keys.map((key) => ({
+                    value: key,
+                    label: dungeonOfStatsKey(key),
+                    hint: `Team: ${teamOfStatsKey(key).split(',').join(', ')}`,
+                })),
+                { value: null, label: 'Cancel' },
+            ],
+        });
+        return chosen || null;
+    }
+
+    /**
+     * Ask about one named team-and-dungeon.
+     * @param {string} statsKey - `teamKey::dungeonName`
+     * @param {string} note - One line saying where that name came from
+     * @returns {Promise<boolean>} Whether the player said yes
+     */
+    async _confirmAverageBaseline(statsKey, note) {
+        const team = teamOfStatsKey(statsKey).split(',').join(', ');
+        const confirmed = await askChoice({
+            title: 'Start the average here',
+            message:
+                `Start the party chat average for ${dungeonOfStatsKey(statsKey)} from now on?\n\n` +
+                `Team: ${team}\n` +
+                (note ? `${note}\n` : '') +
+                '\nEarlier runs stop counting toward the average. Nothing is deleted — ' +
+                'every run keeps its number and stays in the history.',
+            choices: [
+                { value: 'mark', label: 'Start here' },
+                { value: null, label: 'Cancel' },
+            ],
+        });
+        return Boolean(confirmed);
     }
 
     /**
