@@ -695,6 +695,36 @@ export function compareTrialStats({ reported, measured } = {}) {
     return joinTrialStats({ reported, measured });
 }
 
+/**
+ * Slot → `characterId`, from the raw `new_guild_battle.players[]`.
+ *
+ * The companion to {@link rosterFromBattle}, and deliberately not the same
+ * thing. That one is the *name*-bearing view: it drops any entry it cannot put
+ * a name to, so the roster it returns can never hold a slot whose name is
+ * unknown. But the payload states `character.id` on those entries anyway — a
+ * fifty-player trial has been seen sending ids with the names trimmed off — and
+ * an id with no name is exactly what is needed to answer "which of these slots
+ * is me". So this view drops nothing that carries an id.
+ *
+ * Ids are kept as numbers, as the wire sends them; callers compare as text
+ * because `dataManager` holds a string.
+ *
+ * @param {Object} data - A `new_guild_battle` payload
+ * @returns {Object<string, number>} Slot index → character id, for every slot that stated one
+ */
+function slotIdsFromBattle(data) {
+    const players = Array.isArray(data?.players) ? data.players : [];
+    const slotIds = {};
+
+    players.forEach((player, index) => {
+        const id = Number(player?.character?.id);
+        if (!Number.isFinite(id) || id <= 0) return;
+        slotIds[index] = id;
+    });
+
+    return slotIds;
+}
+
 class GuildTrialDamage {
     constructor() {
         this.initialized = false;
@@ -791,6 +821,18 @@ class GuildTrialDamage {
         this.spectatedBossName = null;
         /** Slot → `{name, characterId}`, from `new_guild_battle` */
         this.roster = {};
+        /**
+         * Slot → `characterId`, from the *raw* `new_guild_battle.players[]`.
+         *
+         * Deliberately not the roster. {@link rosterFromBattle} drops any entry
+         * it cannot put a name to, so the named roster never holds a slot whose
+         * name is unknown — even though the payload stated that slot's
+         * `character.id` outright. This map keeps those ids, and it is the only
+         * thing that can say which slot is the watcher's when the names could
+         * not be read. Cleared with the roster at every wave, because the slots
+         * re-deal with it — see {@link GuildTrialDamage#_newSpectatedWave}.
+         */
+        this.slotIds = {};
         /**
          * Slots whose own action counters have been seen. Once the viewer's
          * slot alone; the game now streams counters for every present player,
@@ -988,6 +1030,12 @@ class GuildTrialDamage {
             // from the guild roster this client already keeps regardless of
             // whether the fight view is even open (`_knownName`)
             const roster = rosterFromBattle(data, (characterId) => this._knownName(characterId));
+            // …and, separately, every id the payload stated, named or not. The
+            // roster is the name-bearing view of `players[]` and drops what it
+            // cannot name; this is the id-bearing one and drops nothing. Only
+            // {@link _ownIdentity} reads it, and only on an exact id match.
+            const slotIds = slotIdsFromBattle(data);
+            if (Object.keys(slotIds).length) this.slotIds = slotIds;
             if (Object.keys(roster).length) {
                 this.roster = roster;
                 for (const [index, entry] of Object.entries(roster)) {
@@ -999,17 +1047,25 @@ class GuildTrialDamage {
                         this.characterNames[entry.characterId] = entry.name;
                     }
                 }
-                // …and written down with the battle it belongs to. This message
-                // fires once per tier and never again, so a page refresh
-                // mid-tier used to lose every name — "Player 2" on a
-                // leaderboard whose roster had been on the wire minutes before
-                // Keyed by battle AND tier: the slots re-deal per tier, so a
-                // roster adopted across tiers would re-create the very
-                // mislabelling the per-wave re-deal exists to prevent
-                if (battleId) {
-                    this.storedRoster = { battleId, tier, roster, at: now };
-                    saveTrialRoster(this.storedRoster).catch(() => {});
-                }
+            }
+            // …and written down with the battle it belongs to. This message
+            // fires once per tier and never again, so a page refresh mid-tier
+            // used to lose every name — "Player 2" on a leaderboard whose
+            // roster had been on the wire minutes before. Keyed by battle AND
+            // tier: the slots re-deal per tier, so a roster adopted across
+            // tiers would re-create the very mislabelling the per-wave re-deal
+            // exists to prevent.
+            //
+            // The id map rides along, because a refresh mid-tier is the *only*
+            // time either is worth anything. `ownerId` stamps who was logged in
+            // when it was written: an id map adopted by a different character
+            // could pin that character's name onto a slot the map never
+            // described, and a wrong own slot mislabels where a missing one
+            // merely leaves a placeholder.
+            if (battleId && (Object.keys(roster).length || Object.keys(slotIds).length)) {
+                const ownerId = dataManager.getCurrentCharacterId?.() ?? null;
+                this.storedRoster = { battleId, tier, roster, slotIds, ownerId, at: now };
+                saveTrialRoster(this.storedRoster).catch(() => {});
             }
 
             this._noteBattleMonsters(data.monsters, tier, now);
@@ -1533,6 +1589,7 @@ class GuildTrialDamage {
         // not. The names come back on the wave's own `new_guild_battle`
         // roster, or through the resolver's rungs for a wave without one.
         this.roster = {};
+        this.slotIds = {};
         this.unitNames = {};
         this.names = {};
         // …and the own-unit binding re-confirms per wave, by counters, rather
@@ -1771,6 +1828,20 @@ class GuildTrialDamage {
         if ((held.tier ?? null) !== (tier ?? null)) return;
         if (Number.isFinite(held.at) && Date.now() - held.at > TRIAL_ACTIVE_MS) return;
 
+        // The id map first, and only for the character that wrote it. It is
+        // read by {@link _ownIdentity} alone, where a wrong answer pins the
+        // watcher's name to a stranger's slot ahead of every other evidence —
+        // so a map recorded by a different character is refused outright rather
+        // than trusted to simply not match.
+        const heldIds = held.slotIds && typeof held.slotIds === 'object' ? held.slotIds : {};
+        if (Object.keys(heldIds).length) {
+            const ownId = dataManager.getCurrentCharacterId?.() ?? null;
+            const ownerId = held.ownerId ?? null;
+            if (ownId !== null && ownId !== '' && String(ownerId) === String(ownId)) {
+                this.slotIds = { ...heldIds };
+            }
+        }
+
         const roster = held.roster && typeof held.roster === 'object' ? held.roster : {};
         if (!Object.keys(roster).length) return;
 
@@ -1803,6 +1874,23 @@ class GuildTrialDamage {
      * stream held with no roster at all, where it still means what it always
      * meant.
      *
+     * ## …and the roster is empty exactly when it is needed
+     *
+     * `this.roster` is wiped at every wave and refilled from
+     * `new_guild_battle`, so it is empty precisely in the case this exists for:
+     * a refresh mid-tier, with that message an hour away. It also omits any
+     * slot whose *name* could not be read, though the payload stated that
+     * slot's id. {@link slotIdsFromBattle} keeps those ids in `slotIds`, which
+     * is persisted and re-adopted with the roster, and this is the second rung.
+     *
+     * It resolves on an **exact character-id match and nothing else**. Not a
+     * name, not a position, not "the only slot we have counters for". Since the
+     * `own` rung in `resolveUnitNames` claims its slot ahead of every
+     * positional source, a wrong answer here is worse than no answer: no answer
+     * leaves a placeholder that portrait or vitals evidence may still correct,
+     * a wrong one pins the watcher's name to a guildmate's row and blocks them.
+     * With no entry for the current character, null is the correct output.
+     *
      * ## The character-swap race
      *
      * The slot, the name and the id must all describe the *same* character.
@@ -1830,6 +1918,21 @@ class GuildTrialDamage {
                 break;
             }
         }
+        // The roster could not answer — it is empty when the tier-opening
+        // message was missed, and it omits any slot whose name could not be
+        // read. The id map is what the same message stated about those slots,
+        // and it is an exact id match or nothing: no name matching, no
+        // position, no "the only slot with counters". A null own slot costs a
+        // placeholder; a wrong one binds the watcher's name to a guildmate's
+        // damage ahead of the portrait and vitals evidence that might be right.
+        if (slot === null && before !== null && before !== '') {
+            for (const [index, id] of Object.entries(this.slotIds || {})) {
+                if (String(id) !== String(before)) continue;
+                slot = index;
+                break;
+            }
+        }
+
         // No roster held: the stream is all there is, and a lone counted slot
         // still means the one unit the server is willing to talk about
         if (slot === null && !Object.keys(this.roster || {}).length && this.countedSlots.size === 1) {

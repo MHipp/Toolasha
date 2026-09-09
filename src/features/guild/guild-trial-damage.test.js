@@ -1461,6 +1461,196 @@ describe('the watcher’s own slot', () => {
  * hour — kept verbatim in `guild-trial-messages.fixture.js`. `new_guild_battle`
  * is the message this feature spent three rounds working around the absence of.
  */
+/**
+ * The slot → character id map, and the row that used to say "Player N".
+ *
+ * The watcher's own row fell back to a placeholder whenever the tier-opening
+ * `new_guild_battle` was missed — a refresh mid-tier, with the next one an hour
+ * away — because the only thing that knew which slot was theirs was the named
+ * roster, and the named roster is wiped per wave and refilled from exactly that
+ * message. It also drops any slot it cannot put a *name* to, though the payload
+ * states that slot's `character.id` regardless. The id map keeps those ids.
+ *
+ * The stakes are one-sided, and every test here is about the wrong half: the
+ * `own` rung in `resolveUnitNames` claims its slot ahead of portrait and vitals
+ * evidence, so a wrong own slot pins the watcher's name to a guildmate's damage
+ * where a missing one merely leaves a correctable placeholder. Exact id match
+ * or nothing.
+ */
+describe('the watcher’s slot from the id map', () => {
+    const at = new Date('2026-08-03T16:00:00Z').getTime();
+
+    /** A tier opening whose players carry ids and no names at all — the trimmed payload */
+    const idsOnly = (battleId = 1, tier = 1) => ({
+        type: 'new_guild_battle',
+        battleId,
+        tier,
+        players: [{ character: { id: 900001 } }, { character: { id: 900002 } }, { character: { id: 900003 } }],
+        monsters: [],
+    });
+
+    /** A tick of that fight, with everybody counted as the game now sends them */
+    const tick = (battleId = 1, tier = 1) => ({
+        battleId,
+        tier,
+        pMap: {
+            0: { cHP: 1500, mHP: 1554, atkCounter: 3 },
+            1: { cHP: 1500, mHP: 1554, atkCounter: 3 },
+            2: { cHP: 1500, mHP: 1554, atkCounter: 3 },
+        },
+        mMap: {},
+    });
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setSystemTime(at);
+        game.clientData = {};
+        game.loadouts = [];
+        game.ownName = null;
+        game.ownId = null;
+        game.readOwnId = null;
+        game.storedRoster = null;
+        game.guildMembers = {};
+        guildTrialDamage.storedRoster = null;
+        guildTrialDamage.initialize();
+        guildTrialDamage.reset();
+        guildTrialDamage.setTrialNames(['Trial Badger']);
+    });
+
+    afterEach(() => {
+        guildTrialDamage.cleanup();
+        game.ownId = null;
+        game.readOwnId = null;
+        vi.useRealTimers();
+        document.body.innerHTML = '';
+    });
+
+    test('an unnamed roster still says which slot is the watcher’s', () => {
+        // Nothing can name these slots — the payload trimmed the names and the
+        // guild roster is empty — so `rosterFromBattle` gives back nothing at
+        // all. The ids it discarded are the whole answer to "which one is me".
+        game.ownName = 'MillenniumTest';
+        game.ownId = 900002;
+        game.wsHandlers.new_guild_battle(idsOnly());
+        game.wsHandlers[GUILD_BATTLE_MESSAGE](tick());
+
+        expect(guildTrialDamage.roster).toEqual({});
+        expect(guildTrialDamage.slotIds).toEqual({ 0: 900001, 1: 900002, 2: 900003 });
+        expect(guildTrialDamage._ownIdentity()).toEqual({ slot: '1', name: 'MillenniumTest', characterId: 900002 });
+        // …and the name binds, where the row used to read "Player 2"
+        expect(guildTrialDamage.breakdown().names['1']).toMatchObject({ name: 'MillenniumTest', source: 'own' });
+    });
+
+    test('an id the map does not list yields a placeholder, not a guess', () => {
+        // Watching a trial you are not in. Two other slots are counted and
+        // unnamed; naming one of them yours would be the whole failure mode
+        game.ownName = 'Spectator';
+        game.ownId = 999999;
+        game.wsHandlers.new_guild_battle(idsOnly());
+        game.wsHandlers[GUILD_BATTLE_MESSAGE](tick());
+
+        expect(guildTrialDamage._ownIdentity().slot).toBeNull();
+        const names = guildTrialDamage.breakdown().names;
+        for (const entry of Object.values(names)) expect(entry.name).not.toBe('Spectator');
+    });
+
+    test('a previous battle’s map cannot answer for this one', () => {
+        game.ownName = 'MillenniumTest';
+        game.ownId = 900002;
+        game.wsHandlers.new_guild_battle(idsOnly(1, 1));
+        expect(guildTrialDamage._ownIdentity().slot).toBe('1');
+
+        // A different fight starts and states nothing: the slots have re-dealt,
+        // so last fight's map describes whoever now holds those indexes
+        game.wsHandlers[GUILD_BATTLE_MESSAGE](tick(2, 1));
+
+        expect(guildTrialDamage.slotIds).toEqual({});
+        expect(guildTrialDamage._ownIdentity().slot).toBeNull();
+    });
+
+    test('a new tier of the same battle re-deals the map too', () => {
+        game.ownName = 'MillenniumTest';
+        game.ownId = 900002;
+        game.wsHandlers.new_guild_battle(idsOnly(1, 1));
+        game.wsHandlers[GUILD_BATTLE_MESSAGE](tick(1, 2));
+
+        // `players[]` is re-stated per tier in an order that is not stable, so
+        // the tier boundary voids the map exactly as it voids the roster
+        expect(guildTrialDamage.slotIds).toEqual({});
+        expect(guildTrialDamage._ownIdentity().slot).toBeNull();
+    });
+
+    test('a character switch mid-resolution binds nobody', () => {
+        // Identity is mutable global state: read before the walk, verified
+        // after it. The departing character's name must never land on the
+        // arriving character's slot.
+        game.ownName = 'MillenniumTest';
+        game.wsHandlers.new_guild_battle(idsOnly());
+        game.wsHandlers[GUILD_BATTLE_MESSAGE](tick());
+
+        let reads = 0;
+        game.readOwnId = () => (reads++ === 0 ? 900002 : 900003);
+        expect(guildTrialDamage._ownIdentity()).toEqual({ slot: null, name: null, characterId: null });
+    });
+
+    test('the named roster still wins where it applies', () => {
+        // The map is a second source, not a replacement: the roster answers
+        // first and its answer is unchanged by any of this
+        game.ownName = 'Player20';
+        game.ownId = 900020;
+        game.wsHandlers.new_guild_battle(NEW_GUILD_BATTLE);
+
+        expect(Object.keys(guildTrialDamage.roster).length).toBe(30);
+        expect(guildTrialDamage._ownIdentity()).toEqual({ slot: '19', name: 'Player20', characterId: 900020 });
+    });
+
+    test('the map survives a refresh mid-tier and is adopted', async () => {
+        // The case the whole change exists for: `new_guild_battle` fires once
+        // per tier, so a refresh has nothing on the wire to wait for
+        game.ownName = 'MillenniumTest';
+        game.ownId = 900002;
+        game.wsHandlers.new_guild_battle(idsOnly());
+        expect(game.storedRoster).toMatchObject({ battleId: 1, tier: 1, ownerId: 900002 });
+        expect(game.storedRoster.slotIds).toEqual({ 0: 900001, 1: 900002, 2: 900003 });
+
+        // The refresh: a fresh page-load holds none of the in-memory state
+        guildTrialDamage.cleanup();
+        guildTrialDamage.storedRoster = null;
+        guildTrialDamage.initialize();
+        await vi.advanceTimersByTimeAsync(0);
+
+        game.wsHandlers[GUILD_BATTLE_MESSAGE](tick());
+        expect(guildTrialDamage.breakdown().names['1']).toMatchObject({ name: 'MillenniumTest', source: 'own' });
+    });
+
+    test('a stored map another character wrote is refused', async () => {
+        // Same battle, same tier, different character at the keyboard. The map
+        // is only ever read to answer "which slot is me", and a map recorded by
+        // somebody else is refused outright rather than trusted to not match.
+        game.storedRoster = {
+            battleId: 1,
+            tier: 1,
+            roster: {},
+            slotIds: { 0: 900001, 1: 900002, 2: 900003 },
+            ownerId: 900002,
+            at: Date.now(),
+        };
+        game.ownName = 'OtherCharacter';
+        game.ownId = 900003;
+        guildTrialDamage.cleanup();
+        guildTrialDamage.storedRoster = null;
+        guildTrialDamage.initialize();
+        await vi.advanceTimersByTimeAsync(0);
+
+        game.wsHandlers[GUILD_BATTLE_MESSAGE](tick());
+
+        expect(guildTrialDamage.slotIds).toEqual({});
+        expect(guildTrialDamage._ownIdentity().slot).toBeNull();
+        const names = guildTrialDamage.breakdown().names;
+        for (const entry of Object.values(names)) expect(entry.name).not.toBe('OtherCharacter');
+    });
+});
+
 describe('the tier-opening message', () => {
     const at = new Date('2026-08-03T16:00:00Z').getTime();
 
