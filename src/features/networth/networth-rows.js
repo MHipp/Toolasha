@@ -178,12 +178,16 @@ registerRow({
                 { text: formatWithSeparator(best.booksToNext), color: ROW_COLORS.good, bold: true },
                 { text: 'books', color: ROW_COLORS.dim },
                 { text: formatLargeNumber(Math.round(best.costToNext)), color: ROW_COLORS.gold },
+                // A cost floored at the Tester shop is not a market quote and
+                // must not read as one, the same as in the panel behind this row
+                ...(best.shopPriced ? [{ text: 'shop', color: ROW_COLORS.dim }] : []),
             ],
             { center: true }
         );
         container.title =
             `${best.name} is the cheapest next ability level: ${best.booksToNext} books at ` +
-            `${Math.round(best.bookPrice).toLocaleString()} each.` +
+            `${Math.round(best.bookPrice).toLocaleString()} each` +
+            (best.shopPriced ? ', the Tester shop price.' : '.') +
             (breakdown.length
                 ? `\nYou hold ${formatLargeNumber(held)} unread books worth ` +
                   `${formatLargeNumber(Math.round(books.totalCost || 0))}.`

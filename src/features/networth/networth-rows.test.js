@@ -10,7 +10,7 @@
  * the panel just stops giving the tile a pointer cursor.
  */
 
-import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const game = vi.hoisted(() => ({
     rows: {},
@@ -52,8 +52,11 @@ vi.mock('../abilities/ability-book-panel.js', () => ({
     abilityPlans: () => [],
 }));
 
+/** The cheapest next ability level, when the row is given one to draw */
+const cheapest = vi.hoisted(() => ({ best: null }));
+
 vi.mock('../../utils/ability-books.js', () => ({
-    cheapestNextLevel: () => null,
+    cheapestNextLevel: () => cheapest.best,
 }));
 
 await import('./networth-rows.js');
@@ -213,5 +216,37 @@ describe('the figure tiles summarise their own inputs', () => {
         // and this row is the only thing that calls it regularly. A memo would
         // stop the sampling on every tick it skipped.
         expect(game.rows.skillBooks.version).toBeUndefined();
+    });
+});
+
+describe('the skill books tile', () => {
+    /** One cheapest-next-level, priced wherever the test says */
+    const best = (shopPriced) => ({
+        name: 'Poke',
+        itemHrid: '/items/poke',
+        booksToNext: 2,
+        costToNext: 2,
+        bookPrice: 1,
+        shopPriced,
+    });
+
+    afterEach(() => {
+        cheapest.best = null;
+    });
+
+    test('a cost floored at the Tester shop says so rather than reading as a market quote', () => {
+        cheapest.best = best(true);
+        const container = draw('skillBooks');
+
+        expect(container.textContent).toContain('shop');
+        expect(container.title).toContain('the Tester shop price');
+    });
+
+    test('a market quote says nothing of the sort', () => {
+        cheapest.best = best(false);
+        const container = draw('skillBooks');
+
+        expect(container.textContent).not.toContain('shop');
+        expect(container.title).not.toContain('Tester');
     });
 });
