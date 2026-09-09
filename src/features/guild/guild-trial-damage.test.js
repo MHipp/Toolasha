@@ -1421,10 +1421,13 @@ describe('the watcher’s own slot', () => {
         expect(guildTrialDamage._ownIdentity().slot).toBeNull();
     });
 
-    test('with no roster the lone counted slot is still the watcher', () => {
-        // The pre-change rule, kept for the stream it was written for: nothing
-        // states the slots, and one counted unit is the one the server will
-        // talk about
+    test('with no roster and no id map, a lone counted slot is not the watcher', () => {
+        // The rung that used to answer here read one counted slot as the
+        // viewer, from a stream that sent counters for the viewer alone. The
+        // game now sends them for every present player and `countedSlots`
+        // accumulates over the wave, so one counted slot means one player was
+        // ever present — while spectating, whoever was fighting. Neither
+        // exact-id source can speak, so the honest answer is null.
         game.ownName = 'MillenniumTest';
         game.ownId = 900002;
         game.wsHandlers[GUILD_BATTLE_MESSAGE]({
@@ -1435,7 +1438,100 @@ describe('the watcher’s own slot', () => {
         });
 
         expect(guildTrialDamage.roster).toEqual({});
-        expect(guildTrialDamage._ownIdentity()).toMatchObject({ slot: '2', name: 'MillenniumTest' });
+        expect(guildTrialDamage.slotIds).toEqual({});
+        expect(guildTrialDamage.countedSlots.size).toBe(1);
+        // The name is still read — it is who is at the keyboard — but it binds
+        // to no slot, which is what `allowed()` gates on
+        expect(guildTrialDamage._ownIdentity()).toEqual({
+            slot: null,
+            name: 'MillenniumTest',
+            characterId: 900002,
+        });
+    });
+
+    test('and the watcher’s row reads as a placeholder rather than a name', () => {
+        // The cost the maintainer accepted, stated as an assertion: with the
+        // rung gone the counted slot is named "Player 3", and `nameCoverage`
+        // reports it as a placeholder so the report can say so. A guess would
+        // have been a figure to act on; a placeholder is correctable.
+        game.ownName = 'MillenniumTest';
+        game.ownId = 900002;
+        // Two ticks: `countedSlots` is filled after the naming pass, so the
+        // removed rung only ever had something to say from the second tick on
+        game.wsHandlers[GUILD_BATTLE_MESSAGE]({
+            battleId: 7,
+            tier: 1,
+            pMap: { 0: { cHP: 3000, mHP: 3100 }, 2: { cHP: 2600, mHP: 2612, atkCounter: 4 } },
+            mMap: {},
+        });
+        game.wsHandlers[GUILD_BATTLE_MESSAGE]({
+            battleId: 7,
+            tier: 1,
+            pMap: { 0: { cHP: 2990, mHP: 3100 }, 2: { cHP: 2590, mHP: 2612, atkCounter: 5 } },
+            mMap: {},
+        });
+
+        const report = guildTrialDamage.breakdown();
+        expect(report.names['2'].source).toBe('placeholder');
+        expect(report.nameCoverage.placeholders).toContain(report.names['2'].name);
+        // …and nothing anywhere wears the watcher's name off a guess
+        for (const entry of Object.values(report.names)) expect(entry.name).not.toBe('MillenniumTest');
+    });
+
+    test('the roster still answers where a lone slot is counted', () => {
+        // The removal takes nothing from the exact-id rungs: same one-counted-
+        // slot shape, but the game stated who holds it.
+        game.ownName = 'Player20';
+        game.ownId = 900020;
+        game.wsHandlers.new_guild_battle(NEW_GUILD_BATTLE);
+        game.wsHandlers[GUILD_BATTLE_MESSAGE]({
+            battleId: 1,
+            tier: 1,
+            pMap: { 19: { cHP: 1620, mHP: 1620, atkCounter: 4 } },
+            mMap: {},
+        });
+
+        expect(guildTrialDamage.countedSlots.size).toBe(1);
+        expect(guildTrialDamage._ownIdentity()).toEqual({ slot: '19', name: 'Player20', characterId: 900020 });
+    });
+
+    test('the id map still answers where a lone slot is counted', () => {
+        game.ownName = 'MillenniumTest';
+        game.ownId = 900002;
+        game.wsHandlers.new_guild_battle({
+            type: 'new_guild_battle',
+            battleId: 4,
+            tier: 1,
+            players: [{ character: { id: 900001 } }, { character: { id: 900002 } }, { character: { id: 900003 } }],
+            monsters: [],
+        });
+        game.wsHandlers[GUILD_BATTLE_MESSAGE]({
+            battleId: 4,
+            tier: 1,
+            pMap: { 2: { cHP: 1500, mHP: 1554, atkCounter: 3 } },
+            mMap: {},
+        });
+
+        expect(guildTrialDamage.roster).toEqual({});
+        expect(guildTrialDamage.countedSlots).toEqual(new Set(['2']));
+        // The counted slot is 2; the id map says the watcher is slot 1, and the
+        // id map is what is believed
+        expect(guildTrialDamage._ownIdentity()).toEqual({ slot: '1', name: 'MillenniumTest', characterId: 900002 });
+    });
+
+    test('a character switch with a lone counted slot still binds nobody', () => {
+        game.ownName = 'MillenniumTest';
+        let reads = 0;
+        game.readOwnId = () => (reads++ === 0 ? 900002 : 900003);
+        game.wsHandlers[GUILD_BATTLE_MESSAGE]({
+            battleId: 7,
+            tier: 1,
+            pMap: { 0: { cHP: 3000, mHP: 3100 }, 2: { cHP: 2600, mHP: 2612, atkCounter: 4 } },
+            mMap: {},
+        });
+
+        reads = 0;
+        expect(guildTrialDamage._ownIdentity()).toEqual({ slot: null, name: null, characterId: null });
     });
 
     test('a character switch mid-resolution binds nobody', () => {
@@ -1826,8 +1922,12 @@ describe('the tier-opening message', () => {
         // (portrait), 2: MillenniumTest (vitals)} with countedSlots ['2'] —
         // the ended-trial summary ranked the user at positions 1 and 3 while
         // SarinTest went missing. The resolver now refuses the watcher's name
-        // anywhere but their counted slot and enforces one-name-one-unit, so
-        // the next tick corrects the stored mislabel.
+        // anywhere but the slot an exact character-id match puts them in, so
+        // the next tick corrects the stored mislabel. Nothing here states an
+        // id — no roster, no `new_guild_battle` — so that slot is unknown and
+        // *both* copies go, leaving placeholders the portrait or vitals may
+        // still fill. That is the point of dropping the counted-slot guess: it
+        // would have re-pinned the name to slot 2 on nothing but a counter.
         game.ownName = 'MillenniumTest';
         // A wave is under way…
         game.wsHandlers[GUILD_BATTLE_MESSAGE]({
@@ -1853,11 +1953,13 @@ describe('the tier-opening message', () => {
         });
 
         const names = guildTrialDamage.breakdown().names;
-        expect(names['2']).toMatchObject({ name: 'MillenniumTest', source: 'own' });
+        expect(names['2'].source).toBe('placeholder');
         expect(names['0'].name).not.toBe('MillenniumTest');
-        // …and the summary the ended-trial report reads from carries the fix
+        // …and the summary the ended-trial report reads from carries the fix:
+        // the duplicate is gone, and the name is on nobody rather than on a
+        // slot picked out by a counter
         const wearingIt = Object.values(guildTrialDamage.names).filter((name) => name === 'MillenniumTest');
-        expect(wearingIt).toHaveLength(1);
+        expect(wearingIt).toHaveLength(0);
     });
 
     test('the boss sheet arrives without anybody clicking anything', () => {

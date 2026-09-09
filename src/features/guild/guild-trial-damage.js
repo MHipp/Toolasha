@@ -1870,9 +1870,13 @@ class GuildTrialDamage {
      *
      * The roster is the answer instead: it is the game stating slot →
      * `characterId` outright, and `dataManager` knows which character id is
-     * ours. `countedSlots.size === 1` is kept only as the fallback for a
-     * stream held with no roster at all, where it still means what it always
-     * meant.
+     * ours. `countedSlots.size === 1` was kept for a while as the fallback for
+     * a stream held with no roster at all, on the reading that it still meant
+     * what it always meant there. It does not: `countedSlots` accumulates over
+     * a wave, so with the current stream a size of one says only that one
+     * player was ever *present* this wave, which while spectating is whoever
+     * was fighting rather than the watcher. That rung is gone, and the body
+     * below records why nothing may take its place.
      *
      * ## …and the roster is empty exactly when it is needed
      *
@@ -1933,11 +1937,23 @@ class GuildTrialDamage {
             }
         }
 
-        // No roster held: the stream is all there is, and a lone counted slot
-        // still means the one unit the server is willing to talk about
-        if (slot === null && !Object.keys(this.roster || {}).length && this.countedSlots.size === 1) {
-            slot = [...this.countedSlots][0];
-        }
+        // There is deliberately no third rung. One stood here: with no roster
+        // held and exactly one entry in `countedSlots`, that slot was taken to
+        // be the watcher. That was sound for the stream it was written against,
+        // which carried `atkCounter` for the viewer's unit alone — a counted
+        // slot *was* the viewer by definition. The game now streams counters
+        // for every present player (57 of 57 slots in the captured trial, in
+        // every tick bucket), and `countedSlots` accumulates over a wave, so
+        // `size === 1` no longer says "the viewer": it says only one player was
+        // ever present this wave, which while spectating is whoever was
+        // fighting. The rung was also merely useless once, and is not any
+        // longer: `allowed()` in `guild-trial-units.js` is total, and the `own`
+        // rung claims its slot *before* every positional source, so a wrong own
+        // slot now outranks the portrait and vitals evidence that might have
+        // been right. Do not re-add it, nor any replacement inference — not a
+        // name match, not a position, not "the only slot with counters", not
+        // "the only slot with a portrait". If neither exact-id source answers,
+        // the answer is null and the row is honestly a placeholder.
 
         const after = dataManager.getCurrentCharacterId?.() ?? null;
         if (String(before ?? '') !== String(after ?? '')) return { slot: null, name: null, characterId: null };
