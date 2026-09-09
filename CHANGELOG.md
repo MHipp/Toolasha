@@ -6,6 +6,14 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Audit round: a buy price that could go down, and a character switch that left the wrong things behind
+
+The Buy Now price cover could **lower** a price, which is the one thing it promised never to do. It decided whether to raise before waking the price control and wrote the answer a moment later — and waking that control hands you a live field, so pressing ×2 in between meant the script wrote its older, smaller number over yours. It also read the sleeping display, which shows a rounded figure, so a price of 470,432 looked like 470,000 and anything in between passed as a raise. Two more: it applied the _bottom_ of the tradable band as well as the top, which on a cheap ladder pushed the price up past the rung that covered the order, and a modal whose item it could not identify was priced off the ladder of whatever it had been armed for. All four are fixed, and the decision now happens against the field it is about to write.
+
+Switching character left work behind in two ways. The pause that keeps background work out of the way of startup only ever applied to the first startup of a session, so every switch after that put the arriving character's loading back into competition with it. And a feature that finished loading just after being shut down wrote itself back in, so the arriving character tore down the departing one's copy and never tore down its own.
+
+Two in the simulator. A worker that hit an error was put back in the warm pool with its diagnostic capture still switched on, which then ran for every later simulation that borrowed it. And a worker the browser kills answers nothing at all — that used to hold the whole warm pool open for the rest of the session; it now gives up after two minutes of silence, which no real run comes close to.
+
 ### Four features that were hidden behind a switch are now simply on
 
 Each of these was defaulted off out of habit rather than for a reason, and all four are the kind of thing you would want without having to find them first.
