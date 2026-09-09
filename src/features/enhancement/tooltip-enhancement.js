@@ -41,18 +41,18 @@ import {
     getEnhancementMaterialPrice,
     perAttemptMaterialCost,
     getProductionCost,
-    getProductionChainTime,
     getRealisticBaseItemPrice,
     getCheapestProtectionPrice,
 } from '../../utils/enhancement-pricing.js';
 
-export {
-    getEnhancementMaterialPrice,
-    getProductionCost,
-    getProductionChainTime,
-    getRealisticBaseItemPrice,
-    getCheapestProtectionPrice,
-};
+export { getEnhancementMaterialPrice, getProductionCost, getRealisticBaseItemPrice, getCheapestProtectionPrice };
+
+// Pass-through only: nothing in this module reads the chain time, but the market profit
+// calculator and the goal planner import it from here. Written as a re-export rather than an
+// import that is only ever re-exported, so the bundles that carry this module without either of
+// those callers (combat, ui) drop it silently instead of warning about an unused import on
+// every build.
+export { getProductionChainTime } from '../../utils/enhancement-pricing.js';
 
 /** What a mirror plan combines its leaves with */
 const MIRROR_HRID = '/items/philosophers_mirror';
@@ -253,6 +253,9 @@ export function calculateEnhancementPath(itemHrid, currentEnhancementLevel, conf
         itemHrid,
         targetLevel: currentEnhancementLevel,
         itemLevel,
+        // Whether anything the quote is built on could not be priced; the tooltip says so
+        // rather than presenting a partial bill as a full one
+        pricesPartial: prices.pricesPartial,
         optimalStrategy,
         allStrategies: [optimalStrategy], // Only return optimal
         xpPerHour,
@@ -346,9 +349,15 @@ function priceEnhancementInputs(itemHrid, itemDetails) {
     // Per-attempt materials, through the one shared pricing rule
     const materials = [];
     let materialCostPerAttempt = 0;
+    // A material nobody can price contributes 0 to the bill, and a total that quietly leaves it
+    // out is an under-quote, not a price — the same rule `perAttemptMaterialCost` states for the
+    // XP/hr table and the enhancing panel. The tooltip colours its Total green against the
+    // enhanced item's ask, so an unnoticed under-quote reads as "this is profitable".
+    let pricesPartial = false;
     for (const material of itemDetails.enhancementCosts || []) {
         const materialDetail = gameData.itemDetailMap[material.itemHrid];
         const price = getEnhancementMaterialPrice(material.itemHrid, 'ask');
+        if (!(price > 0) && material.count > 0) pricesPartial = true;
         materialCostPerAttempt += price * material.count;
         materials.push({
             itemHrid: material.itemHrid,
@@ -385,11 +394,15 @@ function priceEnhancementInputs(itemHrid, itemDetails) {
         ? craftingCostBid || craftingCostAsk
         : marketBid || getProductionCost(itemHrid, 'bid') || getRealisticBaseItemPrice(itemHrid);
 
+    // The base item is paid once whatever happens, so an unpriced one understates every level
+    if (!(baseAskPrice > 0)) pricesPartial = true;
+
     return {
         materials,
         materialCostPerAttempt,
         protectionOptions,
         protectionBidPrice,
+        pricesPartial,
         baseCost: baseAskPrice,
         base: {
             baseCost: baseAskPrice,
@@ -750,8 +763,16 @@ export function buildEnhancementTooltipHTML(enhancementData) {
         return '';
     }
 
-    const { itemHrid, targetLevel, optimalStrategy, xpPerHour, totalExpectedXP, paramsNote, enhancementParams } =
-        enhancementData;
+    const {
+        itemHrid,
+        targetLevel,
+        optimalStrategy,
+        xpPerHour,
+        totalExpectedXP,
+        paramsNote,
+        enhancementParams,
+        pricesPartial,
+    } = enhancementData;
 
     // Validate required fields
     if (
@@ -975,6 +996,11 @@ export function buildEnhancementTooltipHTML(enhancementData) {
     }
 
     html += '</table>';
+    if (pricesPartial) {
+        // Same wording the enhancing panel uses for the same condition, so the two surfaces
+        // never say different things about the same missing quote
+        html += `<div style="margin-top: 4px; color: ${config.COLOR_TOOLTIP_LOSS};">Some inputs have no price; costs are understated.</div>`;
+    }
     html += '</div>';
 
     // Time estimate

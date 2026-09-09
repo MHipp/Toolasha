@@ -19,6 +19,9 @@ const PROTECTION = '/items/mirror_of_protection';
 // Prices the mocked market answers with. Tuned so mirroring is worth it: the base item and the
 // mirror are cheap while every enhancement attempt burns an expensive material.
 const REFINED = '/items/test_sword_refined';
+// An enhancement recipe with one material nobody quotes, and one that is quoted
+const PARTLY_PRICED = '/items/test_dagger';
+const UNPRICED_MATERIAL = '/items/unpriced_material';
 
 const prices = {
     [ITEM]: { ask: 100, bid: 90 },
@@ -27,6 +30,7 @@ const prices = {
     [MATERIAL]: { ask: 5000, bid: 4800 },
     [MIRROR]: { ask: 2000, bid: 1900 },
     [PROTECTION]: { ask: 900000, bid: 850000 },
+    [PARTLY_PRICED]: { ask: 100, bid: 90 },
 };
 
 /** Settings the mocked config answers with, reset per test */
@@ -50,7 +54,17 @@ const gameData = {
             itemLevel: 10,
             enhancementCosts: [{ itemHrid: MATERIAL, count: 1 }],
         },
+        [PARTLY_PRICED]: {
+            name: 'Test Dagger',
+            itemLevel: 10,
+            enhancementCosts: [
+                { itemHrid: MATERIAL, count: 1 },
+                { itemHrid: UNPRICED_MATERIAL, count: 2 },
+            ],
+        },
         [MATERIAL]: { name: 'Test Material', sellPrice: 100 },
+        // Deliberately no sellPrice and no market quote: nothing can price it
+        [UNPRICED_MATERIAL]: { name: 'Unpriced Material' },
         [MIRROR]: { name: "Philosopher's Mirror", sellPrice: 1 },
         [PROTECTION]: { name: 'Mirror of Protection', sellPrice: 1 },
     },
@@ -480,6 +494,25 @@ describe('buildEnhancementMilestonesHTML — stats source indicator', () => {
 
         expect(out).toContain('Pro');
         expect(out).toContain('Celestial enhancer');
+    });
+});
+
+describe('an input nobody can price', () => {
+    // A material with no quote contributes 0 to the bill, so the quoted total is an
+    // under-quote — and the tooltip colours that total green against the enhanced item's ask,
+    // which reads as "enhancing this is profitable". The XP/hr table and the enhancing panel
+    // both say when a bill is partial; the tooltip's own tally did not.
+    test('the analysis flags the quote as partial', () => {
+        expect(calculateEnhancementPath(ITEM, 3, enhancingConfig).pricesPartial).toBe(false);
+        expect(calculateEnhancementPath(PARTLY_PRICED, 3, enhancingConfig).pricesPartial).toBe(true);
+    });
+
+    test('the tooltip says the costs are understated, and says nothing when they are not', () => {
+        const partial = buildEnhancementTooltipHTML(calculateEnhancementPath(PARTLY_PRICED, 3, enhancingConfig));
+        expect(partial).toContain('costs are understated');
+
+        const full = buildEnhancementTooltipHTML(calculateEnhancementPath(ITEM, 3, enhancingConfig));
+        expect(full).not.toContain('costs are understated');
     });
 });
 
