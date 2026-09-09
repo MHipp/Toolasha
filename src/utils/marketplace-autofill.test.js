@@ -19,7 +19,7 @@ vi.mock('../core/dom-observer.js', () => ({
     },
 }));
 
-const { createAutofillManager, modalItemHrid } = await import('./marketplace-autofill.js');
+const { createAutofillManager, findQuantityInput, modalItemHrid } = await import('./marketplace-autofill.js');
 
 function buildModal({ headerText = 'Buy Now', inputs = [{ label: 'Quantity' }], itemHrid = null } = {}) {
     const modal = document.createElement('div');
@@ -411,5 +411,49 @@ describe('createAutofillManager', () => {
         observerState.handlers['Current'](modal);
 
         expect(modal.querySelector('input').value).toBe('');
+    });
+});
+
+/**
+ * The buy modal's quantity box, or nothing.
+ *
+ * The walk used to end by returning the first input, which is the worst guess
+ * available rather than a neutral one: that line is only reached once every
+ * input has been rejected as an enhancement-level field, so the first input is
+ * precisely what the walk was trying to avoid. `buyOneMissingMaterial` presses
+ * Buy after filling, so a wrong field there is a wrong order rather than a
+ * cosmetic miss.
+ */
+describe('findQuantityInput refuses rather than guesses', () => {
+    beforeEach(() => {
+        document.body.innerHTML = '';
+    });
+
+    test('a modal whose every input reads as an enhancement level yields nothing', () => {
+        const modal = buildModal({
+            inputs: [{ label: 'Enhancement Level' }, { label: 'Enhancement Level' }],
+        });
+        expect(findQuantityInput(modal)).toBeNull();
+    });
+
+    test('a labelled quantity field is still found', () => {
+        const modal = buildModal({
+            inputs: [{ label: 'Enhancement Level' }, { label: 'Quantity' }],
+        });
+        const inputs = modal.querySelectorAll('input');
+        expect(findQuantityInput(modal)).toBe(inputs[1]);
+    });
+
+    test('a lone input is still an identification, not a guess', () => {
+        const modal = buildModal({ inputs: [{ label: '' }] });
+        expect(findQuantityInput(modal)).toBe(modal.querySelector('input'));
+    });
+
+    test('the game’s own quantity row still wins outright', () => {
+        const modal = buildModal({
+            inputs: [{ label: 'Enhancement Level' }, { rowClass: 'MarketplacePanel_quantityInputs__abc' }],
+        });
+        const inputs = modal.querySelectorAll('input');
+        expect(findQuantityInput(modal)).toBe(inputs[1]);
     });
 });

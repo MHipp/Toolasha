@@ -83,9 +83,20 @@ export function findQuantityInput(modal) {
         }
     }
 
-    // Fallback: Return first input and log warning
-    console.warn('[MarketplaceAutofill] Could not definitively identify quantity input, using first input');
-    return allInputs[0];
+    // Nothing identified it, so nothing is filled.
+    //
+    // The old ending here returned `allInputs[0]`, which is the worst available
+    // guess rather than a neutral one: this line is only reached when strategy 2
+    // rejected *every* input as an enhancement-level field, so the first input is
+    // the field the walk was trying hardest to avoid. Writing a material count
+    // into it and then pressing Buy — which `buyOneMissingMaterial` does — orders
+    // one item at enhancement level N instead of N items at the level asked for.
+    //
+    // Both callers already treat null as "this modal cannot be filled" and say so
+    // ("no quantity box"), so refusing costs a keystroke and telling the player
+    // why, where guessing costs a wrong order.
+    console.warn('[MarketplaceAutofill] Could not identify the quantity input; leaving the modal alone');
+    return null;
 }
 
 /**
