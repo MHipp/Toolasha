@@ -904,6 +904,7 @@ describe('the registry entries the entrypoint hands over', () => {
         draggableModals: 'its own modal offsets',
         collectionFilters: 'its own filter record',
         xpTracker: 'its own XP history',
+        taskRerollTracker: 'its own stored reroll map, with every post-await registration re-scanning on its own',
     };
 
     test.each(Object.entries(widenedConcurrent))('%s is handed to the registry marked concurrent', (key, waitsOn) => {
@@ -919,9 +920,6 @@ describe('the registry entries the entrypoint hands over', () => {
      * one is a deliberate act with a test to change, rather than a tidy-up.
      */
     const deliberatelySerial = {
-        taskRerollTracker:
-            'task-reroll-badge.js reads taskRerollData with no server-payload fallback, ' +
-            'and draws from a catch-up pass that fires as soon as it initializes',
         chatHistoryExtender:
             'its initialize() has no await at all — the cost is 45 ms of its own CPU, ' +
             'which the flag cannot move off the critical path',

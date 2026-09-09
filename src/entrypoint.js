@@ -1823,16 +1823,26 @@ function registerFeatures() {
             category: 'Tasks',
             module: UI.taskRerollTracker,
             async: false,
-            // Deliberately NOT concurrent, and the reason is one line in
-            // another module. `task-reroll-badge.js` reads
-            // `taskRerollTracker.taskRerollData` directly
-            // (`sumBoardRerollSpend`) with no fallback, and it draws from a
-            // catch-up pass that fires the moment it initializes - so with the
-            // load deferred it would render an empty board as "spent nothing"
-            // and stay that way until the next task-list mutation. Its sibling
-            // task-statistics.js reads the same map but falls back to
-            // `quest.coinRerollCount` off the server payload; give the badge
-            // that same fallback and this becomes markable.
+            concurrent: true,
+            // Waits only on its own IndexedDB reroll map. Everything it
+            // registers after that await is late-safe: the WebSocket
+            // `quests_updated` handler and the `character_initialized` handler
+            // both merge with Math.max and the latter re-reads
+            // `dataManager.characterData` if the event has already fired, and
+            // its two DOM observers are backed by `updateAllTaskDisplays()`,
+            // which re-scans every card on the page rather than relying on
+            // having seen them appear.
+            //
+            // Its one visible insertion - the "Reroll spent:" line at the top
+            // of a task card - shares that slot with task-profit-display.js,
+            // which is registered earlier and so already wins it; deferring
+            // this one further cannot reorder them. And what it installs is a
+            // readout, not a guard before an irreversible action (compare
+            // alchemy_actionProtection below, left serial for that reason).
+            //
+            // The one blocker was task-reroll-badge.js reading
+            // `taskRerollData` with no fallback; it now falls back to the
+            // server payload the way task-statistics.js does.
         },
         { key: 'taskSorter', name: 'Task Sorter', category: 'Tasks', module: UI.taskSorter, async: false },
         {
