@@ -2693,6 +2693,62 @@ The 8/13 marketplace layout gave the price row its own "Max" button and put it a
 
 The simulator valued every drop at its gross market price, so profit ignored the sale tax entirely — which is why the 8/13 rise to 5% never moved it. Every drop-revenue path now nets the tax off each non-coin drop (cowbell bags at their own 18%): the Results **Summary** (Profit/day, Revenue), the **Drops** table's Gold columns, and the comparison/upgrade rows all go through one shared `taxedDropValue`. Coin drops stay whole, and the expected-value fallback is left alone since it is already taxed.
 
+## [3.46.0](https://github.com/Millennium44/Toolasha/compare/v3.45.0...v3.46.0) (2026-09-09)
+
+
+### Features
+
+* raise a Buy Now price until it covers the whole quantity ([259744b](https://github.com/Millennium44/Toolasha/commit/259744b9812854cc80b6ae03202b8c8fb34c8aa1))
+
+
+### Bug Fixes
+
+* a press on a control inside a drag handle is a click, not a drag ([ae2ba39](https://github.com/Millennium44/Toolasha/commit/ae2ba39ce43659ddc0df65ebd4eba044a04121dc))
+* cascade panels that open with no saved position ([2529d26](https://github.com/Millennium44/Toolasha/commit/2529d26241af378666150e1bb853c17a1c5ee026))
+* derive the trial watcher's own slot from the roster, not the counters ([e29d63a](https://github.com/Millennium44/Toolasha/commit/e29d63ab4f92dfc6253aaacd6f958a47fc9f6326))
+* gate the single-swing rung on the collision threshold ([18d924f](https://github.com/Millennium44/Toolasha/commit/18d924f8fe90b831e0abb4766ee2895348d35257))
+* **guild:** bound the trial trace's held queue on every path ([e610c5a](https://github.com/Millennium44/Toolasha/commit/e610c5a4f2eeaea580979ce457237c5277796683))
+* **guild:** drop the counted-slot guess for the watcher's own slot ([f056d33](https://github.com/Millennium44/Toolasha/commit/f056d33ec228f4e1ee693f1873e9f51ac3e16558))
+* **guild:** find the watcher's trial slot by a persisted id map ([1c055de](https://github.com/Millennium44/Toolasha/commit/1c055de879ce6b144b21ea80bdcbfb1a2238e094))
+* **guild:** guard the trial elimination rung with allowed() ([36a6d44](https://github.com/Millennium44/Toolasha/commit/36a6d44f5c74bacc2dddc37dc9dcf73c6122f1e7))
+* hide the marketplace pin while a game modal is open ([8086ab8](https://github.com/Millennium44/Toolasha/commit/8086ab802f27542e5760ae86e950c1d4bea791ae))
+* leave the action bar alone when it prints progress, not a total ([064079e](https://github.com/Millennium44/Toolasha/commit/064079e00c4596869c623bdd44fc1ff5f8dbb4ef))
+* raise the build score panel when breakdown is pressed ([1291113](https://github.com/Millennium44/Toolasha/commit/1291113477620fc1c91b9213b253fdef47713b8b))
+* say what the compared stats compare, in the export ([5cd1cdd](https://github.com/Millennium44/Toolasha/commit/5cd1cdda5e556ff23f1faa7111e6d6319dd75d17))
+* stop the trial scoreboard claiming every row is counter-confirmed ([bc94466](https://github.com/Millennium44/Toolasha/commit/bc944667ba33d268cc29a5cbb26ef8c6ce81f54e))
+* **tasks:** fall back to the server payload for untracked reroll spend ([4d4cfdb](https://github.com/Millennium44/Toolasha/commit/4d4cfdb30ef899a58a2b8a12a8fa833ce246628a))
+
+
+### Code Refactoring
+
+* fill the buy quantity through the shared react-input helper ([df72a25](https://github.com/Millennium44/Toolasha/commit/df72a2558b414409f9e6e35b9450514fea137c84))
+* move the tradable range helpers into a shared util ([cf0bcd5](https://github.com/Millennium44/Toolasha/commit/cf0bcd5747faed378bc4637ac61551c4fde0c250))
+
+
+### Performance Improvements
+
+* cache the loadout list instead of rebuilding it per tick ([def4995](https://github.com/Millennium44/Toolasha/commit/def49952412e42f8e52770233f5f46b67038aa4e))
+* gate background work on feature startup, not idleness alone ([ed4d037](https://github.com/Millennium44/Toolasha/commit/ed4d037e51912dea576b1eaf30d19a3ad2a16830))
+* keep a simulation worker warm between runs ([3619612](https://github.com/Millennium44/Toolasha/commit/3619612b62ba0d680c445b99b5916fdae6026b2c))
+* keep the warm workers when a run is preempted ([56fa26b](https://github.com/Millennium44/Toolasha/commit/56fa26bb54d007e8460986e01370e311e0db1ca4))
+* let concurrent feature startup actually happen ([fcc16c5](https://github.com/Millennium44/Toolasha/commit/fcc16c54f67096c0b8141ab36c14871d9d16bf86))
+* overlap seven more feature initializers at startup ([c0ed8d7](https://github.com/Millennium44/Toolasha/commit/c0ed8d7a751c9ff26c5e501f5e5124b0f682da79))
+* pool the all-zones coordinator's child workers ([3af16c5](https://github.com/Millennium44/Toolasha/commit/3af16c5df940d6fe77578a875fd33b59a306f870))
+* **startup:** overlap the task reroll tracker's storage load ([c70e832](https://github.com/Millennium44/Toolasha/commit/c70e832205a804bee9af55aec287bc27f21c42e5))
+* throttle the fight view boss query to once a second ([65d1a99](https://github.com/Millennium44/Toolasha/commit/65d1a99c0b04de89c5a001989d96014892c39f79))
+
+
+### Documentation
+
+* changelog for concurrent startup and trial tick costs ([9c91cc4](https://github.com/Millennium44/Toolasha/commit/9c91cc40c21b1c0081bf3d7f391ffde7a5f4dd15))
+* changelog for the action bar readout fix ([28050de](https://github.com/Millennium44/Toolasha/commit/28050de3c717ceaa0999ea7ce302efced319976a))
+* changelog for the breakdown panel raise and panel cascade ([8b756a0](https://github.com/Millennium44/Toolasha/commit/8b756a07a62e0dda471949a33b083f2681a65b33))
+* changelog for the buy-price and pin fixes ([c449ebb](https://github.com/Millennium44/Toolasha/commit/c449ebbfeca2c811546c3f40e45dee1c863cd59f))
+* changelog for the drag handle click fix ([d0e7a2c](https://github.com/Millennium44/Toolasha/commit/d0e7a2c3286615419e7ac7a056ff00864927fc97))
+* changelog for the leftovers follow-ups ([8a9b4bc](https://github.com/Millennium44/Toolasha/commit/8a9b4bccaf174818695b3f149ec840b99039d4b3))
+* changelog for the leftovers round ([64273a0](https://github.com/Millennium44/Toolasha/commit/64273a096cde653976d790f5bab7c7b8f5bdda9d))
+* changelog for the trial counter-stream corrections ([d4aec93](https://github.com/Millennium44/Toolasha/commit/d4aec93e1c08746a4ca64e6fdfcec0a34f28bfa1))
+
 ## [3.45.0](https://github.com/Millennium44/Toolasha/compare/v3.44.0...v3.45.0) (2026-09-09)
 
 ### Features
