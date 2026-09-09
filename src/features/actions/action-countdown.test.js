@@ -310,3 +310,46 @@ describe('a total that legitimately changes', () => {
         expect(bar.span.textContent).toBe('15.0s / 15.0s');
     });
 });
+
+describe('a bar printing progress rather than a total', () => {
+    // Reported from a labyrinth combat room: the readout on the purple action
+    // bar swings back and forth instead of counting down. A long action's bar
+    // prints "59% - 1m 28s" — how far it has got, and how long is left — and
+    // neither number is a total. `parseFloat` took the percentage for 59
+    // seconds, which disagreed with any honest `--duration`, so the animation
+    // was believed on the ticks where the two happened to be close and refused
+    // on the rest: our composite one tick, the game's own progress text the
+    // next, two different scales alternating on the same bar.
+    test('a percentage readout is left alone rather than read as a total', () => {
+        const bar = mountChangeableBar({ text: '59% - 1m 28s', scaleX: 0.59, duration: 60 });
+        actionCountdown.initialize();
+
+        expect(actionCountdown.textTotalTime).toBeNull();
+        expect(bar.span.textContent).toBe('59% - 1m 28s');
+
+        // The action moves on and the game reprints its progress. The readout
+        // stays the game's on every tick — it advances, it does not swing.
+        bar.set({ text: '75% - 0m 55s', scaleX: 0.75, duration: 60 });
+        vi.advanceTimersByTime(100);
+        expect(bar.span.textContent).toBe('75% - 0m 55s');
+
+        bar.set({ text: '88% - 0m 26s', scaleX: 0.88, duration: 60 });
+        vi.advanceTimersByTime(100);
+        expect(bar.span.textContent).toBe('88% - 0m 26s');
+        expect(actionCountdown.textTotalTime).toBeNull();
+    });
+
+    // The bar goes back to printing a bare total when the next action is a
+    // short one, and the countdown picks it up again from that tick.
+    test('a bare total is still read, and drives the readout as before', () => {
+        const bar = mountChangeableBar({ text: '59% - 1m 28s', scaleX: 0.59, duration: 60 });
+        actionCountdown.initialize();
+        expect(actionCountdown.textTotalTime).toBeNull();
+
+        bar.set({ text: '8.5s', scaleX: 0.5, duration: 8.5 });
+        vi.advanceTimersByTime(100);
+
+        expect(actionCountdown.textTotalTime).toBe(8.5);
+        expect(bar.span.textContent).toBe('4.3s / 8.5s');
+    });
+});

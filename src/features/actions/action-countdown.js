@@ -44,6 +44,33 @@ function isPlausibleDuration(duration) {
     return Number.isFinite(duration) && duration >= MIN_DURATION_SECONDS && duration <= MAX_DURATION_SECONDS;
 }
 
+/**
+ * The total the game printed on the bar, in seconds.
+ *
+ * The bar prints in two forms and only one of them is a total. A short action
+ * prints its whole length as one bare number — "8.5s". A long one prints how
+ * far it has got and how long is left instead — "59% - 1m 28s", as seen on a
+ * labyrinth combat room's bar — where neither number is a total: `parseFloat`
+ * returns the percentage, and a rising percentage read as a count of seconds
+ * disagrees with any honest `--duration`. The cross-check then refused the
+ * animation on the ticks where the two had drifted apart and believed it on
+ * the ones where they happened to be close, so the readout flapped between our
+ * composite and the game's own text as the action ran.
+ *
+ * Nothing is reconstructed from the progress form. A total is derivable from a
+ * rounded percentage and a rounded remainder, but only to several seconds
+ * either way — and `--duration` is the exact number the fill is animating
+ * against, so refusing the cross-check here leaves the readout agreeing with
+ * the bar it sits on rather than with a reconstruction of it.
+ *
+ * @param {string} text - The readout's contents
+ * @returns {number} Seconds, or NaN when the bar is not printing a total
+ */
+function parsePrintedTotal(text) {
+    const match = /^\s*(\d+(?:\.\d+)?)\s*s?\s*$/.exec(String(text || ''));
+    return match ? parseFloat(match[1]) : NaN;
+}
+
 class ActionCountdown {
     constructor() {
         this.initialized = false;
@@ -126,16 +153,16 @@ class ActionCountdown {
      * Our own readout is "3.2s / 8.5s", whose leading number is the time
      * REMAINING. Parsing that back walks the total down towards zero every time
      * this runs, and only `--duration` overwriting it on the next tick hid the
-     * damage — the very crutch the cross-check below takes away. The game's own
-     * text carries a single number; anything with a separator in it is ours.
+     * damage — the very crutch the cross-check below takes away. A total is a
+     * bare number of seconds and nothing else: our own composite carries a
+     * separator, and the game's own progress form carries a percentage — see
+     * `parsePrintedTotal`, which refuses both.
      *
      * @param {HTMLElement} [span] - The readout, when the caller already has it
      */
     _parseTotalTime(span = this.textEl?.querySelector('span')) {
         if (!span) return;
-        const text = span.textContent || '';
-        if (text.includes('/')) return;
-        const val = parseFloat(text);
+        const val = parsePrintedTotal(span.textContent || '');
         if (!isNaN(val) && val > 0) {
             // A new printed total means a new action, or the same one at a new
             // speed. Either way the cached `--duration` belongs to the old one,
@@ -209,8 +236,6 @@ class ActionCountdown {
         // makes those wakes free, and the first visible tick repaints.
         if (document.hidden) return;
 
-        if (!this.totalTime) return;
-
         const span = this.textEl.querySelector('span');
         if (!span) return;
 
@@ -225,6 +250,13 @@ class ActionCountdown {
         // cross-check exists to stop. Reading here cannot race anything,
         // because this is the only thing that overwrites the span.
         this._parseTotalTime(span);
+
+        // Nothing to count down from, and nothing to check the animation
+        // against. A bar printing progress rather than a total spends the whole
+        // action here (see `parsePrintedTotal`), so the read above has to come
+        // first: gating on the total before re-reading it meant one such action
+        // left the countdown asleep until an unrelated event woke it.
+        if (!this.totalTime) return;
 
         if (!this.fillBar || !this.fillBar.isConnected) {
             this.fillBar = this._findFillBar();
