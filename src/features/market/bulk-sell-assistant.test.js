@@ -565,8 +565,13 @@ describe('confirming from the strip', () => {
         input.value = String(qty);
         qtyRow.appendChild(input);
         const confirm = document.createElement('button');
-        confirm.className = 'Button_button__1Fe9z Button_sell__3Rf2';
-        confirm.textContent = 'Sell';
+        // As the real game builds it: the label its string table calls
+        // `postSellOrder`, and NO `Button_sell` class. The fixture used to grant
+        // that class and label the button "Sell", so the class path always
+        // matched here and the tests passed while the live modal refused every
+        // press. A fixture kinder than the game tests nothing.
+        confirm.className = 'Button_button__1Fe9z';
+        confirm.textContent = 'Post Sell Order';
         confirm.addEventListener('click', () => gameClicks++);
         modal.append(head, icon, qtyRow, confirm);
         document.body.appendChild(modal);
@@ -701,6 +706,25 @@ describe('confirming from the strip', () => {
         expect(bulkSell.queue).toEqual([]);
         expect(confirmBtn().style.display).toBe('none');
         modal.remove();
+    });
+
+    test('a refusal leads the status line rather than trailing off the end of it', () => {
+        // The reason used to be appended after the progress, the verb, the
+        // count, the name, the price and the decision reason — past where the
+        // strip truncates. So a Confirm that had refused for a stated reason
+        // presented as a button that did nothing, which is exactly how it was
+        // reported.
+        runAtStep0();
+        document.querySelector('[class*="Modal_modalContainer"]')?.remove();
+
+        confirmBtn().dispatchEvent(new Event('click'));
+
+        const status = bulkSell.chip.querySelector(`.${CHIP}-status`);
+        expect(status.textContent.startsWith('can’t confirm:')).toBe(true);
+        expect(status.textContent).toContain('the sell modal is not open');
+        // and the whole line is still readable on hover, however narrow the strip
+        expect(status.title).toContain('Cheese');
+        expect(status.title).toContain('the sell modal is not open');
     });
 
     test('with the feature off there is no panel and no confirm button', async () => {

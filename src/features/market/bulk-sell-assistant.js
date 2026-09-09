@@ -107,7 +107,37 @@ const MS_PER_DAY = 86400000;
  * the class check misses — a wrong button here is a sale of the wrong thing,
  * so the list is the exact labels rather than anything fuzzy.
  */
-const CONFIRM_LABELS = ['sell', 'sell now', 'post', 'post listing', 'list', 'confirm'];
+/**
+ * The label on the game's own confirm button inside a sell modal.
+ *
+ * Read off the game's bundle rather than guessed: its string table defines
+ * `sellNow:"Sell Now"`, `postSellOrder:"Post Sell Order"`,
+ * `sellListing:"Sell Listing"`, `postSellListing:"Post Sell Listing"` (and the
+ * four buy equivalents, which cannot appear here because the modal's header is
+ * checked for a sell form first). The two `post…` strings are what the button
+ * actually says, and neither was in this list — so the strip's Confirm found no
+ * button and refused every time, which is what "the Confirm button isn't
+ * working" turned out to be.
+ *
+ * These are localised. A client running in another language shows a translated
+ * label, no entry here matches, and the press refuses with "the modal's own
+ * confirm button was not found" — it fails closed and says so, and the game's
+ * own button still works. The game exposes no i18next global to translate
+ * through, so matching the English strings is the most that can be done from
+ * here; `Button_sell` is tried first precisely because a class survives
+ * translation.
+ */
+const CONFIRM_LABELS = [
+    'post sell order',
+    'post sell listing',
+    'sell now',
+    'sell listing',
+    'sell',
+    'post',
+    'post listing',
+    'list',
+    'confirm',
+];
 
 const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
 
@@ -716,7 +746,12 @@ class BulkSellAssistant {
                     ? 'click Sell For in the item menu'
                     : 'confirm in the modal, or press Confirm here';
             const shown = d?.insta && d.avgPrice ? d.avgPrice : d?.price || 0;
-            status.textContent = `${progress} · ${verb} ${this.current.count}× ${this.current.name} @ ${d?.insta ? '~' : ''}${formatKMB(shown)} (${d?.reason}) — ${confirmHint}`;
+            const detail = `${progress} · ${verb} ${this.current.count}× ${this.current.name} @ ${d?.insta ? '~' : ''}${formatKMB(shown)} (${d?.reason})`;
+            // A refusal leads. It used to be appended after the price and the
+            // reason, which is past where the strip truncates — so a Confirm
+            // that had refused for a stated reason looked like a dead button.
+            status.textContent = this.confirmNote ? `${confirmHint} — ${detail}` : `${detail} — ${confirmHint}`;
+            status.title = `${detail} — ${confirmHint}`;
             mainBtn.textContent = '⏭ Skip';
             mainBtn.title = 'Close the modal and skip this item';
         } else if (this.state === 'awaiting_next') {
