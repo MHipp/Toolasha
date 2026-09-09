@@ -6,6 +6,18 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Dungeon times a dd/mm clock turned into month-long runs
+
+On a client that writes dates day-first, the dungeon tracker read every chat timestamp back-to-front. A field over 12 was rescued as a day, so days 13-31 came out right and every day of 12 or less did not — twelve days in every month misread. Runs came out weeks long: a fourteen-minute clear was stored as twenty-nine days. Four separate copies of the same parser had it, and only one had been fixed; the three that write the stored records had not, so history kept filling with month-long runs even once the chat labels read correctly. All four now share one reading, which takes its order from the client and lets the digits overrule it where they can.
+
+Runs already stored that way are re-derived on the next load: both ends of a mangled run went through the same wrong reading, so the true length can be recovered from the record itself. It only rewrites a run when the repair is well-defined and the result is plausible — anything less certain is left exactly as it is, and nothing is deleted. It runs once.
+
+Two more from the same thread. A timestamp both of whose fields are over 12 is no date under any reading and is now dropped instead of being rolled into next year; and a run that spans New Year is a few minutes long instead of a year. The outlier scrub's console line also stops printing milliseconds with a seconds label, which made a correctly scrubbed fourteen-minute run look like ten days.
+
+### "Own use: make vs buy" says which side the saving is on
+
+The line showed the same green whether making or buying came out cheaper, and said "save" without naming what. It now reads `make saves 10.0K (20%)` or `buy saves 30.0K (38%)`, with the losing case in red, so the direction survives a screenshot, a colourblind reader and anyone who skips the colour.
+
 ### The performance panel stops calling waiting-around "CPU"
 
 Net worth deliberately hands the browser back control while it recalculates, but the panel timed the whole wait and filed it as processor time — so the largest line in a live capture read as half a second of the main thread being blocked when the thread was free the entire time. It was nearly diagnosed as the cause of a stutter it had nothing to do with. Anything that waits is now listed separately as wall time, and can no longer be blamed for a pause it merely spanned.
