@@ -6,6 +6,14 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The performance panel stops calling waiting-around "CPU"
+
+Net worth deliberately hands the browser back control while it recalculates, but the panel timed the whole wait and filed it as processor time — so the largest line in a live capture read as half a second of the main thread being blocked when the thread was free the entire time. It was nearly diagnosed as the cause of a stutter it had nothing to do with. Anything that waits is now listed separately as wall time, and can no longer be blamed for a pause it merely spanned.
+
+The marketplace panel's once-a-second check for an open game window was searching the whole page each time. It now learns about windows as they open, which is how the rest of the script watches for them. (The far larger cost in that tick is the browser being asked for the pin's position on a page the game had just redrawn — that is work the browser has to do before it can paint either way, and the poll only pays it a moment earlier, so it stays.)
+
+On the test server, the ability book overlay panel now costs and buys through the Tester shop as the setting has always claimed — including the header's "cheapest next ability level", which was ranking by a price you would not have paid. The net worth tile that shares those figures says when it is quoting the shop.
+
 ### The Equipment Watch row stops re-costing every target on every redraw
 
 That one overlay row was the single most expensive thing on the page in three separate live captures — 77ms in one call, more than any websocket handler. It was solving the full protection sweep for every enhancing target from scratch each time it drew, though nothing about those targets had changed between draws: nearly two hundred Markov solves for the same answers. It now keeps each sweep against the things that decide it — the item, the levels, your bench, the material and protection prices — so a redraw where nothing moved reuses them, and a genuine change still sweeps again. Measured on a game-sized fixture, a redraw went from 18.7ms to 1.05ms.
