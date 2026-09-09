@@ -10,7 +10,10 @@
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
-const game = vi.hoisted(() => ({ data: {}, prices: {}, character: null }));
+const game = vi.hoisted(() => ({ data: {}, prices: {}, character: null, testerOn: false, shopCosts: {} }));
+
+/** What the panel asked the Tester shop to do, and how often */
+const shop = vi.hoisted(() => ({ opened: 0, filtered: [], armed: [] }));
 
 /** What the panel asked the game's buy dialog to be filled with, and for what */
 const market = vi.hoisted(() => ({ filled: [], opened: [], initialized: 0 }));
@@ -25,9 +28,22 @@ vi.mock('../../utils/marketplace-autofill.js', () => ({
     createAutofillManager: () => ({
         initialize: () => market.initialized++,
         setQuantity: (quantity) => market.filled.push(quantity),
+        setPendingCalculation: (fn, options) => shop.armed.push([fn(), options]),
         clearQuantity: () => market.filled.push(null),
         cleanup: () => {},
     }),
+}));
+
+vi.mock('../../utils/tester-shop.js', () => ({
+    testerShopEnabled: () => game.testerOn,
+    testerShopCoinCost: (itemHrid) => game.shopCosts[itemHrid] || 0,
+}));
+vi.mock('../../utils/tester-shop-nav.js', () => ({
+    openTesterShopPage: async () => {
+        shop.opened++;
+        return document.createElement('div');
+    },
+    setShopFilter: (name) => shop.filtered.push(name),
 }));
 
 vi.mock('../../core/data-manager.js', () => ({
@@ -83,9 +99,9 @@ beforeEach(() => {
             '/abilities/rare_move': { name: 'Rare Move' },
         },
         itemDetailMap: {
-            '/items/poke': { abilityBookDetail: { experienceGain: 500 } },
-            '/items/smack': { abilityBookDetail: { experienceGain: 500 } },
-            '/items/rare_move': { abilityBookDetail: { experienceGain: 500 } },
+            '/items/poke': { name: 'Poke Book', abilityBookDetail: { experienceGain: 500 } },
+            '/items/smack': { name: 'Smack Book', abilityBookDetail: { experienceGain: 500 } },
+            '/items/rare_move': { name: 'Rare Move Book', abilityBookDetail: { experienceGain: 500 } },
         },
     };
     // Equipped is the kit; characterAbilities is where the experience lives
@@ -110,6 +126,11 @@ beforeEach(() => {
     market.filled = [];
     market.opened = [];
     longWindow.rate = null;
+    game.testerOn = false;
+    game.shopCosts = {};
+    shop.opened = 0;
+    shop.filtered = [];
+    shop.armed = [];
 });
 
 afterEach(() => {
@@ -530,5 +551,178 @@ describe('the rate the time column divides by', () => {
         expect(abilityPlans().every((plan) => plan.rateWindow === null)).toBe(true);
         expect(text()).not.toContain('w/ combat');
         expect(text()).not.toContain(FAILED);
+    });
+});
+
+describe('the Tester shop as the buy side', () => {
+    /**
+     * Poke's book is 900,000 on the market and Smack's is 4,000, so Smack is
+     * the cheapest next level; the shop sells Poke's book for one coin, which
+     * is the whole point of the case
+     */
+    const shopSellsPokeCheap = () => {
+        game.testerOn = true;
+        game.shopCosts = { '/items/poke': 1 };
+    };
+
+    /** The book icon on one ability's row */
+    const bookIcon = (abilityHrid) => {
+        const input = abilityBookPanel.panel.querySelector(`input[data-ability="${abilityHrid}"]`);
+        return [...input.parentElement.children].find((child) => child.style.cursor === 'pointer');
+    };
+
+    /** Let a click handler's awaits run out */
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    /** The panel's markup, drawn fresh */
+    const drawn = () => {
+        abilityBookPanel.hide();
+        abilityBookPanel.show();
+        return abilityBookPanel.panel.innerHTML;
+    };
+
+    describe('with the setting off', () => {
+        test('a shop selling the book for a coin changes nothing at all', () => {
+            const before = drawn();
+            game.shopCosts = { '/items/poke': 1 };
+
+            expect(drawn()).toBe(before);
+            expect(abilityPlans()[0].name).toBe('Smack');
+            expect(abilityPlans().find((plan) => plan.name === 'Poke').bookPrice).toBe(900000);
+        });
+
+        test('the links still go to the marketplace', async () => {
+            game.shopCosts = { '/items/poke': 1 };
+            abilityBookPanel.show();
+
+            bookIcon('/abilities/poke').dispatchEvent(new Event('click', { bubbles: true }));
+            abilityBookPanel.headerBest.firstElementChild.dispatchEvent(new Event('click', { bubbles: true }));
+            await settle();
+
+            expect(shop.opened).toBe(0);
+            expect(market.opened).toEqual(['/items/poke', '/items/smack']);
+        });
+    });
+
+    test('a book the shop does not sell is untouched by the setting', () => {
+        const before = drawn();
+        game.testerOn = true;
+        game.shopCosts = {};
+
+        expect(drawn()).toBe(before);
+        expect(abilityPlans()[0].name).toBe('Smack');
+    });
+
+    test('a shop dearer than the market does not raise a price', () => {
+        const before = drawn();
+        game.testerOn = true;
+        game.shopCosts = { '/items/poke': 9_000_000, '/items/smack': 4000 };
+
+        // 4,000 is the ask, not under it: strictly cheaper only
+        expect(drawn()).toBe(before);
+        expect(abilityPlans().find((plan) => plan.name === 'Poke').bookPrice).toBe(900000);
+    });
+
+    test('a book cheaper in the shop is costed at the shop, and that changes what is cheapest', () => {
+        expect(abilityPlans()[0].name).toBe('Smack');
+
+        shopSellsPokeCheap();
+        const plans = abilityPlans();
+
+        // Two books at one coin beats two books at 4,000
+        expect(plans[0].name).toBe('Poke');
+        expect(plans[0].bookPrice).toBe(1);
+        expect(plans[0].costToNext).toBe(2);
+        expect(plans.find((plan) => plan.name === 'Smack').costToNext).toBe(8000);
+    });
+
+    test('the header names the ability the shop makes cheapest, and says where the price came from', () => {
+        shopSellsPokeCheap();
+        abilityBookPanel.show();
+
+        expect(abilityBookPanel.headerBest.title).toContain('Poke');
+        expect(abilityBookPanel.headerBest.title).toContain('Tester shop');
+        expect(abilityBookPanel.headerBest.textContent).toContain('(Tester shop)');
+    });
+
+    test('a shop-floored row says so rather than reading as a market quote', () => {
+        shopSellsPokeCheap();
+        abilityBookPanel.show();
+
+        const row = abilityBookPanel.panel.querySelector('input[data-ability="/abilities/poke"]').parentElement;
+        expect(row.textContent).toContain('shop');
+        expect(tooltips()).toContain('the Tester shop price');
+        // Smack is not sold there, so its row is a market quote and says nothing
+        const smack = abilityBookPanel.panel.querySelector('input[data-ability="/abilities/smack"]').parentElement;
+        expect(smack.textContent).not.toContain('shop');
+    });
+
+    test('the row link opens the shop, filtered, with the count armed', async () => {
+        shopSellsPokeCheap();
+        abilityBookPanel.show();
+
+        bookIcon('/abilities/poke').dispatchEvent(new Event('click', { bubbles: true }));
+        await settle();
+
+        expect(shop.opened).toBe(1);
+        expect(shop.filtered).toEqual(['Poke Book']);
+        // Poke is 1,000 experience from level 3 at 500 a book
+        expect(shop.armed).toEqual([[2, { itemHrid: '/items/poke' }]]);
+        // The shop replaces the marketplace, it does not follow it
+        expect(market.opened).toEqual([]);
+        expect(market.filled).toEqual([]);
+    });
+
+    test('the header link opens the shop too, with nothing armed', async () => {
+        shopSellsPokeCheap();
+        abilityBookPanel.show();
+
+        abilityBookPanel.headerBest.firstElementChild.dispatchEvent(new Event('click', { bubbles: true }));
+        await settle();
+
+        expect(shop.opened).toBe(1);
+        expect(shop.filtered).toEqual(['Poke Book']);
+        // The header carries no count, so there is no quantity to fill in
+        expect(shop.armed).toEqual([]);
+        expect(market.opened).toEqual([]);
+    });
+
+    test('a row the shop does not sell still goes to the marketplace with its count', async () => {
+        shopSellsPokeCheap();
+        abilityBookPanel.show();
+
+        bookIcon('/abilities/smack').dispatchEvent(new Event('click', { bubbles: true }));
+        await settle();
+
+        expect(shop.opened).toBe(0);
+        expect(market.opened).toEqual(['/items/smack']);
+        expect(market.filled).toEqual([2]);
+    });
+
+    test('no buy control is pressed on any path', async () => {
+        const clicked = [];
+        const card = document.createElement('div');
+        card.textContent = 'Poke Book';
+        card.addEventListener('click', () => clicked.push('card'));
+        const buy = document.createElement('button');
+        buy.textContent = 'Buy';
+        buy.addEventListener('click', () => clicked.push('buy'));
+        document.body.append(card, buy);
+
+        shopSellsPokeCheap();
+        abilityBookPanel.show();
+        bookIcon('/abilities/poke').dispatchEvent(new Event('click', { bubbles: true }));
+        abilityBookPanel.headerBest.firstElementChild.dispatchEvent(new Event('click', { bubbles: true }));
+        await settle();
+
+        game.testerOn = false;
+        abilityBookPanel.hide();
+        abilityBookPanel.show();
+        bookIcon('/abilities/poke').dispatchEvent(new Event('click', { bubbles: true }));
+        await settle();
+
+        expect(clicked).toEqual([]);
+        card.remove();
+        buy.remove();
     });
 });

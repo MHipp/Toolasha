@@ -40,6 +40,8 @@ import { attachMinimize } from '../../utils/panel-minimize.js';
 import { itemIcon, linkToMarketplace, shortDuration, ROW_COLORS } from '../../utils/overlay-format.js';
 import { navigateToMarketplace } from '../../utils/marketplace-tabs.js';
 import { createAutofillManager } from '../../utils/marketplace-autofill.js';
+import { testerShopEnabled, testerShopCoinCost } from '../../utils/tester-shop.js';
+import { openTesterShopPage, setShopFilter } from '../../utils/tester-shop-nav.js';
 import { createSkillHistory } from '../../utils/skill-history.js';
 import { rateFor as checkpointRateFor, rateWindowLabel } from './ability-checkpoints.js';
 import { abilityPlan, cheapestNextLevel, aimedTotals, bookItemFor } from '../../utils/ability-books.js';
@@ -124,10 +126,27 @@ let autofillReady = false;
  * @param {number|null} books - How many, or null when it cannot be worked out
  */
 export function buyBooks(itemHrid, books) {
-    if (!autofillReady) {
-        autofill.initialize();
-        autofillReady = true;
+    // The shop is a detour taken only when it applies: the marketplace path
+    // stays synchronous, so a click that was never going to the shop is not
+    // deferred a turn for the sake of a question already answered
+    if (boughtFromTesterShop(itemHrid)) {
+        openInTesterShop(itemHrid, books).then((opened) => {
+            // The shop could not be reached; the marketplace still sells books
+            if (!opened) buyOnMarketplace(itemHrid, books);
+        });
+        return;
     }
+
+    buyOnMarketplace(itemHrid, books);
+}
+
+/**
+ * The marketplace listing for a book, with the count already typed in.
+ * @param {string} itemHrid - The book
+ * @param {number|null} books - How many, or null when it cannot be worked out
+ */
+function buyOnMarketplace(itemHrid, books) {
+    armAutofill();
 
     // One-shot, and armed for this book alone: a standing quantity that is not
     // tied to an item fills in the next thing you buy, whatever it is
@@ -135,6 +154,95 @@ export function buyBooks(itemHrid, books) {
     else autofill.clearQuantity();
 
     navigateToMarketplace(itemHrid);
+}
+
+/** Register the buy-dialog observer, once, on first use */
+function armAutofill() {
+    if (autofillReady) return;
+    autofill.initialize();
+    autofillReady = true;
+}
+
+/**
+ * Whether a book is bought from the Tester shop rather than the marketplace.
+ *
+ * Sold in the shop and priced against it is the whole condition — the same one
+ * the Item Dictionary's book panel uses, so the two surfaces cannot disagree
+ * about where a book comes from.
+ *
+ * @param {string} itemHrid - The book
+ * @returns {boolean}
+ */
+function boughtFromTesterShop(itemHrid) {
+    return testerShopEnabled() && testerShopCoinCost(itemHrid) > 0;
+}
+
+/**
+ * Open a book in the Tester shop, filtered to it and with the count armed.
+ *
+ * Nothing here opens the item's card or presses Buy: one click is one game
+ * action, and the player's click is the purchase. A shop that cannot be reached
+ * reports it so the caller can fall back to the marketplace, which sells books
+ * too.
+ *
+ * @param {string} itemHrid - The book
+ * @param {number|null} books - How many to arm, or null to arm nothing
+ * @returns {Promise<boolean>} Whether the shop took the click
+ */
+async function openInTesterShop(itemHrid, books) {
+    const testerTab = await openTesterShopPage();
+    if (!testerTab) return false;
+
+    // Filter and arm only after the tab is selected: selecting a shop tab is
+    // what clears an armed quantity
+    setShopFilter(dataManager.getInitClientData?.()?.itemDetailMap?.[itemHrid]?.name || '');
+    if (books > 0) {
+        armAutofill();
+        autofill.setPendingCalculation(() => Math.ceil(books), { itemHrid });
+    }
+    return true;
+}
+
+/**
+ * Open a book where it is bought, with nothing armed.
+ *
+ * The header's icon, which is a look rather than a purchase — it carries no
+ * count, so there is no quantity to fill in.
+ *
+ * @param {string} itemHrid - The book
+ */
+function openBook(itemHrid) {
+    if (boughtFromTesterShop(itemHrid)) {
+        openInTesterShop(itemHrid, null).then((opened) => {
+            if (!opened) navigateToMarketplace(itemHrid);
+        });
+        return;
+    }
+
+    navigateToMarketplace(itemHrid);
+}
+
+/**
+ * What a book costs to buy, floored at the Tester shop.
+ *
+ * The floor is the shape `resolveItemPrice` already uses: buy-side only, and
+ * the shop replaces a price only when it is strictly cheaper — only when there
+ * is no quote at all does it stand in for a missing one. A dearer shop never
+ * raises a price.
+ *
+ * This is what the panel ranks on, not only what it prints: `costToNext` is the
+ * sort key and the header's "cheapest next level", so a book cheaper in the
+ * shop than on the market has to be costed at the shop or the panel names an
+ * ability that is not the cheapest thing to buy.
+ *
+ * @param {string} itemHrid - The book
+ * @returns {{price: number, floored: boolean}} `floored` is whether the figure is the shop's
+ */
+function bookBuyPrice(itemHrid) {
+    const marketAsk = getItemPrices(itemHrid)?.ask || 0;
+    const shopCost = testerShopEnabled() ? testerShopCoinCost(itemHrid) : 0;
+    const floored = shopCost > 0 && (!(marketAsk > 0) || shopCost < marketAsk);
+    return { price: floored ? shopCost : marketAsk, floored };
 }
 
 /**
@@ -202,10 +310,11 @@ export function abilityPlans(target = targetFor) {
         const itemHrid = bookItemFor(ability.abilityHrid);
         const perBookExperience = data?.itemDetailMap?.[itemHrid]?.abilityBookDetail?.experienceGain;
 
+        const { price, floored } = bookBuyPrice(itemHrid);
         const plan = abilityPlan({
             ability,
             perBookExperience,
-            bookPrice: getItemPrices(itemHrid)?.ask || 0,
+            bookPrice: price,
             table,
             targetLevel: typeof target === 'function' ? target(ability.abilityHrid) : target,
         });
@@ -221,6 +330,9 @@ export function abilityPlans(target = targetFor) {
             plans.push({
                 ...plan,
                 name: abilityName(ability.abilityHrid),
+                // Whether the figure beside it is the shop's rather than the
+                // market's. Every surface that prints the cost has to say which
+                shopPriced: floored,
                 experiencePerHour: window ? window.experiencePerHour : live,
                 // Null means the figure beside it is the live ten-minute rate.
                 // Every surface that prints the rate has to say which it is —
@@ -440,7 +552,8 @@ class AbilityBookPanel {
         if (!best) return;
 
         const icon = itemIcon(best.itemHrid, 18);
-        linkToMarketplace(icon, best.itemHrid, navigateToMarketplace);
+        linkToMarketplace(icon, best.itemHrid, openBook);
+        if (best.shopPriced) icon.title = 'Open in the Tester shop';
 
         this.headerBest.append(
             icon,
@@ -448,7 +561,11 @@ class AbilityBookPanel {
             this._label('books'),
             this._value(formatKMB(best.costToNext), ROW_COLORS.gold)
         );
-        this.headerBest.title = `${best.name} is the cheapest next ability level you could buy right now.`;
+        // A shop-floored figure is not a market quote and must not read as one
+        if (best.shopPriced) this.headerBest.append(this._label(' (Tester shop)'));
+        this.headerBest.title =
+            `${best.name} is the cheapest next ability level you could buy right now.` +
+            (best.shopPriced ? ' Costed at the Tester shop, which sells the book for less than the market.' : '');
     }
 
     /** The periodic redraw, which leaves a field being typed into alone */
@@ -528,7 +645,11 @@ class AbilityBookPanel {
             document.createTextNode(' · '),
             this._value(formatKMB(totals.cost), ROW_COLORS.gold)
         );
-        summary.title = 'Every ability taken to the level its own row is aimed at.';
+        summary.title =
+            'Every ability taken to the level its own row is aimed at.' +
+            (plans.some((plan) => plan.shopPriced)
+                ? ' Books the Tester shop sells cheaper are costed at the shop.'
+                : '');
         // A total that quietly excludes rows is a lower bound wearing a total's
         // clothes, so the count of what it could not price is said out loud
         if (totals.unpriced) {
@@ -586,6 +707,11 @@ class AbilityBookPanel {
         });
         level.title = plan.level === 0 ? 'Not learned yet.' : `${plan.name} is level ${plan.level}.`;
 
+        // Where the click goes, and which price the row is quoting: one
+        // condition decides both, so the two cannot disagree
+        const shop = plan.shopPriced;
+        const where = shop ? 'Tester shop' : 'marketplace';
+
         // The icon is the name. An ability's book is its picture and a column of
         // pictures is read faster than a column of words — and the words were
         // ellipsed to "Pen…" at any width that left room for the figures.
@@ -601,8 +727,8 @@ class AbilityBookPanel {
                 ? `${plan.name} — not learned. The first book teaches the ability rather than levelling it.`
                 : plan.name) +
                 (books > 0
-                    ? `\nClick to buy: opens the marketplace with ${formatWithSeparator(books)} filled in.`
-                    : '\nClick to open in the marketplace.')
+                    ? `\nClick to buy: opens the ${where} with ${formatWithSeparator(books)} filled in.`
+                    : `\nClick to open in the ${where}.`)
         );
 
         line.append(level, icon, this._experienceCell(plan, owed), this._timeCell(plan, owed));
@@ -613,10 +739,19 @@ class AbilityBookPanel {
 
         const costCell = this._cell(cost === null ? 'no price' : formatKMB(cost));
         costCell.style.color = cost === null ? ROW_COLORS.bad : ROW_COLORS.gold;
+        // A shop-floored figure is not a market quote and must not read as one.
+        // The column has no room for the whole phrase the dictionary panel
+        // prints, so it carries the same word and the tooltip says the rest
+        if (cost !== null && shop) {
+            const label = this._label(' shop');
+            label.style.fontSize = '9px';
+            costCell.appendChild(label);
+        }
         costCell.title =
             cost === null
                 ? 'Nobody is selling this book, so its cost is unknown rather than nothing.'
-                : `${formatWithSeparator(books)} books at ${formatWithSeparator(plan.bookPrice)} each.`;
+                : `${formatWithSeparator(books)} books at ${formatWithSeparator(plan.bookPrice)} each` +
+                  (shop ? ', the Tester shop price, cheaper than the market.' : '.');
 
         line.append(booksCell, costCell, this._targetInput(plan));
         return line;
