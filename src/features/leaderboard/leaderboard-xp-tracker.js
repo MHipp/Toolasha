@@ -40,6 +40,7 @@ import webSocketHook from '../../core/websocket.js';
 import config from '../../core/config.js';
 import { createPersistedRecord, mergeSeriesMaps } from '../../utils/persisted-record.js';
 import { registerSyncMerge } from '../../utils/sync-merge-registry.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 
 const STORE_NAME = 'leaderboardHistory';
 
@@ -296,7 +297,15 @@ class LeaderboardXPTracker {
         // Load history BEFORE registering WS listener to avoid race condition where
         // leaderboard_updated arrives before storage resolves, causing history to be overwritten.
         // An unreadable store keeps whatever is in memory rather than blanking it.
+        //
+        // The ticket is taken before that read and checked after it. A
+        // `character_switching` teardown landing inside the read used to leave a
+        // live `leaderboard_updated` handler and `initialized = true` behind it,
+        // and the switch's own re-initialise then early-returned on that flag —
+        // no board reading was recorded again until the page was reloaded.
+        const ticket = captureOwner(this);
         await this.history.load();
+        if (!stillOurs(ticket)) return;
         // Readings of 0 are the one-column boards as recorded before the value
         // column was read correctly; left in place they would pair with the
         // first real reading into a rate from nothing. Dropped once, here.
@@ -449,6 +458,7 @@ class LeaderboardXPTracker {
     }
 
     disable() {
+        noteTeardown(this);
         for (const unregister of this.unregisterHandlers) {
             unregister();
         }

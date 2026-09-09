@@ -19,6 +19,7 @@ import { createCuratedRecord, createPersistedRecord, mergeById } from '../../uti
 import { registerSyncMerge } from '../../utils/sync-merge-registry.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { addStyles } from '../../utils/dom.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 
 /**
  * Retired tasks live alongside the live map in the same store.
@@ -159,8 +160,16 @@ class TaskRerollTracker {
     async initialize() {
         if (this.isInitialized) return;
 
+        // Taken before the read, checked after it. A `character_switching`
+        // teardown landing inside `loadFromStorage()` used to leave the WS
+        // listeners, the DOM observers, the injected `<style>` and
+        // `isInitialized = true` behind it, and the switch's own re-initialise
+        // then early-returned on that flag — reroll spend went unrecorded for
+        // the arriving character until the page was reloaded.
+        const ticket = captureOwner(this);
         // Load saved data from IndexedDB
         await this.loadFromStorage();
+        if (!stillOurs(ticket)) return;
 
         // Register WebSocket listener
         this.registerWebSocketListeners();
@@ -238,6 +247,7 @@ class TaskRerollTracker {
     }
 
     disable() {
+        noteTeardown(this);
         try {
             this.cleanup();
         } catch (error) {

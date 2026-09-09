@@ -12,6 +12,7 @@ import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { createPersistedRecord, mergeSeriesMaps } from '../../utils/persisted-record.js';
 import { registerSyncMerge } from '../../utils/sync-merge-registry.js';
 import { monthToDateFor } from './skill-checkpoints.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 
 const STORE_NAME = 'xpHistory';
 const WINDOW_10M = 10 * 60 * 1000;
@@ -259,6 +260,14 @@ class XPTracker {
             document.head.appendChild(style);
         }
 
+        // Taken before the character-init read below, checked after it. A
+        // `character_switching` teardown landing inside `_onCharacterInit()`
+        // used to leave the tooltip observer and `initialized = true` behind
+        // it, and the switch's own re-initialise then early-returned on that
+        // flag — no XP rate, time-till-level or month gain was shown for the
+        // arriving character until the page was reloaded.
+        const ticket = captureOwner(this);
+
         const characterInitHandler = async (data) => {
             await this._onCharacterInit(data);
         };
@@ -296,6 +305,10 @@ class XPTracker {
         if (dataManager.characterData) {
             await this._onCharacterInit(dataManager.characterData);
         }
+        // The handlers registered above are already off — `disable()` ran the
+        // unregisters while this was suspended — so returning here leaves
+        // nothing behind and, crucially, no flag set
+        if (!stillOurs(ticket)) return;
 
         // Watch for skill tooltip appearing
         this._watchSkillTooltip();
@@ -633,6 +646,7 @@ class XPTracker {
     }
 
     disable() {
+        noteTeardown(this);
         this.timerRegistry.clearAll();
 
         this.unregisterObservers.forEach((fn) => fn());

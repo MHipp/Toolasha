@@ -7,6 +7,7 @@ import dataManager from '../../core/data-manager.js';
 import storage from '../../core/storage.js';
 import { registerSyncMerge } from '../../utils/sync-merge-registry.js';
 import config from '../../core/config.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 
 /**
  * Two history maps folded into one, per item key and per side, the second
@@ -142,8 +143,22 @@ class TradeHistory {
         // Get current character ID
         this.characterId = dataManager.getCurrentCharacterId();
 
+        // Taken before the read, checked after it. `loadHistory()` guards its
+        // own merge; this guards the registration.
+        //
+        // This module holds its own `character_switched` listener, so the
+        // "dead until reload" shape does not apply — `handleCharacterSwitch()`
+        // re-disables and re-initialises, which clears a leaked flag. What it
+        // does NOT clear is a leaked listener: when the interrupted read lands
+        // while `handleCharacterSwitch()` is itself parked on the
+        // re-initialise, both calls register and `marketUpdateHandler` keeps
+        // only the second handle, so the first `market_listings_updated`
+        // listener can never be removed and every fill is recorded twice for
+        // as long as the tab lives.
+        const ticket = captureOwner(this);
         // Load existing history from storage
         await this.loadHistory();
+        if (!stillOurs(ticket)) return;
 
         this.marketUpdateHandler = (data) => {
             this.handleMarketUpdate(data);
@@ -347,6 +362,7 @@ class TradeHistory {
      * Disable the feature
      */
     disable() {
+        noteTeardown(this);
         try {
             if (this.marketUpdateHandler) {
                 dataManager.off('market_listings_updated', this.marketUpdateHandler);

@@ -22,6 +22,7 @@
 import domObserver from '../../core/dom-observer.js';
 import storage from '../../core/storage.js';
 import config from '../../core/config.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 
 const STORAGE_KEY = 'modalPositions3';
 const STORE_NAME = 'settings';
@@ -72,7 +73,20 @@ class DraggableModals {
         if (this.initialized) return;
         if (!config.getSetting('draggableModals', true)) return;
 
-        this.offsets = (await storage.get(STORAGE_KEY, STORE_NAME, {})) || {};
+        // Taken before the read, checked after it. A `character_switching`
+        // teardown landing inside it used to leave a live `Modal_modalContent`
+        // observer and `initialized = true` behind. `domObserver` is a
+        // singleton a switch does not tear down, so that observer kept firing
+        // and modals stayed draggable — the damage was instead that the flag
+        // disagreed with the teardown (a `disable()` for the setting being
+        // turned off mid-read left the feature running with the registry
+        // believing it off) and that `unregisterObserver` holds only the LAST
+        // handle, so two switches inside overlapping reads orphaned an
+        // observer nothing could ever unregister.
+        const ticket = captureOwner(this);
+        const stored = await storage.get(STORAGE_KEY, STORE_NAME, {});
+        if (!stillOurs(ticket)) return;
+        this.offsets = stored || {};
 
         // Watch Modal_modalContent — unique to the inner dialog content element.
         // Its parentElement is Modal_modal (the box we apply transform to).
@@ -223,6 +237,7 @@ class DraggableModals {
     }
 
     disable() {
+        noteTeardown(this);
         if (this.unregisterObserver) {
             this.unregisterObserver();
             this.unregisterObserver = null;
@@ -233,6 +248,8 @@ class DraggableModals {
 }
 
 const draggableModals = new DraggableModals();
+
+export { draggableModals };
 
 export default {
     name: 'Draggable Modals',
