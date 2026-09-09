@@ -822,7 +822,7 @@ export const settingsGroups = {
                 id: 'abilityTooltip_effectiveTiming',
                 label: 'Show effective cooldown/cast time on ability hovers',
                 type: 'checkbox',
-                default: false,
+                default: true,
                 help: 'The game’s ability tooltip always shows base Cooldown and Cast Time. This adds, in parentheses, what they actually are with your Ability Haste, Cast Speed and Attack level applied — and adds nothing when the figures match.',
             },
             itemTooltip_enhancementMilestones: {
@@ -1354,7 +1354,7 @@ export const settingsGroups = {
                 id: 'market_itemHop',
                 label: 'Market: Step between items without going back to the list',
                 type: 'checkbox',
-                default: false,
+                default: true,
                 help:
                     "On an item's marketplace page, [ and ] open the previous/next item from the item grid you " +
                     'came from (respecting any filter you had applied), and Escape goes back to the grid. The same ' +
@@ -2998,7 +2998,7 @@ export const settingsGroups = {
                 id: 'equipmentMismatchWarning',
                 label: 'Warn when the gear contradicts the action',
                 type: 'checkbox',
-                default: false,
+                default: true,
                 help:
                     'A pulsing pill in the header when the kit and the running action disagree: a production piece ' +
                     'still worn in combat, or — the one that costs you hours — a cooking, gathering, crafting or ' +

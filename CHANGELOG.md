@@ -6,6 +6,14 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Four features that were hidden behind a switch are now simply on
+
+Each of these was defaulted off out of habit rather than for a reason, and all four are the kind of thing you would want without having to find them first.
+
+The gear warning is the one that was costing people: it says so in its own description — a crafting, cooking, gathering or enhancing action running while the piece that would speed it up sits unequipped in your bag. It stays silent unless something is actually wrong, and says nothing during a labyrinth run. Ability hovers now show what your cooldown and cast time really are with your haste and cast speed applied, adding nothing when those match the base figures. `[` and `]` step between marketplace items without going back to the list — a shortcut with nothing on screen until you press it. And Buy Now raises the price to cover the whole quantity, which is a better bargain than its description used to claim: the price is a limit, not a per-unit charge, so the units the cheapest listings cover are still bought at those prices.
+
+Anyone who would rather meet new switches turned off already has "New settings start turned off" for that.
+
 ### Follow-ups: an all-zones sweep stops re-sending the game to itself, and reroll spend is right on a cold board
 
 A full all-zones sweep built a fresh worker for every zone and tier and copied the whole game's data into each one — thirty-six copies for a thirty-six tier sweep. The coordinator keeps its workers now, so it sends the data once per slot instead: four copies, not thirty-six. And pressing Simulate again no longer throws away the warm workers, so a second run starts where the first left off. Stopping a run keeps them; disabling the feature or switching character still releases everything, because a kept worker there would be holding a departed character's data.
