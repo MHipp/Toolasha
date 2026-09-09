@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
     inventory: [],
     itemDetails: new Map(),
     reserved: [],
+    characterId: 'char1',
     started: null,
     walkInitialized: 0,
 }));
@@ -17,6 +18,7 @@ vi.mock('../../core/config.js', () => ({
 vi.mock('../../core/data-manager.js', () => ({
     default: {
         getInventory: () => mocks.inventory,
+        getCurrentCharacterId: () => mocks.characterId,
         getItemDetails: (itemHrid) => mocks.itemDetails.get(itemHrid) || { isTradable: true },
         getActionDetails: () => null,
     },
@@ -32,9 +34,10 @@ vi.mock('../tasks/task-card-quest.js', () => ({
 
 vi.mock('../../utils/inventory-reservations.js', () => ({
     effectiveInventoryRows: (rows) => rows,
-    reserve: (ownerId, lines, options) => {
+    reserve: async (ownerId, lines, options) => {
         mocks.reserved.push({ ownerId, lines, options });
-        return Promise.resolve(true);
+        await mocks.onReserve?.();
+        return true;
     },
 }));
 
@@ -121,6 +124,8 @@ beforeEach(() => {
     mocks.inventory = [];
     mocks.itemDetails = new Map();
     mocks.reserved = [];
+    mocks.characterId = 'char1';
+    mocks.onReserve = null;
     mocks.started = null;
     mocks.walkInitialized = 0;
     document.body.innerHTML = '';
@@ -367,6 +372,35 @@ describe('disable', () => {
         expect(craftingPlanWalk.onStepAboutToRun).not.toBeNull();
 
         taskCraftingTrain.disable();
+        expect(craftingPlanWalk.onStepAboutToRun).toBeNull();
+    });
+
+    /*
+     * The plans, the merged steps and the inventory they were sized against all
+     * belong to the character who pressed the button. The walk ends itself on a
+     * switch, but only on one that happens after it has started — a switch
+     * inside the claim would otherwise walk the arriving character through the
+     * departing one's task list.
+     */
+    test('a switch inside the claim starts no walk for the arriving character', async () => {
+        const group = groupTasksBySharedChain(
+            planTaskTargets(
+                [
+                    { actionHrid: '/actions/tailoring/hat', quantity: 1, label: 'Hat' },
+                    { actionHrid: '/actions/tailoring/boots', quantity: 1, label: 'Boots' },
+                ],
+                {
+                    planFor: (actionHrid) => (actionHrid === '/actions/tailoring/hat' ? hatPlan() : bootsPlan()),
+                }
+            )
+        )[0];
+
+        mocks.onReserve = () => {
+            mocks.characterId = 'char2';
+        };
+
+        expect(await taskCraftingTrain.startMergedWalk(group)).toBe(false);
+        expect(mocks.started).toBeNull();
         expect(craftingPlanWalk.onStepAboutToRun).toBeNull();
     });
 

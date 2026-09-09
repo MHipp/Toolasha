@@ -520,7 +520,15 @@ class TaskCraftingTrain {
         const label = `Task walk: ${group.tasks.map((task) => task.target.label).join(', ')}`;
         const claim = () => reserve(ownerId, mergedMissingLines(plans, ownerId), { label });
 
+        // Whoever is walking is fixed before the write, and re-checked after it:
+        // the plans, the steps and the inventory they were sized against all
+        // belong to this character, and a switch landing inside the claim would
+        // otherwise hand the arriving character a walk through the departing
+        // one's tasks — the walk itself only ends on switches that happen after
+        // it has started.
+        const walker = dataManager.getCurrentCharacterId?.() || null;
         await claim();
+        if ((dataManager.getCurrentCharacterId?.() || null) !== walker) return false;
 
         let previousStep = null;
         this.stepHook = (step) => {
