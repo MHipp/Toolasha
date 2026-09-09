@@ -277,6 +277,17 @@ export function createPanel({
             if (headingEl) headingEl.textContent = title;
         },
         render,
+        /**
+         * Whether the panel is on the page right now.
+         *
+         * Exposed because callers kept asking `api.panel` instead, which answers
+         * a different question: the handle survives an element torn off the page
+         * without going through `hide()`, so a truthy `panel` can mean "held but
+         * invisible". A caller that redraws on the strength of it draws into
+         * nothing and looks like a dead control.
+         * @returns {boolean}
+         */
+        isOpen,
         get panel() {
             return panel;
         },

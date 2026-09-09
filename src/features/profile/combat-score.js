@@ -253,11 +253,24 @@ class CombatScore {
         const owner = own ? null : profileData?.profile?.sharableCharacter?.name || 'Player';
         const changed = setScoreSource(own ? readOwnScore : () => scoreData, owner);
 
-        if (changed && buildScorePanel.panel) {
+        // `isOpen()`, not `buildScorePanel.panel`. The handle stays set when the
+        // element is torn off the page without going through `hide()`, so the
+        // old check redrew a panel nobody could see and returned — the link did
+        // nothing at all on the first press after that, which is how this was
+        // reported. Measured on the live page: the panel toggled cleanly once it
+        // had been built, and only the first press after opening a profile was
+        // swallowed.
+        if (buildScorePanel.isOpen()) {
+            // Same profile twice is "put it away"; a different profile is "show
+            // me this one instead" and must never read as the link failing.
+            if (!changed) {
+                buildScorePanel.hide();
+                return;
+            }
             buildScorePanel.render();
             return;
         }
-        buildScorePanel.toggle();
+        buildScorePanel.show();
     }
 
     /**

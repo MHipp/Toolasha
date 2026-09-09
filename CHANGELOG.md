@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The profile's breakdown link opens on the first press
+
+It could be pressed and do nothing at all. Opening the breakdown redrew the panel whenever the profile it was pointed at changed and a panel object existed — but that object outlives the panel being taken off the page, so it redrew something invisible and stopped there. Measured on a live page: the panel opened and closed perfectly once it had been built, and only the press that mattered, the first one after opening a profile, was swallowed.
+
+It now asks whether the panel is actually on screen rather than whether one was ever made. Pressing it on the same profile twice still puts it away; pressing it while looking at somebody else redraws for them instead of closing, which is the press where closing would look most like a failure.
+
 ### The device-local rule now holds in every direction, and restored chat is sanitised properly
 
 Chat history is kept on your machine and is meant never to leave it. Two ways it still could:

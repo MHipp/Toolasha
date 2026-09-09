@@ -9,7 +9,15 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
-const stub = vi.hoisted(() => ({ currentCharacterId: 7, toggles: 0 }));
+const stub = vi.hoisted(() => ({
+    currentCharacterId: 7,
+    toggles: 0,
+    renders: 0,
+    shows: 0,
+    hides: 0,
+    open: false,
+    ownerChanged: false,
+}));
 
 vi.mock('../../core/config.js', () => ({
     default: {
@@ -39,15 +47,33 @@ vi.mock('../combat/loadout-snapshot.js', () => ({ default: { getAllSnapshots: ()
 vi.mock('../combat-sim/combat-sim-ui.js', () => ({ default: {} }));
 vi.mock('../combat-sim/combat-sim-adapter.js', () => ({ buildPlayerDTOFromProfile: () => ({}) }));
 vi.mock('../../utils/enhancement-worker-manager.js', () => ({ terminateWorkerPool: () => {} }));
+// Modelled on the real panel api rather than on what the caller happens to
+// reach for. The old stub offered `panel`, `render` and `toggle` only, so a
+// caller asking the reliable question -- is it actually on the page -- got a
+// stub that could not answer, and a caller trusting the raw handle looked
+// correct here while doing nothing on a real page. `isOpen` reports document
+// membership, exactly as `simple-panel.js` does.
 vi.mock('./build-score-panel.js', () => ({
     buildScorePanel: {
         panel: null,
-        render: () => {},
+        isOpen: () => stub.open,
+        render: () => {
+            stub.renders += 1;
+        },
+        show: () => {
+            stub.shows += 1;
+            stub.open = true;
+        },
+        hide: () => {
+            stub.hides += 1;
+            stub.open = false;
+        },
         toggle: () => {
             stub.toggles += 1;
+            stub.open = !stub.open;
         },
     },
-    setScoreSource: () => false,
+    setScoreSource: () => stub.ownerChanged,
 }));
 vi.mock('./build-score-row.js', () => ({ readOwnScore: () => null }));
 
@@ -340,6 +366,11 @@ describe('the breakdown link', () => {
         document.body.innerHTML = '';
         stub.currentCharacterId = 7;
         stub.toggles = 0;
+        stub.renders = 0;
+        stub.shows = 0;
+        stub.hides = 0;
+        stub.open = false;
+        stub.ownerChanged = false;
         combatScore.currentPanel = null;
     });
 
@@ -350,13 +381,46 @@ describe('the breakdown link', () => {
         expect(document.querySelector('#mwi-score-breakdown-link')).not.toBeNull();
     });
 
-    test('clicking it toggles the Build Score panel', () => {
+    test('the first click opens it, even when a stale handle is left behind', () => {
+        // The reported failure: the link did nothing at all. `openBreakdown`
+        // redrew whenever the owner changed and a `panel` handle existed, but
+        // the handle outlives an element torn off the page, so it redrew
+        // something invisible and returned. Measured live, the panel toggled
+        // cleanly once built and only the first press was swallowed.
+        stub.open = false;
+        stub.ownerChanged = true;
         const { profileData, scoreData } = profile(7);
         combatScore.showScorePanel(profileData, scoreData, document.createElement('div'));
 
         document.querySelector('#mwi-score-breakdown-link').click();
 
-        expect(stub.toggles).toBe(1);
+        expect(stub.shows).toBe(1);
+        expect(stub.renders).toBe(0);
+    });
+
+    test('clicking it again on the same profile puts it away', () => {
+        stub.open = true;
+        stub.ownerChanged = false;
+        const { profileData, scoreData } = profile(7);
+        combatScore.showScorePanel(profileData, scoreData, document.createElement('div'));
+
+        document.querySelector('#mwi-score-breakdown-link').click();
+
+        expect(stub.hides).toBe(1);
+    });
+
+    test('an open panel pointed at another profile redraws rather than closing', () => {
+        // Closing here would read as the link failing, on the press where the
+        // player most expects to see something
+        stub.open = true;
+        stub.ownerChanged = true;
+        const { profileData, scoreData } = profile(99);
+        combatScore.showScorePanel(profileData, scoreData, document.createElement('div'));
+
+        document.querySelector('#mwi-score-breakdown-link').click();
+
+        expect(stub.renders).toBe(1);
+        expect(stub.hides).toBe(0);
     });
 
     test("another player's profile offers the same link, named after them", () => {
