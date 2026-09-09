@@ -6,6 +6,16 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The performance panel can say how much of the hitching was not ours
+
+Three additions, all behind a switch on the panel's own header and off until you turn them on.
+
+The stall ledger already saw every block over 50ms, whoever caused it, but could only name our own work. It now also reports the time during which **nothing of ours was running** — the honest form of "this was not us". A stall we only partly caused contributes only the part we did not cover, and each row says which it was rather than rounding it to one side. It cannot name a culprit: the game's own work and every other browser extension land in the same figure, because no browser interface attributes a task to an extension.
+
+A leak canary watches what the script itself is holding — listeners, observers, timers, timeouts, DOM handlers — and flags a count that has never once gone down. That is the half we can act on, since a number that only climbs is ours to fix. It sees what registers a count; a feature holding a private list of its own is invisible to it until it registers one.
+
+And a heap-size trend, where the browser offers one. It covers the whole tab — the game, this script, and anything else installed — so it can tell you a leak exists and roughly how fast, and never whose.
+
 ### Two Combat Simulator figures now read in the unit you compare them in
 
 An expanded upgrade row quotes profit per day rather than per hour, so the gain sits in the same unit as the cost above it — an upgrade worth a few thousand coins an hour reads as noise beside a price in the hundreds of millions, and as something you can weigh when it is a day's worth. The percentage beside it is the same either way.
