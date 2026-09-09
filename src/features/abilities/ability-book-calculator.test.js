@@ -7,7 +7,7 @@
  * this file is about what the calculator does with it at the level 200 cap,
  * where `booksToLevel` returns null (the experience table has nothing past
  * 200) rather than a number of books — and about the Tester shop, which on the
- * test server moves where the buy button goes.
+ * test server floors what a book costs and moves where the buy button goes.
  */
 
 import { describe, test, expect, beforeEach, vi } from 'vitest';
@@ -111,7 +111,7 @@ describe('the level 200 cap', () => {
     });
 });
 
-describe('the Tester shop as where a book is bought', () => {
+describe('the Tester shop as the buy side', () => {
     /** A calculator one level short of 10: 1,000 experience, 2 books at 500 each */
     const build = async () => {
         const el = panel();
@@ -124,6 +124,14 @@ describe('the Tester shop as where a book is bought', () => {
 
     /** Let the click handler's awaits run out */
     const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    test('with the setting off the cost is the market quote and the button says marketplace', async () => {
+        const el = await build();
+
+        // 2 books at ask 100 / bid 90
+        expect(el.textContent).toContain('Cost: 200 / 180 (ask / bid)');
+        expect(buyButton(el).textContent).toBe('Buy on Marketplace');
+    });
 
     test('with the setting off the button still goes to the marketplace', async () => {
         const el = await build();
@@ -141,8 +149,48 @@ describe('the Tester shop as where a book is bought', () => {
         buyButton(el).click();
         await settle();
 
+        expect(el.textContent).toContain('Cost: 200 / 180 (ask / bid)');
         expect(buyButton(el).textContent).toBe('Buy on Marketplace');
         expect(calls.market).toEqual([['/items/poke']]);
+    });
+
+    test('a book the shop sells cheaper is costed at the shop, and says so', async () => {
+        game.testerOn = true;
+        game.shopCost = 10;
+        const el = await build();
+
+        // Both columns are buy-side, and 10 beats both the ask and the bid
+        expect(el.textContent).toContain('Cost: 20 (Tester shop)');
+        expect(el.textContent).not.toContain('(ask / bid)');
+    });
+
+    test('the shop floors only the column it beats', async () => {
+        game.testerOn = true;
+        game.shopCost = 95; // under the ask of 100, over the bid of 90
+        const el = await build();
+
+        expect(el.textContent).toContain('Cost: 190 / 180 (shop / bid)');
+    });
+
+    test('a shop dearer than the market does not raise the cost', async () => {
+        game.testerOn = true;
+        game.shopCost = 500;
+        const el = await build();
+
+        expect(el.textContent).toContain('Cost: 200 / 180 (ask / bid)');
+    });
+
+    test('the recomputed cost after a level change keeps the shop floor', async () => {
+        game.testerOn = true;
+        game.shopCost = 10;
+        const el = await build();
+        const input = el.querySelector('#tillLevelInput');
+        input.value = '11';
+        input.dispatchEvent(new Event('change'));
+
+        // Two levels, 2,000 experience, 4 books
+        expect(el.textContent).toContain('Books needed: 4');
+        expect(el.textContent).toContain('Cost: 40 (Tester shop)');
     });
 
     test('a book the shop sells routes the button to the Tester tab with the quantity armed', async () => {

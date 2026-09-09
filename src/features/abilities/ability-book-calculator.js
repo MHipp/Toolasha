@@ -209,14 +209,40 @@ class AbilityBookCalculator {
 
         // Get market prices
         const prices = marketAPI.getPrice(itemHrid, 0);
-        const ask = prices?.ask || 0;
-        const bid = prices?.bid || 0;
+        const marketAsk = prices?.ask || 0;
+        const marketBid = prices?.bid || 0;
 
-        // Where the buy button goes: the Tester shop when it is priced in and
-        // sells the book, the marketplace otherwise
+        // The Tester shop as a buy-side floor, the same shape `resolveItemPrice`
+        // uses: the shop replaces a price only when it is strictly cheaper, and
+        // only when there is no quote at all does it stand in for a missing one.
+        // Both columns here are buy-side — the ask is buying now, the bid is
+        // buying by waiting — so both take the floor. Taking it on the ask alone
+        // would leave a bid above the shop price reading as the cheap way to buy
+        // a book you can walk in and buy for less.
         const shopCost = testerShopEnabled() ? testerShopCoinCost(itemHrid) : 0;
+        const floors = (price) => shopCost > 0 && (!(price > 0) || shopCost < price);
+        const askFloored = floors(marketAsk);
+        const bidFloored = floors(marketBid);
+        const ask = askFloored ? shopCost : marketAsk;
+        const bid = bidFloored ? shopCost : marketBid;
+        // Where the buy button goes. Sold in the shop and priced against it is
+        // the whole condition: `shopCost` is already 0 when the setting is off
         const useTesterShop = shopCost > 0;
         const itemName = dataManager.getItemDetails?.(itemHrid)?.name || '';
+
+        /**
+         * The cost line for a book count, naming which price each figure is —
+         * a shop-floored figure is not a market quote and must not read as one.
+         * @param {number} books - Books needed
+         * @returns {string}
+         */
+        const costLine = (books) => {
+            const askText = formatKMB(Math.ceil(books * ask));
+            const bidText = formatKMB(Math.ceil(books * bid));
+            if (askFloored && bidFloored) return `Cost: ${askText} (Tester shop)`;
+            const labels = `${askFloored ? 'shop' : 'ask'} / ${bidFloored ? 'shop' : 'bid'}`;
+            return `Cost: ${askText} / ${bidText} (${labels})`;
+        };
 
         // Create calculator HTML
         const calculatorDiv = dom.createStyledDiv(
@@ -262,7 +288,7 @@ class AbilityBookCalculator {
             <div id="tillLevelNumber" style="font-size: 0.95em;">
                 Books needed: <strong>${numberFormatter(booksNeeded)}</strong>
                 <br>
-                Cost: ${formatKMB(Math.ceil(booksNeeded * ask))} / ${formatKMB(Math.ceil(booksNeeded * bid))} (ask / bid)
+                ${costLine(booksNeeded)}
             </div>
             <div style="font-size: 0.85em; color: #999; margin-top: 8px; font-style: italic;">
                 Refresh page to update current level
@@ -284,7 +310,7 @@ class AbilityBookCalculator {
                 display.innerHTML = `
                     Books needed: <strong>${numberFormatter(books)}</strong>
                     <br>
-                    Cost: ${formatKMB(Math.ceil(books * ask))} / ${formatKMB(Math.ceil(books * bid))} (ask / bid)
+                    ${costLine(books)}
                 `;
             } else {
                 currentBooks = 0;
