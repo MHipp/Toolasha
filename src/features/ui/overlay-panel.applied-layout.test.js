@@ -16,9 +16,9 @@
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
-const store = vi.hoisted(() => ({ data: new Map() }));
+const store = vi.hoisted(() => ({ data: new Map(), transactions: [] }));
 /** The per-character side of storage, which is where the applied name lives */
-const scoped = vi.hoisted(() => ({ data: new Map() }));
+const scoped = vi.hoisted(() => ({ data: new Map(), unbatched: [] }));
 
 vi.mock('../../core/config.js', () => ({
     default: { getSetting: () => true, getSettingValue: () => 'off', Z_HUD: 50, Z_FLOATING_PANEL: 1100, Z_POPUP: 9000 },
@@ -26,6 +26,14 @@ vi.mock('../../core/config.js', () => ({
 vi.mock('../../core/storage.js', () => ({
     default: {
         getJSON: async (key) => (store.data.has(key) ? JSON.parse(JSON.stringify(store.data.get(key))) : null),
+        getMany: async (keys) => {
+            // One transaction however many keys it carries, which is what the
+            // panel's start-up read is counted on
+            store.transactions.push([...keys]);
+            return new Map(
+                keys.map((key) => [key, store.data.has(key) ? JSON.parse(JSON.stringify(store.data.get(key))) : null])
+            );
+        },
         setJSON: async (key, value) => {
             store.data.set(key, JSON.parse(JSON.stringify(value)));
             return true;
@@ -60,8 +68,17 @@ vi.mock('../../utils/panel-geometry.js', () => ({
 }));
 vi.mock('../../utils/floating-panel.js', () => ({ makeDraggable: () => () => {}, makeResizable: () => () => {} }));
 vi.mock('../../utils/character-key.js', () => ({
-    readScoped: async (base, storeName, defaultValue = null) =>
+    characterKey: (base) => `${base}_scoped`,
+    // The panel reads its three records in one batch now; the batch is keyed,
+    // but what the scoped read means is still "whatever is filed under base"
+    readScopedFrom: async (base, _values, storeName, defaultValue = null) =>
         scoped.data.has(base) ? scoped.data.get(base) : defaultValue,
+    readScoped: async (base, storeName, defaultValue = null) => {
+        // Un-batched: one transaction of its own, and up to two. Counted so a
+        // test can say the start-up path no longer takes any.
+        scoped.unbatched.push(base);
+        return scoped.data.has(base) ? scoped.data.get(base) : defaultValue;
+    },
     writeScoped: async (base, value) => {
         scoped.data.set(base, value === undefined ? null : value);
         return true;
@@ -121,7 +138,9 @@ function openGear() {
 
 beforeEach(async () => {
     store.data.clear();
+    store.transactions = [];
     scoped.data.clear();
+    scoped.unbatched = [];
     dialog.answer = null;
     document.body.replaceChildren();
 
@@ -253,6 +272,45 @@ describe('the applied layout name survives a reload', () => {
 
         dialog.answer = null;
         await overlayPanel._resetLayout();
+
+        expect(overlayPanel.appliedLayout).toBe('Dungeon');
+    });
+});
+
+/**
+ * A reload used to make three scoped reads one after another — the layout, the
+ * pre-migration layout, and the applied layout's name — each its own readonly
+ * transaction, and up to two where the bare key had to be checked. At start-up
+ * every one of those queues behind a dozen other features' reads.
+ */
+describe('what a reload costs the settings store', () => {
+    test('the whole start-up read is one transaction, carrying every key', async () => {
+        wear(dungeonLayout());
+        await overlayPanel.saveNamedLayout('Dungeon');
+        await overlayPanel.applyNamedLayout('Dungeon');
+
+        store.transactions = [];
+        scoped.unbatched = [];
+        await reload();
+
+        expect(store.transactions).toHaveLength(1);
+        expect(store.transactions[0]).toEqual([
+            'overlayPanelV2_scoped',
+            'overlayPanelV2',
+            'overlayPanel_scoped',
+            'overlayPanel',
+            'overlayAppliedLayout_scoped',
+            'overlayAppliedLayout',
+        ]);
+        expect(scoped.unbatched).toEqual([]);
+    });
+
+    test('and the name still comes back off it', async () => {
+        wear(dungeonLayout());
+        await overlayPanel.saveNamedLayout('Dungeon');
+        await overlayPanel.applyNamedLayout('Dungeon');
+
+        await reload();
 
         expect(overlayPanel.appliedLayout).toBe('Dungeon');
     });

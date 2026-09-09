@@ -17,7 +17,7 @@
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
-const store = vi.hoisted(() => ({ data: new Map() }));
+const store = vi.hoisted(() => ({ data: new Map(), transactions: [] }));
 const game = vi.hoisted(() => ({ actions: [], labyrinth: null }));
 
 vi.mock('../../core/config.js', () => ({
@@ -37,6 +37,14 @@ vi.mock('../../core/data-manager.js', () => ({
 vi.mock('../../core/storage.js', () => ({
     default: {
         getJSON: async (key) => (store.data.has(key) ? JSON.parse(JSON.stringify(store.data.get(key))) : null),
+        getMany: async (keys) => {
+            // One transaction however many keys it carries, which is what the
+            // panel's start-up read is counted on
+            store.transactions.push([...keys]);
+            return new Map(
+                keys.map((key) => [key, store.data.has(key) ? JSON.parse(JSON.stringify(store.data.get(key))) : null])
+            );
+        },
         setJSON: async (key, value) => {
             store.data.set(key, JSON.parse(JSON.stringify(value)));
             return true;

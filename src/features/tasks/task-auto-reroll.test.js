@@ -15,7 +15,7 @@ import { describe, test, expect, beforeEach, vi } from 'vitest';
 /** Who is logged in, and whether the feature's own setting is on */
 const world = vi.hoisted(() => ({ charId: 'test', enabled: false }));
 /** The settings store the two per-character lists live in: key -> array */
-const db = vi.hoisted(() => ({ map: new Map(), hold: null }));
+const db = vi.hoisted(() => ({ map: new Map(), hold: null, transactions: [] }));
 
 vi.mock('../../core/config.js', () => ({
     default: { getSetting: () => world.enabled, getSettingValue: (_k, d) => d },
@@ -24,10 +24,19 @@ vi.mock('../../core/dom-observer.js', () => ({ default: { onClass: () => () => {
 vi.mock('../../core/storage.js', () => ({
     default: {
         getJSON: async (key, _store, fallback = []) => {
+            db.transactions.push([key]);
             // A read left open, so a test can land a character switch inside one
             if (db.hold) await db.hold;
             return db.map.has(key) ? db.map.get(key) : fallback;
         },
+        getMany: async (keys) => {
+            // One entry however many keys it carries: that is what a batched
+            // read buys, and what a test counting transactions is looking at
+            db.transactions.push([...keys]);
+            if (db.hold) await db.hold;
+            return new Map(keys.map((key) => [key, db.map.has(key) ? db.map.get(key) : null]));
+        },
+        parseJSON: (raw, _key, fallback = null) => (raw === null ? fallback : raw),
         setJSON: async (key, value) => {
             db.map.set(key, value);
             return true;
@@ -110,6 +119,7 @@ describe('the per-character lists across a switch', () => {
         world.enabled = true;
         db.map.clear();
         db.hold = null;
+        db.transactions = [];
         taskAutoReroll.disable();
     });
 
@@ -168,5 +178,40 @@ describe('the per-character lists across a switch', () => {
         }
 
         expect(db.map.get('taskAutoRerollHrids_iron')).toEqual(['/monsters/rat']);
+    });
+});
+
+/**
+ * Start-up runs a dozen features' initializers at once, so every transaction
+ * one of them opens waits behind all of theirs. Both lists live in the same
+ * store and were read one after the other.
+ */
+describe('what start-up costs the settings store', () => {
+    beforeEach(() => {
+        world.charId = 'market';
+        world.enabled = true;
+        db.map.clear();
+        db.hold = null;
+        db.transactions = [];
+        taskAutoReroll.disable();
+    });
+
+    test('both lists come out of one transaction, with the same values', async () => {
+        db.map.set('taskAutoRerollHrids_market', ['/monsters/imp']);
+        db.map.set('taskProtectedHrids_market', ['/monsters/cow']);
+
+        await taskAutoReroll.initialize();
+
+        expect(db.transactions).toHaveLength(1);
+        expect(db.transactions[0]).toEqual(['taskAutoRerollHrids_market', 'taskProtectedHrids_market']);
+        expect([...taskAutoReroll.autoRerollHrids]).toEqual(['/monsters/imp']);
+        expect([...taskAutoReroll.protectedHrids]).toEqual(['/monsters/cow']);
+    });
+
+    test('a character with neither list stored gets two empty ones', async () => {
+        await taskAutoReroll.initialize();
+
+        expect(taskAutoReroll.autoRerollHrids.size).toBe(0);
+        expect(taskAutoReroll.protectedHrids.size).toBe(0);
     });
 });

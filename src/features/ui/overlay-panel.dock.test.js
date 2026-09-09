@@ -16,7 +16,13 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 vi.mock('../../core/config.js', () => ({
     default: { getSetting: () => true, Z_HUD: 50, Z_FLOATING_PANEL: 1100, Z_POPUP: 9000 },
 }));
-vi.mock('../../core/storage.js', () => ({ default: { getJSON: async () => null, setJSON: async () => {} } }));
+vi.mock('../../core/storage.js', () => ({
+    default: {
+        getJSON: async () => null,
+        setJSON: async () => {},
+        getMany: async (keys) => new Map(keys.map((key) => [key, null])),
+    },
+}));
 vi.mock('../../utils/timer-registry.js', () => ({
     createTimerRegistry: () => ({ registerTimeout: () => {}, registerInterval: () => {}, clearAll: () => {} }),
 }));

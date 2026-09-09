@@ -20,7 +20,13 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 vi.mock('../../core/config.js', () => ({
     default: { getSetting: () => true, Z_HUD: 50, Z_FLOATING_PANEL: 1100, Z_POPUP: 9000 },
 }));
-vi.mock('../../core/storage.js', () => ({ default: { getJSON: async () => null, setJSON: async () => {} } }));
+vi.mock('../../core/storage.js', () => ({
+    default: {
+        getJSON: async () => null,
+        setJSON: async () => {},
+        getMany: async (keys) => new Map(keys.map((key) => [key, null])),
+    },
+}));
 vi.mock('../../utils/timer-registry.js', () => ({
     createTimerRegistry: () => ({ registerTimeout: () => {}, registerInterval: () => {}, clearAll: () => {} }),
 }));
@@ -45,8 +51,10 @@ vi.mock('../../utils/choice-dialog.js', () => ({ askChoice: async () => null }))
 /** What storage hands back for this character, and what the panel wrote to it */
 const saved = vi.hoisted(() => ({ read: null, legacy: null, written: null, writtenKey: null }));
 vi.mock('../../utils/character-key.js', () => ({
+    characterKey: (base) => `${base}_scoped`,
     // Key-aware, because the panel reads two: the current record and, when
     // there is none, the one the pixel-era build left behind
+    readScopedFrom: async (key) => (key === 'overlayPanelV2' ? saved.read : saved.legacy),
     readScoped: async (key) => (key === 'overlayPanelV2' ? saved.read : saved.legacy),
     writeScoped: async (key, value) => {
         saved.written = value;

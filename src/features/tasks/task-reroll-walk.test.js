@@ -19,7 +19,7 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const settings = vi.hoisted(() => ({ values: {} }));
-const stored = vi.hoisted(() => ({ values: {} }));
+const stored = vi.hoisted(() => ({ values: {}, transactions: [] }));
 const market = vi.hoisted(() => ({ cowbellValue: 8000 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -36,9 +36,22 @@ vi.mock('../../core/config.js', () => ({
 }));
 vi.mock('../../core/storage.js', () => ({
     default: {
-        get: async (key, _store, fallback) => stored.values[key] ?? fallback,
+        get: async (key, _store, fallback) => {
+            stored.transactions.push([key]);
+            return stored.values[key] ?? fallback;
+        },
+        getMany: async (keys) => {
+            // One entry however many keys it carries: that is the whole point
+            // of a batched read, and what a test counting transactions sees
+            stored.transactions.push([...keys]);
+            return new Map(keys.map((key) => [key, stored.values[key] ?? null]));
+        },
+        parseJSON: (raw, _key, fallback = null) => (raw === null ? fallback : raw),
         set: async () => {},
-        getJSON: async (key, _store, fallback) => stored.values[key] ?? fallback,
+        getJSON: async (key, _store, fallback) => {
+            stored.transactions.push([key]);
+            return stored.values[key] ?? fallback;
+        },
         setJSON: async () => {},
         delete: async (key) => {
             delete stored.values[key];
@@ -286,6 +299,7 @@ beforeEach(() => {
     };
     // Cap protection on, which is what makes the thresholds below mean anything
     stored.values = { taskCapProtection_7: true };
+    stored.transactions = [];
     consent.target = null;
     consent.requested = 0;
     market.cowbellValue = 8000;
@@ -1870,5 +1884,74 @@ describe('the widget sorts on demand', () => {
         expect(sortButton()).toBeTruthy();
         sortButton().click();
         expect(sorter.sortTasks).toHaveBeenCalledWith(true);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// What start-up costs
+// ---------------------------------------------------------------------------
+
+/**
+ * Start-up runs a dozen features' initializers at once, and every extra
+ * IndexedDB transaction one of them opens queues behind all of theirs. The
+ * walk used to open five: the protected list, the widget's position, and one
+ * scoped read per cap record.
+ */
+describe('what start-up costs the settings store', () => {
+    test('the walk reads its whole stored state in one transaction', async () => {
+        stored.values = {
+            taskProtectedHrids_7: [MILKING],
+            taskRerollWalkPanelPosition: { x: 10, y: 20 },
+            taskCapProtection_7: true,
+            taskCapCoinThreshold_7: 40000,
+            taskCapCowbellThreshold_7: 8,
+        };
+        walk.isInitialized = false;
+        stored.transactions = [];
+
+        await walk.initialize();
+
+        expect(stored.transactions).toHaveLength(1);
+        expect(stored.transactions[0]).toEqual(
+            expect.arrayContaining([
+                'taskProtectedHrids_7',
+                'taskRerollWalkPanelPosition',
+                'taskCapProtection_7',
+                'taskCapCoinThreshold_7',
+                'taskCapCowbellThreshold_7',
+            ])
+        );
+    });
+
+    test('and every value is what the un-batched reads gave', async () => {
+        stored.values = {
+            taskProtectedHrids_7: [MILKING],
+            taskRerollWalkPanelPosition: { x: 10, y: 20 },
+            taskCapProtection_7: true,
+            taskCapCoinThreshold_7: 40000,
+            taskCapCowbellThreshold_7: 8,
+        };
+        walk.isInitialized = false;
+
+        await walk.initialize();
+
+        expect(walk.protectedHrids).toEqual(new Set([MILKING]));
+        expect(walk.panelPosition).toEqual({ x: 10, y: 20 });
+        expect(walk.capProtectionEnabled).toBe(true);
+        expect(walk.coinThreshold).toBe(40000);
+        expect(walk.cowbellThreshold).toBe(8);
+    });
+
+    test('a character with nothing stored still gets the popup’s defaults', async () => {
+        stored.values = {};
+        walk.isInitialized = false;
+
+        await walk.initialize();
+
+        expect(walk.protectedHrids).toEqual(new Set());
+        expect(walk.panelPosition).toBe(null);
+        expect(walk.capProtectionEnabled).toBe(false);
+        expect(walk.coinThreshold).toBe(320000);
+        expect(walk.cowbellThreshold).toBe(32);
     });
 });

@@ -79,7 +79,7 @@ import { clickThroughReact } from '../../utils/react-click.js';
 import taskSorter from './task-sorter.js';
 import { createMutationWatcher } from '../../utils/dom-observer-helpers.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
-import { readScoped } from '../../utils/character-key.js';
+import { characterKey, readScopedFrom } from '../../utils/character-key.js';
 import {
     createFloatingWidget,
     widgetCheckboxRow,
@@ -124,6 +124,21 @@ const COWBELL_REROLL_CAP = 32;
 /** The shield popup's defaults, so a character who never opened it is not blocked early */
 const DEFAULT_COIN_THRESHOLD = 320000;
 const DEFAULT_COWBELL_THRESHOLD = 32;
+
+/** The shield popup's three cap records, which this walk reads but never writes */
+const CAP_BASES = ['taskCapProtection', 'taskCapCoinThreshold', 'taskCapCowbellThreshold'];
+
+/**
+ * Every key a scoped read of the cap records can touch, for one `getMany`.
+ *
+ * Both forms of each: `readScopedFrom` resolves the scoped key first and falls
+ * back to the bare one for a pre-scoping install, and a key missing from the
+ * batch reads as absent.
+ * @returns {Array<string>} Scoped and bare keys, in that order per record
+ */
+function capKeys() {
+    return CAP_BASES.flatMap((base) => [characterKey(base), base]);
+}
 
 /** @returns {string} The protected-task list's key for the current character */
 function protectedStorageKey() {
@@ -427,12 +442,20 @@ class TaskRerollWalk {
         if (!config.getSetting('tasks_rerollWalk')) return;
         this.isInitialized = true;
 
-        await this._loadProtectedHrids();
-        await this._loadThresholds();
+        // The protected list, the widget's position and the six cap records in
+        // one readonly transaction rather than five awaited round trips: at
+        // startup a dozen features open their own reads at once, and each
+        // transaction queues behind every one of theirs. Keys are built here,
+        // before the read, so a switch landing inside it cannot make the read
+        // and whatever is done with it name different characters.
         try {
-            this.panelPosition = await storage.get(PANEL_POSITION_KEY, 'settings', null);
+            const protectedKey = protectedStorageKey();
+            const batch = await storage.getMany([protectedKey, PANEL_POSITION_KEY, ...capKeys()], 'settings');
+            this.protectedHrids = new Set(storage.parseJSON(batch.get(protectedKey), protectedKey, []));
+            await this._loadThresholds(batch);
+            this.panelPosition = batch.get(PANEL_POSITION_KEY) ?? null;
         } catch (error) {
-            console.error('[TaskRerollWalk] Loading the widget position failed:', error);
+            console.error('[TaskRerollWalk] Loading the walk’s stored state failed:', error);
         }
 
         const unregisterPanel = domObserver.onClass('TaskRerollWalk-Panel', 'TasksPanel_taskSlotCount', (panel) => {
@@ -489,16 +512,6 @@ class TaskRerollWalk {
         this.unregisterHandlers.push(() => document.removeEventListener('click', spendHandler, true));
     }
 
-    /** @private */
-    async _loadProtectedHrids() {
-        try {
-            const saved = await storage.getJSON(protectedStorageKey(), 'settings', []);
-            this.protectedHrids = new Set(saved);
-        } catch (error) {
-            console.error('[TaskRerollWalk] Failed to load the protected task list:', error);
-        }
-    }
-
     /**
      * Read the shield popup's cap block — the same keys it writes, per
      * character and through the same adopt-once migration, so the two features
@@ -510,14 +523,18 @@ class TaskRerollWalk {
      * numbers went on refusing them.
      * @private
      */
-    async _loadThresholds() {
+    async _loadThresholds(prefetched = null) {
         try {
-            this.capProtectionEnabled = Boolean(await readScoped('taskCapProtection', 'settings', false));
+            // One transaction for all six records, not three scoped reads of
+            // up to two apiece. `prefetched` lets `initialize` fold them into
+            // the batch it was opening anyway.
+            const caps = prefetched ?? (await storage.getMany(capKeys(), 'settings'));
+            this.capProtectionEnabled = Boolean(await readScopedFrom('taskCapProtection', caps, 'settings', false));
             this.coinThreshold =
-                Number(await readScoped('taskCapCoinThreshold', 'settings', DEFAULT_COIN_THRESHOLD)) ||
+                Number(await readScopedFrom('taskCapCoinThreshold', caps, 'settings', DEFAULT_COIN_THRESHOLD)) ||
                 DEFAULT_COIN_THRESHOLD;
             this.cowbellThreshold =
-                Number(await readScoped('taskCapCowbellThreshold', 'settings', DEFAULT_COWBELL_THRESHOLD)) ||
+                Number(await readScopedFrom('taskCapCowbellThreshold', caps, 'settings', DEFAULT_COWBELL_THRESHOLD)) ||
                 DEFAULT_COWBELL_THRESHOLD;
         } catch (error) {
             console.error('[TaskRerollWalk] Failed to read the block-reroll thresholds:', error);

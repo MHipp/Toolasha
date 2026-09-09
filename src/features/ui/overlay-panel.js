@@ -81,12 +81,13 @@
 
 import config from '../../core/config.js';
 import dataManager from '../../core/data-manager.js';
+import storage from '../../core/storage.js';
 import performanceMonitor from '../../utils/performance-monitor.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { registerFloatingPanel, unregisterFloatingPanel, bringPanelToFront } from '../../utils/panel-z-index.js';
 import { makeDraggable, makeResizable } from '../../utils/floating-panel.js';
 import { restoreGeometry, saveGeometry, clearGeometry, allGeometry } from '../../utils/panel-geometry.js';
-import { readScoped, writeScoped } from '../../utils/character-key.js';
+import { characterKey, readScopedFrom, writeScoped } from '../../utils/character-key.js';
 import {
     registeredRows,
     resolveRows,
@@ -503,7 +504,16 @@ class OverlayPanel {
         // Rebuilt from defaults rather than merged onto what is in memory: this
         // runs again after a character switch, and the character switched away
         // from must not leave its tiles behind
-        const saved = await this._readSettings();
+        // Everything this panel reads at start-up in one readonly transaction:
+        // the layout, the pre-migration layout it may have to fall back to, and
+        // the name of the applied layout. Three scoped reads of up to two keys
+        // apiece used to go out one after another, and at start-up each waits
+        // behind every other feature's transactions as well as its own.
+        const state = await storage.getMany(
+            [STORAGE_KEY, LEGACY_STORAGE_KEY, APPLIED_LAYOUT_KEY].flatMap((base) => [characterKey(base), base]),
+            'settings'
+        );
+        const saved = await this._readSettings(state);
         this.settings =
             saved && typeof saved === 'object'
                 ? // Never spread in from the defaults: a saved layout that predates
@@ -526,7 +536,7 @@ class OverlayPanel {
 
         // Before the panel is drawn, so the first render of the popover already
         // has the Update button and the "Showing:" line on it
-        await this._restoreAppliedLayout();
+        await this._restoreAppliedLayout(state);
 
         // Reopens itself where you left it — an overlay you have to summon after
         // every refresh is an overlay you stop using
@@ -629,13 +639,14 @@ class OverlayPanel {
      * `span` and the settings it could name would switch all four off without
      * ever mentioning them.
      *
+     * @param {Map<string, *>} values - Both forms of both keys, read in one transaction
      * @returns {Promise<Object|null>} The settings, or null for a fresh character
      */
-    async _readSettings() {
-        const current = await readScoped(STORAGE_KEY, 'settings', null, { migrate: 'adopt' });
+    async _readSettings(values) {
+        const current = await readScopedFrom(STORAGE_KEY, values, 'settings', null, { migrate: 'adopt' });
         if (current && typeof current === 'object') return current;
 
-        const legacy = await readScoped(LEGACY_STORAGE_KEY, 'settings', null, { migrate: 'adopt' });
+        const legacy = await readScopedFrom(LEGACY_STORAGE_KEY, values, 'settings', null, { migrate: 'adopt' });
         if (!legacy || typeof legacy !== 'object') return null;
 
         // Everything that was never geometry comes across untouched; the pixels
@@ -669,13 +680,14 @@ class OverlayPanel {
      * to compare it against, and the Update button saves it back under that
      * name — which is what somebody who deleted it by accident wants.
      *
+     * @param {Map<string, *>} values - Both forms of the key, read in one transaction
      * @returns {Promise<void>}
      */
-    async _restoreAppliedLayout() {
+    async _restoreAppliedLayout(values) {
         try {
             // Discard rather than adopt: which layout one character is showing
             // is not a fact about another character's screen
-            const name = await readScoped(APPLIED_LAYOUT_KEY, 'settings', null, { migrate: 'discard' });
+            const name = await readScopedFrom(APPLIED_LAYOUT_KEY, values, 'settings', null, { migrate: 'discard' });
             this.appliedLayout = typeof name === 'string' && name ? name : null;
         } catch (error) {
             console.error('[OverlayPanel] Reading the applied layout failed:', error);

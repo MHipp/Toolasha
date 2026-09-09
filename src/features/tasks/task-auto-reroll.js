@@ -129,12 +129,15 @@ class TaskAutoReroll {
         const started = this._generation;
         const current = () => this._generation === started && currentCharId() === charId;
 
-        const saved = await storage.getJSON(storageKeys(charId).list, 'settings', []);
+        // Both lists in one readonly transaction rather than two awaited round
+        // trips: at startup a dozen features are reading their own records at
+        // once, and each extra transaction queues behind all of theirs.
+        const keys = storageKeys(charId);
+        const read = await storage.getMany([keys.list, keys.protected], 'settings');
         if (!current()) return;
-        this.autoRerollHrids = new Set(saved);
+        this.autoRerollHrids = new Set(storage.parseJSON(read.get(keys.list), keys.list, []));
         this._listOwner = charId;
-        await this._loadProtectedHrids(charId);
-        if (!current()) return;
+        this.protectedHrids = new Set(storage.parseJSON(read.get(keys.protected), keys.protected, []));
 
         const unregister = domObserver.onClass('TaskAutoReroll', 'RandomTask_randomTask', () => {
             // Always re-read the whole board: the rating rule is relative, so a
