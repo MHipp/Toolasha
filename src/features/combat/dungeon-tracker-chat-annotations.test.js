@@ -21,6 +21,8 @@ const game = vi.hoisted(() => ({
     currentRun: null,
     pendingDungeon: null,
     averageBaselines: {},
+    clearedAt: 0,
+    characterId: 'char-a',
 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -33,7 +35,7 @@ vi.mock('../../core/config.js', () => ({
 }));
 
 vi.mock('../../core/data-manager.js', () => ({
-    default: { on: () => {}, off: () => {} },
+    default: { on: () => {}, off: () => {}, getCurrentCharacterId: () => game.characterId },
 }));
 
 vi.mock('../../utils/dom-observer-helpers.js', () => ({
@@ -63,6 +65,7 @@ vi.mock('./dungeon-tracker-storage.js', () => ({
         getTeamKey: (names) => [...names].sort().join(','),
         saveTeamRun: vi.fn(async () => true),
         getAverageBaselines: async () => game.averageBaselines,
+        clearedAt: () => game.clearedAt,
     },
 }));
 
@@ -133,6 +136,8 @@ beforeEach(() => {
     game.currentRun = null;
     game.pendingDungeon = null;
     game.averageBaselines = {};
+    game.clearedAt = 0;
+    game.characterId = 'char-a';
 
     annotations.cumulativeStatsByDungeon = {};
     annotations.storedRunDurations = {};
@@ -316,6 +321,27 @@ describe('sorting chat into events', () => {
 
         expect(events).toHaveLength(1);
         expect(events[0].timestamp).toEqual(aug4(10, 0, 5));
+    });
+
+    test('a reset re-arms every message except the restored ones', async () => {
+        // resetAnnotationState() strips data-processed from the whole document
+        // so the log can be rebuilt. Restored scrollback must not come back
+        // with it: where it came from is not something a reset can change.
+        const restored = message('[08/04 09:00:00 AM]', 'Key counts: [Alice - 12]');
+        restored.dataset.mwiRestored = '1';
+        restored.dataset.processed = '1';
+        const live = message('[08/04 10:00:00 AM]', 'Key counts: [Alice - 1]');
+        message('[08/04 10:05:00 AM]', 'Key counts: [Alice - 2]');
+        annotations.lastSeenDungeonName = 'Chimerical Den';
+
+        await annotations.annotateAllMessages();
+        annotations.resetAnnotationState();
+
+        expect(annotations.extractChatEvents().map((e) => e.timestamp)).toEqual([aug4(10, 0, 0), aug4(10, 5, 0)]);
+
+        await annotations.annotateAllMessages();
+        expect(labelOn(restored)).toBeNull();
+        expect(labelOn(live)).toBe('[Run #1: 5m 0s]');
     });
 
     test('ordinary chatter is not an event', () => {
@@ -1188,6 +1214,69 @@ describe('how far back the average reaches', () => {
  * later run number, and the windowed average divided by a slot count that
  * counted them.
  */
+describe('a clear of the history reaches the runs chat already labelled', () => {
+    test('a labelled run that has scrolled out of chat does not survive the clear', async () => {
+        // Two runs, labelled while all three key counts were on screen
+        const first = message('[08/04 10:00:00 AM]', 'Key counts: [Alice - 1]');
+        const second = message('[08/04 10:05:00 AM]', 'Key counts: [Alice - 2]');
+        const third = message('[08/04 10:10:00 AM]', 'Key counts: [Alice - 3]');
+        annotations.lastSeenDungeonName = 'Chimerical Den';
+        await annotations.annotateAllMessages();
+        expect(labelOn(first)).toBe('[Run #1: 5m 0s]');
+        expect(labelOn(second)).toBe('[Run #2: 5m 0s]');
+
+        // The chat buffer scrolls the two labelled runs away — nothing can
+        // rebuild them from the DOM, so only what the pass remembered is left
+        first.remove();
+        second.remove();
+        message('[08/04 10:15:00 AM]', 'Key counts: [Alice - 4]');
+
+        // "Delete all history": the store empties and stamps the epoch
+        game.allRuns = [];
+        game.clearedAt = Date.now();
+        await annotations.refreshRunCounts();
+
+        expect(labelOn(third)).toBe('[Run #1: 5m 0s]');
+    });
+
+    test('without a clear those remembered runs still hold their slots', async () => {
+        const first = message('[08/04 10:00:00 AM]', 'Key counts: [Alice - 1]');
+        const second = message('[08/04 10:05:00 AM]', 'Key counts: [Alice - 2]');
+        const third = message('[08/04 10:10:00 AM]', 'Key counts: [Alice - 3]');
+        annotations.lastSeenDungeonName = 'Chimerical Den';
+        await annotations.annotateAllMessages();
+
+        first.remove();
+        second.remove();
+        message('[08/04 10:15:00 AM]', 'Key counts: [Alice - 4]');
+
+        await annotations.refreshRunCounts();
+
+        expect(labelOn(third)).toBe('[Run #3: 5m 0s]');
+    });
+});
+
+describe('a pass overtaken by a character switch', () => {
+    test('nothing is labelled for the character that has already left', async () => {
+        message('[08/04 10:00:00 AM]', 'Key counts: [Alice - 1]');
+        message('[08/04 10:05:00 AM]', 'Key counts: [Alice - 2]');
+        annotations.lastSeenDungeonName = 'Chimerical Den';
+
+        // The pass parks on the init wait, exactly where a switch lands
+        annotations.initComplete = false;
+        const pass = annotations.annotateAllMessages();
+
+        game.characterId = 'char-b';
+        annotations.initComplete = true;
+        await pass;
+
+        // Numbering the outgoing character's log off the arriving character's
+        // (still empty) history would mark those messages processed at numbers
+        // nothing can correct
+        expect(labels()).toEqual([]);
+    });
+});
+
 describe('a run seen from both sides is still one run', () => {
     /** August 4, 12-hour with a meridiem — the stamp shape the parser reads unambiguously. */
     function stamp(date) {

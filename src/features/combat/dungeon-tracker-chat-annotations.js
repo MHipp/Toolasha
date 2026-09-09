@@ -131,10 +131,41 @@ class DungeonTrackerChatAnnotations {
             // the runs they filter
             this.averageBaselines = (await dungeonTrackerStorage.getAverageBaselines?.()) || {};
 
+            // A "delete all history" forgets the runs it covers everywhere they
+            // are held, and this is the other place they are held: a run this
+            // session already labelled is remembered here because its message
+            // carries data-processed and will never be extracted again, so
+            // resetting the annotations cannot rebuild it from the DOM. Left
+            // alone it keeps its number slot and its duration after the clear -
+            // the chat numbering does not restart at #1 and the average still
+            // reaches over runs the user deleted. Pruned by the clear's own
+            // epoch, exactly as `applyClearEpoch` prunes the stored side.
+            this.forgetChatRunsClearedBefore(dungeonTrackerStorage.clearedAt?.() ?? 0);
+
             this.initComplete = true;
         } catch (error) {
             console.error('[Dungeon Tracker] Failed to load run counts from storage:', error);
             this.initComplete = true; // Continue anyway
+        }
+    }
+
+    /**
+     * Drop the remembered chat runs a "delete all history" was asking to forget.
+     *
+     * At or before the epoch, matching {@link applyClearEpoch}'s rule on the
+     * stored side, so the two populations the merge puts together agree about
+     * which runs still exist. A dungeon left with nothing remembered keeps no
+     * empty map behind.
+     *
+     * @param {number} clearedAt - Epoch milliseconds, 0 for "never cleared"
+     */
+    forgetChatRunsClearedBefore(clearedAt) {
+        if (!(Number(clearedAt) > 0)) return;
+        for (const [statsKey, runs] of Object.entries(this.annotatedChatRuns)) {
+            for (const ts of [...runs.keys()]) {
+                if (ts <= clearedAt) runs.delete(ts);
+            }
+            if (runs.size === 0) delete this.annotatedChatRuns[statsKey];
         }
     }
 
@@ -285,6 +316,14 @@ class DungeonTrackerChatAnnotations {
             return;
         }
 
+        // Who this pass is for. It has awaits ahead of it, and a character
+        // switch landing inside one tears the state down (`cleanup()`) and
+        // starts the arriving character's load - so a pass that carried on
+        // would number the outgoing character's messages off an empty history,
+        // mark them processed at those numbers, and fold their durations into
+        // the totals the arriving character is rebuilding.
+        const passCharacterId = this.currentCharacterId();
+
         // Wait for initialization to complete to ensure run counts are loaded
         if (!this.initComplete) {
             await new Promise((resolve) => {
@@ -306,6 +345,8 @@ class DungeonTrackerChatAnnotations {
             });
         }
 
+        if (this.currentCharacterId() !== passCharacterId) return;
+
         // A pass can run before anything is able to name the dungeon: on a reload
         // mid-run the "Battle started:" line scrolled out of chat long ago, and the
         // tracker holds no run until a battle verifies the one it is restoring.
@@ -316,6 +357,7 @@ class DungeonTrackerChatAnnotations {
         if (this._annotatedWithoutDungeonName && this.hasDungeonNameSource()) {
             this.resetAnnotationState();
             await this.loadRunCountsFromStorage();
+            if (this.currentCharacterId() !== passCharacterId) return;
         }
 
         const events = this.extractChatEvents();
@@ -655,6 +697,20 @@ class DungeonTrackerChatAnnotations {
                 }
             }
         }
+    }
+
+    /**
+     * Whichever character the game is currently logged in as.
+     *
+     * Read rather than cached: it is the value an in-flight pass compares
+     * against to find out whether it is still speaking for the character it
+     * started for. Null when the data manager cannot say, which compares equal
+     * to itself and so never aborts a pass on its own.
+     *
+     * @returns {string|null} The character id, or null
+     */
+    currentCharacterId() {
+        return dataManager.getCurrentCharacterId?.() ?? null;
     }
 
     /**

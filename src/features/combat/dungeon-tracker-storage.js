@@ -240,6 +240,30 @@ export function mergeClearEpochs(local, incoming) {
 }
 
 /**
+ * How far ahead of this device's clock a marker may still be believed.
+ *
+ * A marker is always stamped `Date.now()` on the device that sets it, so one
+ * arriving from ahead of us is clock skew between devices, and a few minutes
+ * of that is ordinary. Beyond it the stamp describes no run that has happened
+ * anywhere, and taking it at face value would be unrecoverable: the fold keeps
+ * the later marker, so a device set a year fast would blank that dungeon's
+ * average for a year and no press of "start the average here" on a correct
+ * clock could lower it again.
+ */
+export const BASELINE_FUTURE_TOLERANCE_MS = 5 * 60 * 1000;
+
+/**
+ * Whether one baseline stamp is a fact about runs rather than clock skew.
+ *
+ * @param {number} stamp - Epoch milliseconds
+ * @param {number} horizon - The furthest future stamp still believed
+ * @returns {boolean}
+ */
+function isUsableBaseline(stamp, horizon) {
+    return stamp > 0 && (!Number.isFinite(horizon) || stamp <= horizon);
+}
+
+/**
  * Fold two baseline maps: per dungeon, the later marker stands.
  *
  * The same forward-only argument {@link mergeClearEpochs} makes, one entry at
@@ -252,14 +276,16 @@ export function mergeClearEpochs(local, incoming) {
  * @param {*} incoming - The downloaded map
  * @returns {Record<string, number>} The per-key maximum
  */
-export function mergeAverageBaselines(local, incoming) {
+export function mergeAverageBaselines(local, incoming, now = Date.now()) {
     const out = {};
+    const horizon = Number(now) + BASELINE_FUTURE_TOLERANCE_MS;
     for (const side of [local, incoming]) {
         // An array is not a baseline map — its indices would fold in as
         // dungeon names — so a value of the wrong shape is dropped, not read
         if (!side || typeof side !== 'object' || Array.isArray(side)) continue;
         for (const [key, at] of Object.entries(side)) {
             const stamp = Number(at) || 0;
+            if (!isUsableBaseline(stamp, horizon)) continue;
             if (stamp > (out[key] || 0)) out[key] = stamp;
         }
     }
@@ -817,6 +843,21 @@ class DungeonTrackerStorage {
     }
 
     /**
+     * When "delete all history" was last pressed, as this device knows it.
+     *
+     * The same epoch {@link applyClearEpoch} drops stored runs by, exposed so
+     * the populations kept outside the run store - the chat pass remembers the
+     * runs it has already labelled, which have scrolled out of chat and so
+     * cannot be rebuilt from the DOM - can be pruned by the very same fact.
+     * Reading it is only meaningful after the history has been loaded once.
+     *
+     * @returns {number} Epoch milliseconds, 0 when nothing was ever cleared
+     */
+    clearedAt() {
+        return Number(this._clearedAt) || 0;
+    }
+
+    /**
      * Where each dungeon's chat average is asked to start from.
      *
      * @returns {Promise<Record<string, number>>} `teamKey::dungeonName` → epoch
@@ -830,8 +871,10 @@ class DungeonTrackerStorage {
             console.warn('[DungeonTrackerStorage] Average baselines could not be read');
             return {};
         }
-        const stored = probe.value;
-        this._averageBaselines = stored && typeof stored === 'object' && !Array.isArray(stored) ? { ...stored } : {};
+        // Folded with nothing, purely for the shape and skew checks the fold
+        // already makes — a stored map is no more trustworthy than a
+        // downloaded one, since a pull writes downloaded markers straight in
+        this._averageBaselines = mergeAverageBaselines(probe.value, null);
         return this._averageBaselines;
     }
 

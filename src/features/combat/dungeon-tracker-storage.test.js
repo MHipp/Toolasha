@@ -1121,4 +1121,35 @@ describe('average baselines', () => {
         expect(mergeAverageBaselines(null, undefined)).toEqual({});
         expect(mergeAverageBaselines({ x: 'nope' }, [1, 2])).toEqual({});
     });
+
+    test('a marker from a badly skewed clock is not believed, and does not stick', () => {
+        const now = 1_800_000_000_000;
+        const skewed = { 'A,B::Chimerical Den': now + 365 * 24 * 60 * 60 * 1000 };
+        const sane = { 'A,B::Chimerical Den': now - 1000 };
+
+        // Taking the later of the two would leave this dungeon's average
+        // blanked for a year, and no correct-clock press could lower it
+        expect(mergeAverageBaselines(sane, skewed, now)).toEqual(sane);
+        expect(mergeAverageBaselines(skewed, sane, now)).toEqual(sane);
+        // A dungeon whose only marker is the impossible one is simply unmarked
+        expect(mergeAverageBaselines(skewed, null, now)).toEqual({});
+    });
+
+    test('ordinary skew between two devices is still believed', () => {
+        const now = 1_800_000_000_000;
+        const ahead = { 'A,B::Chimerical Den': now + 30_000 };
+        expect(mergeAverageBaselines(ahead, null, now)).toEqual(ahead);
+    });
+
+    test('a skewed marker already in storage is ignored, and a fresh press replaces it', async () => {
+        game.saved.unifiedRuns = {
+            dungeonAverageBaselines: { 'A,B::Chimerical Den': Date.now() + 365 * 24 * 60 * 60 * 1000 },
+        };
+
+        expect(await dungeonTrackerStorage.getAverageBaselines()).toEqual({});
+
+        const at = Date.now();
+        expect(await dungeonTrackerStorage.setAverageBaseline('A,B::Chimerical Den', at)).toBe(true);
+        expect(await dungeonTrackerStorage.getAverageBaselines()).toEqual({ 'A,B::Chimerical Den': at });
+    });
 });
