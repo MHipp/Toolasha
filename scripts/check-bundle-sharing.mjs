@@ -104,6 +104,15 @@ const ALLOWLIST = new Map([
         'stateless running-action selectors; no module state to share',
     ],
     [
+        'src/utils/init-ownership.js',
+        // Two pure functions and a teardown counter kept on the owner object
+        // under a `Symbol.for` key, not in this module — so every inlined copy
+        // reads and writes the same counter on the same feature instance, and
+        // a second copy is only weight. Imported wherever an initialize()
+        // awaits before registering: combat, alchemy, enhancement, inventory.
+        'stateless ownership tickets; the generation lives on the owner, not here',
+    ],
+    [
         'src/utils/yield-to-browser.js',
         // One exported function, closes over nothing: a duplicated copy
         // behaves identically to a shared one.
