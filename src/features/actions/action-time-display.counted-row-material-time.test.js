@@ -37,6 +37,8 @@ const game = vi.hoisted(() => ({
     actionDetails: {},
     itemDetails: {},
     inventory: [],
+    // Enhancement predictions, off unless an enhancing test sets them
+    predictions: null,
 }));
 
 vi.mock('../../core/data-manager.js', () => ({
@@ -75,7 +77,7 @@ vi.mock('../../api/marketplace.js', () => ({
 vi.mock('./gathering-profit.js', () => ({ calculateGatheringProfit: async () => null }));
 vi.mock('../market/profit-calculator.js', () => ({ default: { calculate: async () => null } }));
 vi.mock('../market/alchemy-profit-calculator.js', () => ({ default: { calculate: async () => null } }));
-vi.mock('../enhancement/enhancement-xp.js', () => ({ calculateEnhancementPredictions: () => null }));
+vi.mock('../enhancement/enhancement-xp.js', () => ({ calculateEnhancementPredictions: () => game.predictions }));
 
 const { default: actionTimeDisplay } = await import('./action-time-display.js');
 const { default: tooltipObserver } = await import('../../core/tooltip-observer.js');
@@ -87,10 +89,14 @@ const STAR_FRUIT = '/items/star_fruit';
 const ESSENCE = '/items/foraging_essence';
 const COIN = '/items/coin';
 
+const SWORD = '/items/cheese_sword';
+const ENHANCER = '/items/mirror_of_protection';
+
 const CRAFT_PLANK = '/actions/crafting/plank';
 const CRAFT_BOW = '/actions/crafting/bow';
 const DECOMPOSE = '/actions/alchemy/decompose';
 const COINIFY = '/actions/alchemy/coinify';
+const ENHANCE = '/actions/enhancing/enhance';
 
 /** Inventory rows in the one location the lookup counts */
 function stack(itemHrid, count, enhancementLevel = 0) {
@@ -115,14 +121,18 @@ function queued(id, actionHrid, { maxCount, primaryItemHrid } = {}) {
 /** The "+N Queued Actions" popper with one row per queued action. */
 function queueTooltipPopper(rowNames) {
     const rows = rowNames
-        .map(
-            (name, i) => `
+        .map((entry, i) => {
+            // An enhancing row is recognised by its icon, not its text: the game labels it
+            // with the item name alone, which is what matchActionFromDiv reads.
+            const { name, enhancing } = typeof entry === 'string' ? { name: entry } : entry;
+            const icon = enhancing ? '<svg><use href="/static/media/misc_sprite.svg#enhancing"></use></svg>' : '';
+            return `
                 <div class="QueuedActions_action__item">
                     <div class="QueuedActions_actionText__y">
-                        <div class="QueuedActions_text__z">#${i + 1}${name}</div>
+                        <div class="QueuedActions_text__z">${icon}#${i + 1}${name}</div>
                     </div>
-                </div>`
-        )
+                </div>`;
+        })
         .join('');
     const el = document.createElement('div');
     el.className = 'MuiTooltip-popper';
@@ -170,6 +180,14 @@ beforeEach(() => {
             // yield credited to later rows is an expected value, not stock in hand.
             alchemyDetail: { bulkMultiplier: 1, decomposeItems: [{ itemHrid: ESSENCE, count: 1 }] },
         },
+        [SWORD]: {
+            itemHrid: SWORD,
+            name: 'Cheese Sword',
+            itemLevel: 10,
+            // One protection item per attempt is the whole per-attempt bill here
+            enhancementCosts: [{ itemHrid: ENHANCER, count: 1 }],
+        },
+        [ENHANCER]: { itemHrid: ENHANCER, name: 'Mirror Of Protection', itemLevel: 1 },
         [ESSENCE]: {
             itemHrid: ESSENCE,
             name: 'Foraging Essence',
@@ -195,11 +213,13 @@ beforeEach(() => {
             inputItems: [{ itemHrid: PLANK, count: 3 }],
             outputItems: [{ itemHrid: BOW, count: 1 }],
         },
+        [ENHANCE]: { hrid: ENHANCE, name: 'Enhance', type: '/action_types/enhancing', coinCost: 0 },
         [DECOMPOSE]: { hrid: DECOMPOSE, name: 'Decompose', type: '/action_types/alchemy', coinCost: 0 },
         [COINIFY]: { hrid: COINIFY, name: 'Coinify', type: '/action_types/alchemy', coinCost: 0 },
     };
     game.inventory = [];
     game.currentActions = [];
+    game.predictions = null;
     actionTimeDisplay.initializeQueueTooltipObserver();
 });
 
@@ -362,5 +382,92 @@ describe('the queue edit menu, which duplicates the timing logic inline, agrees'
         actionTimeDisplay.injectQueueTimes(el);
 
         expect(rowLimits(el)).toEqual(['[0s]']);
+    });
+});
+
+describe('a counted enhancing row shows the time its materials can cover', () => {
+    // 10s per attempt and far more attempts expected than requested, so the request — not the
+    // enhancement model — is what the row would otherwise be displayed for.
+    const PER_ACTION = 10;
+
+    /** One counted enhancing row for the sword, asking for `maxCount` attempts. */
+    const enhancingRow = (maxCount) => ({
+        ...queued(1, ENHANCE, { maxCount, primaryItemHrid: SWORD }),
+        enhancingMaxLevel: 10,
+        enhancingProtectionMinLevel: 0,
+    });
+
+    beforeEach(() => {
+        game.predictions = { expectedAttempts: 1000, expectedProtections: 0, perActionTime: PER_ACTION };
+    });
+
+    test('a request for 500 backed by protections for 40 displays the time for 40', () => {
+        game.inventory = [stack(ENHANCER, 40)];
+        game.currentActions = [enhancingRow(500)];
+
+        const el = queueTooltipPopper([{ name: 'Cheese Sword', enhancing: true }]);
+        observerState.handler(el);
+
+        // 40 x 10s, not 500 x 10s
+        expect(rowLimits(el)).toEqual(['[0h 06m 40s]']);
+    });
+
+    test('an enhancing row that can perform none of its request reads as no time', () => {
+        game.inventory = [];
+        game.currentActions = [enhancingRow(500)];
+
+        const el = queueTooltipPopper([{ name: 'Cheese Sword', enhancing: true }]);
+        observerState.handler(el);
+
+        // The same plain bracket every other action type shows — no enhancing-only vocabulary
+        expect(rowLimits(el)).toEqual(['[0s]']);
+    });
+
+    test('the enhancing row spends exactly what it displays', () => {
+        const lookup = actionTimeDisplay.buildInventoryLookup([stack(ENHANCER, 40)]);
+        const action = enhancingRow(500);
+        const details = game.actionDetails[ENHANCE];
+
+        const timing = actionTimeDisplay.calculateSingleQueueActionTime(action, details, lookup, {
+            limitCountedByMaterials: true,
+        });
+        const performed = actionTimeDisplay.deductQueueActionMaterials(lookup, details, action, timing);
+
+        expect(timing.count).toBe(40);
+        expect(timing.totalTime).toBe(400);
+        expect(performed).toBe(40);
+        expect(lookup.byHrid[ENHANCER]).toBe(0);
+    });
+
+    test('an unqueued enhancing action still prices its full request against the whole bag', () => {
+        const lookup = actionTimeDisplay.buildInventoryLookup([stack(ENHANCER, 40)]);
+        const action = enhancingRow(500);
+
+        const timing = actionTimeDisplay.calculateSingleQueueActionTime(action, game.actionDetails[ENHANCE], lookup);
+
+        expect(timing.count).toBe(500);
+        expect(timing.totalTime).toBe(5000);
+        expect(timing.materialLimit).toBe(null);
+        expect(timing.limitType).toBe(null);
+        expect(timing.materialLimitIsEstimated).toBe(false);
+        expect(lookup.byHrid[ENHANCER]).toBe(40);
+    });
+
+    test('the queue edit menu clamps the same enhancing row the same way', () => {
+        game.inventory = [stack(ENHANCER, 40)];
+        game.currentActions = [enhancingRow(500)];
+
+        const el = document.createElement('div');
+        el.className = 'QueuedActions_queuedActions__menu';
+        el.innerHTML = `
+            <div class="QueuedActions_action__item">
+                <div class="QueuedActions_actionText__y">
+                    <div class="QueuedActions_text__z"><svg><use href="#enhancing"></use></svg>#1Cheese Sword</div>
+                </div>
+            </div>`;
+        document.body.appendChild(el);
+        actionTimeDisplay.injectQueueTimes(el);
+
+        expect(rowLimits(el)).toEqual(['[0h 06m 40s]']);
     });
 });

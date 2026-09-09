@@ -599,11 +599,19 @@ class ActionTimeDisplay {
         let materialLimitIsEstimated = false;
 
         if (isEnhancing) {
-            const enhancingTime = this.calculateEnhancingQueueTime(actionObj, actionDetails, inventoryLookup);
+            const enhancingTime = this.calculateEnhancingQueueTime(actionObj, actionDetails, inventoryLookup, options);
             if (enhancingTime) {
                 count = enhancingTime.count;
                 totalTime = enhancingTime.totalTime;
                 actionTimeSeconds = enhancingTime.totalTime;
+                // Set only when the cap actually bound, as in the non-enhancing branch: an
+                // enhancing row inside its materials rests on the player's request, not on a
+                // material channel, and must not be labelled — or marked — as if it did.
+                if (enhancingTime.limitType) {
+                    materialLimit = enhancingTime.count;
+                    limitType = enhancingTime.limitType;
+                    materialLimitIsEstimated = enhancingTime.materialLimitIsEstimated === true;
+                }
             } else if (isInfinite) {
                 isTrulyInfinite = true;
                 totalTime = Infinity;
@@ -1589,12 +1597,24 @@ class ActionTimeDisplay {
     /**
      * Calculate time for an enhancing action in the queue
      * Uses enhancement predictions to determine realistic time based on min(queued, expected attempts)
+     *
+     * What limits an enhancing row is its per-attempt bill: `enhancementCosts` on the item
+     * being enhanced, which is what `calculateMaterialLimit` and `deductQueueActionMaterials`
+     * both cost it against. The item itself is not consumed (it comes back at a new level),
+     * and a protection item is charged only on the attempts that fail — neither is a channel
+     * either side counts, so neither can bind here without disagreeing with the ledger.
+     *
      * @param {Object} actionObj - Action object from dataManager
      * @param {Object} actionDetails - Action details
-     * @param {Object} inventoryLookup - Inventory lookup maps
-     * @returns {Object|null} { count, totalTime } or null if cannot calculate
+     * @param {Object} inventoryLookup - Inventory lookup maps; read, never mutated
+     * @param {Object} [options] - {limitCountedByMaterials} — cap a counted row at what its
+     *   per-attempt costs can pay for, the same rule every other action type follows. Off by
+     *   default: this helper also answers for a single, unqueued action, where the whole bag
+     *   is the right basis and the requested count is what the player asked to run.
+     * @returns {Object|null} `{ count, totalTime }`, carrying `limitType` and
+     *   `materialLimitIsEstimated` as well when the cap actually bound, or null if cannot calculate
      */
-    calculateEnhancingQueueTime(actionObj, actionDetails, inventoryLookup) {
+    calculateEnhancingQueueTime(actionObj, actionDetails, inventoryLookup, options = {}) {
         if (!actionObj.primaryItemHash) return null;
 
         const { itemHrid, level: currentLevel } = this.parseItemHash(actionObj.primaryItemHash);
@@ -1620,17 +1640,48 @@ class ActionTimeDisplay {
             usesMirror = true;
         }
 
+        // A row's figure and the time built on it, capped by materials where the caller asked
+        // for it. `elapsed` belongs to the attempt already running, so it is subtracted after
+        // the cap rather than scaled with it.
+        const settle = (rawCount) => {
+            let finalCount = Number.isFinite(rawCount) ? Math.max(0, rawCount) : 0;
+            let cap = null;
+            if (options.limitCountedByMaterials && actionObj.hasMaxCount) {
+                // Ceil, because an expected-attempts count is fractional and the shared helper
+                // answers in whole actions: the cap must bind on 10 available against an
+                // expected 10.4, and must not round 10.4 down to 10 when nothing binds.
+                const capped = this.capCountedRequestByMaterials(
+                    Math.ceil(finalCount),
+                    actionDetails,
+                    inventoryLookup,
+                    actionObj
+                );
+                if (capped.limitType !== null) {
+                    finalCount = capped.count;
+                    cap = capped;
+                }
+            }
+            const elapsed = dataManager.getElapsedSecondsInCurrentUnit(
+                actionObj.id,
+                actionObj.currentCount,
+                perActionTime
+            );
+            const totalTime = Math.max(0, finalCount * perActionTime - elapsed);
+            if (!cap) return { count: finalCount, totalTime };
+            return {
+                count: finalCount,
+                totalTime,
+                limitType: cap.limitType,
+                materialLimitIsEstimated: cap.isEstimated,
+            };
+        };
+
         if (usesMirror) {
             let actions = targetLevel - currentLevel;
             if (actionObj.hasMaxCount) {
                 actions = Math.min(actions, actionObj.maxCount - actionObj.currentCount);
             }
-            const elapsedInCurrentUnit = dataManager.getElapsedSecondsInCurrentUnit(
-                actionObj.id,
-                actionObj.currentCount,
-                perActionTime
-            );
-            return { count: actions, totalTime: Math.max(0, actions * perActionTime - elapsedInCurrentUnit) };
+            return settle(actions);
         }
 
         // Determine queue count
@@ -1646,14 +1697,8 @@ class ActionTimeDisplay {
             queuedActions === Infinity
                 ? predictions.expectedAttempts
                 : Math.min(queuedActions, predictions.expectedAttempts);
-        const elapsedInCurrentUnit = dataManager.getElapsedSecondsInCurrentUnit(
-            actionObj.id,
-            actionObj.currentCount,
-            perActionTime
-        );
-        const totalTime = Math.max(0, realisticActions * perActionTime - elapsedInCurrentUnit);
 
-        return { count: realisticActions, totalTime };
+        return settle(realisticActions);
     }
 
     parseActionNameFromDom(actionNameText) {
@@ -2672,11 +2717,13 @@ class ActionTimeDisplay {
                     let baseActionsNeeded = 0; // Time-consuming actions for time calculation
 
                     if (isEnhancing) {
-                        // Enhancing: use enhancement-specific time calculation
+                        // Enhancing: use enhancement-specific time calculation, capped at what
+                        // its per-attempt costs can pay for like every other counted row
                         const enhancingTime = this.calculateEnhancingQueueTime(
                             currentAction,
                             actionDetails,
-                            inventoryLookup
+                            inventoryLookup,
+                            { limitCountedByMaterials: true }
                         );
                         if (enhancingTime) {
                             count = enhancingTime.count;
@@ -2845,13 +2892,22 @@ class ActionTimeDisplay {
                 let materialLimitIsEstimated = false;
 
                 if (isEnhancing) {
-                    // Enhancing: use enhancement-specific time calculation
-                    const enhancingTime = this.calculateEnhancingQueueTime(actionObj, actionDetails, inventoryLookup);
+                    // Enhancing: use enhancement-specific time calculation, capped at what its
+                    // per-attempt costs can pay for like every other counted row
+                    const enhancingTime = this.calculateEnhancingQueueTime(actionObj, actionDetails, inventoryLookup, {
+                        limitCountedByMaterials: true,
+                    });
                     if (enhancingTime) {
                         count = enhancingTime.count;
                         totalTime = enhancingTime.totalTime;
                         actionTimeSeconds = enhancingTime.totalTime;
                         accumulatedTime += enhancingTime.totalTime;
+                        // Only when the cap bound, as in the non-enhancing branch below
+                        if (enhancingTime.limitType) {
+                            materialLimit = enhancingTime.count;
+                            limitType = enhancingTime.limitType;
+                            materialLimitIsEstimated = enhancingTime.materialLimitIsEstimated === true;
+                        }
                     } else if (isInfinite) {
                         isTrulyInfinite = true;
                         hasInfinite = true;
