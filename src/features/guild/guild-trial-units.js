@@ -433,7 +433,13 @@ export function resolveUnitNames({
         );
         const unclaimed = pool.filter((name) => !claimed.has(name.toLowerCase()));
         const unresolved = [...indexes].filter((index) => !combined[index] || combined[index].source === 'placeholder');
-        if (unclaimed.length === 1 && unresolved.length === 1) {
+        // Injectivity only forces the pairing if every *other* assignment is
+        // right, and the watcher's own name is the one a positional source is
+        // likeliest to have misplaced — so the same guard applies here. When
+        // it refuses, nothing is assigned: the slot keeps its placeholder,
+        // which reads as "Player N" and is honest, rather than carrying a
+        // name the data does not support.
+        if (unclaimed.length === 1 && unresolved.length === 1 && allowed(unresolved[0], unclaimed[0], 'elimination')) {
             resolved[unresolved[0]] = { name: unclaimed[0], source: 'elimination' };
         }
     }

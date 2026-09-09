@@ -252,6 +252,66 @@ describe('one name, one unit', () => {
     });
 });
 
+describe('elimination is bound by the same guard as every other source', () => {
+    // The watcher's slot is unknown (`slot: null`), so their name is refused
+    // everywhere outside the roster. A vitals match then labels the slot they
+    // are actually sitting in with somebody else's name, which leaves their
+    // own name unclaimed and one other slot unresolved — the exact shape
+    // elimination fires on.
+    const misplaced = {
+        pMap: { 0: icmeow, 1: { mHP: 5 } },
+        loadouts: [sheet('SarinTest', 2612, 2180)],
+        partyNames: ['MillenniumTest', 'SarinTest'],
+    };
+
+    test('the watcher’s own name is not pinned to a foreign slot', () => {
+        const names = resolveUnitNames({ ...misplaced, own: { slot: null, name: 'MillenniumTest' } });
+
+        expect(names['0']).toEqual({ name: 'SarinTest', source: 'vitals' });
+        expect(names['1'].source).toBe('placeholder');
+        expect(Object.values(names).some((entry) => entry.name === 'MillenniumTest')).toBe(false);
+    });
+
+    test('the declined slot is reported as a placeholder, not as a name', () => {
+        const names = resolveUnitNames({ ...misplaced, own: { slot: null, name: 'MillenniumTest' } });
+        const coverage = nameCoverage(names);
+
+        expect(coverage).toMatchObject({ named: 1, of: 2, placeholders: ['Player 2'] });
+        expect(coverage.bySource.elimination).toBeUndefined();
+    });
+
+    test('with no watcher supplied the pairing is still forced', () => {
+        const names = resolveUnitNames(misplaced);
+        expect(names['1']).toEqual({ name: 'MillenniumTest', source: 'elimination' });
+    });
+
+    test('a name that is not the watcher’s is still forced onto the last slot', () => {
+        const names = resolveUnitNames({
+            pMap: { 0: {}, 1: {} },
+            roster: { 0: { name: 'Tib' } },
+            partyNames: ['Moo', 'Tib'],
+            own: { slot: '0', name: 'Tib' },
+        });
+
+        expect(names['1']).toEqual({ name: 'Moo', source: 'elimination' });
+    });
+
+    test('the watcher’s own name is forced when the unresolved slot is their slot', () => {
+        // Their slot is absent from this tick's pMap and held as a stored
+        // placeholder, so the `own` rung never runs and elimination is what
+        // reaches it — permitted, because the caller states that slot is theirs.
+        const names = resolveUnitNames({
+            pMap: { 0: {} },
+            roster: { 0: { name: 'Tib' } },
+            known: { 1: { name: 'Player 2', source: 'placeholder' } },
+            partyNames: ['Tib', 'MillenniumTest'],
+            own: { slot: '1', name: 'MillenniumTest' },
+        });
+
+        expect(names['1']).toEqual({ name: 'MillenniumTest', source: 'elimination' });
+    });
+});
+
 describe('rosterFromBattle', () => {
     test('slot order is the join, and it is exact', () => {
         const roster = rosterFromBattle(NEW_GUILD_BATTLE);
