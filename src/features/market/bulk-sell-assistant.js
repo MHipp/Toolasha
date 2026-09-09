@@ -142,6 +142,26 @@ const CONFIRM_LABELS = [
 const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
 
 /**
+ * Whether the loadout hold list was looked at at all.
+ *
+ * With Loadout Snapshot switched off nothing ever fills the snapshot store, so
+ * `getAllSnapshots()` reports nothing and the hold list comes back empty — which
+ * from the strip is indistinguishable from a character who has no loadouts. The
+ * two are different facts and the second one is a comparison that never ran, so
+ * the strip is told which it is looking at rather than left to imply the wrong
+ * one by saying a count.
+ *
+ * @returns {boolean} True when the loadout store is one the hold list can read
+ */
+export function loadoutsChecked() {
+    try {
+        return config.getSetting('loadoutSnapshot') === true;
+    } catch {
+        return false;
+    }
+}
+
+/**
  * Every piece of gear saved into a loadout, as hold keys.
  *
  * A loadout is a claim on an item: you are still using it, just not right now.
@@ -155,6 +175,7 @@ const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputE
  */
 export function loadoutHoldKeys() {
     const keys = [];
+    if (!loadoutsChecked()) return keys;
     const store = loadoutSnapshot() || bundledLoadoutSnapshot;
     for (const snapshot of store.getAllSnapshots?.() || []) {
         // Both the stored level and the resolved one are protected: a "highest
@@ -197,6 +218,8 @@ class BulkSellAssistant {
          */
         this.holdProviders = new Map();
         this.heldCount = 0;
+        /** Whether the last queue build could read the loadout store at all */
+        this.loadoutsChecked = true;
         /** Enhanced gear the watchlist source declined to sweep up */
         this.enhancedSkipped = 0;
         this._hasTabs = false;
@@ -227,7 +250,20 @@ class BulkSellAssistant {
      */
     _skipNote({ bare = false } = {}) {
         const parts = [];
-        if (this.heldCount > 0) parts.push(`${this.heldCount} held back (in a loadout, or claimed elsewhere)`);
+        if (this.heldCount > 0) {
+            // "in a loadout" is only one of the reasons when loadouts were among
+            // the things looked at
+            parts.push(
+                this.loadoutsChecked
+                    ? `${this.heldCount} held back (in a loadout, or claimed elsewhere)`
+                    : `${this.heldCount} held back (claimed elsewhere)`
+            );
+        }
+        // Said even though it is not a count: silence here, and a bare "0 held
+        // back", both read as "nothing needed holding" when the truth is that
+        // nothing was looked at, and the gear at risk is exactly the gear a
+        // loadout is wearing
+        if (!this.loadoutsChecked) parts.push('loadouts not checked (Loadout Snapshot is off)');
         if (this.enhancedSkipped > 0) {
             parts.push(`${this.enhancedSkipped} enhanced item${this.enhancedSkipped === 1 ? '' : 's'} skipped`);
         }
@@ -1020,6 +1056,9 @@ class BulkSellAssistant {
         // is counted and reported like every other claim on the inventory.
         const providers = new Map(this.holdProviders);
         providers.set('loadouts', () => loadoutHoldKeys());
+        // Recorded per build rather than read at render time, so the strip
+        // reports the run it is describing and not the setting as it stands now
+        this.loadoutsChecked = loadoutsChecked();
         const heldKeys = collectHeldKeys(providers, (name, error) =>
             console.error(`[BulkSellAssistant] Hold provider "${name}" failed; its items are not held:`, error)
         );

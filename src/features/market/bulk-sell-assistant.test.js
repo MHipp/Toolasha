@@ -86,7 +86,10 @@ vi.mock('./marketplace-shortcuts.js', () => ({
 }));
 vi.mock('../combat/loadout-snapshot.js', () => ({
     default: {
-        getAllSnapshots: () => game.loadouts,
+        // Faithful to the real store: with the feature switched off nothing
+        // ever loads it from storage, so it reports no loadouts at all — which
+        // from the outside is indistinguishable from a character who has none
+        getAllSnapshots: () => (settings['loadoutSnapshot'] ? game.loadouts : []),
         // The real store fills from storage asynchronously; a run that reads it
         // before it has sees no loadouts at all
         whenReady: () => (game.loadoutsReady ? Promise.resolve(true) : new Promise((r) => game.readyWaiters.push(r))),
@@ -113,6 +116,9 @@ const inventory = (itemHrid, count = 5, enhancementLevel = 0) => ({
 });
 
 beforeEach(() => {
+    // The Loadout Snapshot feature is what fills the store the hold list reads;
+    // on is the case every test but the "switched off" one is about
+    settings['loadoutSnapshot'] = true;
     game.details = {
         '/items/cheese': { isTradable: true },
         '/items/milk': { isTradable: true },
@@ -262,6 +268,31 @@ describe('gear saved into a loadout', () => {
 
         expect(queued()).not.toContain('/items/sword');
         expect(bulkSell.heldCount).toBe(1);
+    });
+
+    /*
+     * With Loadout Snapshot switched off nothing ever fills the snapshot store,
+     * so the hold list comes back empty — indistinguishable, from the strip,
+     * from a character who has no loadouts. Saying nothing (or "0 held back")
+     * asserts a comparison that never ran. Same class as a claim fixed
+     * elsewhere this round.
+     */
+    test('is not checked at all when Loadout Snapshot is off, and the strip says so', async () => {
+        settings['loadoutSnapshot'] = false;
+        game.loadouts = [{ equipment: [{ itemHrid: '/items/cheese', enhancementLevel: 0 }] }];
+        await bulkSell._start();
+
+        expect(bulkSell._skipNote({ bare: true })).toContain('loadouts not checked');
+        // And the reason the count is what it is, is not claimed to be a loadout
+        expect(bulkSell._skipNote({ bare: true })).not.toContain('in a loadout');
+    });
+
+    test('is checked, and reported as zero, when it is on and there are no loadouts', async () => {
+        game.loadouts = [];
+        await bulkSell._start();
+
+        expect(bulkSell.heldCount).toBe(0);
+        expect(bulkSell._skipNote({ bare: true })).not.toContain('not checked');
     });
 
     test('a loadout with nothing in it is not a problem', async () => {
