@@ -6,6 +6,14 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Follow-ups: an all-zones sweep stops re-sending the game to itself, and reroll spend is right on a cold board
+
+A full all-zones sweep built a fresh worker for every zone and tier and copied the whole game's data into each one — thirty-six copies for a thirty-six tier sweep. The coordinator keeps its workers now, so it sends the data once per slot instead: four copies, not thirty-six. And pressing Simulate again no longer throws away the warm workers, so a second run starts where the first left off. Stopping a run keeps them; disabling the feature or switching character still releases everything, because a kept worker there would be holding a departed character's data.
+
+The reroll badge showed a board it had no figures for yet as "spent nothing". It reads the game's own count when it has nothing of its own, the way the task statistics popup already did, so a cold board shows what you really spent. That was also the last thing keeping the reroll tracker's stored data from loading alongside everything else at startup.
+
+And the last guess about which trial slot is yours is gone. It read "only one player's counters have been seen, so that must be you", which was true when the game only sent your own counters and is not true now that it sends everyone's — while spectating, one player seen means whoever was fighting. With the naming guard now total, that guess outranked portrait and vitals evidence, so it could put your name on someone else's row. Your slot comes from the roster or the stored id map, or it is left unknown.
+
 ### Leftovers: a faster start, a warm simulation worker, and your own name where it belongs
 
 Seven more features now start alongside each other rather than queueing — about a second and a half of waiting on stored data, removed from every load. Two more were looked at and deliberately left as they are, with the reason written beside them: one has a badge that reads its figures with no fallback and would show an empty board as "spent nothing", and the other has nothing to wait for in the first place. Background work also now waits for startup to finish rather than for the browser's next idle moment, which in Chrome was landing in the middle of it and making both slower.
