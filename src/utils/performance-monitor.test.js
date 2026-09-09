@@ -797,7 +797,11 @@ describe('timer tracing does no work while measuring is off', () => {
         performanceMonitor.enabled = true;
         target.registered.timeout[0].handler();
 
-        expect([...performanceMonitor.measurements.keys()]).toContain('timeout:anon@?');
+        // Never the bare `timeout:anon@?` it used to be: that one name was
+        // shared by every anonymous timer in the script, so the row it made
+        // was the biggest line in a live dump and named nothing
+        const [name] = [...performanceMonitor.measurements.keys()];
+        expect(name).toMatch(/^timeout:anon#\d+/);
     });
 
     test('the counters hang off the monitor, which is how the panel reaches them', () => {
@@ -1251,5 +1255,179 @@ describe('registered count sources', () => {
     test('the API is reachable from the published instance, which is how later bundles get it', () => {
         expect(typeof performanceMonitor.registerCountSource).toBe('function');
         expect(typeof performanceMonitor.readCountSources).toBe('function');
+    });
+});
+
+describe('late naming of timers created before measuring started', () => {
+    /** A fake timer host: registrations are captured and ticks are fired by hand. */
+    function makeTarget() {
+        const registered = { interval: [], timeout: [] };
+        return {
+            registered,
+            setInterval: vi.fn((handler, delay, ...args) => {
+                registered.interval.push({ handler, delay, args });
+                return 111;
+            }),
+            setTimeout: vi.fn((handler, delay, ...args) => {
+                registered.timeout.push({ handler, delay, args });
+                return 222;
+            }),
+        };
+    }
+
+    /** Register a handler with measuring off, then tick it with measuring on. */
+    function tickLate(target, kind, handler) {
+        performanceMonitor.enabled = false;
+        target[kind === 'interval' ? 'setInterval' : 'setTimeout'](handler, 5);
+        performanceMonitor.enabled = true;
+        const entry = target.registered[kind].at(-1);
+        entry.handler();
+        return entry;
+    }
+
+    /** A body slow enough to clear the 1ms recording floor. */
+    function burn() {
+        const t0 = performance.now();
+        while (performance.now() - t0 < 2) {
+            // spin
+        }
+    }
+
+    beforeEach(() => {
+        performanceMonitor.reset();
+        performanceMonitor._tabVisible = true;
+    });
+
+    afterEach(() => {
+        performanceMonitor.enabled = false;
+    });
+
+    test('two different anonymous intervals get different labels', () => {
+        const target = makeTarget();
+        installIntervalTracing(target);
+
+        const first = tickLate(target, 'interval', () => burn());
+        const second = tickLate(target, 'interval', () => burn());
+
+        const names = [...performanceMonitor.measurements.keys()];
+        expect(names).toHaveLength(2);
+        expect(names[0]).not.toBe(names[1]);
+        for (const name of names) expect(name).toMatch(/^interval:anon#\d+/);
+        expect(first.handler).not.toBe(second.handler);
+    });
+
+    test('an anonymous handler keeps the same label across its own later ticks', () => {
+        const target = makeTarget();
+        installIntervalTracing(target);
+
+        const entry = tickLate(target, 'interval', () => burn());
+        const afterFirst = [...performanceMonitor.measurements.keys()];
+        expect(afterFirst).toHaveLength(1);
+
+        entry.handler();
+        entry.handler();
+
+        expect([...performanceMonitor.measurements.keys()]).toEqual(afterFirst);
+        expect(performanceMonitor.measurements.get(afterFirst[0])).toHaveLength(3);
+    });
+
+    test('the same anonymous handler registered twice reports under one label', () => {
+        const target = makeTarget();
+        installIntervalTracing(target);
+
+        // One handler, two timers: keying labels by handler identity keeps the
+        // two registrations aggregated, the way one captured call site does.
+        // Via an array so no name is inferred — a `const f = function () {}`
+        // is not anonymous, it is named `f`.
+        const [shared] = [
+            function () {
+                burn();
+            },
+        ];
+        expect(shared.name).toBe('');
+        tickLate(target, 'interval', shared);
+        tickLate(target, 'interval', shared);
+
+        const names = [...performanceMonitor.measurements.keys()];
+        expect(names).toHaveLength(1);
+        expect(performanceMonitor.measurements.get(names[0])).toHaveLength(2);
+    });
+
+    test('the label carries a word lifted from the handler source, so it can be grepped', () => {
+        const target = makeTarget();
+        installIntervalTracing(target);
+
+        const panel = { refreshTheMarketPanel: () => {} };
+        tickLate(target, 'interval', () => {
+            panel.refreshTheMarketPanel();
+            burn();
+        });
+
+        const [name] = [...performanceMonitor.measurements.keys()];
+        expect(name).toMatch(/^interval:anon#\d+\.refreshTheMarketPanel@\?$/);
+    });
+
+    test('timeouts are labelled the same way, not collapsed into one anon row', () => {
+        const target = makeTarget();
+        installIntervalTracing(target);
+
+        tickLate(target, 'timeout', () => burn());
+        tickLate(target, 'timeout', () => burn());
+
+        const names = [...performanceMonitor.measurements.keys()];
+        expect(names).toHaveLength(2);
+        expect(names[0]).not.toBe(names[1]);
+        for (const name of names) expect(name).toMatch(/^timeout:anon#\d+/);
+    });
+
+    test('a named handler is unaffected by the anonymous labelling', () => {
+        const target = makeTarget();
+        installIntervalTracing(target);
+
+        tickLate(target, 'interval', function _startRefreshing() {
+            burn();
+        });
+
+        expect([...performanceMonitor.measurements.keys()]).toEqual(['interval:_startRefreshing@?']);
+    });
+
+    test('nothing is named while measuring is off, so the disabled tick path is untouched', () => {
+        const target = makeTarget();
+        installIntervalTracing(target);
+
+        const inner = vi.fn();
+        const [probe] = [
+            function () {
+                inner();
+            },
+        ];
+        // toString is the only thing labelling can call on the handler, so a
+        // spy on it catches any naming work that leaked onto the disabled path
+        const toString = vi.spyOn(Function.prototype, 'toString');
+
+        performanceMonitor.enabled = false;
+        target.setInterval(probe, 5);
+        const entry = target.registered.interval.at(-1);
+        entry.handler();
+        entry.handler();
+
+        expect(inner).toHaveBeenCalledTimes(2);
+        expect(toString).not.toHaveBeenCalled();
+        expect(performanceMonitor.measurements.size).toBe(0);
+        toString.mockRestore();
+    });
+
+    test('the timerCallSite naming path still names timers created while measuring', () => {
+        const target = makeTarget();
+        installIntervalTracing(target);
+
+        performanceMonitor.enabled = true;
+        target.setInterval(() => burn(), 5);
+        target.registered.interval.at(-1).handler();
+
+        const [name] = [...performanceMonitor.measurements.keys()];
+        // A real line number, not `@?`: the call site was captured at creation
+        expect(name).toMatch(/^interval:\S+@\d+/);
+        expect(name).not.toContain('anon#');
     });
 });

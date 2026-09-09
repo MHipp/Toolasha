@@ -934,6 +934,102 @@ performanceMonitor.heapMemorySupported = heapMemorySupported;
 performanceMonitor.registerCountSource = registerCountSource;
 performanceMonitor.readCountSources = readCountSources;
 
+// Identifiers a call in a handler body shares with every other handler body,
+// so finding one first says nothing about which timer this is. Keywords are
+// here because `function (` and `if (` parse as calls to the scan below.
+const ANON_HINT_SKIP = new Set([
+    'function',
+    'return',
+    'await',
+    'async',
+    'new',
+    'typeof',
+    'void',
+    'delete',
+    'yield',
+    'throw',
+    'super',
+    'import',
+    'if',
+    'for',
+    'while',
+    'switch',
+    'Date',
+    'now',
+    'performance',
+    'Math',
+    'console',
+    'log',
+    'warn',
+    'error',
+    'String',
+    'Number',
+    'Boolean',
+    'Object',
+    'Array',
+    'Promise',
+    'JSON',
+    'parse',
+    'stringify',
+    'push',
+    'apply',
+    'call',
+    'bind',
+    'then',
+    'catch',
+    'map',
+    'filter',
+    'forEach',
+]);
+
+// Minified locals are one or two characters, so a short token is noise rather
+// than a hint. Function declarations survive terser (`keep_fnames`) and method
+// names are never mangled, which is what makes this readable in a release build.
+const ANON_HINT_MIN_LENGTH = 3;
+
+// The callee that identifies a handler is in its first statement or nowhere
+// useful, and the cap bounds the regex on a handler that inlines a large body.
+const ANON_HINT_SCAN_CHARS = 400;
+
+/**
+ * A greppable word from an anonymous handler's own source, or '' if it has none.
+ *
+ * Costs one `toString` and one bounded regex scan, paid once per distinct
+ * handler because the caller caches the result — never a stack capture, which
+ * is the cost `installIntervalTracing` exists to avoid paying while measuring
+ * is off.
+ * @param {Function} handler - The timer callback
+ * @returns {string} A callee name from the body, e.g. `updateDisplay`
+ */
+function anonSourceHint(handler) {
+    let source;
+    try {
+        source = Function.prototype.toString.call(handler);
+    } catch {
+        // Exotic callables (revoked proxies) refuse toString; a bare ordinal
+        // still splits the bucket, which is the part that matters.
+        return '';
+    }
+    const head = source.slice(0, ANON_HINT_SCAN_CHARS);
+    // `foo(` and `obj.foo(` alike — the method name is the informative half,
+    // and it is the half minification leaves alone.
+    const calls = /([A-Za-z_$][\w$]*)\s*\(/g;
+    let match;
+    while ((match = calls.exec(head)) !== null) {
+        const token = match[1];
+        if (token.length < ANON_HINT_MIN_LENGTH || ANON_HINT_SKIP.has(token)) continue;
+        return token;
+    }
+    return '';
+}
+
+// Labels are keyed by handler identity so a handler stays under one row across
+// every timer it is registered for, the way a named call site aggregates. Weak
+// because a timer that is cleared must be collectable — nothing else may hold
+// these handlers, so the ordinal counter is a number and not an array index.
+const anonTimerLabels = new WeakMap();
+let anonTimerOrdinal = 0;
+
 /**
  * The best name a timer can be given at tick time, when its creation stack is
  * long gone.
@@ -944,12 +1040,27 @@ performanceMonitor.readCountSources = readCountSources;
  * that starts ticking after the panel opens still reports under something
  * readable rather than vanishing. The `@?` says the line number is the part
  * that is missing, in the same shape `timerCallSite` returns.
+ *
+ * A handler with no name — an arrow passed straight to `setInterval` — used to
+ * report as the literal `anon@?`, and since `record` aggregates by name, every
+ * such timer in the script collapsed into one row. Three live dumps had that
+ * row as the largest line in the window and it named nothing. Distinct handlers
+ * now get distinct ordinals plus a word lifted from their own source, so the
+ * row is both separable and greppable: `interval:anon#3.updateDisplay@?`.
  * @param {Function} handler - The timer callback
- * @returns {string} e.g. `_startRefreshing@?`
+ * @returns {string} e.g. `_startRefreshing@?` or `anon#3.updateDisplay@?`
  */
 function lateTimerName(handler) {
     const name = handler.name;
-    return `${name && name !== 'anonymous' ? name : 'anon'}@?`;
+    if (name && name !== 'anonymous') return `${name}@?`;
+    let label = anonTimerLabels.get(handler);
+    if (label === undefined) {
+        anonTimerOrdinal += 1;
+        const hint = anonSourceHint(handler);
+        label = `anon#${anonTimerOrdinal}${hint ? `.${hint}` : ''}@?`;
+        anonTimerLabels.set(handler, label);
+    }
+    return label;
 }
 
 /**
