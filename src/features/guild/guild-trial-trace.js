@@ -76,6 +76,19 @@ export const UNKNOWN_MANIFEST_GIVE_UP_MS = 2 * 60 * 1000;
 export const UNKNOWN_MANIFEST_GIVE_UP_EVENTS = 5000;
 
 /**
+ * The hard ceiling on held events, on every path — not just the unreadable
+ * manifest one.
+ *
+ * `_retryProbe`'s bound only ever applied while the manifest was known
+ * unreadable; a restore that was merely slow (a blocked IndexedDB upgrade,
+ * storage pressure) held its queue with no ceiling at all, and a trial delivers
+ * ~40 messages a second as live parsed payloads. Same number as the give-up
+ * bound, because it is the same judgement: past this many held events the wait
+ * has stopped being a wait.
+ */
+export const MAX_QUEUED_EVENTS = UNKNOWN_MANIFEST_GIVE_UP_EVENTS;
+
+/**
  * The trial battle stream, verbatim. Mirrors the names `guild-trial-damage.js`
  * subscribes to: the tier-opening message (roster, tier-scaled boss — every one
  * is a boundary marker in the trace), the spectator tick firehose, the
@@ -155,6 +168,7 @@ class GuildTrialTrace {
      * @param {number} [options.resumeWindowMs] - How recent a persisted trace must be to resume
      * @param {number} [options.unknownGiveUpMs] - How long to wait on an unreadable manifest
      * @param {number} [options.unknownGiveUpEvents] - How many events to hold while waiting
+     * @param {number} [options.maxQueuedEvents] - Hard ceiling on held events, on every path
      */
     constructor({
         maxEvents = MAX_EVENTS,
@@ -164,6 +178,7 @@ class GuildTrialTrace {
         resumeWindowMs = RESUME_WINDOW_MS,
         unknownGiveUpMs = UNKNOWN_MANIFEST_GIVE_UP_MS,
         unknownGiveUpEvents = UNKNOWN_MANIFEST_GIVE_UP_EVENTS,
+        maxQueuedEvents = unknownGiveUpEvents,
     } = {}) {
         this.maxEvents = maxEvents;
         this.maxStoredBytes = maxStoredBytes;
@@ -172,6 +187,7 @@ class GuildTrialTrace {
         this.resumeWindowMs = resumeWindowMs;
         this.unknownGiveUpMs = unknownGiveUpMs;
         this.unknownGiveUpEvents = unknownGiveUpEvents;
+        this.maxQueuedEvents = maxQueuedEvents;
         this.initialized = false;
         this.handlers = null;
         this._restored = false;
@@ -216,6 +232,21 @@ class GuildTrialTrace {
         this.resumed = false;
         this.lastGuildBattleKey = null;
         this._queue = []; // messages that arrived before the restore settled
+        /**
+         * Held events the queue cap threw away. Kept apart from
+         * {@link eventsDropped} until the restore settles: adopting a manifest
+         * overwrites `eventsDropped` with the persisted number, so a drop
+         * counted straight into it before that would be silently erased — the
+         * one outcome worse than the drop itself.
+         */
+        this._queueDropped = 0;
+        /**
+         * Whether the trace stopped waiting for a restore that never answered
+         * and started fresh. The events held meanwhile are still replayed, but
+         * a persisted trace this session might have resumed was not read, so
+         * anything from before this session is missing from the file.
+         */
+        this.restoreAbandoned = false;
         this._flushChain = Promise.resolve();
         this._flushQueued = false;
     }
@@ -263,6 +294,10 @@ class GuildTrialTrace {
                 return 'unknown';
             })
             .then((outcome) => {
+                // The message path may have given up on this restore already
+                // (see _abandonRestore); a late answer must not reopen the wait
+                // or re-settle a trace that is running.
+                if (this._restored) return;
                 if (outcome === 'unknown') {
                     // The manifest could not be read. That is not "no trace": a
                     // fresh manifest written now would orphan every chunk the
@@ -291,6 +326,10 @@ class GuildTrialTrace {
     _settleRestore(sweep) {
         this._manifestUnknown = false;
         this._restored = true;
+        // After the restore, never before: an adoption has just overwritten
+        // eventsDropped with the manifest's number
+        this.eventsDropped += this._queueDropped;
+        this._queueDropped = 0;
         const queued = this._queue;
         this._queue = [];
         for (const message of queued) this._record(message.type, message.data, message.at);
@@ -310,7 +349,15 @@ class GuildTrialTrace {
      * starts fresh — logged, because that fresh manifest may be orphaning chunks.
      */
     _retryProbe() {
-        if (this._probing || !this._manifestUnknown) return;
+        if (!this._manifestUnknown) return;
+        if (this._probing) {
+            // A probe that has been out long enough for the hold to overflow is
+            // not coming back: a read that hangs rather than fails resolves
+            // nothing, so neither this probe's `then` nor its `finally` ever
+            // runs and `_probing` would latch for the rest of the session.
+            if (this._queueDropped > 0) this._abandonRestore();
+            return;
+        }
         const now = Date.now();
         const overdue =
             now - this._unknownSince >= this.unknownGiveUpMs || this._queue.length >= this.unknownGiveUpEvents;
@@ -446,6 +493,7 @@ class GuildTrialTrace {
         this.startedAt = manifest.startedAt || 0;
         this.duplicatesDiscarded = manifest.duplicatesDiscarded || 0;
         this.eventsDropped = manifest.eventsDropped || 0;
+        this.restoreAbandoned = Boolean(manifest.restoreAbandoned);
         this.maxGapMs = typeof manifest.maxGapMs === 'number' ? manifest.maxGapMs : null;
         this.gapsOver5s = manifest.gapsOver5s || 0;
         this.firstEventType = manifest.firstEventType || null;
@@ -472,13 +520,71 @@ class GuildTrialTrace {
                 // arrival time so replaying it cannot start a trace the restore
                 // is about to adopt over
                 this._queue.push({ type, data, at: Date.now() });
+                const dropped = this._enforceQueueCap();
                 if (this._manifestUnknown) this._retryProbe();
+                // The hold is full and still overflowing: the restore in flight
+                // has had a whole cap's worth of messages to answer in and has
+                // not, so stop waiting for it and record.
+                else if (dropped) this._abandonRestore();
                 return;
             }
             this._record(type, data, Date.now());
         } catch (error) {
             console.error('[GuildTrialTrace] Recording a trial message failed:', error);
         }
+    }
+
+    /**
+     * Hold the queue to {@link maxQueuedEvents}, dropping the oldest held
+     * events and counting them.
+     *
+     * Oldest rather than newest, and dropping rather than refusing to hold at
+     * all, because this is a diagnostic recorder: losing some events is
+     * acceptable, wedging the tab the fight is being rendered in is not, and a
+     * trace with an unmarked hole in it is worse than either. The same
+     * judgement the chunk eviction already makes — keep the recent fight, count
+     * what went — so the two overflow paths cannot disagree about what a full
+     * trace does. Dropping the oldest also lands on the honest header: the
+     * replay's first event is then no longer the tier-opening message, so
+     * `startedMidFight` reads true by itself.
+     *
+     * @returns {boolean} Whether anything was dropped — the signal both waiting
+     *   paths use to decide the restore is never going to answer
+     */
+    _enforceQueueCap() {
+        if (this._queue.length <= this.maxQueuedEvents) return false;
+        const excess = this._queue.length - this.maxQueuedEvents;
+        this._queue.splice(0, excess);
+        this._queueDropped += excess;
+        return true;
+    }
+
+    /**
+     * Stop waiting for a restore that has not answered, and record.
+     *
+     * Reached from either waiting path, on one signal: the hold is full and
+     * has started dropping. A read that hangs rather than fails resolves
+     * nothing, so no `.then` of ours ever runs and the wait would otherwise be
+     * forever. At the observed ~40 messages a second, a full hold is over two
+     * minutes of silence from storage — long past the point where the events
+     * still arriving matter more than the ones on disk.
+     *
+     * The generation bump is the refusal {@link disable} uses: a restore that
+     * began before this point checks the generation before it touches any
+     * state, so a late answer cannot adopt a manifest into the fresh trace now
+     * being recorded — nor may the sweep run, since nothing trustworthy is
+     * known about which chunks are live. The restore promise is replaced with a
+     * settled one so an export is not left awaiting the same hung read.
+     */
+    _abandonRestore() {
+        console.warn(
+            `[GuildTrialTrace] The trace restore did not settle with ${this._queue.length} events held; starting a fresh trace`
+        );
+        this.restoreAbandoned = true;
+        this._generation++;
+        this._probing = false;
+        this._restorePromise = Promise.resolve();
+        this._settleRestore(false);
     }
 
     /**
@@ -631,6 +737,7 @@ class GuildTrialTrace {
                     eventCount: this.eventCount,
                     duplicatesDiscarded: this.duplicatesDiscarded,
                     eventsDropped: this.eventsDropped,
+                    restoreAbandoned: this.restoreAbandoned,
                     maxGapMs: this.maxGapMs,
                     gapsOver5s: this.gapsOver5s,
                     firstEventType: this.firstEventType,
@@ -685,7 +792,8 @@ class GuildTrialTrace {
      *
      * @returns {{running: boolean, eventCount: number, heldCount: number, duplicatesDiscarded: number,
      *   eventsDropped: number, traceId: string|null, startedAt: number|null, maxGapMs: number|null,
-     *   gapsOver5s: number, startedMidFight: boolean|null, resumedAcrossReloads: boolean, chunkCount: number}}
+     *   gapsOver5s: number, startedMidFight: boolean|null, resumedAcrossReloads: boolean,
+     *   restoreAbandoned: boolean, chunkCount: number}}
      */
     status() {
         return {
@@ -694,13 +802,16 @@ class GuildTrialTrace {
             // Events held back while the persisted manifest could not be read
             heldCount: this._queue.length,
             duplicatesDiscarded: this.duplicatesDiscarded,
-            eventsDropped: this.eventsDropped,
+            // Held drops included before the restore has folded them in, so the
+            // number never dips while the wait is what is doing the dropping
+            eventsDropped: this.eventsDropped + this._queueDropped,
             traceId: this.traceId,
             startedAt: this.startedAt || null,
             maxGapMs: this.maxGapMs,
             gapsOver5s: this.gapsOver5s,
             startedMidFight: this._startedMidFight(),
             resumedAcrossReloads: this.resumed,
+            restoreAbandoned: this.restoreAbandoned,
             chunkCount: this.chunks.length,
         };
     }
@@ -822,13 +933,16 @@ class GuildTrialTrace {
             exportedAt: Date.now(),
             eventCount: this.eventCount,
             duplicatesDiscarded: this.duplicatesDiscarded,
-            eventsDropped: this.eventsDropped,
+            eventsDropped: this.eventsDropped + this._queueDropped,
             maxGapMs: this.maxGapMs,
             gapsOver5s: this.gapsOver5s,
             // The tier-opening message is the only boundary marker; a trace that
             // does not begin with one caught the fight already running
             startedMidFight: this._startedMidFight(),
             resumedAcrossReloads: this.resumed,
+            // The restore never answered and the trace started fresh: whatever
+            // was persisted before this session is not in the file
+            restoreAbandoned: this.restoreAbandoned,
             chunkCount: this.chunks.length,
         };
     }
@@ -936,8 +1050,16 @@ export function describeTraceStatus(status) {
         const longest = Number.isFinite(status.maxGapMs) ? `, longest ${formatGap(status.maxGapMs)}` : '';
         lines.push(`${gaps}${longest} — the stream went quiet there and the events are simply absent.`);
     }
+    if (status.eventsDropped > 0) {
+        const dropped =
+            status.eventsDropped === 1 ? '1 event was dropped' : `${status.eventsDropped} events were dropped`;
+        lines.push(`${dropped} to keep the recording bounded — the file is a window, not the whole stream.`);
+    }
     if (status.startedMidFight === true) {
         lines.push('Started mid-fight, so the opening of the tier is not in the file.');
+    }
+    if (status.restoreAbandoned) {
+        lines.push('Gave up waiting for stored trace data, so anything from before this session is missing.');
     }
     if (status.resumedAcrossReloads) {
         lines.push('Stitched back together across a page reload.');

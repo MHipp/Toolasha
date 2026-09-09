@@ -54,11 +54,16 @@ vi.mock('../../utils/character-key.js', () => ({
     },
 }));
 // `unavailable` stands in for a dropped IndexedDB connection: a read that says
-// it could not be made, rather than one that says "nothing there"
-const storageMock = vi.hoisted(() => ({ unavailable: false }));
+// it could not be made, rather than one that says "nothing there". `hang` is
+// the other failure the trace has to survive: a read that never answers at all
+// (a blocked upgrade, storage pressure), which resolves nothing and so runs
+// none of the trace's own callbacks. `gate` is the same read merely slow.
+const storageMock = vi.hoisted(() => ({ unavailable: false, hang: false, gate: null }));
 vi.mock('../../core/storage.js', () => ({
     default: {
         tryGet: async (key) => {
+            if (storageMock.hang) return new Promise(() => {});
+            if (storageMock.gate) await storageMock.gate;
             if (storageMock.unavailable) return null;
             return store.has(key) ? { found: true, value: store.get(key) } : { found: false, value: null };
         },
@@ -116,6 +121,8 @@ const tick = { battleId: 1, tier: 2, pMap: { 0: { cHP: 100 } }, mMap: { 0: { cHP
 beforeEach(async () => {
     settings.guildTrialDiagnosticTrace = true;
     storageMock.unavailable = false;
+    storageMock.hang = false;
+    storageMock.gate = null;
     chars.current = 'c1';
     store.clear();
     await trace.clear();
@@ -602,6 +609,90 @@ describe('persistence', () => {
             await instance._settle();
             expect(instance.activeTraceId()).toEqual(expect.any(String));
             expect(instance.status().eventCount).toBe(3);
+        } finally {
+            instance.cleanup();
+        }
+    });
+
+    test('a restore that never answers cannot grow the held queue without bound', async () => {
+        // Not a failed read but a hung one: no callback of the trace's ever
+        // runs, so nothing on the ordinary waiting path would ever stop it
+        // holding live payload objects at ~40 messages a second.
+        storageMock.hang = true;
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+        const instance = new GuildTrialTrace({ maxQueuedEvents: 4, flushEvents: 1000 });
+        instance.initialize();
+        try {
+            for (let i = 0; i < 200; i++) emit('guild_battle_updated', { ...tick, pMap: { 0: { cHP: i } } });
+
+            expect(instance._queue.length).toBeLessThanOrEqual(4);
+            const status = instance.status();
+            expect(status.heldCount).toBe(0); // the wait was given up on, not still running
+            expect(status.eventCount).toBe(199); // everything but the one dropped event
+            expect(status.eventsDropped).toBe(1);
+            expect(status.restoreAbandoned).toBe(true);
+            expect(warn).toHaveBeenCalledWith(expect.stringContaining('did not settle'));
+
+            // The file says so on both counts a reader would check
+            const metadata = await tracedMetadata(instance);
+            expect(metadata.eventsDropped).toBe(1);
+            expect(metadata.restoreAbandoned).toBe(true);
+            expect(describeTraceStatus(instance.status())).toContain('1 event was dropped');
+            expect(describeTraceStatus(instance.status())).toContain('before this session is missing');
+        } finally {
+            instance.cleanup();
+        }
+    });
+
+    test('a re-probe that hangs is given up on too, rather than holding for ever', async () => {
+        persistedTrace();
+        storageMock.unavailable = true;
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+        const instance = new GuildTrialTrace({ unknownGiveUpEvents: 4, flushEvents: 1000 });
+        instance.initialize();
+        await instance.whenReady();
+        try {
+            // The manifest read failed, so events are held; now storage stops
+            // answering entirely and the re-probe never comes back
+            storageMock.hang = true;
+            for (let i = 0; i < 100; i++) emit('guild_battle_updated', { ...tick, pMap: { 0: { cHP: i } } });
+
+            expect(instance._queue.length).toBeLessThanOrEqual(4);
+            const status = instance.status();
+            expect(status.eventCount).toBe(99);
+            expect(status.eventsDropped).toBe(1);
+            expect(status.restoreAbandoned).toBe(true);
+            expect(warn).toHaveBeenCalled();
+        } finally {
+            instance.cleanup();
+        }
+    });
+
+    test('a slow restore that does answer still replays every held event', async () => {
+        let open;
+        storageMock.gate = new Promise((resolve) => {
+            open = resolve;
+        });
+
+        const instance = new GuildTrialTrace({ maxQueuedEvents: 100, flushEvents: 1000 });
+        instance.initialize();
+        try {
+            for (let i = 0; i < 40; i++) emit('guild_battle_updated', { ...tick, pMap: { 0: { cHP: i } } });
+            expect(instance.status().heldCount).toBe(40); // still waiting, nothing recorded
+            expect(instance.activeTraceId()).toBeNull();
+
+            open();
+            storageMock.gate = null;
+            await instance._settle();
+
+            const status = instance.status();
+            expect(status.heldCount).toBe(0);
+            expect(status.eventCount).toBe(40);
+            expect(status.eventsDropped).toBe(0);
+            expect(status.restoreAbandoned).toBe(false);
+            expect(await tracedEvents(instance)).toHaveLength(40);
         } finally {
             instance.cleanup();
         }
