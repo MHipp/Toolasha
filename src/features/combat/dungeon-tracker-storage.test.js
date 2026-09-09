@@ -63,12 +63,17 @@ const {
     mergeRuns,
     mergeRunHistories,
     mergeClearEpochs,
+    mergeDeletedRuns,
+    pruneTombstones,
+    toTombstoneMap,
+    tombstoneFor,
     mergeAverageBaselines,
     applyClearEpoch,
     PERSIST_COALESCE_MS,
     RUNS_STORE,
     RUNS_KEY,
     RUNS_CLEARED_KEY,
+    RUNS_DELETED_KEY,
     RUNS_DATE_REPAIR_KEY,
     AVERAGE_BASELINE_KEY,
     swapMonthDay,
@@ -464,7 +469,12 @@ describe('deleting runs', () => {
 
         await dungeonTrackerStorage.deleteRun('2026-01-01T00:00:00Z');
 
-        expect(game.writes).toEqual([['allRuns', true]]);
+        // The tombstone goes out first, so a crash between the two writes
+        // leaves the removal recorded rather than the run gone with no reason
+        expect(game.writes).toEqual([
+            ['allRunsDeleted', true],
+            ['allRuns', true],
+        ]);
         expect(game.saved.unifiedRuns.allRuns.map((r) => r.timestamp)).toEqual(['2026-01-02T00:00:00Z']);
         // The duplicate check no longer sees the deleted run either
         expect(
@@ -477,9 +487,11 @@ describe('deleting runs', () => {
 
         await dungeonTrackerStorage.clearAllRuns();
 
-        // The clear epoch beside the emptied list, so a pull cannot undo it
+        // The clear epoch beside the emptied list, so a pull cannot undo it,
+        // and the tombstone set pruned against it in between
         expect(game.writes).toEqual([
             ['allRunsClearedAt', true],
+            ['allRunsDeleted', true],
             ['allRuns', true],
         ]);
         expect(game.saved.unifiedRuns.allRuns).toEqual([]);
@@ -1323,5 +1335,224 @@ describe('repairSwappedDateRuns', () => {
         expect(registered?.label).toBe('Dungeon run date-order repair');
         expect(registered.merge(500, 0)).toBe(500);
         expect(registered.merge(0, 500)).toBe(500);
+    });
+});
+
+/**
+ * A clear watermark answers "forget all of it". Every *single* removal — a run
+ * deleted by hand, an outlier the scrub dropped, the broken copy a date repair
+ * replaced — was remembered only in memory, so the union that folds a
+ * downloaded history in had nothing to tell it from a run this device has
+ * simply never seen, and the next pull put it straight back.
+ */
+describe('removing one run survives a pull', () => {
+    const run = (id, timestamp, duration) => ({ id, teamKey: 'A,B', timestamp, duration });
+
+    /** What a pull leaves behind: both keys folded, and the caches cold */
+    const pullFrom = (peerRuns, peerDeleted = []) => {
+        const saved = game.saved.unifiedRuns;
+        saved[RUNS_DELETED_KEY] = mergeForKey(RUNS_STORE, RUNS_DELETED_KEY).merge(saved[RUNS_DELETED_KEY], peerDeleted);
+        saved[RUNS_KEY] = mergeForKey(RUNS_STORE, RUNS_KEY).merge(saved[RUNS_KEY], peerRuns);
+        dungeonTrackerStorage._resetCache();
+    };
+
+    test('the tombstone key resolves to a registered fold', () => {
+        expect(mergeForKey(RUNS_STORE, RUNS_DELETED_KEY)?.label).toBe('Dungeon runs removed');
+    });
+
+    test('a tombstone carries the removed run’s own moment, not the moment of the delete', () => {
+        expect(tombstoneFor(run(1, '2026-01-04T00:00:00.000Z', 101))).toEqual({
+            id: 'A,B|2026-01-04T00:00:00.000Z|101',
+            at: Date.parse('2026-01-04T00:00:00.000Z'),
+        });
+        // A run that cannot be placed in time gives a tombstone that cannot be
+        // pruned, which is the conservative reading and the right one
+        expect(tombstoneFor(run(2, null, 5)).at).toBeNull();
+    });
+
+    test('a hand-deleted run is not brought back by a peer that never saw the delete', async () => {
+        const peer = [run(1, '2026-01-04T00:00:00.000Z', 101), run(2, '2026-01-06T00:00:00.000Z', 102)];
+        seedRuns(structuredClone(peer));
+        await dungeonTrackerStorage.getAllRuns();
+        await dungeonTrackerStorage.deleteRun('2026-01-04T00:00:00.000Z');
+        expect(game.saved.unifiedRuns[RUNS_DELETED_KEY]).toEqual([
+            { id: 'A,B|2026-01-04T00:00:00.000Z|101', at: Date.parse('2026-01-04T00:00:00.000Z') },
+        ]);
+
+        pullFrom(structuredClone(peer));
+
+        expect((await dungeonTrackerStorage.getAllRuns()).map((entry) => entry.id)).toEqual([2]);
+        // and the prune is written back, so it is not re-read or re-pushed
+        expect(game.saved.unifiedRuns[RUNS_KEY].map((entry) => entry.id)).toEqual([2]);
+    });
+
+    test('a scrubbed outlier is not brought back by a peer', async () => {
+        const peer = [
+            run(1, '2026-01-01T00:00:00.000Z', 100),
+            run(2, '2026-01-02T00:00:00.000Z', 100),
+            run(3, '2026-01-03T00:00:00.000Z', 100),
+            run(4, '2026-01-04T00:00:00.000Z', 100),
+            run(5, '2026-01-05T00:00:00.000Z', 100),
+            run(6, '2026-01-06T00:00:00.000Z', 100_000),
+        ];
+        seedRuns(structuredClone(peer));
+        expect(await dungeonTrackerStorage.scrubOutlierRuns()).toBe(1);
+
+        pullFrom(structuredClone(peer));
+
+        expect((await dungeonTrackerStorage.getAllRuns()).map((entry) => entry.id)).not.toContain(6);
+    });
+
+    test('a repaired run does not come back beside its mended self', async () => {
+        // The repair changes the run's identity, so without a tombstone the
+        // broken month-long copy returns *beside* the 14-minute one and
+        // poisons the pace median rather than merely reappearing
+        const wrongStart = new Date(2026, 0, 3, 23, 56, 0);
+        const wrongEnd = new Date(2026, 1, 3, 0, 10, 13);
+        const broken = {
+            timestamp: wrongStart.toISOString(),
+            duration: wrongEnd.getTime() - wrongStart.getTime(),
+            dungeonName: 'Chimerical Den',
+            teamKey: 'A,B',
+        };
+        game.saved = {};
+        seedRuns([structuredClone(broken)]);
+        expect(await dungeonTrackerStorage.repairSwappedDateRuns()).toBe(1);
+
+        pullFrom([structuredClone(broken)]);
+
+        const kept = await dungeonTrackerStorage.getAllRuns();
+        expect(kept).toHaveLength(1);
+        expect(kept[0].duration).toBe(14 * 60 * 1000 + 13 * 1000);
+    });
+
+    test('a pull the fold could not see is still put right by the next load', async () => {
+        // The fold reads this device's tombstones, but a pull can land before
+        // anything has read the history — and the payload's keys are applied in
+        // whatever order they came down. The load is the backstop that makes
+        // the outcome the same either way.
+        const peer = [run(1, '2026-01-04T00:00:00.000Z', 101), run(2, '2026-01-06T00:00:00.000Z', 102)];
+        seedRuns(structuredClone(peer));
+        await dungeonTrackerStorage.getAllRuns();
+        await dungeonTrackerStorage.deleteRun('2026-01-04T00:00:00.000Z');
+        const tombstones = game.saved.unifiedRuns[RUNS_DELETED_KEY];
+
+        dungeonTrackerStorage._resetCache();
+        game.saved.unifiedRuns[RUNS_KEY] = structuredClone(peer);
+        game.saved.unifiedRuns[RUNS_DELETED_KEY] = tombstones;
+
+        expect((await dungeonTrackerStorage.getAllRuns()).map((entry) => entry.id)).toEqual([2]);
+    });
+
+    test('a run recorded again after being deleted is kept, and stays kept', async () => {
+        seedRuns([run(1, '2026-01-04T00:00:00.000Z', 101)]);
+        await dungeonTrackerStorage.getAllRuns();
+        await dungeonTrackerStorage.deleteRun('2026-01-04T00:00:00.000Z');
+
+        expect(
+            await dungeonTrackerStorage.saveTeamRun('A,B', { timestamp: '2026-01-04T00:00:00.000Z', duration: 101 })
+        ).toBe(true);
+        await dungeonTrackerStorage.flushPendingSave();
+        // The tombstone is gone from disk, so a reload keeps the run
+        expect(game.saved.unifiedRuns[RUNS_DELETED_KEY]).toEqual([]);
+        dungeonTrackerStorage._resetCache();
+        expect(await dungeonTrackerStorage.getAllRuns()).toHaveLength(1);
+    });
+
+    test('a peer still holding the tombstone re-asserts it over a re-observation', async () => {
+        // The boundary of a union fold, and deliberate: an identical identity
+        // is the *same* run seen again — a chat backfill re-reading it — not a
+        // new one, since a genuine re-run is stamped at a different moment and
+        // so has an identity of its own. A deletion the user made and a peer
+        // has seen therefore outlives another device re-observing the run,
+        // which is what stops every backfill undoing every delete.
+        seedRuns([run(1, '2026-01-04T00:00:00.000Z', 101)]);
+        await dungeonTrackerStorage.getAllRuns();
+        await dungeonTrackerStorage.deleteRun('2026-01-04T00:00:00.000Z');
+        await dungeonTrackerStorage.saveTeamRun('A,B', { timestamp: '2026-01-04T00:00:00.000Z', duration: 101 });
+        await dungeonTrackerStorage.flushPendingSave();
+
+        pullFrom([], [{ id: 'A,B|2026-01-04T00:00:00.000Z|101', at: Date.parse('2026-01-04T00:00:00.000Z') }]);
+
+        expect(await dungeonTrackerStorage.getAllRuns()).toEqual([]);
+        // A genuine re-run, at its own moment, is untouched by that tombstone
+        expect(
+            await dungeonTrackerStorage.saveTeamRun('A,B', { timestamp: '2026-02-01T00:00:00.000Z', duration: 101 })
+        ).toBe(true);
+        await dungeonTrackerStorage.flushPendingSave();
+        expect(await dungeonTrackerStorage.getAllRuns()).toHaveLength(1);
+    });
+
+    test('the fold is a union, and reads the same in both directions', () => {
+        const fold = mergeForKey(RUNS_STORE, RUNS_DELETED_KEY).merge;
+        const mine = [{ id: 'A|1|1', at: 10 }];
+        const theirs = [{ id: 'B|2|2', at: 20 }];
+
+        expect(fold(mine, theirs)).toEqual([
+            { id: 'A|1|1', at: 10 },
+            { id: 'B|2|2', at: 20 },
+        ]);
+        expect(fold(theirs, mine)).toEqual(fold(mine, theirs));
+        expect(fold(mine, mine)).toEqual(mine);
+        expect(fold(null, undefined)).toEqual([]);
+    });
+
+    test('a bare identity is read as a tombstone that cannot be placed in time', () => {
+        expect(mergeDeletedRuns(['A|1|1'], null)).toEqual([{ id: 'A|1|1', at: null }]);
+        // and anything of the wrong shape is dropped rather than guessed at
+        expect(mergeDeletedRuns([null, 42, {}, { id: '' }], null)).toEqual([]);
+        expect(toTombstoneMap({ nonsense: true }).size).toBe(0);
+    });
+
+    test('a clear supersedes the tombstones it already covers, and no others', () => {
+        const cleared = Date.parse('2026-01-05T00:00:00.000Z');
+        const entries = [
+            { id: 'before', at: Date.parse('2026-01-04T00:00:00.000Z') },
+            { id: 'after', at: Date.parse('2026-01-06T00:00:00.000Z') },
+            { id: 'unplaceable', at: null },
+        ];
+
+        // The one before the clear can never decide anything again — the epoch
+        // drops that run wherever it comes from — and the unplaceable one is
+        // kept for exactly as long as the run it names could come back
+        expect(pruneTombstones(entries, cleared).map((entry) => entry.id)).toEqual(['after', 'unplaceable']);
+        expect(pruneTombstones(entries, 0)).toEqual(entries);
+    });
+
+    test('clearing all history prunes the tombstones rather than dropping them', async () => {
+        vi.setSystemTime(Date.parse('2026-01-05T00:00:00.000Z'));
+        seedRuns([run(1, '2026-01-04T00:00:00.000Z', 101), { id: 2, teamKey: 'A,B', timestamp: null, duration: 7 }]);
+        await dungeonTrackerStorage.getAllRuns();
+        await dungeonTrackerStorage.deleteRun('2026-01-04T00:00:00.000Z');
+        await dungeonTrackerStorage.deleteRun(null);
+
+        await dungeonTrackerStorage.clearAllRuns();
+
+        // The stamped run's tombstone is superseded by the epoch; the unstamped
+        // one's is not, because the epoch cannot place that run either
+        expect(game.saved.unifiedRuns[RUNS_DELETED_KEY]).toEqual([{ id: 'A,B||7', at: null }]);
+
+        // and a peer pushing both back cannot resurrect either
+        pullFrom([run(1, '2026-01-04T00:00:00.000Z', 101), { id: 2, teamKey: 'A,B', timestamp: null, duration: 7 }]);
+        expect(await dungeonTrackerStorage.getAllRuns()).toEqual([]);
+        vi.useRealTimers();
+    });
+
+    test('a second tab’s removal is not undone by this one’s write', async () => {
+        seedRuns([run(1, '2026-01-04T00:00:00.000Z', 101), run(2, '2026-01-06T00:00:00.000Z', 102)]);
+        await dungeonTrackerStorage.getAllRuns();
+        await dungeonTrackerStorage.deleteRun('2026-01-04T00:00:00.000Z');
+
+        // What the other tab wrote while this one held its own copy
+        game.saved.unifiedRuns[RUNS_DELETED_KEY] = [
+            ...game.saved.unifiedRuns[RUNS_DELETED_KEY],
+            { id: 'A,B|2026-01-06T00:00:00.000Z|102', at: Date.parse('2026-01-06T00:00:00.000Z') },
+        ];
+        await dungeonTrackerStorage.deleteRun('nothing-matches-this');
+
+        expect(game.saved.unifiedRuns[RUNS_DELETED_KEY].map((entry) => entry.id)).toEqual([
+            'A,B|2026-01-04T00:00:00.000Z|101',
+            'A,B|2026-01-06T00:00:00.000Z|102',
+        ]);
     });
 });

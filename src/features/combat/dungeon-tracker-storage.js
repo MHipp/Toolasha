@@ -25,6 +25,29 @@ export const RUNS_KEY = 'allRuns';
 export const RUNS_CLEARED_KEY = 'allRunsClearedAt';
 
 /**
+ * The runs removed one at a time, so a pull cannot put them back.
+ *
+ * {@link RUNS_CLEARED_KEY} answers "forget all of it" and nothing else, and
+ * every *single* removal — a run deleted by hand, an outlier
+ * {@link DungeonTrackerStorage#scrubOutlierRuns} dropped, the broken copy a
+ * date repair replaced — was only ever remembered in memory. The union that
+ * folds a downloaded history in has nothing to tell a run the user removed
+ * from one they simply have not seen, so a peer that never saw the removal
+ * pushed it straight back.
+ *
+ * Its own key for the same reason the clear watermark has one: {@link RUNS_KEY}
+ * is a bare array four other modules read directly. Its fold is a union, since
+ * a removal is a fact that only moves forward exactly as a clear is.
+ *
+ * Stored as `[{id, at}]`: `id` is the {@link runIdentity} triple, and `at` is
+ * *the removed run's own moment* — not the moment of the deletion. That is
+ * what makes an entry prunable: a clear at epoch C already drops every run
+ * stamped at or before C, so a tombstone whose run is that old can never
+ * change an outcome again and is dropped with it.
+ */
+export const RUNS_DELETED_KEY = 'allRunsDeleted';
+
+/**
  * Where each dungeon's chat average is asked to start from.
  *
  * A map of `teamKey::dungeonName` → epoch milliseconds: runs at or before the
@@ -156,7 +179,8 @@ export function runIdentity(run) {
  *
  * @param {Array<Object>} memory - The in-memory list, newest first
  * @param {Array<Object>} stored - What storage holds right now
- * @param {Set<string>} [deleted] - Identities removed in this session
+ * @param {Set<string>|Map<string, *>} [deleted] - Identities removed, by
+ *   `has()` alone, so a tombstone map and a bare identity set both serve
  * @returns {Array<Object>} The union, newest first
  */
 export function mergeRuns(memory, stored, deleted) {
@@ -222,6 +246,134 @@ export function applyClearEpoch(runs, clearedAt) {
 }
 
 /**
+ * A tombstone's own moment, or null when the run it names had no usable stamp.
+ *
+ * @param {*} at - The stored moment
+ * @returns {number|null} Epoch milliseconds, or null
+ */
+function tombstoneTime(at) {
+    const time = Number(at);
+    return Number.isFinite(time) && time > 0 ? time : null;
+}
+
+/**
+ * Read any accepted tombstone shape as identity → moment.
+ *
+ * The stored and downloaded shape is `[{id, at}]`; memory holds a `Map`; a
+ * bare identity string is taken as a tombstone with no moment, which is the
+ * conservative reading — an entry that cannot be placed in time is never
+ * pruned. Anything else is dropped rather than guessed at.
+ *
+ * @param {*} value - A map, a set, an array of entries, or nothing
+ * @returns {Map<string, number|null>} Identity → the run's own moment
+ */
+export function toTombstoneMap(value) {
+    const map = new Map();
+    if (!value) return map;
+    if (value instanceof Map) {
+        for (const [id, at] of value) if (typeof id === 'string' && id) map.set(id, tombstoneTime(at));
+        return map;
+    }
+    const entries = value instanceof Set ? [...value] : Array.isArray(value) ? value : [];
+    for (const entry of entries) {
+        if (typeof entry === 'string') {
+            if (entry) map.set(entry, null);
+            continue;
+        }
+        const id = entry?.id;
+        if (typeof id !== 'string' || !id) continue;
+        map.set(id, tombstoneTime(entry.at));
+    }
+    return map;
+}
+
+/**
+ * The tombstone that stands for one run.
+ *
+ * @param {Object} run - The run being removed
+ * @returns {{id: string, at: number|null}} Its identity and its own moment
+ */
+export function tombstoneFor(run) {
+    return { id: runIdentity(run), at: runTime(run) };
+}
+
+/**
+ * Fold two tombstone sets: the union, exactly as a clear takes the later epoch.
+ *
+ * A removal only ever moves forward. A device that has not seen one holds no
+ * entry for it, and a whole-key write from that device would be the removal
+ * coming undone — the same shape {@link mergeClearEpochs} exists to prevent,
+ * one run at a time instead of all of them at once.
+ *
+ * Two sides that both name a run agree about its moment, because the identity
+ * carries the timestamp the moment is parsed from; the tie-break is only for a
+ * payload that disagrees with itself, and it is symmetric — a placeable moment
+ * beats an unplaceable one, and the earlier of two beats the later — so the
+ * fold reads the same in both directions. The output is sorted by identity for
+ * the same reason.
+ *
+ * @param {*} local - This device's tombstones
+ * @param {*} incoming - The downloaded tombstones
+ * @returns {Array<{id: string, at: number|null}>} The union
+ */
+export function mergeDeletedRuns(local, incoming) {
+    const out = new Map();
+    for (const side of [local, incoming]) {
+        for (const [id, at] of toTombstoneMap(side)) {
+            if (!out.has(id)) {
+                out.set(id, at);
+                continue;
+            }
+            const held = out.get(id);
+            if (held === null) out.set(id, at);
+            else if (at !== null && at < held) out.set(id, at);
+        }
+    }
+    return [...out.keys()].sort().map((id) => ({ id, at: out.get(id) }));
+}
+
+/**
+ * Drop the tombstones a "delete all history" at `clearedAt` has superseded.
+ *
+ * This is what bounds the set. A clear drops every run stamped at or before
+ * its epoch wherever that run comes from, so a tombstone for such a run can
+ * never decide anything again — {@link applyClearEpoch} would have dropped it
+ * anyway. A tombstone whose run cannot be placed in time is kept for as long
+ * as the run it names could come back, which is forever: the epoch is exactly
+ * the question an unstamped run cannot answer, and {@link applyClearEpoch}
+ * keeps such a run for the same reason.
+ *
+ * @param {*} deleted - The tombstones
+ * @param {number} clearedAt - Epoch milliseconds, 0 for "never cleared"
+ * @returns {Array<{id: string, at: number|null}>} The survivors
+ */
+export function pruneTombstones(deleted, clearedAt) {
+    const epoch = Number(clearedAt) || 0;
+    const entries = [...toTombstoneMap(deleted)].map(([id, at]) => ({ id, at }));
+    if (!(epoch > 0)) return entries;
+    return entries.filter((entry) => entry.at === null || entry.at > epoch);
+}
+
+/**
+ * Drop the runs a tombstone names.
+ *
+ * The counterpart of {@link applyClearEpoch} for single removals, and applied
+ * in the same three places: on the way in from storage, to the stored side of
+ * every merging write, and to the fold a pull uses.
+ *
+ * @param {Array<Object>} runs - Stored runs
+ * @param {*} deleted - The tombstones
+ * @returns {Array<Object>} The survivors — the same array when nothing went
+ */
+export function applyTombstones(runs, deleted) {
+    const list = Array.isArray(runs) ? runs : [];
+    const map = toTombstoneMap(deleted);
+    if (map.size === 0) return list;
+    const kept = list.filter((run) => !map.has(runIdentity(run)));
+    return kept.length === list.length ? list : kept;
+}
+
+/**
  * Fold a downloaded run history into this device's, for a sync pull.
  *
  * The history is a set of observations — each device sees the runs its own
@@ -233,12 +385,21 @@ export function applyClearEpoch(runs, clearedAt) {
  * been amended in place (a tier filled in from a chat annotation), the same
  * reason {@link mergeRuns} prefers memory.
  *
+ * A union alone, though, is a union with the runs this device *removed*: a
+ * peer that never saw a deletion still holds the run, and pushes it back. So
+ * the tombstones are folded in too, and applied to both sides — the incoming
+ * one because it may be carrying a run we deleted, the local one because it
+ * may be carrying a run the peer deleted and we have not dropped yet.
+ *
  * @param {Array<Object>} local - This device's runs
  * @param {Array<Object>} incoming - The downloaded runs
+ * @param {*} [deleted] - The tombstones, as this device knows them
  * @returns {Array<Object>} The union, newest first
  */
-export function mergeRunHistories(local, incoming) {
-    return mergeRuns(Array.isArray(local) ? local : [], Array.isArray(incoming) ? incoming : []);
+export function mergeRunHistories(local, incoming, deleted) {
+    const tombstones = toTombstoneMap(deleted);
+    const merged = mergeRuns(Array.isArray(local) ? local : [], Array.isArray(incoming) ? incoming : [], tombstones);
+    return applyTombstones(merged, tombstones);
 }
 
 /**
@@ -426,10 +587,30 @@ class DungeonTrackerStorage {
         /** teamKey → that team's runs (the same objects), for the duplicate check */
         this._byTeam = new Map();
         /**
-         * Identities removed in this session, so a merge cannot resurrect them
-         * from a copy of the list written before the delete landed.
+         * The runs removed, identity → the removed run's own moment, so a
+         * merge cannot resurrect them from a copy of the list written before
+         * the delete landed. Persisted at {@link RUNS_DELETED_KEY} and synced,
+         * because a *peer's* copy written before the delete is the one this
+         * device cannot otherwise tell from a run it has simply never seen.
          */
-        this._deleted = new Set();
+        this._deleted = new Map();
+        /**
+         * Identities recorded again since a removal, so the fold that unions
+         * the stored and downloaded tombstones in does not put the removal
+         * back under this session's feet.
+         *
+         * Session-local on purpose. The revival is written out by dropping the
+         * tombstone, which is all a reload needs; what it cannot outlive is a
+         * *peer* that still holds the tombstone, and that is the right way
+         * round. An identical identity is the same run seen again — a chat
+         * backfill re-reading it — rather than a new one, because a genuine
+         * re-run is stamped at its own moment and carries its own identity. A
+         * deletion the user made must survive a backfill re-observing the run,
+         * or no delete would ever stick.
+         */
+        this._revived = new Set();
+        /** Whether the tombstones have changed since they were last written */
+        this._deletedDirty = false;
         /** One read-merge-write at a time; two interleaved would each miss the other */
         this._persistChain = null;
         /** A deferred merge-and-write is armed, to tell a burst from a lone run */
@@ -520,17 +701,34 @@ class DungeonTrackerStorage {
                     return null;
                 }
                 const clearedProbe = await storage.tryGet(RUNS_CLEARED_KEY, this.unifiedStoreName);
+                const deletedProbe = await storage.tryGet(RUNS_DELETED_KEY, this.unifiedStoreName);
                 // A reset landing inside the read means this list is no longer
                 // the one anyone asked for; indexing it would revive it
                 if (this._loading !== read) return null;
                 this._clearedAt = clearedProbe === null ? 0 : Number(clearedProbe.value) || 0;
+                if (deletedProbe === null) {
+                    // Not "nothing was ever removed": a read that failed. The
+                    // set stays as it is, and the merging write folds the
+                    // stored one back in rather than writing an empty one over
+                    // it, so a failed read here costs suppression and not data.
+                    console.warn('[DungeonTrackerStorage] Removed-run tombstones could not be read');
+                } else {
+                    const held = toTombstoneMap(deletedProbe.value);
+                    this._adoptTombstones(mergeDeletedRuns(this._deleted, held));
+                    // Either the prune dropped superseded entries or this
+                    // session removed a run before the read landed; both want
+                    // writing back
+                    if (this._deleted.size !== held.size) this._deletedDirty = true;
+                }
                 const stored = Array.isArray(probe.value) ? probe.value : [];
-                const kept = applyClearEpoch(stored, this._clearedAt);
+                const kept = applyTombstones(applyClearEpoch(stored, this._clearedAt), this._deleted);
                 this._index(kept);
-                // A pull unioned runs the clear had already forgotten back into
-                // the stored key. Pruning memory alone would leave them there to
-                // be re-read — and pushed back out — so the prune is written.
+                // A pull unioned runs the clear had already forgotten — or ones
+                // removed one at a time — back into the stored key. Pruning
+                // memory alone would leave them there to be re-read, and pushed
+                // back out, so the prune is written.
                 if (kept.length !== stored.length) await this._persistReplace();
+                if (this._deletedDirty) await this._persistDeleted();
                 return this._runs;
             } finally {
                 if (this._loading === read) this._loading = null;
@@ -538,6 +736,71 @@ class DungeonTrackerStorage {
         })();
         this._loading = read;
         return read;
+    }
+
+    /**
+     * Take a folded tombstone list as the in-memory truth.
+     *
+     * Pruned against the clear epoch — a clear supersedes every tombstone it
+     * already covers — and with anything recorded again since dropped, so the
+     * fold that unions the stored and downloaded sets in cannot reinstate a
+     * removal the user has undone by running the dungeon again.
+     *
+     * @param {Array<{id: string, at: number|null}>} entries - The folded set
+     * @returns {Array<{id: string, at: number|null}>} What was adopted
+     * @private
+     */
+    _adoptTombstones(entries) {
+        const kept = pruneTombstones(entries, this._clearedAt).filter((entry) => !this._revived.has(entry.id));
+        this._deleted = toTombstoneMap(kept);
+        return kept;
+    }
+
+    /**
+     * Record that a run was removed, so no copy of the list can bring it back.
+     * @param {Object} run - The run going away
+     * @private
+     */
+    _tombstone(run) {
+        const { id, at } = tombstoneFor(run);
+        this._revived.delete(id);
+        this._deleted.set(id, at);
+        this._deletedDirty = true;
+    }
+
+    /**
+     * Record that a removed run was recorded again, and is wanted again.
+     * @param {Object} run - The run as newly recorded
+     * @private
+     */
+    _revive(run) {
+        const id = runIdentity(run);
+        // The overwhelmingly common case is a run that was never removed, and
+        // it must not cost a tombstone write — a backfill appends dozens
+        if (!this._deleted.has(id)) return;
+        this._deleted.delete(id);
+        this._revived.add(id);
+        this._deletedDirty = true;
+    }
+
+    /**
+     * Write the tombstones out, folding in whatever storage holds now.
+     *
+     * The same read-fold-write every other key here takes, for the same
+     * reason: a second tab may have removed a run this copy has never heard
+     * of, and a whole-key write would undo it.
+     * @returns {Promise<boolean>} Whether the write landed
+     * @private
+     */
+    async _persistDeleted() {
+        const probe = await storage.tryGet(RUNS_DELETED_KEY, this.unifiedStoreName);
+        if (probe === null) {
+            console.warn('[DungeonTrackerStorage] Tombstones not saved: the stored set could not be read first');
+            return false;
+        }
+        const merged = this._adoptTombstones(mergeDeletedRuns(probe.value, this._deleted));
+        this._deletedDirty = false;
+        return storage.setJSON(RUNS_DELETED_KEY, merged, this.unifiedStoreName, true);
     }
 
     /**
@@ -614,6 +877,10 @@ class DungeonTrackerStorage {
      */
     _persistNow(immediate) {
         const run = async () => {
+            // Before the runs, so a crash between the two writes leaves the
+            // removal recorded and the run still listed — which the next load
+            // puts right — rather than the run gone with nothing saying why
+            if (this._deletedDirty) await this._persistDeleted();
             const probe = await storage.tryGet(RUNS_KEY, this.unifiedStoreName);
             if (probe === null) {
                 console.warn('[DungeonTrackerStorage] Runs not saved: the stored history could not be read first');
@@ -657,7 +924,9 @@ class DungeonTrackerStorage {
         this._runs = null;
         this._loading = null;
         this._byTeam = new Map();
-        this._deleted = new Set();
+        this._deleted = new Map();
+        this._revived = new Set();
+        this._deletedDirty = false;
         this._persistChain = null;
         this._clearedAt = 0;
         this._averageBaselines = null;
@@ -882,7 +1151,7 @@ class DungeonTrackerStorage {
             allRuns.unshift(unifiedRun);
             this._indexRun(unifiedRun);
             // A run recorded again after being deleted is wanted again
-            this._deleted.delete(runIdentity(unifiedRun));
+            this._revive(unifiedRun);
 
             // Memory is authoritative and every reader goes through it, so the
             // write takes the normal debounce — a backfill of dozens of runs
@@ -916,7 +1185,7 @@ class DungeonTrackerStorage {
         if (!allRuns) return false;
         const kept = [];
         for (const run of allRuns) {
-            if (run.timestamp === timestamp) this._deleted.add(runIdentity(run));
+            if (run.timestamp === timestamp) this._tombstone(run);
             else kept.push(run);
         }
         this._index(kept);
@@ -935,12 +1204,16 @@ class DungeonTrackerStorage {
             this._pendingTimer = null;
         }
         this._index([]);
-        this._deleted = new Set();
         // The epoch is what survives the round trip: a peer that never saw this
         // clear will push its whole history back, and the union that folds it in
         // has nothing else to tell those runs from ones recorded since.
         this._clearedAt = Date.now();
         await storage.setJSON(RUNS_CLEARED_KEY, this._clearedAt, this.unifiedStoreName, true);
+        // The clear supersedes every tombstone it covers, which is why the set
+        // is pruned here rather than emptied: a tombstone for a run the epoch
+        // cannot place is still the only thing keeping that run away.
+        this._deletedDirty = true;
+        await this._persistDeleted();
         return this._persistReplace();
     }
 
@@ -957,6 +1230,22 @@ class DungeonTrackerStorage {
      */
     clearedAt() {
         return Number(this._clearedAt) || 0;
+    }
+
+    /**
+     * The runs removed, as this device knows them.
+     *
+     * Exposed for the sync fold: a merge is registered as a pure
+     * `(local, incoming)` per key, so the one folding the run history has no
+     * other way to reach the tombstones. Reading it before the history has
+     * been loaded answers what this session has removed and no more, which is
+     * why the load prunes again — the fold suppresses what it can, and the
+     * next load is what makes it right whatever order the pull wrote the keys.
+     *
+     * @returns {Map<string, number|null>} Identity → the removed run's moment
+     */
+    deletedIdentities() {
+        return this._deleted;
     }
 
     /**
@@ -1087,7 +1376,7 @@ class DungeonTrackerStorage {
             // repair changes it: the pre-repair identity has to be tombstoned
             // or the merging write would read the broken copy straight back in
             // beside the mended one.
-            this._deleted.add(runIdentity(run));
+            this._tombstone(run);
             run.timestamp = fixed.timestamp;
             run.duration = fixed.duration;
             repaired++;
@@ -1157,7 +1446,7 @@ class DungeonTrackerStorage {
 
         const cleaned = [];
         for (let i = 0; i < allRuns.length; i++) {
-            if (outlierIndices.has(i)) this._deleted.add(runIdentity(allRuns[i]));
+            if (outlierIndices.has(i)) this._tombstone(allRuns[i]);
             else cleaned.push(allRuns[i]);
         }
         this._index(cleaned);
@@ -1242,8 +1531,24 @@ const dungeonTrackerStorage = new DungeonTrackerStorage();
 registerSyncMerge({
     store: RUNS_STORE,
     key: RUNS_KEY,
-    merge: mergeRunHistories,
+    merge: (local, incoming) => mergeRunHistories(local, incoming, dungeonTrackerStorage.deletedIdentities()),
     label: 'Dungeon run history',
+});
+
+/*
+ * And the runs removed one at a time beside it, folded as a union — a removal
+ * is forward-only exactly as a clear is, and a peer that never saw one holds
+ * the run still. Without this key every single removal was undone by the next
+ * pull: a run deleted by hand, an outlier the scrub dropped, and worst, the
+ * broken copy a date repair replaced — the repair changes a run's identity, so
+ * the mangled twin came back *beside* the mended one and poisoned the pace
+ * median rather than merely reappearing.
+ */
+registerSyncMerge({
+    store: RUNS_STORE,
+    key: RUNS_DELETED_KEY,
+    merge: mergeDeletedRuns,
+    label: 'Dungeon runs removed',
 });
 
 /*

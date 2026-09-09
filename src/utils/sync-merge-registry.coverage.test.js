@@ -194,6 +194,7 @@ const corpus = [
     // with the list's, so the near-miss is worth stating
     { store: 'unifiedRuns', key: 'allRuns', label: 'Dungeon run history' },
     { store: 'unifiedRuns', key: 'allRunsClearedAt', label: 'Dungeon run history clear' },
+    { store: 'unifiedRuns', key: 'allRunsDeleted', label: 'Dungeon runs removed' },
     { store: 'unifiedRuns', key: 'dungeonAverageBaselines', label: 'Dungeon average baselines' },
 
     // combat/labyrinth-run-ledger.js
