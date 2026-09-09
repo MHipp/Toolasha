@@ -6,6 +6,30 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The device-local rule now holds in every direction, and restored chat is sanitised properly
+
+Chat history is kept on your machine and is meant never to leave it. Two ways it still could:
+
+The rule that strips it was written per store, and the rule it enforces is not — it applied to the settings store alone, so the same record written anywhere else would have gone to the sync gist and into backup files unnoticed. It is enforced everywhere now, whichever store a device-local record lives in.
+
+And every route _out_ stripped it while one route _in_ did not: importing a settings file never checked. A file exported by an older build, or hand-edited, could plant somebody else's whisper markup in your own store, after which your own history feature would keep it as if you had typed it. That import now drops it and takes the rest of the file as before.
+
+Restored messages are also sanitised for more than event attributes. A link that runs script rather than navigating, an animation that writes such a link back after the sweep, a background image fetched from a stranger's server the moment old scrollback is drawn — none of those needed a click to matter, and all are removed now. A message that fails to parse costs only itself instead of the rest of the buffer.
+
+### Bulk Sell's own Confirm button works, and says why when it will not
+
+It pressed nothing at all. It looks for the game's confirm button by name, and the names it knew did not include the one the game actually draws — "Post Sell Order" — so it refused every time. It now knows the four names the game's own string table defines. In a language other than English it will still refuse, because those names are translated and the game offers nothing to translate through; it fails closed and the game's own button is unaffected.
+
+It also refused _silently_, which is why it read as a broken button rather than a cautious one: the reason was written after the item, the price and the decision, past where the strip runs out of room. A refusal now comes first, and the whole line is readable by hovering.
+
+### The marketplace opens at the enhancement level a watched upgrade was costed at
+
+Watching an enhanced item and pressing "Missing Mats Marketplace" opened the order book for the plain, unenhanced item. The panel costs an upgrade by whichever is cheaper — buying the finished item at its level, or buying a plain one and enhancing it — and the button now opens whichever of those the panel actually costed, so the price on the card and the listing you land on are the same decision. Clicking a watched item's icon or name follows its level too. An item with no enhancement is unchanged.
+
+### Three ways a dungeon average could still be wrong
+
+Clearing the run history left behind the runs chat had already labelled, so numbering carried on past the deletion and the lifetime average still reached over runs that were meant to be gone. An annotation pass overtaken by a character switch carried on and folded the departing character's runs into the arriving one's totals. And because a reset marker syncs by taking the newest stamp, a device with a badly wrong clock could set one in the future and blank a dungeon's average for as long as that date stood — an impossible stamp is now read as the skew it is, and pressing "start the average here" on a correct clock takes it back.
+
 ### When the script starts too late to catch your character, it says so instead of blaming itself
 
 Your character's data is sent once, in the moment after the game connects, and nothing ever sends it again. A page that loads the script a fraction too late — likelier when other userscripts are loading alongside — misses it, and every panel then sits empty for the rest of the session while the game plays on perfectly. The message it printed said the connection hook may have failed, which was the one thing that was definitely fine: messages were arriving the whole time.
