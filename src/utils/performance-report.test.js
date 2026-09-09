@@ -245,3 +245,55 @@ describe('the stall ledger in the report', () => {
         expect(text).not.toContain('this session');
     });
 });
+
+describe('the rolling window, split by what it measures', () => {
+    const build = () =>
+        formatReport({
+            stats: new Map([
+                [
+                    'networth:recalculate',
+                    { calls: 1, totalMs: 452.6, avgMs: 452.6, kind: 'elapsed', wallPercent: 9.05 },
+                ],
+                ['dom:MarketFilter', { calls: 40, totalMs: 480, avgMs: 12, kind: 'blocking', cpuPercent: 9.6 }],
+            ]),
+        });
+
+    test('a yielding metric is listed apart from the CPU block', () => {
+        const text = build();
+        const busiest = text.indexOf('Busiest since the panel opened');
+        const elapsed = text.indexOf('Elapsed, not CPU');
+
+        expect(elapsed).toBeGreaterThan(busiest);
+        // The biggest line by total ms, yet it does not head the CPU block
+        expect(text.slice(busiest, elapsed)).not.toContain('networth:recalculate');
+        expect(text.slice(elapsed)).toContain('9.1% wall  networth:recalculate');
+        expect(text.slice(elapsed)).toContain('avg 452.60ms elapsed');
+    });
+
+    test('a blocking metric reads exactly as it did before', () => {
+        expect(build()).toContain('   9.6%  dom:MarketFilter');
+    });
+
+    test('no yielding metric, no second block', () => {
+        const text = formatReport({
+            stats: new Map([['dom:MarketFilter', { calls: 40, totalMs: 480, avgMs: 12, cpuPercent: 9.6 }]]),
+        });
+
+        expect(text).toContain('Busiest since the panel opened');
+        expect(text).not.toContain('Elapsed, not CPU');
+    });
+
+    test('the exported data carries the tag beside the number', () => {
+        const data = reportData({
+            stats: new Map([
+                [
+                    'networth:recalculate',
+                    { calls: 1, totalMs: 452.6, avgMs: 452.6, kind: 'elapsed', wallPercent: 9.05 },
+                ],
+            ]),
+        });
+
+        expect(data.rolling['networth:recalculate'].kind).toBe('elapsed');
+        expect(data.rolling['networth:recalculate'].cpuPercent).toBeUndefined();
+    });
+});

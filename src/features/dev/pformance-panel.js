@@ -103,6 +103,15 @@ const COLORS = {
     success: '#00ff99',
 };
 
+/**
+ * Title of the section for metrics measured across yields.
+ *
+ * A constant because the section machinery below picks its columns and its
+ * percentage cell by title, and a table headed "CPU %" over elapsed numbers is
+ * the exact bug this section exists to end.
+ */
+const ELAPSED_SECTION = 'Elapsed (yields, not CPU)';
+
 class PFormancePanel {
     constructor() {
         this.panel = null;
@@ -114,6 +123,7 @@ class PFormancePanel {
         this.domSectionCollapsed = false;
         this.activitySectionCollapsed = false;
         this.overlayRowSectionCollapsed = false;
+        this.elapsedSectionCollapsed = false;
         this.stallSectionCollapsed = false;
         this.startupCollapsed = false;
         this.attributionSectionCollapsed = false;
@@ -404,8 +414,15 @@ class PFormancePanel {
         // ledger draws from, and worth seeing live for the same reason
         const activityEntries = [];
         const overlayRowEntries = [];
+        // Elapsed metrics get their own section rather than a CPU % cell they
+        // cannot honestly fill. Mixed into the tables above they would also sort
+        // to the top of them, which is how a half-second of waiting spent days
+        // reading as the worst CPU line in the panel.
+        const elapsedEntries = [];
         for (const [name, stats] of allStats) {
-            if (name.startsWith('dom:')) {
+            if (stats.kind === 'elapsed') {
+                elapsedEntries.push({ name, ...stats });
+            } else if (name.startsWith('dom:')) {
                 domEntries.push({ name: name.slice(4), ...stats });
             } else if (name.startsWith('overlayRow:')) {
                 overlayRowEntries.push({ name: name.slice(11), ...stats });
@@ -432,6 +449,7 @@ class PFormancePanel {
             }));
 
         initEntries.sort((a, b) => b.totalMs - a.totalMs);
+        elapsedEntries.sort((a, b) => b.wallPercent - a.wallPercent);
         domEntries.sort((a, b) => b.cpuPercent - a.cpuPercent);
         activityEntries.sort((a, b) => b.cpuPercent - a.cpuPercent);
         overlayRowEntries.sort((a, b) => b.cpuPercent - a.cpuPercent);
@@ -453,6 +471,15 @@ class PFormancePanel {
                 this.activitySectionCollapsed = v;
             })
         );
+        // Only once something has reported one: a session with no yielding
+        // measurement has no section to show
+        if (elapsedEntries.length) {
+            this.contentEl.appendChild(
+                this._createSection(ELAPSED_SECTION, elapsedEntries, this.elapsedSectionCollapsed, (v) => {
+                    this.elapsedSectionCollapsed = v;
+                })
+            );
+        }
         const churn = this._createTimerChurnLine(pm);
         if (churn) this.contentEl.appendChild(churn);
         // Only once the overlay has reported a row — a session with the
@@ -891,7 +918,9 @@ class PFormancePanel {
                   ? ['Suspects', 'At', 'Stall ms']
                   : title === 'Leak canary'
                     ? ['Source', 'Lowest', 'Now']
-                    : ['Name', 'Calls/s', 'Total ms', 'CPU %'];
+                    : title === ELAPSED_SECTION
+                      ? ['Name', 'Calls/s', 'Wall ms', 'Wall %']
+                      : ['Name', 'Calls/s', 'Total ms', 'CPU %'];
 
         for (const col of columns) {
             const th = document.createElement('th');
@@ -935,7 +964,9 @@ class PFormancePanel {
                 row.appendChild(this._cell(entry.name, 'left'));
                 row.appendChild(this._cell(callsPerSec, 'right'));
                 row.appendChild(this._cell(entry.totalMs.toFixed(1), 'right'));
-                row.appendChild(this._cpuCell(entry.cpuPercent));
+                row.appendChild(
+                    title === ELAPSED_SECTION ? this._wallCell(entry.wallPercent) : this._cpuCell(entry.cpuPercent)
+                );
             }
 
             tbody.appendChild(row);
@@ -968,6 +999,23 @@ class PFormancePanel {
             textOverflow: 'ellipsis',
             maxWidth: align === 'left' ? '160px' : 'auto',
         });
+        return td;
+    }
+
+    /**
+     * A wall-clock share, deliberately not styled like a CPU one.
+     *
+     * `_cpuCell` colours by threshold because a high CPU percentage is a
+     * problem. A high elapsed percentage is not - it can be a feature politely
+     * spreading itself over a second - so this stays neutral and says `wall`,
+     * leaving the red for the column that earns it.
+     * @param {number} percent - Share of the rolling window in wall time
+     * @returns {HTMLElement} The cell
+     * @private
+     */
+    _wallCell(percent) {
+        const td = this._cell(percent.toFixed(2) + '% wall', 'right');
+        td.style.color = COLORS.textDim;
         return td;
     }
 

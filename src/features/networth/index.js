@@ -206,8 +206,12 @@ class NetworthFeature {
             return;
         }
 
-        // Into the rolling stats, so the stall ledger can name it — this is
-        // the very call the 2026-08-29 stutter hunt spent hours attributing
+        // Into the rolling stats as *elapsed*, not CPU. This run yields to the
+        // browser throughout (see the overlap note below), so what is measured
+        // here is wall clock; the phases that actually hold the thread are
+        // recorded separately, `networth:updateDisplays` being the unsliced one.
+        // Reported as CPU it read as 9% of a rolling window on a client whose
+        // stall ledger showed zero stalls over the same window.
         const recalcStartedAt = performanceMonitor.enabled ? performance.now() : 0;
         // Recalculations overlap: the cooldown path, a manual refresh and the
         // price-update debounce all call in here, and each run yields to the
@@ -247,7 +251,7 @@ class NetworthFeature {
             console.error('[Networth] Error calculating networth:', error);
         } finally {
             if (recalcStartedAt) {
-                performanceMonitor.record('networth:recalculate', performance.now() - recalcStartedAt);
+                performanceMonitor.recordElapsed('networth:recalculate', performance.now() - recalcStartedAt);
             }
         }
     }

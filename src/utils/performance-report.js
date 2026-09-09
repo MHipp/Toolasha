@@ -197,13 +197,31 @@ export function formatReport({
         lines.push('');
     }
 
-    const running = [...(stats || [])].sort((a, b) => b[1].totalMs - a[1].totalMs).slice(0, 15);
+    const ranked = [...(stats || [])].sort((a, b) => b[1].totalMs - a[1].totalMs);
+    const running = ranked.filter(([, stat]) => stat.kind !== 'elapsed').slice(0, 15);
     if (running.length) {
         lines.push('Busiest since the panel opened (rolling 5s window)');
         lines.push('-'.repeat(60));
         for (const [name, stat] of running) {
             lines.push(
                 `${stat.cpuPercent.toFixed(1).padStart(6)}%  ${name.padEnd(34)} ${stat.calls} calls, avg ${stat.avgMs.toFixed(2)}ms`
+            );
+        }
+        lines.push('');
+    }
+
+    // Listed apart because their percentages are not comparable with the ones
+    // above: an elapsed region yields to the browser, so most of what it
+    // measures is time the main thread spent on somebody else's work - or on
+    // nothing. Kept, because "net worth takes half a second to settle" is worth
+    // knowing; kept out of the CPU block, because it is not half a second of CPU.
+    const elapsed = ranked.filter(([, stat]) => stat.kind === 'elapsed').slice(0, 15);
+    if (elapsed.length) {
+        lines.push('Elapsed, not CPU - these yield to the browser (rolling 5s window)');
+        lines.push('-'.repeat(60));
+        for (const [name, stat] of elapsed) {
+            lines.push(
+                `${stat.wallPercent.toFixed(1).padStart(6)}% wall  ${name.padEnd(28)} ${stat.calls} calls, avg ${stat.avgMs.toFixed(2)}ms elapsed`
             );
         }
         lines.push('');
@@ -260,6 +278,9 @@ export function reportData({
         marks: [...marks].sort((a, b) => a.at - b.at),
         features: initTimeline(snapshots),
         spans: Object.fromEntries([...spans].map(([name, parts]) => [name, parts])),
+        // One object, each entry carrying its own `kind` - splitting it into two
+        // would break every consumer that looks a metric up by name, and the
+        // tag travels with the number wherever it is sorted or filtered.
         rolling: Object.fromEntries([...stats].map(([name, stat]) => [name, stat])),
     };
 }

@@ -1431,3 +1431,85 @@ describe('late naming of timers created before measuring started', () => {
         expect(name).not.toContain('anon#');
     });
 });
+
+describe('elapsed versus blocking measurements', () => {
+    beforeEach(() => {
+        performanceMonitor.reset();
+        performanceMonitor.enabled = true;
+        performanceMonitor._tabVisible = true;
+    });
+
+    test('a yielding span quotes wall time and no CPU percentage', () => {
+        // The live figure: one recalculate, 452ms of wall clock across yields,
+        // reported for days as 9% CPU in a window with zero stalls
+        performanceMonitor.recordElapsed('networth:recalculate', 452.6);
+
+        const stats = performanceMonitor.getStats('networth:recalculate');
+
+        expect(stats.kind).toBe('elapsed');
+        expect(stats.cpuPercent).toBeNull();
+        // Not lost: half a second is still half a second of waiting
+        expect(stats.totalMs).toBeCloseTo(452.6);
+        expect(stats.wallPercent).toBeCloseTo((452.6 / performanceMonitor.windowMs) * 100);
+    });
+
+    test('a blocking measurement still quotes CPU, unchanged', () => {
+        performanceMonitor.record('dom:MarketFilter', 250);
+
+        const stats = performanceMonitor.getStats('dom:MarketFilter');
+
+        expect(stats.kind).toBe('blocking');
+        expect(stats.cpuPercent).toBe(5);
+        expect(stats.wallPercent).toBeNull();
+    });
+
+    test('a yielding span is not blamed for a stall it merely spanned', () => {
+        const now = performance.now();
+        // 300ms of wall clock ending now, of which almost none was on the
+        // thread — the stall underneath it is somebody else's
+        performanceMonitor.recordElapsed('networth:recalculate', 300);
+        performanceMonitor._recordStall({ startTime: now - 300, duration: 300 });
+
+        const attribution = performanceMonitor.getStallAttribution(Infinity);
+
+        expect(performanceMonitor.getStalls()[0].suspects).toEqual([]);
+        expect(attribution.ourStalls).toBe(0);
+        expect(attribution.unattributedStalls).toBe(1);
+    });
+
+    test('one blocking phase inside a yielding run is still attributed', () => {
+        const now = performance.now();
+        performanceMonitor.record('networth:updateDisplays', 300);
+        performanceMonitor.recordElapsed('networth:recalculate', 300);
+        performanceMonitor._recordStall({ startTime: now - 300, duration: 300 });
+
+        const stall = performanceMonitor.getStalls()[0];
+
+        expect(stall.suspects.map((suspect) => suspect.name)).toEqual(['networth:updateDisplays']);
+    });
+
+    test('recordElapsed() is a no-op when disabled, and tags nothing', () => {
+        performanceMonitor.enabled = false;
+        performanceMonitor.recordElapsed('networth:recalculate', 452);
+
+        expect(performanceMonitor.getStats('networth:recalculate')).toBeNull();
+        expect(performanceMonitor.isElapsedMetric('networth:recalculate')).toBe(false);
+    });
+
+    test('wrap() times an async function as elapsed, a sync one as blocking', async () => {
+        await performanceMonitor.wrap('asyncThing', async () => {
+            await Promise.resolve();
+        })();
+        performanceMonitor.wrap('syncThing', () => 1)();
+
+        expect(performanceMonitor.getStats('asyncThing').kind).toBe('elapsed');
+        expect(performanceMonitor.getStats('syncThing').kind).toBe('blocking');
+    });
+
+    test('reset() forgets the tagging along with the measurements', () => {
+        performanceMonitor.recordElapsed('networth:recalculate', 452);
+        performanceMonitor.reset();
+
+        expect(performanceMonitor.isElapsedMetric('networth:recalculate')).toBe(false);
+    });
+});

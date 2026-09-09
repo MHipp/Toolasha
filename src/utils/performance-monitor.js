@@ -351,6 +351,10 @@ class PerformanceMonitor {
         this.marks = [];
         // Work that a snapshot was made of, broken into its parts
         this.spans = new Map();
+        // Metric names whose durations are wall-clock elapsed, not thread time.
+        // Populated by `recordElapsed`; consulted anywhere a duration would
+        // otherwise be read as CPU (the percentage, and stall coverage).
+        this.elapsedMetrics = new Set();
         this.bootAt = BOOT_AT;
         this.windowMs = WINDOW_MS;
         this.enabled = false;
@@ -364,9 +368,15 @@ class PerformanceMonitor {
     }
 
     /**
-     * Record a timing measurement
+     * Record a blocking timing measurement - main-thread time, nothing else.
+     *
+     * The duration handed in here is read as CPU: it drives `cpuPercent`, and
+     * it tells the stall ledger the thread was occupied for
+     * `[perfTime - duration, perfTime]`. Both readings are wrong for a region
+     * that awaits or yields, so measure such a region with `recordElapsed`.
+     *
      * @param {string} name - Metric name (e.g. "dom:MarketFilter", "init:tooltipPrices")
-     * @param {number} durationMs - Duration in milliseconds
+     * @param {number} durationMs - Duration in milliseconds, blocking only
      */
     record(name, durationMs) {
         if (!this.enabled || !this._tabVisible) return;
@@ -390,6 +400,42 @@ class PerformanceMonitor {
             }
             if (firstValid > 0) entries.splice(0, firstValid);
         }
+    }
+
+    /**
+     * Record a wall-clock elapsed measurement - a region that yields.
+     *
+     * `networth:recalculate` is why this exists. It deliberately yields to the
+     * browser between phases and stamps `performance.now()` across the whole
+     * run, so its 452ms is half a second of *waiting*, not of CPU. Fed through
+     * `record` it became the largest line in a table headed "CPU %" during a
+     * live guild trial, in a window whose stall ledger showed zero stalls: the
+     * table's biggest row was measuring the opposite of what the column said.
+     *
+     * The number is kept, in the same rolling window, under the same name. It
+     * is quoted as wall time instead, and kept out of every figure presented as
+     * CPU - the percentage (`kind: 'elapsed'`, `cpuPercent: null`) and stall
+     * coverage, where a mostly-idle half-second would otherwise blanket a stall
+     * it did not cause.
+     *
+     * @param {string} name - Metric name (e.g. "networth:recalculate")
+     * @param {number} durationMs - Wall-clock milliseconds, yields included
+     */
+    recordElapsed(name, durationMs) {
+        if (!this.enabled || !this._tabVisible) return;
+        // Tagged before the entry lands: an entry sitting in `measurements`
+        // under an untagged name is read as CPU for the rest of the window.
+        this.elapsedMetrics.add(name);
+        this.record(name, durationMs);
+    }
+
+    /**
+     * Whether a metric's durations are wall-clock elapsed rather than CPU.
+     * @param {string} name - Metric name
+     * @returns {boolean}
+     */
+    isElapsedMetric(name) {
+        return this.elapsedMetrics.has(name);
     }
 
     /**
@@ -481,7 +527,10 @@ class PerformanceMonitor {
     }
 
     /**
-     * Wrap a function with automatic timing
+     * Wrap a function with automatic timing.
+     *
+     * A synchronous function is timed as blocking; one returning a promise is
+     * timed as elapsed, because its settle time includes every await inside it.
      * @param {string} name - Metric name
      * @param {Function} fn - Function to wrap
      * @returns {Function} Wrapped function
@@ -494,7 +543,9 @@ class PerformanceMonitor {
             try {
                 const result = fn.apply(this, args);
                 if (result && typeof result.then === 'function') {
-                    return result.finally(() => monitor.record(name, performance.now() - start));
+                    // A promise's settle time spans every await inside it, so
+                    // what this measures is wall clock and not thread time
+                    return result.finally(() => monitor.recordElapsed(name, performance.now() - start));
                 }
                 monitor.record(name, performance.now() - start);
                 return result;
@@ -506,9 +557,16 @@ class PerformanceMonitor {
     }
 
     /**
-     * Get stats for a single metric within the rolling window
+     * Get stats for a single metric within the rolling window.
+     *
+     * `kind` says which of the two percentages is the real one. A blocking
+     * metric quotes `cpuPercent` and leaves `wallPercent` null; an elapsed one
+     * does the reverse. Neither is ever quoted for the other, so a reader
+     * cannot pick up an elapsed figure believing it is CPU.
+     *
      * @param {string} name - Metric name
-     * @returns {{ calls: number, totalMs: number, avgMs: number, cpuPercent: number } | null}
+     * @returns {{ calls: number, totalMs: number, avgMs: number, kind: 'blocking'|'elapsed',
+     *   cpuPercent: number|null, wallPercent: number|null } | null}
      */
     getStats(name) {
         const entries = this.measurements.get(name);
@@ -526,17 +584,22 @@ class PerformanceMonitor {
 
         if (calls === 0) return null;
 
+        const elapsed = this.elapsedMetrics.has(name);
+        const percent = Math.min((totalMs / this.windowMs) * 100, 100);
         return {
             calls,
             totalMs,
             avgMs: totalMs / calls,
-            cpuPercent: Math.min((totalMs / this.windowMs) * 100, 100),
+            kind: elapsed ? 'elapsed' : 'blocking',
+            cpuPercent: elapsed ? null : percent,
+            wallPercent: elapsed ? percent : null,
         };
     }
 
     /**
      * Get stats for all metrics, cleaning up stale data
-     * @returns {Map<string, { calls: number, totalMs: number, avgMs: number, cpuPercent: number }>}
+     * @returns {Map<string, { calls: number, totalMs: number, avgMs: number,
+     *   kind: 'blocking'|'elapsed', cpuPercent: number|null, wallPercent: number|null }>}
      */
     getAllStats() {
         this._cleanup();
@@ -694,6 +757,11 @@ class PerformanceMonitor {
         const suspects = [];
         const covered = [];
         for (const [name, entries] of this.measurements) {
+            // An elapsed metric's duration is wall time across yields, so the
+            // inferred `[perfTime - duration, perfTime]` extent is not thread
+            // occupancy. Counting it would let a half-second of mostly-idle
+            // waiting blanket a stall the game caused and report it as ours.
+            if (this.elapsedMetrics.has(name)) continue;
             for (let i = entries.length - 1; i >= 0; i--) {
                 const m = entries[i];
                 if (m.perfTime < windowStart) break;
@@ -829,6 +897,10 @@ class PerformanceMonitor {
         this.measurements.clear();
         this.snapshots.clear();
         this.spans.clear();
+        // The tags are a property of the call sites, not of the data, but a
+        // reset means the next window is measured from scratch by whatever
+        // records into it - and every recorder re-tags on its next call.
+        this.elapsedMetrics.clear();
         this.stalls = [];
         this.worstStallMs = 0;
         // Marks are the startup trace and cannot be taken again without a
