@@ -15,6 +15,24 @@ const WINDOW_MS = 5000;
  */
 const MAX_ENTRIES_PER_METRIC = 1000;
 
+/**
+ * Where a stall stops being ours and starts being somebody else's.
+ *
+ * `coveredMs` on a stall is how many of its milliseconds a *measured* Toolasha
+ * span was running for (union, so nested spans are not counted twice). The two
+ * thresholds below turn that into a verdict:
+ *
+ * - covered >= 80% of the stall -> `ours`
+ * - covered <= 20%              -> `not-ours`
+ * - anything between            -> `partly-ours`, counted in neither bucket
+ *
+ * The middle band exists because silently rounding a half-covered stall to
+ * either side is the one thing that would make this figure dishonest. A stall
+ * we half-caused is shown as half-caused.
+ */
+const STALL_OURS_COVERAGE = 0.8;
+const STALL_NOT_OURS_COVERAGE = 0.2;
+
 /** @returns {number} The monotonic clock, safe where `performance` is absent */
 function monotonicNow() {
     return typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -27,6 +45,50 @@ function monotonicNow() {
  * question is "what happened before my feature got a turn".
  */
 const BOOT_AT = typeof performance !== 'undefined' ? performance.now() : 0;
+
+/**
+ * Total length of a set of possibly overlapping intervals.
+ * @param {Array<[number, number]>} intervals - `[from, to]` pairs, unsorted
+ * @returns {number} Milliseconds covered by at least one interval
+ */
+function unionLength(intervals) {
+    if (intervals.length === 0) return 0;
+    const sorted = [...intervals].sort((a, b) => a[0] - b[0]);
+    let total = 0;
+    let [from, to] = sorted[0];
+    for (let i = 1; i < sorted.length; i++) {
+        const next = sorted[i];
+        if (next[0] > to) {
+            total += to - from;
+            [from, to] = next;
+        } else if (next[1] > to) {
+            to = next[1];
+        }
+    }
+    return total + (to - from);
+}
+
+/**
+ * What a recorded stall can honestly be said to be.
+ *
+ * **This cannot name a culprit.** `not-ours` means exactly one thing: no
+ * Toolasha span we were measuring was running while the main thread was
+ * blocked. The game's own work, another browser extension's content script,
+ * the browser's own layout or GC, and any of our code that is not instrumented
+ * all land in the same bucket, and no browser API separates them — the Long
+ * Task API's `TaskAttributionTiming` identifies iframe *containers*, nothing
+ * about which script or extension ran.
+ *
+ * @param {{duration: number, coveredMs?: number}} stall - A stall from `getStalls()`
+ * @returns {{coverage: number, verdict: 'ours'|'partly-ours'|'not-ours'}}
+ */
+export function stallCoverage(stall) {
+    const duration = stall?.duration || 0;
+    const coverage = duration > 0 ? Math.min((stall.coveredMs || 0) / duration, 1) : 0;
+    const verdict =
+        coverage >= STALL_OURS_COVERAGE ? 'ours' : coverage <= STALL_NOT_OURS_COVERAGE ? 'not-ours' : 'partly-ours';
+    return { coverage, verdict };
+}
 
 class PerformanceMonitor {
     constructor() {
@@ -309,11 +371,16 @@ class PerformanceMonitor {
      */
     _recordStall(entry) {
         const duration = Math.round(entry.duration);
+        const attribution = this._attributionFor(entry);
         this.stalls.push({
             time: Date.now(),
             sinceBoot: Math.round(entry.startTime),
             duration,
-            suspects: this._suspectsFor(entry),
+            suspects: attribution.suspects,
+            // How many of this stall's milliseconds a measured span was
+            // running for. Computed here, once, while the measurements are
+            // still in the window — reading it later is then O(1) per stall.
+            coveredMs: attribution.coveredMs,
             recentEvents: this._eventsFor(entry),
         });
         if (duration > this.worstStallMs) this.worstStallMs = duration;
@@ -343,20 +410,52 @@ class PerformanceMonitor {
      * @returns {Array<{name: string, ms: number}>} Largest first, at most five
      */
     _suspectsFor(entry) {
-        const windowStart = entry.startTime - 50;
-        const windowEnd = entry.startTime + entry.duration + 100;
+        return this._attributionFor(entry).suspects;
+    }
+
+    /**
+     * The suspects for a stall, and how much of it they actually account for.
+     *
+     * Suspect naming is deliberately loose (a span that ended a beat after the
+     * stall did is still a suspect — the observer and the recorder both run
+     * behind the work). Coverage is deliberately strict: each candidate span is
+     * clipped to the stall's own `[startTime, startTime + duration]` window and
+     * the clipped intervals are unioned, so two nested spans covering the same
+     * 40ms count as 40ms and not 80ms, and coverage can never exceed the
+     * stall's length.
+     *
+     * A span's extent is inferred, not measured: `record()` stamps the
+     * monotonic clock when the work *finishes* and carries its duration, so the
+     * span is taken to be `[perfTime - duration, perfTime]`. The stamp is taken
+     * a few microseconds after the work ends, which is the whole of the error.
+     *
+     * @param {PerformanceEntry} entry - The longtask
+     * @returns {{suspects: Array<{name: string, ms: number}>, coveredMs: number}}
+     */
+    _attributionFor(entry) {
+        const stallStart = entry.startTime;
+        const stallEnd = entry.startTime + entry.duration;
+        const windowStart = stallStart - 50;
+        const windowEnd = stallEnd + 100;
 
         const suspects = [];
+        const covered = [];
         for (const [name, entries] of this.measurements) {
             for (let i = entries.length - 1; i >= 0; i--) {
                 const m = entries[i];
                 if (m.perfTime < windowStart) break;
                 if (m.perfTime <= windowEnd && m.duration >= 5) {
                     suspects.push({ name, ms: Math.round(m.duration) });
+                    const from = Math.max(stallStart, m.perfTime - m.duration);
+                    const to = Math.min(stallEnd, m.perfTime);
+                    if (to > from) covered.push([from, to]);
                 }
             }
         }
-        return suspects.sort((a, b) => b.ms - a.ms).slice(0, 5);
+        return {
+            suspects: suspects.sort((a, b) => b.ms - a.ms).slice(0, 5),
+            coveredMs: unionLength(covered),
+        };
     }
 
     /**
@@ -400,6 +499,65 @@ class PerformanceMonitor {
      */
     getStalls() {
         return [...(this.stalls || [])];
+    }
+
+    /**
+     * The stall time nothing of ours was running for.
+     *
+     * A longtask observer sees *every* main-thread block over 50ms, whoever
+     * caused it. Splitting them by whether any measured Toolasha span
+     * overlapped gives the one number this script can state about the rest of
+     * the page: how much of the hitching was not us. It says nothing about who
+     * it *was* — see `stallCoverage` for why that is not knowable here.
+     *
+     * `unattributedMs` sums the *uncovered* milliseconds of every stall in the
+     * window, partly-ours ones included, so a stall we half-caused contributes
+     * only its other half. `unattributedStalls` counts only the ones that came
+     * out `not-ours`.
+     *
+     * @param {number} [windowMs] - How far back to look; defaults to the panel's
+     *   rolling window. Pass `Infinity` for everything the stall ring still holds
+     *   (that ring is capped at 200 entries, so "everything" has a ceiling).
+     * @returns {{windowMs: number, stalls: number, totalMs: number, ourStalls: number,
+     *   partlyOursStalls: number, unattributedStalls: number, unattributedMs: number}}
+     */
+    /**
+     * `stallCoverage` as an instance method.
+     *
+     * Callers in other bundles reach this module through the published
+     * singleton (`Toolasha.Core.performanceMonitor`), not through an import —
+     * a bare named import would be a second, uninitialized copy. Everything
+     * they need has to hang off the instance.
+     * @param {Object} stall - A stall from `getStalls()`
+     * @returns {{coverage: number, verdict: 'ours'|'partly-ours'|'not-ours'}}
+     */
+    stallCoverage(stall) {
+        return stallCoverage(stall);
+    }
+
+    getStallAttribution(windowMs = this.windowMs) {
+        const cutoff = windowMs === Infinity ? -Infinity : Date.now() - windowMs;
+        const totals = {
+            windowMs,
+            stalls: 0,
+            totalMs: 0,
+            ourStalls: 0,
+            partlyOursStalls: 0,
+            unattributedStalls: 0,
+            unattributedMs: 0,
+        };
+        for (const stall of this.stalls || []) {
+            if (stall.time < cutoff) continue;
+            const { coverage, verdict } = stallCoverage(stall);
+            totals.stalls += 1;
+            totals.totalMs += stall.duration;
+            totals.unattributedMs += stall.duration * (1 - coverage);
+            if (verdict === 'ours') totals.ourStalls += 1;
+            else if (verdict === 'partly-ours') totals.partlyOursStalls += 1;
+            else totals.unattributedStalls += 1;
+        }
+        totals.unattributedMs = Math.round(totals.unattributedMs);
+        return totals;
     }
 
     /**

@@ -12,6 +12,14 @@ import { downloadFile } from '../../utils/csv-export.js';
 import { performanceMonitor, scriptBuildLabel } from '../../utils/bundle-bridge.js';
 import { registerCommand, unregisterCommand } from '../../utils/command-registry.js';
 
+/**
+ * Setting key for the attribution extras (stall attribution, leak canary, heap
+ * trend). Off unless the key is explicitly true: this is a diagnostic overlay
+ * on a diagnostic panel, and with it off the panel renders exactly what it
+ * rendered before it existed.
+ */
+const ATTRIBUTION_SETTING = 'pformanceAttribution';
+
 function getPerformanceMonitor() {
     return performanceMonitor();
 }
@@ -33,6 +41,51 @@ function setMonitorEnabled(enabled) {
     // hitch is recorded, attributed, and printed with the trace
     if (enabled) monitor.startStallWatch?.();
     else monitor.stopStallWatch?.();
+}
+
+/**
+ * Whether the attribution extras are switched on.
+ *
+ * Defaults to off and stays off when there is no config at all — the panel is
+ * openable from a popped-out window whose module graph has no settings in it.
+ * @returns {boolean} True only if the setting is explicitly on
+ */
+function readAttributionSetting() {
+    try {
+        return config?.getSettingValue?.(ATTRIBUTION_SETTING, false) === true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * The one-word verdict for a stall row, with the percentage that produced it.
+ *
+ * "not ours" means no measured Toolasha span was running during the block. It
+ * does not name a culprit: the game, another extension, GC and our own
+ * un-instrumented code are indistinguishable here, and no browser API
+ * separates them.
+ * @param {Object} pm - The performance monitor, which scores the stall
+ * @param {Object} stall - A stall from `getStalls()`
+ * @returns {string} e.g. `not ours 0%`, `partly ours 43%`, `ours 96%`
+ */
+function coverageTag(pm, stall) {
+    const scored = pm.stallCoverage?.(stall);
+    if (!scored) return 'coverage unknown';
+    const label = scored.verdict === 'ours' ? 'ours' : scored.verdict === 'partly-ours' ? 'partly ours' : 'not ours';
+    return `${label} ${Math.round(scored.coverage * 100)}%`;
+}
+
+/**
+ * Persist the toggle, where there is somewhere to persist it.
+ * @param {boolean} enabled - The new state
+ */
+function writeAttributionSetting(enabled) {
+    try {
+        config?.setSettingValue?.(ATTRIBUTION_SETTING, enabled);
+    } catch {
+        // A diagnostic toggle that cannot be saved still works this session
+    }
 }
 
 const COLORS = {
@@ -61,6 +114,10 @@ class PFormancePanel {
         this.overlayRowSectionCollapsed = false;
         this.stallSectionCollapsed = false;
         this.startupCollapsed = false;
+        this.attributionSectionCollapsed = false;
+        // Read once per open, in show(); a mocked or absent config must not
+        // take the panel with it
+        this.attributionEnabled = false;
     }
 
     initialize() {
@@ -79,6 +136,7 @@ class PFormancePanel {
             return;
         }
         setMonitorEnabled(true);
+        this.attributionEnabled = readAttributionSetting();
         this._createPanel();
         this._startUpdating();
     }
@@ -186,7 +244,19 @@ class PFormancePanel {
         const closeBtn = this._headerButton('✕', () => this.hide());
         closeBtn.title = 'Close';
 
+        // The one affordance the extras add while they are off. Everything it
+        // switches on is drawn below; with it off the content is unchanged.
+        const attributionBtn = this._headerButton('◎', () => {
+            this.attributionEnabled = !this.attributionEnabled;
+            writeAttributionSetting(this.attributionEnabled);
+            this._paintAttributionButton(attributionBtn);
+            this._updateContent();
+        });
+        this.attributionButton = attributionBtn;
+        this._paintAttributionButton(attributionBtn);
+
         this.copyButton = copyBtn;
+        buttons.appendChild(attributionBtn);
         buttons.appendChild(copyBtn);
         buttons.appendChild(saveBtn);
         buttons.appendChild(collapseBtn);
@@ -195,6 +265,18 @@ class PFormancePanel {
         header.appendChild(title);
         header.appendChild(buttons);
         return header;
+    }
+
+    /**
+     * Colour and label the extras toggle for its current state.
+     * @param {HTMLElement} button - The header button
+     * @private
+     */
+    _paintAttributionButton(button) {
+        button.style.color = this.attributionEnabled ? COLORS.accent : COLORS.textDim;
+        button.title = this.attributionEnabled
+            ? 'Attribution extras on — unattributed stall time, registry leak canary, heap trend'
+            : 'Show attribution extras (off by default)';
     }
 
     _headerButton(text, onClick) {
@@ -324,11 +406,15 @@ class PFormancePanel {
             .map((stall) => ({
                 stallMs: stall.duration,
                 at: stall.sinceBoot,
-                who: stall.suspects?.length
-                    ? stall.suspects.map((suspect) => `${suspect.name} ${suspect.ms}ms`).join(', ')
-                    : stall.recentEvents?.length
-                      ? `after ${stall.recentEvents.join(', ')} (likely the game)`
-                      : 'nothing instrumented',
+                who:
+                    (stall.suspects?.length
+                        ? stall.suspects.map((suspect) => `${suspect.name} ${suspect.ms}ms`).join(', ')
+                        : stall.recentEvents?.length
+                          ? `after ${stall.recentEvents.join(', ')} (likely the game)`
+                          : 'nothing instrumented') +
+                    // The partial-overlap rule made visible per row rather than
+                    // rounded away into one of the two buckets
+                    (this.attributionEnabled ? ` [${coverageTag(pm, stall)}]` : ''),
             }));
 
         initEntries.sort((a, b) => b.totalMs - a.totalMs);
@@ -369,6 +455,51 @@ class PFormancePanel {
                 this.stallSectionCollapsed = v;
             })
         );
+        if (this.attributionEnabled) {
+            const unattributed = this._createUnattributedLine(pm);
+            if (unattributed) this.contentEl.appendChild(unattributed);
+        }
+    }
+
+    /**
+     * How much of the hitching was not ours.
+     *
+     * Read carefully: this is the stall time during which **no measured
+     * Toolasha span was running**. That is all it is. It does not identify the
+     * culprit and cannot — the game's own work, every other browser
+     * extension's content script, the browser's layout and GC, and any of our
+     * code that nothing has instrumented are the same bucket here. The Long
+     * Task API attributes a task only as far as the iframe container it ran
+     * in; nothing in any browser says which extension ran.
+     *
+     * Two windows are shown because they answer different questions: the
+     * rolling one the rest of this panel uses (`monitor.windowMs`, 5s) for
+     * "right now", and everything the stall ring still holds (capped at 200
+     * stalls) for "this session".
+     * @param {Object} pm - The performance monitor
+     * @returns {HTMLElement|null} The line, or null on a monitor too old to answer
+     * @private
+     */
+    _createUnattributedLine(pm) {
+        if (typeof pm.getStallAttribution !== 'function') return null;
+        const now = pm.getStallAttribution();
+        const session = pm.getStallAttribution(Infinity);
+
+        const line = document.createElement('div');
+        line.textContent =
+            `Not ours: ${now.unattributedStalls}/${now.stalls} stalls, ${now.unattributedMs}ms ` +
+            `in the last ${(now.windowMs / 1000).toFixed(1)}s — ` +
+            `session ${session.unattributedStalls}/${session.stalls} stalls, ${session.unattributedMs}ms ` +
+            `(${session.partlyOursStalls} partly ours). ` +
+            'Means only that no measured Toolasha span overlapped: the game, other extensions, ' +
+            'GC and our own un-instrumented code are indistinguishable here.';
+        Object.assign(line.style, {
+            padding: '2px 6px 6px',
+            fontSize: '11px',
+            color: COLORS.textDim,
+            whiteSpace: 'normal',
+        });
+        return line;
     }
 
     /**

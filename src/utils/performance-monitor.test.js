@@ -2,7 +2,12 @@
  * Tests for Performance Monitor
  */
 import { describe, test, expect, beforeEach, vi } from 'vitest';
-import performanceMonitor, { installIntervalTracing, timerCallSite, timerCounters } from './performance-monitor.js';
+import performanceMonitor, {
+    installIntervalTracing,
+    timerCallSite,
+    timerCounters,
+    stallCoverage,
+} from './performance-monitor.js';
 
 describe('PerformanceMonitor', () => {
     beforeEach(() => {
@@ -792,5 +797,127 @@ describe('timer tracing does no work while measuring is off', () => {
 
     test('the counters hang off the monitor, which is how the panel reaches them', () => {
         expect(performanceMonitor.timerCounters).toBe(timerCounters);
+    });
+});
+
+describe('unattributed stall time', () => {
+    beforeEach(() => {
+        performanceMonitor.reset();
+        performanceMonitor.enabled = true;
+        performanceMonitor._tabVisible = true;
+        performanceMonitor.stalls = [];
+    });
+
+    /**
+     * Record a stall as if the observer had seen it, with `covered` of its
+     * milliseconds accounted for by measured Toolasha work.
+     * @param {number} duration - Stall length
+     * @param {number} covered - Covered milliseconds
+     * @returns {Object} The stall
+     */
+    const stallCovering = (duration, covered) => ({ duration, coveredMs: covered, time: Date.now() });
+
+    test('a stall no measured span overlapped counts toward the unattributed figure', () => {
+        // Nothing recorded, so nothing can overlap
+        performanceMonitor._recordStall({ startTime: performance.now(), duration: 300 });
+
+        const attribution = performanceMonitor.getStallAttribution(Infinity);
+
+        expect(attribution.stalls).toBe(1);
+        expect(attribution.unattributedStalls).toBe(1);
+        expect(attribution.unattributedMs).toBe(300);
+        expect(attribution.ourStalls).toBe(0);
+    });
+
+    test('a stall a measured span ran through does not', () => {
+        const now = performance.now();
+        // A 300ms span that finished right now: it covers the whole stall
+        performanceMonitor.record('networth:recalculate', 300);
+        performanceMonitor._recordStall({ startTime: now - 300, duration: 300 });
+
+        const attribution = performanceMonitor.getStallAttribution(Infinity);
+
+        expect(attribution.stalls).toBe(1);
+        expect(attribution.ourStalls).toBe(1);
+        expect(attribution.unattributedStalls).toBe(0);
+        expect(attribution.unattributedMs).toBeLessThan(60);
+    });
+
+    test('nested spans covering the same milliseconds are not counted twice', () => {
+        const now = performance.now();
+        performanceMonitor.record('outer', 100);
+        performanceMonitor.record('inner', 90);
+
+        performanceMonitor._recordStall({ startTime: now - 200, duration: 200 });
+
+        // Both spans end at ~now, so their union is ~100ms of a 200ms stall,
+        // not 190ms. That is the partly-ours band.
+        const stall = performanceMonitor.getStalls()[0];
+        expect(stall.coveredMs).toBeGreaterThan(90);
+        expect(stall.coveredMs).toBeLessThan(120);
+    });
+
+    describe('the partial-overlap rule', () => {
+        test('80% covered or more is ours', () => {
+            expect(stallCoverage(stallCovering(100, 80)).verdict).toBe('ours');
+            expect(stallCoverage(stallCovering(100, 100)).verdict).toBe('ours');
+        });
+
+        test('20% covered or less is not ours', () => {
+            expect(stallCoverage(stallCovering(100, 20)).verdict).toBe('not-ours');
+            expect(stallCoverage(stallCovering(100, 0)).verdict).toBe('not-ours');
+        });
+
+        test('in between is partly ours, and lands in neither bucket', () => {
+            expect(stallCoverage(stallCovering(100, 50)).verdict).toBe('partly-ours');
+
+            performanceMonitor.stalls = [stallCovering(100, 50)];
+            const attribution = performanceMonitor.getStallAttribution(Infinity);
+
+            expect(attribution.partlyOursStalls).toBe(1);
+            expect(attribution.ourStalls).toBe(0);
+            expect(attribution.unattributedStalls).toBe(0);
+        });
+
+        test('a partly-ours stall contributes only its uncovered half to the millisecond figure', () => {
+            performanceMonitor.stalls = [stallCovering(200, 60)];
+
+            expect(performanceMonitor.getStallAttribution(Infinity).unattributedMs).toBe(140);
+        });
+
+        test('coverage can never exceed the stall it is measured against', () => {
+            // A span longer than the stall is clipped to the stall's window
+            const now = performance.now();
+            performanceMonitor.record('long', 5000);
+            performanceMonitor._recordStall({ startTime: now - 100, duration: 100 });
+
+            const stall = performanceMonitor.getStalls()[0];
+            expect(stall.coveredMs).toBeLessThanOrEqual(100);
+            expect(stallCoverage(stall).coverage).toBeLessThanOrEqual(1);
+        });
+
+        test('a stall with no coverage field at all reads as not ours rather than throwing', () => {
+            expect(stallCoverage({ duration: 120 }).verdict).toBe('not-ours');
+            expect(stallCoverage(undefined).coverage).toBe(0);
+        });
+    });
+
+    test('the rolling window excludes stalls older than it', () => {
+        performanceMonitor.stalls = [
+            { duration: 100, coveredMs: 0, time: Date.now() - 60000 },
+            { duration: 100, coveredMs: 0, time: Date.now() },
+        ];
+
+        expect(performanceMonitor.getStallAttribution(5000).stalls).toBe(1);
+        expect(performanceMonitor.getStallAttribution(Infinity).stalls).toBe(2);
+    });
+
+    test('the stall ring stays capped, so the attribution figure cannot grow without bound', () => {
+        for (let i = 0; i < 500; i++) {
+            performanceMonitor._recordStall({ startTime: i, duration: 60 });
+        }
+
+        expect(performanceMonitor.getStalls()).toHaveLength(200);
+        expect(performanceMonitor.getStallAttribution(Infinity).stalls).toBe(200);
     });
 });
