@@ -6,12 +6,14 @@
  * The arithmetic itself lives in `utils/ability-books.js` and is tested there;
  * this file is about what the calculator does with it at the level 200 cap,
  * where `booksToLevel` returns null (the experience table has nothing past
- * 200) rather than a number of books.
+ * 200) rather than a number of books — and about the Tester shop, which on the
+ * test server moves where the buy button goes.
  */
 
 import { describe, test, expect, beforeEach, vi } from 'vitest';
 
-const game = vi.hoisted(() => ({ data: {}, price: null }));
+const game = vi.hoisted(() => ({ data: {}, price: null, testerOn: false, shopCost: 0 }));
+const calls = vi.hoisted(() => ({ market: [], openShop: 0, filter: [], quantity: [], pending: [] }));
 
 vi.mock('../../core/config.js', () => ({
     default: {
@@ -21,12 +23,35 @@ vi.mock('../../core/config.js', () => ({
         onSettingChange: () => {},
     },
 }));
-vi.mock('../../core/data-manager.js', () => ({ default: { getInitClientData: () => game.data } }));
+vi.mock('../../core/data-manager.js', () => ({
+    default: {
+        getInitClientData: () => game.data,
+        getItemDetails: (hrid) => game.data?.itemDetailMap?.[hrid] || null,
+    },
+}));
 vi.mock('../../api/marketplace.js', () => ({ default: { getPrice: () => game.price } }));
 vi.mock('../../core/dom-observer.js', () => ({ default: { onClass: () => () => {} } }));
-vi.mock('../../utils/marketplace-tabs.js', () => ({ navigateToMarketplace: () => {} }));
+vi.mock('../../utils/marketplace-tabs.js', () => ({
+    navigateToMarketplace: (...args) => calls.market.push(args),
+}));
 vi.mock('../../utils/marketplace-autofill.js', () => ({
-    createAutofillManager: () => ({ initialize: () => {}, setQuantity: () => {}, cleanup: () => {} }),
+    createAutofillManager: () => ({
+        initialize: () => {},
+        setQuantity: (...args) => calls.quantity.push(args),
+        setPendingCalculation: (fn, options) => calls.pending.push([fn(), options]),
+        cleanup: () => {},
+    }),
+}));
+vi.mock('../../utils/tester-shop.js', () => ({
+    testerShopEnabled: () => game.testerOn,
+    testerShopCoinCost: () => game.shopCost,
+}));
+vi.mock('../../utils/tester-shop-nav.js', () => ({
+    openTesterShopPage: async () => {
+        calls.openShop++;
+        return document.createElement('div');
+    },
+    setShopFilter: (...args) => calls.filter.push(args),
 }));
 
 const { default: abilityBookCalculator } = await import('./ability-book-calculator.js');
@@ -36,8 +61,19 @@ const table = [0, 0];
 for (let level = 2; level <= 200; level++) table[level] = table[level - 1] + 1000;
 
 beforeEach(() => {
-    game.data = { levelExperienceTable: table };
+    game.data = {
+        levelExperienceTable: table,
+        itemDetailMap: { '/items/poke': { name: 'Poke' } },
+    };
     game.price = { ask: 100, bid: 90 };
+    game.testerOn = false;
+    game.shopCost = 0;
+    calls.market.length = 0;
+    calls.filter.length = 0;
+    calls.quantity.length = 0;
+    calls.pending.length = 0;
+    calls.openShop = 0;
+    document.body.innerHTML = '';
 });
 
 /** A bare Item Dictionary panel, standing in for the real modal content */
@@ -72,5 +108,81 @@ describe('the level 200 cap', () => {
         expect(input.value).toBe('200');
         // 1,000 experience to level 200 at 500 a book
         expect(el.textContent).toContain('Books needed: 2');
+    });
+});
+
+describe('the Tester shop as where a book is bought', () => {
+    /** A calculator one level short of 10: 1,000 experience, 2 books at 500 each */
+    const build = async () => {
+        const el = panel();
+        await abilityBookCalculator.injectCalculator(el, { level: 9, xp: table[9] }, 500, '/items/poke');
+        return el;
+    };
+
+    /** The panel's buy button, whatever it currently calls itself */
+    const buyButton = (el) => Array.from(el.querySelectorAll('button')).find((b) => /buy/i.test(b.textContent));
+
+    /** Let the click handler's awaits run out */
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    test('with the setting off the button still goes to the marketplace', async () => {
+        const el = await build();
+        buyButton(el).click();
+        await settle();
+
+        expect(calls.market).toEqual([['/items/poke']]);
+        expect(calls.openShop).toBe(0);
+    });
+
+    test('a book the shop does not sell is untouched by the setting', async () => {
+        game.testerOn = true;
+        game.shopCost = 0;
+        const el = await build();
+        buyButton(el).click();
+        await settle();
+
+        expect(buyButton(el).textContent).toBe('Buy on Marketplace');
+        expect(calls.market).toEqual([['/items/poke']]);
+    });
+
+    test('a book the shop sells routes the button to the Tester tab with the quantity armed', async () => {
+        game.testerOn = true;
+        game.shopCost = 10;
+        const el = await build();
+        const button = buyButton(el);
+        expect(button.textContent).toBe('Buy in Tester shop');
+
+        button.click();
+        await settle();
+
+        expect(calls.openShop).toBe(1);
+        expect(calls.filter).toEqual([['Poke']]);
+        expect(calls.pending).toEqual([[2, { itemHrid: '/items/poke' }]]);
+        // The shop replaces the marketplace, it does not follow it
+        expect(calls.market).toEqual([]);
+    });
+
+    test('the button presses no buy control of its own on either path', async () => {
+        const clicked = [];
+        const card = document.createElement('div');
+        card.textContent = 'Poke';
+        card.addEventListener('click', () => clicked.push('card'));
+        const buy = document.createElement('button');
+        buy.textContent = 'Buy';
+        buy.addEventListener('click', () => clicked.push('buy'));
+        document.body.append(card, buy);
+
+        game.testerOn = true;
+        game.shopCost = 10;
+        const shopPanel = await build();
+        buyButton(shopPanel).click();
+        await settle();
+
+        game.testerOn = false;
+        const marketPanel = await build();
+        buyButton(marketPanel).click();
+        await settle();
+
+        expect(clicked).toEqual([]);
     });
 });

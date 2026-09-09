@@ -13,6 +13,8 @@ import domObserver from '../../core/dom-observer.js';
 import { navigateToMarketplace } from '../../utils/marketplace-tabs.js';
 import { createAutofillManager } from '../../utils/marketplace-autofill.js';
 import { booksToLevel } from '../../utils/ability-books.js';
+import { testerShopEnabled, testerShopCoinCost } from '../../utils/tester-shop.js';
+import { openTesterShopPage, setShopFilter } from '../../utils/tester-shop-nav.js';
 
 /**
  * AbilityBookCalculator class handles ability book calculations in Item Dictionary
@@ -210,6 +212,12 @@ class AbilityBookCalculator {
         const ask = prices?.ask || 0;
         const bid = prices?.bid || 0;
 
+        // Where the buy button goes: the Tester shop when it is priced in and
+        // sells the book, the marketplace otherwise
+        const shopCost = testerShopEnabled() ? testerShopCoinCost(itemHrid) : 0;
+        const useTesterShop = shopCost > 0;
+        const itemName = dataManager.getItemDetails?.(itemHrid)?.name || '';
+
         // Create calculator HTML
         const calculatorDiv = dom.createStyledDiv(
             {
@@ -291,7 +299,7 @@ class AbilityBookCalculator {
 
         // Buy on Marketplace button
         const buyButton = document.createElement('button');
-        buyButton.textContent = 'Buy on Marketplace';
+        buyButton.textContent = useTesterShop ? 'Buy in Tester shop' : 'Buy on Marketplace';
         buyButton.style.cssText = `
             margin-top: 8px;
             padding: 4px 10px;
@@ -302,11 +310,23 @@ class AbilityBookCalculator {
             border-radius: 3px;
             cursor: pointer;
         `;
-        buyButton.addEventListener('click', () => {
-            if (currentBooks > 0) {
-                this.autofillManager.setQuantity(Math.ceil(currentBooks), { itemHrid });
-                navigateToMarketplace(itemHrid);
+        buyButton.addEventListener('click', async () => {
+            if (!(currentBooks > 0)) return;
+            const quantity = Math.ceil(currentBooks);
+            if (useTesterShop) {
+                const testerTab = await openTesterShopPage();
+                if (testerTab) {
+                    // Filter and arm only after the tab is selected: selecting a
+                    // shop tab is what clears an armed quantity. Nothing here
+                    // opens the item's card or presses Buy — the player does
+                    setShopFilter(itemName);
+                    this.autofillManager.setPendingCalculation(() => quantity, { itemHrid });
+                    return;
+                }
+                // The shop could not be reached; the marketplace still sells books
             }
+            this.autofillManager.setQuantity(quantity, { itemHrid });
+            navigateToMarketplace(itemHrid);
         });
         calculatorDiv.appendChild(buyButton);
 
