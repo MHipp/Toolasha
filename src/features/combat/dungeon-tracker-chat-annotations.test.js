@@ -75,6 +75,7 @@ vi.mock('../chat/chat-profile-link.js', () => ({ markAsProfileLink: markAsProfil
 
 vi.mock('./dungeon-tracker-storage.js', () => ({
     default: {
+        repairSwappedDateRuns: async () => 0,
         scrubOutlierRuns: async () => 0,
         getAllRuns: async () => game.allRuns,
         getTeamKey: (names) => [...names].sort().join(','),

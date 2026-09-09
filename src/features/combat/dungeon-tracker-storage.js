@@ -5,6 +5,7 @@
 
 import storage from '../../core/storage.js';
 import dataManager from '../../core/data-manager.js';
+import { RECOVERY_FALLBACK_MAX_MS } from './dungeon-pace.js';
 import { registerSyncMerge } from '../../utils/sync-merge-registry.js';
 
 /** The object store the run history lives in */
@@ -38,6 +39,22 @@ export const RUNS_CLEARED_KEY = 'allRunsClearedAt';
  * device is not undone by a pull from one that never saw it.
  */
 export const AVERAGE_BASELINE_KEY = 'dungeonAverageBaselines';
+
+/**
+ * When this device re-derived the runs a mm/dd-vs-dd/mm misread had mangled.
+ *
+ * The four chat-stamp parsers used to read `[dd/mm hh:mm:ss]` as mm/dd, so on a
+ * day-first client every day of 12 or less was taken for a month and a run's
+ * two endpoints could land weeks apart — a 14-minute clear stored as 29 days.
+ * The parsers are fixed; {@link DungeonTrackerStorage#repairSwappedDateRuns}
+ * repairs what they wrote, once, and this key is what stops it running twice.
+ *
+ * Its own key, like the clear watermark, because {@link RUNS_KEY} is a bare
+ * array four other modules read directly. Its fold is `Math.max`, so a pull
+ * from a device that never ran the pass cannot un-mark this one and set the
+ * repair going again over records that are already right.
+ */
+export const RUNS_DATE_REPAIR_KEY = 'allRunsDateOrderRepairedAt';
 
 /**
  * Runs are stored once for the whole account, not once per character.
@@ -290,6 +307,92 @@ export function mergeAverageBaselines(local, incoming, now = Date.now()) {
         }
     }
     return out;
+}
+
+/**
+ * The same instant with its month and day read the other way round.
+ *
+ * A stamp misread in the wrong field order produced a date whose month is the
+ * true day and whose day is the true month; putting them back is the whole
+ * repair. Only defined when both fields are 12 or less — a field over 12 could
+ * only ever have been a day, so the digits already overruled the locale and
+ * that endpoint was parsed correctly in the first place. The year and the
+ * time-of-day are untouched: the misread never involved them.
+ *
+ * @param {Date} date - The date as it was stored
+ * @returns {Date|null} The swapped date, or null when no swap is defined
+ */
+export function swapMonthDay(date) {
+    if (!(date instanceof Date)) return null;
+    const time = date.getTime();
+    if (!Number.isFinite(time)) return null;
+    const month = date.getMonth() + 1;
+    const day = date.getDate();
+    if (month > 12 || day > 12) return null;
+    return new Date(
+        date.getFullYear(),
+        day - 1,
+        month,
+        date.getHours(),
+        date.getMinutes(),
+        date.getSeconds(),
+        date.getMilliseconds()
+    );
+}
+
+/**
+ * What a run misread in the wrong date field order should have said.
+ *
+ * The raw chat text is long gone, so the repair is arithmetic on the record
+ * itself. Both of a run's endpoints went through the one parser, so both were
+ * misread the same way: the end is `timestamp + duration`, and swapping the
+ * two endpoints back gives the duration that was actually observed.
+ *
+ * Three things all have to hold before a record is touched, and a record that
+ * fails any of them is returned as unrepairable rather than rewritten:
+ *
+ * 1. its stored duration is implausible — a plausible run was never misread in
+ *    a way that mattered, and re-deriving it would be inventing a change;
+ * 2. both endpoints are swappable (see {@link swapMonthDay});
+ * 3. the re-derived duration is itself plausible.
+ *
+ * "Plausible" is the recovery bound the pace module already reasons with —
+ * `RECOVERY_FALLBACK_MAX_MS`, 45 minutes — chosen over the history-derived
+ * `plausibleMaxRunMs` deliberately: that bound is a median of the very records
+ * being repaired, so a history full of month-long runs would vouch for them.
+ *
+ * @param {Object} run - A stored run
+ * @param {number} [maxRunMs] - The longest a run may plausibly have taken
+ * @returns {{timestamp: string, duration: number}|null} The repaired fields, or
+ *   null when this record must be left exactly as it is
+ */
+export function rederiveSwappedRun(run, maxRunMs = RECOVERY_FALLBACK_MAX_MS) {
+    const duration = Number(run?.duration);
+    if (!Number.isFinite(duration)) return null;
+    if (isPlausibleDuration(duration, maxRunMs)) return null;
+
+    const start = runTime(run);
+    if (start === null) return null;
+
+    const trueStart = swapMonthDay(new Date(start));
+    const trueEnd = swapMonthDay(new Date(start + duration));
+    if (!trueStart || !trueEnd) return null;
+
+    const trueDuration = trueEnd.getTime() - trueStart.getTime();
+    if (!isPlausibleDuration(trueDuration, maxRunMs)) return null;
+
+    return { timestamp: trueStart.toISOString(), duration: trueDuration };
+}
+
+/**
+ * Whether a duration is one a dungeon run could have taken.
+ *
+ * @param {number} duration - Milliseconds, as every stored duration is
+ * @param {number} maxRunMs - The longest a run may plausibly have taken
+ * @returns {boolean}
+ */
+function isPlausibleDuration(duration, maxRunMs) {
+    return Number.isFinite(duration) && duration > 0 && duration <= maxRunMs;
 }
 
 /**
@@ -935,6 +1038,76 @@ class DungeonTrackerStorage {
     }
 
     /**
+     * Put right the runs a mm/dd-vs-dd/mm misread mangled, once and for all.
+     *
+     * For as long as the tracker had four copies of a parser that read a
+     * `[dd/mm hh:mm:ss]` chat stamp as mm/dd, a day-first client misread every
+     * day of 12 or less as a month. Both of a run's endpoints went through it,
+     * so a 14-minute clear could be written down as 29 days. The parsers are
+     * fixed; these records are not, and the raw chat text was never kept — so
+     * the repair is arithmetic on the record itself (see
+     * {@link rederiveSwappedRun}).
+     *
+     * Deliberately conservative, and deliberately not a scrub: nothing is
+     * deleted, and a record whose repair cannot be derived confidently is left
+     * exactly as it was. An untouched wrong record is better than an invented
+     * right one, and {@link DungeonTrackerStorage#scrubOutlierRuns} — which
+     * this runs in front of, so a repairable run is mended before it can be
+     * judged an outlier — already removes the grossest of what is left.
+     *
+     * One pass ever, guarded by {@link RUNS_DATE_REPAIR_KEY}: a second pass
+     * over already-correct records could only ever make them wrong.
+     *
+     * @returns {Promise<number>} How many runs were re-derived
+     */
+    async repairSwappedDateRuns() {
+        const marker = await storage.tryGet(RUNS_DATE_REPAIR_KEY, this.unifiedStoreName);
+        if (marker === null) {
+            // A repair that cannot read its own marker cannot know it has not
+            // already run, and running twice is the one thing it must not do
+            console.warn('[DungeonTrackerStorage] Date-order repair skipped: its marker could not be read');
+            return 0;
+        }
+        if (Number(marker.value) > 0) return 0;
+
+        const allRuns = await this._loadRuns();
+        if (!allRuns) {
+            console.warn('[DungeonTrackerStorage] Date-order repair skipped: the stored history could not be read');
+            return 0;
+        }
+
+        let repaired = 0;
+        let leftAlone = 0;
+        for (const run of allRuns) {
+            const fixed = rederiveSwappedRun(run);
+            if (!fixed) {
+                if (!isPlausibleDuration(Number(run?.duration), RECOVERY_FALLBACK_MAX_MS)) leftAlone++;
+                continue;
+            }
+            // The identity is the (team, timestamp, duration) triple, so a
+            // repair changes it: the pre-repair identity has to be tombstoned
+            // or the merging write would read the broken copy straight back in
+            // beside the mended one.
+            this._deleted.add(runIdentity(run));
+            run.timestamp = fixed.timestamp;
+            run.duration = fixed.duration;
+            repaired++;
+        }
+
+        // Written whatever happened, and only after the pass: the point of the
+        // marker is that this never runs a second time.
+        if (repaired > 0) await this._persist(true);
+        await storage.setJSON(RUNS_DATE_REPAIR_KEY, Date.now(), this.unifiedStoreName, true);
+
+        console.log(
+            `[DungeonTrackerStorage] Date-order repair: re-derived ${repaired} run(s); ` +
+                `left ${leftAlone} implausible run(s) as recorded (an endpoint was not swappable, ` +
+                `or the swap was no more plausible); ${allRuns.length - repaired - leftAlone} were already plausible`
+        );
+        return repaired;
+    }
+
+    /**
      * Remove runs whose duration is more than 3× the median for their dungeon+team group.
      * Only scrubs groups with at least 5 runs (not enough data below that to be confident).
      * @returns {Promise<number>} Number of runs removed
@@ -1083,6 +1256,19 @@ registerSyncMerge({
     key: RUNS_CLEARED_KEY,
     merge: mergeClearEpochs,
     label: 'Dungeon run history clear',
+});
+
+/*
+ * The date-order repair marker, folded the same forward-only way. Without a
+ * fold a pull from a device that has not run the one-time repair would clear
+ * this device's marker and set the pass going again — over records it has
+ * already mended, which is the one input it was never designed for.
+ */
+registerSyncMerge({
+    store: RUNS_STORE,
+    key: RUNS_DATE_REPAIR_KEY,
+    merge: mergeClearEpochs,
+    label: 'Dungeon run date-order repair',
 });
 
 /*

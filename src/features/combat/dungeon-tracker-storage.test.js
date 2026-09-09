@@ -69,7 +69,10 @@ const {
     RUNS_STORE,
     RUNS_KEY,
     RUNS_CLEARED_KEY,
+    RUNS_DATE_REPAIR_KEY,
     AVERAGE_BASELINE_KEY,
+    swapMonthDay,
+    rederiveSwappedRun,
 } = await import('./dungeon-tracker-storage.js');
 
 const { mergeForKey } = await import('../../utils/sync-merge-registry.js');
@@ -1151,5 +1154,174 @@ describe('average baselines', () => {
         const at = Date.now();
         expect(await dungeonTrackerStorage.setAverageBaseline('A,B::Chimerical Den', at)).toBe(true);
         expect(await dungeonTrackerStorage.getAverageBaselines()).toEqual({ 'A,B::Chimerical Den': at });
+    });
+});
+
+describe('repairSwappedDateRuns', () => {
+    // The stamps the four broken parsers produced were built with
+    // `new Date(year, month - 1, day, …)`, so every date here is local time and
+    // is constructed the same way rather than written as an ISO literal.
+    const MINUTE = 60 * 1000;
+    /** The maintainer's own case: a 14m 13s clear stored as a month and a bit. */
+    const CLEAR_MS = 14 * MINUTE + 13 * 1000;
+
+    /**
+     * A run as a day-first client's misread wrote it down.
+     *
+     * `[01/03 23:56:00]` and `[02/03 00:10:13]` — 1 and 2 March, fourteen
+     * minutes apart — read as mm/dd become 3 January and 3 February.
+     * @param {Object} [extra] - Fields to override
+     * @returns {Object} The run as it was stored
+     */
+    function misreadRun(extra = {}) {
+        const wrongStart = new Date(2026, 0, 3, 23, 56, 0);
+        const wrongEnd = new Date(2026, 1, 3, 0, 10, 13);
+        return {
+            timestamp: wrongStart.toISOString(),
+            duration: wrongEnd.getTime() - wrongStart.getTime(),
+            dungeonName: 'Chimerical Den',
+            teamKey: 'A,B',
+            ...extra,
+        };
+    }
+
+    beforeEach(() => {
+        game.saved = {};
+        game.writes = [];
+    });
+
+    test('swapMonthDay is only defined when neither field could have been a day', () => {
+        expect(swapMonthDay(new Date(2026, 0, 3, 23, 56, 0))?.getTime()).toBe(
+            new Date(2026, 2, 1, 23, 56, 0).getTime()
+        );
+        // 20 can only ever have been a day, so the digits already overruled the
+        // locale and that endpoint has nothing to put back
+        expect(swapMonthDay(new Date(2026, 0, 20, 12, 0, 0))).toBeNull();
+        expect(swapMonthDay(new Date('nonsense'))).toBeNull();
+        expect(swapMonthDay(null)).toBeNull();
+    });
+
+    test('a plausible run is never re-derived, however swappable it is', () => {
+        const run = { timestamp: new Date(2026, 4, 3, 12, 0, 0).toISOString(), duration: CLEAR_MS };
+        expect(rederiveSwappedRun(run)).toBeNull();
+    });
+
+    test('the 14m 13s clear stored as a month is put back', async () => {
+        seedRuns([misreadRun()]);
+
+        expect(await dungeonTrackerStorage.repairSwappedDateRuns()).toBe(1);
+
+        const [stored] = game.saved.unifiedRuns.allRuns;
+        expect(stored.duration).toBe(CLEAR_MS);
+        expect(new Date(stored.timestamp).getTime()).toBe(new Date(2026, 2, 1, 23, 56, 0).getTime());
+        // and the record itself survives — this is a repair, not a scrub
+        expect(stored.dungeonName).toBe('Chimerical Den');
+        expect(stored.teamKey).toBe('A,B');
+    });
+
+    test('the pre-repair identity is tombstoned, so the broken copy cannot merge back', async () => {
+        seedRuns([misreadRun()]);
+        await dungeonTrackerStorage.repairSwappedDateRuns();
+
+        // A second tab's copy of the store still holds the broken record
+        game.saved.unifiedRuns.allRuns = [misreadRun(), ...game.saved.unifiedRuns.allRuns];
+        await dungeonTrackerStorage.saveTeamRun('C,D', {
+            timestamp: new Date(2026, 4, 3, 12, 0, 0).toISOString(),
+            duration: CLEAR_MS,
+            dungeonName: 'Pirate Cove',
+        });
+        await dungeonTrackerStorage.flushPendingSave();
+
+        expect(game.saved.unifiedRuns.allRuns.map((r) => r.duration)).toEqual([CLEAR_MS, CLEAR_MS]);
+    });
+
+    test('a run whose swap is undefined is left exactly as it was', async () => {
+        // 20 January: the day field is over 12, so that endpoint was parsed
+        // correctly whatever the locale said and no swap is defined
+        const before = {
+            timestamp: new Date(2026, 0, 20, 10, 0, 0).toISOString(),
+            duration: 9 * 24 * 60 * MINUTE,
+            dungeonName: 'Chimerical Den',
+            teamKey: 'A,B',
+        };
+        seedRuns([{ ...before }]);
+
+        expect(await dungeonTrackerStorage.repairSwappedDateRuns()).toBe(0);
+        expect(game.saved.unifiedRuns.allRuns).toEqual([before]);
+    });
+
+    test('a swap that is still implausible leaves the record alone rather than guessing', async () => {
+        // Both endpoints swap, but 5 January → 6 January becomes 1 May → 1 June:
+        // a month, which is no more a dungeon run than the day it replaced
+        const wrongStart = new Date(2026, 0, 5, 10, 0, 0);
+        const wrongEnd = new Date(2026, 0, 6, 10, 0, 0);
+        const before = {
+            timestamp: wrongStart.toISOString(),
+            duration: wrongEnd.getTime() - wrongStart.getTime(),
+            dungeonName: 'Chimerical Den',
+            teamKey: 'A,B',
+        };
+        seedRuns([{ ...before }]);
+
+        expect(await dungeonTrackerStorage.repairSwappedDateRuns()).toBe(0);
+        expect(game.saved.unifiedRuns.allRuns).toEqual([before]);
+    });
+
+    test('a store of correct records comes through untouched', async () => {
+        const correct = [
+            {
+                timestamp: new Date(2026, 4, 3, 12, 0, 0).toISOString(),
+                duration: CLEAR_MS,
+                dungeonName: 'Chimerical Den',
+                teamKey: 'A,B',
+            },
+            {
+                timestamp: new Date(2026, 4, 3, 11, 0, 0).toISOString(),
+                duration: 11 * MINUTE,
+                dungeonName: 'Chimerical Den',
+                teamKey: 'A,B',
+            },
+            {
+                timestamp: new Date(2026, 10, 25, 9, 0, 0).toISOString(),
+                duration: 22 * MINUTE,
+                dungeonName: 'Pirate Cove',
+                teamKey: 'C,D',
+            },
+        ];
+        seedRuns(correct.map((run) => ({ ...run })));
+
+        expect(await dungeonTrackerStorage.repairSwappedDateRuns()).toBe(0);
+        expect(game.saved.unifiedRuns.allRuns).toEqual(correct);
+        // and the history itself was never rewritten
+        expect(game.writes.map(([key]) => key)).toEqual([RUNS_DATE_REPAIR_KEY]);
+    });
+
+    test('the marker stops a second pass from touching records the first one mended', async () => {
+        seedRuns([misreadRun()]);
+        expect(await dungeonTrackerStorage.repairSwappedDateRuns()).toBe(1);
+        expect(Number(game.saved.unifiedRuns[RUNS_DATE_REPAIR_KEY])).toBeGreaterThan(0);
+
+        const afterFirst = structuredClone(game.saved.unifiedRuns.allRuns);
+        dungeonTrackerStorage._resetCache();
+
+        expect(await dungeonTrackerStorage.repairSwappedDateRuns()).toBe(0);
+        expect(game.saved.unifiedRuns.allRuns).toEqual(afterFirst);
+    });
+
+    test('a marker that could not be read means the pass does not run at all', async () => {
+        seedRuns([misreadRun()]);
+        game.unreadable = true;
+
+        expect(await dungeonTrackerStorage.repairSwappedDateRuns()).toBe(0);
+
+        game.unreadable = false;
+        expect(game.saved.unifiedRuns.allRuns[0].duration).not.toBe(CLEAR_MS);
+    });
+
+    test('the repair marker folds forward, so a pull cannot set the pass going again', () => {
+        const registered = mergeForKey(RUNS_STORE, RUNS_DATE_REPAIR_KEY);
+        expect(registered?.label).toBe('Dungeon run date-order repair');
+        expect(registered.merge(500, 0)).toBe(500);
+        expect(registered.merge(0, 500)).toBe(500);
     });
 });

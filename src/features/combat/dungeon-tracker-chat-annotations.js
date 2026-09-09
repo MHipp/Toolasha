@@ -89,6 +89,11 @@ class DungeonTrackerChatAnnotations {
      */
     async loadRunCountsFromStorage() {
         try {
+            // Mend the runs a mm/dd-vs-dd/mm chat-stamp misread mangled — once
+            // ever, and before the scrub, so a run that can be put right is not
+            // thrown away as an outlier first
+            await dungeonTrackerStorage.repairSwappedDateRuns();
+
             // Scrub outlier runs before seeding averages
             await dungeonTrackerStorage.scrubOutlierRuns();
 
