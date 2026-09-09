@@ -564,6 +564,19 @@ class PFormancePanel {
      * @returns {Object<string, number>} Source name to current count
      * @private
      */
+    /**
+     * One reading of every source: our registries, plus whatever features have
+     * registered a count getter of their own.
+     *
+     * The registered ones are read off the *published* monitor rather than an
+     * imported module, because the feature that registered lives in a later
+     * bundle and registered on the copy the core bundle published — and because
+     * this panel can be opened from a popped-out window with its own module
+     * graph. A monitor too old to have the API contributes nothing and costs
+     * nothing.
+     * @returns {Object<string, number>} Source name to current count
+     * @private
+     */
     _registryCounts() {
         const counts = {};
         for (const [kind, value] of Object.entries(getCleanupRegistryCensus())) {
@@ -575,6 +588,15 @@ class PFormancePanel {
         const dom = domObserver?.getCounts?.();
         if (dom) {
             for (const [kind, value] of Object.entries(dom)) counts[`dom:${kind}`] = value;
+        }
+        // Registered sources name themselves in full, so they are folded in as
+        // they come. A feature's broken getter is already dropped inside
+        // readCountSources; this guard is for a monitor that cannot answer.
+        try {
+            const registered = getPerformanceMonitor()?.readCountSources?.();
+            if (registered) Object.assign(counts, registered);
+        } catch (error) {
+            console.error('[PFormance] Could not read registered count sources:', error);
         }
         return counts;
     }

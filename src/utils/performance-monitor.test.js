@@ -10,6 +10,8 @@ import performanceMonitor, {
     createLeakCanary,
     createHeapTrend,
     heapMemorySupported,
+    registerCountSource,
+    readCountSources,
 } from './performance-monitor.js';
 
 describe('PerformanceMonitor', () => {
@@ -1149,5 +1151,105 @@ describe('heap trend', () => {
         trend.reset();
 
         expect(trend.getTrend()).toBe(null);
+    });
+});
+
+/**
+ * The registration the canary's own doc promised: a feature hands over a named
+ * count getter, and the panel folds it in beside the registry counts.
+ *
+ * The collections most likely to be leaking are plain fields on a feature
+ * instance — a Map, an object of Maps — which no registry knows about, so
+ * without this the canary is blind to exactly what it exists to find.
+ */
+describe('registered count sources', () => {
+    const registered = [];
+
+    /**
+     * Register and remember, so nothing leaks into the next test.
+     * @param {string} name
+     * @param {() => number} getCount
+     * @returns {Function} The unregister function
+     */
+    const register = (name, getCount) => {
+        const off = registerCountSource(name, getCount);
+        registered.push(off);
+        return off;
+    };
+
+    afterEach(() => {
+        while (registered.length) registered.pop()();
+    });
+
+    test('a registered source is read by name', () => {
+        const messages = new Map([['a', 1]]);
+        register('dungeon:processedMessages', () => messages.size);
+
+        expect(readCountSources()['dungeon:processedMessages']).toBe(1);
+        messages.set('b', 2);
+        expect(readCountSources()['dungeon:processedMessages']).toBe(2);
+    });
+
+    test('a registered source can raise the canary growth flag', () => {
+        let size = 20;
+        register('dungeon:processedMessages', () => size);
+        const canary = createLeakCanary();
+
+        for (let i = 0; i < 15; i++) {
+            canary.sample(readCountSources());
+            size += 10;
+        }
+
+        const row = canary.getReport().find((r) => r.source === 'dungeon:processedMessages');
+        expect(row.growing).toBe(true);
+        expect(row.lowest).toBe(20);
+    });
+
+    test('a getter that throws costs its own row and nothing else', () => {
+        register('broken', () => {
+            throw new Error('gone');
+        });
+        register('fine', () => 7);
+
+        let counts;
+        expect(() => {
+            counts = readCountSources();
+        }).not.toThrow();
+        expect(counts).toEqual({ fine: 7 });
+    });
+
+    test('a getter that answers with something that is not a number is skipped', () => {
+        register('nan', () => NaN);
+        register('text', () => 'lots');
+        register('fine', () => 3);
+
+        expect(readCountSources()).toEqual({ fine: 3 });
+    });
+
+    test('unregistering removes the source, and doing it twice is harmless', () => {
+        const off = register('going', () => 5);
+        expect(readCountSources().going).toBe(5);
+
+        off();
+        expect(readCountSources().going).toBeUndefined();
+        expect(() => off()).not.toThrow();
+    });
+
+    test('registering the same name again replaces rather than duplicates', () => {
+        register('dungeon:processedMessages', () => 1);
+        register('dungeon:processedMessages', () => 2);
+
+        expect(readCountSources()).toEqual({ 'dungeon:processedMessages': 2 });
+    });
+
+    test('a registration with no name or no getter is refused, not stored', () => {
+        expect(() => registerCountSource('', () => 1)).not.toThrow();
+        expect(() => registerCountSource('x', null)).not.toThrow();
+        expect(readCountSources()).toEqual({});
+    });
+
+    test('the API is reachable from the published instance, which is how later bundles get it', () => {
+        expect(typeof performanceMonitor.registerCountSource).toBe('function');
+        expect(typeof performanceMonitor.readCountSources).toBe('function');
     });
 });

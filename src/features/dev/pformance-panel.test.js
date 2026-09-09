@@ -28,6 +28,9 @@ vi.mock('../../utils/panel-z-index.js', () => ({
 vi.mock('../../utils/csv-export.js', () => ({ downloadFile: () => {} }));
 
 const { default: pformancePanel } = await import('./pformance-panel.js');
+// The real registration API, not a stand-in: what the panel must survive is a
+// getter that throws, and it is `readCountSources` that decides what that costs.
+const { registerCountSource, readCountSources } = await import('../../utils/performance-monitor.js');
 
 /** @returns {HTMLElement|null} The panel, if it is up */
 const onScreen = () => document.getElementById('toolasha-pformance-panel');
@@ -328,5 +331,98 @@ describe('the heap trend in the panel', () => {
         pformancePanel.show();
 
         expect(onScreen().children[1].textContent).not.toContain('Tab heap');
+    });
+});
+
+/**
+ * Registered count sources: collections that belong to a feature rather than to
+ * one of our registries, folded in beside the registry counts.
+ *
+ * The panel asks the published monitor for them, because a feature in a later
+ * bundle registers on that same instance.
+ */
+describe('registered count sources in the panel', () => {
+    /** @type {Array<() => void>} Unregister functions, undone after each test */
+    let registered = [];
+
+    /**
+     * Register through the real API and remember to undo it.
+     * @param {string} name
+     * @param {() => number} getCount
+     */
+    const register = (name, getCount) => {
+        registered.push(registerCountSource(name, getCount));
+    };
+
+    beforeEach(() => {
+        registered = [];
+        window.Toolasha = { Core: { performanceMonitor: { ...richMonitor, readCountSources } } };
+        leakSamples = [];
+        leakReport = [];
+        leakReset = 0;
+    });
+
+    afterEach(() => {
+        while (registered.length) registered.pop()();
+    });
+
+    test('a registered source is sampled beside the registry ones', () => {
+        settings.pformanceAttribution = true;
+        register('dungeon:processedMessages', () => 4200);
+        register('dungeon:annotatedChatRuns', () => 17);
+        pformancePanel.show();
+
+        expect(leakSamples).toHaveLength(1);
+        expect(leakSamples[0]['dungeon:processedMessages']).toBe(4200);
+        expect(leakSamples[0]['dungeon:annotatedChatRuns']).toBe(17);
+        // and the registry sources are still there
+        expect(leakSamples[0]['cleanup:listeners']).toBeDefined();
+    });
+
+    test('a registered source can be the row the canary flags', () => {
+        settings.pformanceAttribution = true;
+        leakReport = [
+            {
+                source: 'dungeon:processedMessages',
+                latest: 4200,
+                lowest: 12,
+                samples: 90,
+                decreases: 0,
+                growing: true,
+            },
+        ];
+        pformancePanel.show();
+
+        expect(onScreen().children[1].textContent).toContain('⚠ dungeon:processedMessages');
+    });
+
+    test('a getter that throws leaves the panel — and the other sources — working', () => {
+        settings.pformanceAttribution = true;
+        register('broken', () => {
+            throw new Error('the feature went away');
+        });
+        register('dungeon:processedMessages', () => 9);
+
+        expect(() => pformancePanel.show()).not.toThrow();
+        expect(onScreen()).not.toBe(null);
+        expect(leakSamples[0].broken).toBeUndefined();
+        expect(leakSamples[0]['dungeon:processedMessages']).toBe(9);
+        expect(onScreen().children[1].textContent).toContain('Leak canary');
+    });
+
+    test('a monitor too old to know about registered sources is not a crash', () => {
+        settings.pformanceAttribution = true;
+        window.Toolasha = { Core: { performanceMonitor: richMonitor } };
+
+        expect(() => pformancePanel.show()).not.toThrow();
+        expect(leakSamples[0]['cleanup:listeners']).toBeDefined();
+    });
+
+    test('with the extras off nothing is sampled and no registered source is shown', () => {
+        register('dungeon:processedMessages', () => 4200);
+        pformancePanel.show();
+
+        expect(leakSamples).toEqual([]);
+        expect(onScreen().children[1].textContent).not.toContain('dungeon:processedMessages');
     });
 });

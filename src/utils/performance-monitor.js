@@ -113,6 +113,69 @@ export const LEAK_CANARY_LIMITS = {
 };
 
 /**
+ * Named count getters a feature has handed over, `name` → `() => number`.
+ *
+ * Holds functions, never the collections they count: a registry that held the
+ * Maps would keep alive exactly the things it is watching for growth.
+ * @type {Map<string, () => number>}
+ */
+const countSources = new Map();
+
+/**
+ * Put a feature's own collection under the leak canary's eye.
+ *
+ * The registries (cleanup, timers, dom) report themselves, but the collections
+ * most likely to leak are plain fields on a feature instance — a Map of
+ * processed message ids, an object of Maps of annotated runs — that no registry
+ * knows about. Nothing is discovered automatically, so a feature that wants
+ * watching says so here.
+ *
+ * `getCount` is called once per panel refresh, so it must be O(1)-ish: a
+ * `.size`, a key count. Never a walk. It must also survive being called after
+ * the feature has been torn down — throwing costs only its own row, but a
+ * getter that answers is more useful than one that does not.
+ *
+ * Registering a name twice replaces the getter rather than duplicating it, so a
+ * feature that re-initializes does not accumulate rows.
+ *
+ * @param {string} name - Report label, e.g. `dungeon:processedMessages`
+ * @param {() => number} getCount - Cheap reader of the current count
+ * @returns {() => void} Unregisters; safe to call more than once
+ */
+export function registerCountSource(name, getCount) {
+    if (typeof name !== 'string' || !name || typeof getCount !== 'function') return () => {};
+    countSources.set(name, getCount);
+    return () => {
+        // Only if it is still ours: a later registration under the same name
+        // owns the row, and this unregister must not take that one away.
+        if (countSources.get(name) === getCount) countSources.delete(name);
+    };
+}
+
+/**
+ * Read every registered source once.
+ *
+ * A getter that throws or answers with something that is not a finite number
+ * costs its own row and nothing else — the panel this feeds is a diagnostic
+ * overlay, and a feature that has gone away must not take it down.
+ *
+ * @returns {Object<string, number>} Source name to current count
+ */
+export function readCountSources() {
+    const counts = {};
+    for (const [name, getCount] of countSources) {
+        try {
+            const value = getCount();
+            if (Number.isFinite(value)) counts[name] = value;
+        } catch {
+            // Deliberately silent: this runs on the panel's 1s refresh, and a
+            // broken getter would otherwise log once a second forever.
+        }
+    }
+    return counts;
+}
+
+/**
  * Watch per-source counts for growth that only ever goes one way.
  *
  * The rule, stated once: **a source is flagged when it has never decreased
@@ -863,6 +926,13 @@ performanceMonitor.timerCounters = timerCounters;
 performanceMonitor.createLeakCanary = createLeakCanary;
 performanceMonitor.createHeapTrend = createHeapTrend;
 performanceMonitor.heapMemorySupported = heapMemorySupported;
+
+// The registration API, on the instance for the same reason and for one more:
+// a feature in a later bundle registers on the copy the core bundle published,
+// which is the copy the panel reads. Two copies would be two registries, and
+// the panel would show none of what the features registered.
+performanceMonitor.registerCountSource = registerCountSource;
+performanceMonitor.readCountSources = readCountSources;
 
 /**
  * The best name a timer can be given at tick time, when its creation stack is

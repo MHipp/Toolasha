@@ -18,6 +18,7 @@ import {
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { createMutationWatcher } from '../../utils/dom-observer-helpers.js';
 import { gameDigitsSource } from '../../utils/number-parser.js';
+import performanceMonitor from '../../utils/performance-monitor.js';
 
 class DungeonTrackerChatAnnotations {
     constructor() {
@@ -47,6 +48,22 @@ class DungeonTrackerChatAnnotations {
         this.tabClickHandlers = new Map(); // Store tab click handlers for cleanup
         this._pendingAnnotateTimeout = null; // Debounce timer for annotateAllMessages
         this._annotatedWithoutDungeonName = false; // A pass labelled runs no source could name
+
+        // Visibility only — neither collection is pruned here, which is the
+        // maintainer's call. Both grow for the life of a session and belong to
+        // no registry, so the pformance panel's leak canary could not see them
+        // at all; these getters put them in its per-source counts. Both are
+        // cheap because the panel reads them on its 1s refresh: a Map size, and
+        // a sum of Map sizes over the statsKeys (a handful — one per team and
+        // dungeon — never a walk over the runs themselves, which is where the
+        // growth is). Both read `this` live, so a cleanup() that replaces the
+        // collections is reported rather than missed.
+        performanceMonitor?.registerCountSource?.('dungeon:processedMessages', () => this.processedMessages.size);
+        performanceMonitor?.registerCountSource?.('dungeon:annotatedChatRuns', () => {
+            let runs = 0;
+            for (const map of Object.values(this.annotatedChatRuns)) runs += map?.size || 0;
+            return runs;
+        });
     }
 
     /**
