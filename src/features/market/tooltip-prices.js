@@ -202,6 +202,11 @@ export function ownUseCompare(profitData, actionDetail = null) {
 
 /**
  * The own-use line's text and color, ready for the tooltip.
+ *
+ * The color carries the same answer the text does and never carries it alone:
+ * profit green when making wins, loss red when buying does, informational blue
+ * when the two are even or there is no buy price to compare against.
+ *
  * @param {Object|null} comparison - From {@link ownUseCompare}
  * @returns {{text: string, color: string}|null} Null when there is nothing to say
  */

@@ -512,8 +512,7 @@ class DungeonTrackerStorage {
         // them — `_deleted` only filters the *stored* side.
         if (this._loading) return this._loading;
 
-        let read;
-        read = (async () => {
+        const read = (async () => {
             try {
                 const probe = await storage.tryGet(RUNS_KEY, this.unifiedStoreName);
                 if (probe === null) {
