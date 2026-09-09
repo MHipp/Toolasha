@@ -2775,7 +2775,7 @@ describe('the summary at the top of the Results tab', () => {
         expect(shown).toContain('Profit/day');
         expect(shown).toContain('XP/hr');
         expect(shown).toContain('Kills/hr');
-        expect(shown).toContain('Deaths/day');
+        expect(shown).toContain('Deaths/hr');
         // Up top is the whole point: burying it under Overview would be the bug
         expect(shown.indexOf('Summary')).toBeLessThan(shown.indexOf('Overview'));
         // And the marker itself must never survive into the page
@@ -2823,12 +2823,11 @@ describe('the summary at the top of the Results tab', () => {
     });
 
     test('deaths are a daily figure, because the hourly one rounds to never', () => {
-        // One death every fifty hours: half a death a day, which is a number a
-        // player can act on, against 0.02 an hour, which is not
+        // One death every fifty hours. Three decimals is what makes an hourly
+        // rate legible here: 0.020 is a number a player can act on, where the
+        // rounded "0" this used to avoid by switching to days was not
         const shown = showFight(oneHourFight({ deaths: { player1: 0.02 } })).textContent;
 
-        expect(shown).toContain('Deaths/day0.5');
-        // The hourly figure is still down in Overview for anyone who wants it
         expect(shown).toContain('Deaths/hr0.020');
     });
 
@@ -2848,11 +2847,11 @@ describe('the summary at the top of the Results tab', () => {
         expect(none).toContain('Deaths/hr0.000');
     });
 
-    test('the Summary Deaths/day tile keeps its own variable precision', () => {
-        // Only Deaths/hr was asked to change; the daily headline tile still
-        // rounds the way it always did.
+    test('the Summary deaths tile is hourly, to the same three decimals as Overview', () => {
+        // The tile and the Overview row are the same quantity and must not be
+        // the one figure on screen in a different unit
         const shown = showFight(oneHourFight({ deaths: { player1: 1 } })).textContent;
-        expect(shown).toContain('Deaths/day24');
+        expect(shown).toContain('Deaths/hr1.000');
     });
 
     /**

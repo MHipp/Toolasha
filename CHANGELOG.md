@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Two Combat Simulator figures now read in the unit you compare them in
+
+An expanded upgrade row quotes profit per day rather than per hour, so the gain sits in the same unit as the cost above it — an upgrade worth a few thousand coins an hour reads as noise beside a price in the hundreds of millions, and as something you can weigh when it is a day's worth. The percentage beside it is the same either way.
+
+The Summary's deaths tile is per hour, to three decimals, matching the Overview row and the DPH column instead of being the one figure on screen in another unit. It read per day to avoid an hourly rate rounding to a zero that looks like "never"; three decimals answers that without the change of unit, and 0.020 is a number you can act on.
+
 ### Bulk Sell has its own Confirm button, so your cursor stays in one place
 
 A run of fifty items meant moving between the assistant's strip and the game's confirm button on every one. The strip now carries its own Confirm, and the game's button keeps working exactly as before — both routes take the same path, so a sale advances the walk the same way whichever you use.

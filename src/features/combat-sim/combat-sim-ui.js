@@ -5612,15 +5612,19 @@ class CombatSimUI {
             );
         }
 
-        // Deaths per day rather than per hour: at a realistic death rate the
-        // hourly figure rounds to a number of zeroes that reads as "never"
-        const deathsPerDay = deathsPerHr * 24;
+        // Per hour, to three decimals, matching the Overview row below.
+        //
+        // This tile used to read per DAY, because rounding an hourly death rate
+        // to an integer collapses every survivable build onto "0" and reads as
+        // "never". Three decimals is the answer to that rather than a change of
+        // unit: 0.042 is legible as a real rate, and the tile now agrees with
+        // the Overview and with the DPH column instead of being the one figure
+        // on screen in a different unit.
         tiles.push(
             tile(
-                'Deaths/day',
-                this._formatDeaths(deathsPerDay) +
-                    this._formatDelta(deathsPerDay, prevDeathsPerHr === null ? null : prevDeathsPerHr * 24, false),
-                deathsPerDay > 0 ? '#ff6b6b' : '#e0e0e0'
+                'Deaths/hr',
+                this._formatDeathsPerHour(deathsPerHr) + this._formatDelta(deathsPerHr, prevDeathsPerHr, false),
+                deathsPerHr > 0 ? '#ff6b6b' : '#e0e0e0'
             )
         );
 
@@ -6166,28 +6170,17 @@ class CombatSimUI {
     }
 
     /**
-     * Format a deaths/hr value, showing decimals for low rates.
-     * @param {number} value
-     * @returns {string}
-     * @private
-     */
-    _formatDeaths(value) {
-        if (value === 0) return '0';
-        if (value < 0.1) return value.toFixed(2);
-        if (value < 1) return value.toFixed(1);
-        return formatWithSeparator(Math.round(value));
-    }
-
-    /**
      * Format the Overview's Deaths/hr, always to three decimals.
      *
-     * The variable-precision {@link _formatDeaths} is right for the Summary's
-     * Deaths/day tile — a headline number, read at a glance — but wrong here:
-     * rounding an hourly rate to an integer collapses 0.042 and 1.4 deaths/hr
+     * Rounding an hourly rate to an integer collapses 0.042 and 1.4 deaths/hr
      * onto "0" and "1", and the difference between them is the whole story of
-     * how safe a build is. Three fixed decimals is the same treatment the
-     * drop table gives its fractional items/hr rates, and keeping the width
-     * constant means two builds can be compared digit by digit.
+     * how safe a build is. Three fixed decimals is the same treatment the drop
+     * table gives its fractional items/hr rates, and keeping the width constant
+     * means two builds can be compared digit by digit.
+     *
+     * The Summary tile uses this too. It used to read per day with variable
+     * precision, to dodge that rounding; three decimals answers the same
+     * objection without making one tile the odd unit out.
      *
      * @param {number} value - Deaths per hour
      * @returns {string} e.g. "0.042", "1.000"
@@ -7359,7 +7352,11 @@ class CombatSimUI {
     _renderUpgradeDetailCells(r, baseline) {
         const dpsValueDelta = r.metrics.dps - baseline.dps;
         const xpValueDelta = r.metrics.xpPerHour - baseline.xpPerHour;
-        const profitValueDelta = r.metrics.profitPerHour - baseline.profitPerHour;
+        // Shown per DAY: an upgrade's hourly profit delta is often a few
+        // thousand coins, which reads as noise next to a cost in the hundreds of
+        // millions. The percentage either side of it is identical whichever unit
+        // this is in, so only the absolute figures are scaled.
+        const profitValueDelta = (r.metrics.profitPerHour - baseline.profitPerHour) * 24;
         const ephDelta = r.metrics.encountersPerHour - baseline.encountersPerHour;
         const dphDelta = r.metrics.deathsPerHour - baseline.deathsPerHour;
         const fmtDelta = (val) => {
@@ -7398,8 +7395,8 @@ class CombatSimUI {
                     <div style="color:${deltaColor(xpValueDelta)};">${fmtDelta(xpValueDelta)} (${r.deltas.xp >= 0 ? '+' : ''}${r.deltas.xp.toFixed(2)}%)${errorBar('xp')}</div>
                 </div>
                 <div>
-                    <div style="color:#888;">Profit/hr</div>
-                    <div style="color:#e0e0e0;">${formatKMB(r.metrics.profitPerHour)}</div>
+                    <div style="color:#888;">Profit/day</div>
+                    <div style="color:#e0e0e0;">${formatKMB(r.metrics.profitPerHour * 24)}</div>
                     <div style="color:${deltaColor(profitValueDelta)};">${fmtDelta(profitValueDelta)} (${r.deltas.profit >= 0 ? '+' : ''}${r.deltas.profit.toFixed(2)}%)${errorBar('profit')}</div>
                 </div>
                 <div>
@@ -7414,7 +7411,7 @@ class CombatSimUI {
                 </div>
             </div>
             <div style="margin-top:6px; color:#666; font-size:10px;">
-                Baseline: DPS ${formatKMB(baseline.dps)} | EXP ${formatKMB(baseline.xpPerHour)} | Profit ${formatKMB(baseline.profitPerHour)} | EPH ${baseline.encountersPerHour.toFixed(1)} | DPH ${baseline.deathsPerHour.toFixed(1)}
+                Baseline: DPS ${formatKMB(baseline.dps)} | EXP ${formatKMB(baseline.xpPerHour)} | Profit/day ${formatKMB(baseline.profitPerHour * 24)} | EPH ${baseline.encountersPerHour.toFixed(1)} | DPH ${baseline.deathsPerHour.toFixed(1)}
             </div>
             ${this._renderUpgradeCostBasis(r)}
             ${this._renderGuildShrineCost(r)}
