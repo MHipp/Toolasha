@@ -26,6 +26,7 @@ import config from '../../core/config.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { registerFloatingPanel, unregisterFloatingPanel } from '../../utils/panel-z-index.js';
 import { registerCommand, unregisterCommand } from '../../utils/command-registry.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 
 class DungeonTrackerUI {
     constructor() {
@@ -63,8 +64,22 @@ class DungeonTrackerUI {
             run: () => this.toggle(),
         });
 
-        // Load saved state
+        // Load saved state.
+        //
+        // `isInitialized` is set *before* this await, so a `character_switching`
+        // teardown landing inside the read never made the re-initialise
+        // early-return. Instead the resumed tail ran on top of a `cleanup()` that
+        // had already nulled the handler fields: it built a second
+        // `#mwi-dungeon-tracker` container and stored a fresh `onUpdate` handler
+        // and a fresh 1 Hz interval into the very fields the teardown had just
+        // cleared, so the previous pair could never be unregistered. One live
+        // leak per switch, accumulating — the "removing all (memory leak
+        // detected)" warning below is this being observed after the fact.
+        const ticket = captureOwner(this);
         await this.state.load();
+        // Guards the whole resumed tail, not just the next statement: everything
+        // from here to the end of initialize() registers something.
+        if (!stillOurs(ticket)) return;
 
         // Initialize modules with formatTime function
         this.chart = new DungeonTrackerUIChart(this.state, this.formatTime.bind(this));
@@ -1002,6 +1017,7 @@ class DungeonTrackerUI {
      * Cleanup for character switching
      */
     cleanup() {
+        noteTeardown(this);
         try {
             unregisterCommand('Dungeon Tracker');
             // Immediately hide UI to prevent visual artifacts during character switch

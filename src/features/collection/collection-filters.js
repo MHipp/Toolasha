@@ -15,6 +15,7 @@ import { getActionEfficiencyContext } from '../../utils/efficiency.js';
 import { formatRelativeTime } from '../../utils/formatters.js';
 import { characterKey } from '../../utils/character-key.js';
 import { createCuratedRecord } from '../../utils/persisted-record.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -565,8 +566,20 @@ class CollectionFilters {
         // Inject CSS
         this._buildCSS();
 
-        // Load persisted state
+        // Load persisted state.
+        //
+        // `isInitialized` is set *before* this read, so a `character_switching`
+        // teardown landing inside it never made the re-initialise early-return.
+        // The resumed tail instead pushed its `domObserver.onClass`
+        // registrations into a `unregisterHandlers` array `disable()` had already
+        // emptied, and registered a second `character_initialized` handler over
+        // the field holding the first — both left live with no handle to remove
+        // them. Cheaper than the action-panel sites only because those observers
+        // fire when the Collections panel is opened; the same three lines fix it.
+        const ticket = captureOwner(this);
         await this._load();
+        // Guards the whole resumed tail — both observers and the switch handler.
+        if (!stillOurs(ticket)) return;
 
         // Watch for Collections panel controls bar being added to the DOM
         const unregPanel = domObserver.onClass(
@@ -610,6 +623,7 @@ class CollectionFilters {
     }
 
     disable() {
+        noteTeardown(this);
         try {
             if (this.characterInitHandler) {
                 dataManager.off('character_initialized', this.characterInitHandler);

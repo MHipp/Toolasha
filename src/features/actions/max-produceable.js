@@ -23,6 +23,7 @@ import { getDrinkConcentration, parseArtisanBonus } from '../../utils/tea-parser
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { onActionTile, resolveActionTile } from '../../utils/action-panel-helper.js';
 import { affordableActions } from '../../utils/material-calculator.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 
 /**
  * Action type constants for classification
@@ -81,8 +82,23 @@ class MaxProduceable {
 
         this.isInitialized = true;
 
-        // Initialize shared sort manager
+        // Initialize shared sort manager.
+        //
+        // `isInitialized` is set *before* this await (which reads the pins and
+        // sort mode out of IndexedDB), so a `character_switching` teardown
+        // landing inside it never made the re-initialise early-return. The
+        // resumed tail instead ran on top of a `disable()` that had already
+        // nulled the handler fields and dropped the tile observer, and re-stored
+        // its own into them — leaving the previous `items_updated`,
+        // `consumables_updated`, `character_switching` and setting listeners and
+        // the previous `onActionTile` observer live with no handle left to
+        // unregister them. One leak per switch, each one a full count/profit
+        // recompute and a DOM pass over every visible tile on every inventory
+        // change.
+        const ticket = captureOwner(this);
         await actionPanelSort.initialize();
+        // Guards the whole resumed tail — the observer and every listener below.
+        if (!stillOurs(ticket)) return;
 
         this.setupObserver();
 
@@ -928,6 +944,7 @@ class MaxProduceable {
      * Disable the max produceable display
      */
     disable() {
+        noteTeardown(this);
         try {
             // Clear debounce timers
             clearTimeout(this.itemsUpdatedDebounceTimer);
