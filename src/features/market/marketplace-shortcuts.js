@@ -411,6 +411,10 @@ class MarketplaceShortcuts {
         this.pendingQuantity = null;
 
         setTimeout(() => {
+            // Nothing is written when the field cannot be identified: the
+            // alternative was the old positional guess, which in a woken sell
+            // modal is the price field. An unfilled quantity costs the player a
+            // keystroke; a stack count typed into the price does not
             const quantityInput = this.findQuantityInput(modal);
             if (!quantityInput) return;
 
@@ -638,10 +642,26 @@ class MarketplaceShortcuts {
 
     /**
      * Find the quantity input in a marketplace modal.
-     * Equipment items have multiple number inputs (enhancement level + quantity),
-     * so we identify the correct one by checking parent containers.
+     *
+     * Equipment items have several inputs (enhancement level, price, quantity),
+     * so the right one is identified by the label its container carries — the
+     * label is a *sibling* of the field's wrapper in the game's markup, so the
+     * ancestor is walked outward a level at a time rather than read off
+     * `closest('div')`.
+     *
+     * Answers null when nothing identifies the field, and never a positional
+     * guess. It used to end in `return allInputs[0]`, and in a Sell Now modal
+     * whose price control has been woken into a real input that first input is
+     * the PRICE — so a modal this could not read handed its caller a price. The
+     * caller that matters is the Bulk Sell strip's Confirm guard, which compares
+     * that number against the queued count before pressing the game's own sell
+     * button: fail-closed only by the accident of a price rarely equalling a
+     * count, on the one feature in the script that sells for you. Every caller
+     * already returns on null, so refusing is the shape they were written for.
+     *
      * @param {HTMLElement} modal - Modal container element
-     * @returns {HTMLInputElement|null} Quantity input element or null
+     * @returns {HTMLInputElement|null} Quantity input element, or null when the
+     *   field cannot be positively identified
      */
     findQuantityInput(modal) {
         // The game's own quantity row — reliable, and works whether the fields are
@@ -653,6 +673,9 @@ class MarketplaceShortcuts {
         const allInputs = Array.from(modal.querySelectorAll('input'));
 
         if (allInputs.length === 0) return null;
+        // Not a positional guess: the price control sleeps as a display div
+        // until it is clicked, so a marketplace modal carrying exactly one
+        // input is carrying the quantity field and nothing else
         if (allInputs.length === 1) return allInputs[0];
 
         // Multiple inputs — find the one near "Quantity" text, not "Enhancement Level"
@@ -671,7 +694,7 @@ class MarketplaceShortcuts {
             }
         }
 
-        return allInputs[0];
+        return null;
     }
 
     /**

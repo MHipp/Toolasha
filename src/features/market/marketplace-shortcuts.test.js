@@ -137,3 +137,64 @@ describe('the ÷2 / ×2 multiplier buttons read price and quantity as comma-form
         }
     });
 });
+
+/*
+ * `findQuantityInput` used to end in `return allInputs[0]`. In a Sell Now modal
+ * whose price field has been woken into a real input, the first input IS the
+ * price — so a modal whose labels the walk could not read handed the caller a
+ * price. The one caller that matters is the Bulk Sell strip's Confirm guard,
+ * which compares that number to the queued count before pressing the game's own
+ * sell button: a fail-open shape on the one feature that sells for you.
+ */
+describe('findQuantityInput refuses rather than guessing positionally', () => {
+    /**
+     * A modal with two inputs and no readable labels — the shape the walk
+     * cannot identify.
+     * @returns {HTMLElement}
+     */
+    function unlabelledModal() {
+        const modal = document.createElement('div');
+        modal.innerHTML = `
+            <div><div><input value="45,000,000" /></div></div>
+            <div><div><input value="7" /></div></div>
+        `;
+        return modal;
+    }
+
+    test('an unidentifiable quantity field is null, not the price', () => {
+        const modal = unlabelledModal();
+        const found = marketplaceShortcuts.findQuantityInput(modal);
+        expect(found).toBeNull();
+        // Specifically not the price, which is what the positional fallback gave
+        expect(found?.value).not.toBe('45,000,000');
+    });
+
+    test("the game's own quantity row is still identification enough", () => {
+        const modal = document.createElement('div');
+        modal.innerHTML = `
+            <div class="MarketplacePanel_priceInputs__x"><input value="45,000,000" /></div>
+            <div class="MarketplacePanel_quantityInputs__y"><input value="7" /></div>
+        `;
+        expect(marketplaceShortcuts.findQuantityInput(modal).value).toBe('7');
+    });
+
+    test('a labelled field is still found by walking outward to the label', () => {
+        const modal = document.createElement('div');
+        modal.innerHTML = `
+            <div>Price<div><input value="45,000,000" /></div></div>
+            <div>Quantity<div><input value="7" /></div></div>
+        `;
+        expect(marketplaceShortcuts.findQuantityInput(modal).value).toBe('7');
+    });
+
+    test('a modal with a single input is identified, not guessed', () => {
+        // The price control sleeps as a display div until it is clicked, so a
+        // freshly opened sell modal really does carry the quantity field alone
+        const modal = document.createElement('div');
+        modal.innerHTML = `
+            <div class="MarketplacePanel_priceDisplay__z">45,000,000</div>
+            <div><div><input value="7" /></div></div>
+        `;
+        expect(marketplaceShortcuts.findQuantityInput(modal).value).toBe('7');
+    });
+});

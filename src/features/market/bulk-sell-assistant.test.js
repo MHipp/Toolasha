@@ -579,7 +579,16 @@ describe('confirming from the strip', () => {
      * A sell modal shaped like the game's: header, item icon, quantity row and
      * the game's own confirming button.
      */
-    const openModal = ({ item = 'cheese', qty = 18, header = 'Sell Now', enhancement = null } = {}) => {
+    const openModal = ({
+        item = 'cheese',
+        qty = 18,
+        header = 'Sell Now',
+        enhancement = null,
+        // Drop the game's own quantity row and leave two bare inputs — price
+        // first, as the DOM orders them — which is the shape the finder cannot
+        // positively identify
+        unreadableQty = false,
+    } = {}) => {
         const modal = document.createElement('div');
         modal.className = 'Modal_modalContainer__abc';
         const head = document.createElement('div');
@@ -617,6 +626,16 @@ describe('confirming from the strip', () => {
         confirm.className = 'Button_button__1Fe9z';
         confirm.textContent = 'Post Sell Order';
         confirm.addEventListener('click', () => gameClicks++);
+        if (unreadableQty) {
+            qtyRow.className = '';
+            const priceWrap = document.createElement('div');
+            const priceInput = document.createElement('input');
+            priceInput.value = '45,000,000';
+            priceWrap.appendChild(priceInput);
+            modal.append(head, icon, ...(enhRow ? [enhRow] : []), priceWrap, qtyRow, confirm);
+            document.body.appendChild(modal);
+            return modal;
+        }
         modal.append(head, icon, ...(enhRow ? [enhRow] : []), qtyRow, confirm);
         document.body.appendChild(modal);
         return modal;
@@ -734,6 +753,27 @@ describe('confirming from the strip', () => {
         expect(gameClicks).toBe(0);
         expect(statusText()).toMatch(/3/);
         expect(statusText()).toMatch(/18/);
+    });
+
+    /*
+     * The finder used to end in `return allInputs[0]`, and in a Sell Now modal
+     * whose price control has been woken into a real input that first input is
+     * the PRICE. So a modal the finder could not read handed this guard a price
+     * to compare against the queued count — fail-closed only by the accident of
+     * a price rarely equalling a count, on the one feature that presses the
+     * game's own sell button. The finder answers null now, which is what makes
+     * this refusal reachable.
+     */
+    test('it refuses, and says why, when the quantity field cannot be identified', () => {
+        openModal({ unreadableQty: true });
+        runAtStep0();
+
+        confirmBtn().click();
+
+        expect(gameClicks).toBe(0);
+        expect(statusText()).toMatch(/quantity cannot be read/);
+        // Not a comparison against the price, dressed up as a quantity mismatch
+        expect(statusText()).not.toMatch(/45,?000,?000/);
     });
 
     test('Skip and Stop are untouched by the new button', () => {

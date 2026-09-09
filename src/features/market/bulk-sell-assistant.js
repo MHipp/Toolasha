@@ -1381,6 +1381,12 @@ class BulkSellAssistant {
             // cannot read is left alone the way it always was.
             const shown = this._modalItemHrid(modal);
             if (shown && shown !== wantedHrid) return;
+            // A field the finder cannot positively identify is left alone
+            // rather than written to. The alternative was the finder's old
+            // positional guess, which in a woken sell modal is the PRICE field —
+            // typing a stack count into it is a worse outcome than an unfilled
+            // quantity the player types themselves, and the Confirm guard says
+            // so at the point it matters
             const input = marketplaceShortcuts.findQuantityInput(modal);
             if (!input) return;
             nativeInputValueSetter.call(input, String(count));
