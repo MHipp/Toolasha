@@ -48,6 +48,9 @@ const game = vi.hoisted(() => ({
     // from, and the game's own build costs, which is where its price does
     houseRooms: new Map(),
     houseDetails: {},
+    // Every marketplace the panel's links opened, so a test can prove a row
+    // about a +12 opens the +12 order book rather than the base item's
+    navigations: [],
 }));
 
 vi.mock('../../core/data-manager.js', () => ({
@@ -126,7 +129,9 @@ vi.mock('../../utils/panel-geometry.js', () => ({
     // the panel complain that the mock is missing it
     clampPanelToViewport: () => {},
 }));
-vi.mock('../../utils/marketplace-tabs.js', () => ({ navigateToMarketplace: () => {} }));
+vi.mock('../../utils/marketplace-tabs.js', () => ({
+    navigateToMarketplace: (itemHrid, enhancementLevel = 0) => game.navigations.push({ itemHrid, enhancementLevel }),
+}));
 vi.mock('../../utils/game-lookups.js', () => ({ getItemHridFromName: () => null }));
 // Kept rather than discarded, so the tile's own `version()` — which is what
 // spares the overlay this module's whole render sixty times a minute — can be
@@ -187,6 +192,7 @@ const {
     isLaddering,
     enhancementCost,
     upgradeBaseCost,
+    upgradeBaseRoute,
     resetEquipmentSavings,
     setLocked,
     watchAbility,
@@ -280,6 +286,7 @@ beforeEach(() => {
         },
     };
     game.prices['/items/lumber:0'] = { ask: 1_000_000, bid: 900_000 };
+    game.navigations = [];
     resetEquipmentSavings();
 });
 
@@ -1957,6 +1964,126 @@ describe('the panel draws house levels', () => {
         expect(text()).not.toContain(FAILED);
         // The headline names it, and Everything counts it
         expect(text()).toContain('1 house level');
+    });
+});
+
+describe('the marketplace a watched enhancement opens', () => {
+    // The maintainer's case: a refinement that RETAINS enhancement, watched at
+    // +12. The card costs the base at +12; every link and the Missing Mats
+    // button have to shop for the same thing, or the panel quotes one piece and
+    // the marketplace shows another a fifth the price.
+    const openCalls = [];
+
+    const watchRefinedAt12 = () => {
+        game.actions['/actions/refine'].retainAllEnhancement = true;
+        // The finished ★+12 is listed, so the card takes the craft path rather
+        // than treating the target as something only an anvil can produce
+        game.prices['/items/refined_spear:12'] = { ask: 2_000_000_000, bid: 1_800_000_000 };
+        watchTarget('/items/refined_spear', 12);
+        toggleCrafting('/items/refined_spear', 12);
+    };
+
+    beforeEach(() => {
+        openCalls.length = 0;
+        window.Toolasha = {
+            Actions: {
+                missingMaterialsButton: {
+                    openMissingMaterials: (...args) => {
+                        openCalls.push(args);
+                    },
+                },
+            },
+        };
+    });
+
+    afterEach(() => {
+        delete window.Toolasha;
+    });
+
+    const clickMissingMats = () => {
+        const button = Array.from(equipmentSavingsPanel.panel.querySelectorAll('button')).find(
+            (element) => element.textContent === 'Missing Mats Marketplace'
+        );
+        expect(button).toBeTruthy();
+        button.click();
+    };
+
+    test('the route is reported, not just its price: a listed base is shopped for at the level', () => {
+        // A +12 on the market, and no enhancing bench to run a ladder on
+        game.prices['/items/plain_spear:12'] = { ask: 500_000_000, bid: 450_000_000 };
+        const recipe = { upgradeItemHrid: '/items/plain_spear', retainAllEnhancement: true };
+
+        expect(upgradeBaseRoute(recipe, 12, () => 300_000_000)).toEqual({ cost: 500_000_000, level: 12 });
+    });
+
+    test('the route is 0 when the enhance run wins, because what is bought then is a +0', () => {
+        game.details['/items/plain_spear'].itemLevel = 90;
+        game.details['/items/plain_spear'].enhancementCosts = [{ itemHrid: '/items/shard', count: 2 }];
+        window.Toolasha.Utils = {
+            enhancementCalculator: { calculateEnhancement: () => ({ attempts: 2, protectionCount: 0 }) },
+            enhancementConfig: { getAutoDetectedParams: () => ({ enhancingLevel: 100, toolBonus: 10 }) },
+        };
+        // No listing at the level at all, so the run is the only route
+        const recipe = { upgradeItemHrid: '/items/plain_spear', retainAllEnhancement: true };
+
+        expect(upgradeBaseRoute(recipe, 12, () => 300_000_000).level).toBe(0);
+    });
+
+    test('a base already in the bag at the level is still a bill about that level', () => {
+        game.inventory.push({ itemHrid: '/items/plain_spear', count: 1, enhancementLevel: 12 });
+        const recipe = { upgradeItemHrid: '/items/plain_spear', retainAllEnhancement: true };
+
+        expect(upgradeBaseRoute(recipe, 12, () => 300_000_000)).toEqual({ cost: 0, level: 12 });
+    });
+
+    test('the Missing Mats button asks for the base at the level the card costed', async () => {
+        game.prices['/items/plain_spear:12'] = { ask: 500_000_000, bid: 450_000_000 };
+        watchRefinedAt12();
+        equipmentSavingsPanel.show();
+
+        clickMissingMats();
+
+        await vi.waitFor(() => expect(openCalls).toHaveLength(1));
+        expect(openCalls[0]).toEqual(['/actions/refine', 1, { upgradeItemLevel: 12 }]);
+    });
+
+    test('a plain craft still opens the +0 bill it always did', async () => {
+        watchTarget('/items/refined_spear');
+        toggleCrafting('/items/refined_spear');
+        equipmentSavingsPanel.show();
+
+        clickMissingMats();
+
+        await vi.waitFor(() => expect(openCalls).toHaveLength(1));
+        expect(openCalls[0]).toEqual(['/actions/refine', 1, { upgradeItemLevel: 0 }]);
+    });
+
+    test('the icon and the name open the level the row is about, not the base item', () => {
+        watchRefinedAt12();
+        equipmentSavingsPanel.show();
+
+        for (const element of equipmentSavingsPanel.panel.querySelectorAll('[title="Open in the marketplace"]')) {
+            element.click();
+        }
+
+        expect(game.navigations.length).toBeGreaterThan(0);
+        for (const navigation of game.navigations) {
+            expect(navigation).toEqual({ itemHrid: '/items/refined_spear', enhancementLevel: 12 });
+        }
+    });
+
+    test('an unenhanced row still opens the plain listing', () => {
+        watchTarget('/items/holy_sword');
+        equipmentSavingsPanel.show();
+
+        for (const element of equipmentSavingsPanel.panel.querySelectorAll('[title="Open in the marketplace"]')) {
+            element.click();
+        }
+
+        expect(game.navigations.length).toBeGreaterThan(0);
+        for (const navigation of game.navigations) {
+            expect(navigation.enhancementLevel).toBe(0);
+        }
     });
 });
 

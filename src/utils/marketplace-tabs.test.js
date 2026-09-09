@@ -25,6 +25,7 @@ vi.mock('../core/data-manager.js', () => ({
 import webSocketHook from '../core/websocket.js';
 import {
     createMaterialTab,
+    materialTabName,
     visibleTabsContainer,
     removeMaterialTabs,
     removeShrineMarketTabs,
@@ -194,6 +195,34 @@ describe('createMaterialTab', () => {
         );
 
         expect(document.body.contains(tab)).toBe(false);
+    });
+});
+
+describe('a tab for a line that names an enhancement level', () => {
+    test('says the level, so the tab is not read as the base item', () => {
+        expect(materialTabName({ itemName: 'furious spear', enhancementLevel: 12 })).toBe('Furious Spear +12');
+    });
+
+    test('a line with no level is named exactly as it always was', () => {
+        expect(materialTabName({ itemName: 'cedar lumber' })).toBe('Cedar Lumber');
+        expect(materialTabName({ itemName: 'cedar lumber', enhancementLevel: 0 })).toBe('Cedar Lumber');
+    });
+
+    test('the tab and a live update of it agree on the name', () => {
+        const ref = buildReferenceTab();
+        const material = {
+            itemHrid: '/items/furious_spear',
+            itemName: 'furious spear',
+            enhancementLevel: 12,
+            missing: 1,
+            required: 1,
+            isTradeable: true,
+        };
+        const tab = createMaterialTab(material, ref, () => {});
+        expect(tab.querySelector('[class*="TabsComponent_badge"]').innerHTML).toContain('Furious Spear +12');
+
+        updateTabBadge(tab, { ...material, missing: 0 });
+        expect(tab.querySelector('[class*="TabsComponent_badge"]').innerHTML).toContain('Furious Spear +12');
     });
 });
 

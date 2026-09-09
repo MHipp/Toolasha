@@ -25,6 +25,7 @@ import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { createAutofillManager, findQuantityInput } from '../../utils/marketplace-autofill.js';
 import {
     createMaterialTab,
+    materialTabName,
     createClearAllTabsControl,
     removeMaterialTabs,
     setupMarketplaceCleanupObserver,
@@ -77,6 +78,8 @@ let storedNumActions = 0;
 let storedEnhancementContext = null;
 /** A plain bill of materials opened from elsewhere (a house level), kept for live updates */
 let storedMaterialList = null;
+/** The level the open bill's upgrade item is wanted at, kept so live updates do not lose it */
+let storedUpgradeItemLevel = 0;
 const timerRegistry = createTimerRegistry();
 const autofillManager = createAutofillManager('MissingMats-Actions');
 
@@ -605,6 +608,7 @@ async function handleEnhancementMissingMaterialsClick(
     };
     storedActionHrid = null;
     storedNumActions = 0;
+    storedUpgradeItemLevel = 0;
 
     // Recalculate materials fresh (inventory may have changed since button was rendered)
     const freshMaterials = calculateEnhancementMaterialRequirements(
@@ -686,19 +690,23 @@ function createMissingMaterialsButton(missingMaterials, actionHrid, numActions, 
  * @param {string} actionHrid - Action HRID for recalculating materials
  * @param {number} numActions - Number of actions for recalculating materials
  */
-async function handleMissingMaterialsClick(actionHrid, numActions) {
+async function handleMissingMaterialsClick(actionHrid, numActions, upgradeItemLevel = 0) {
     // Store context for live updates
     storedActionHrid = actionHrid;
     storedNumActions = numActions;
     storedEnhancementContext = null;
     storedMaterialList = null;
+    storedUpgradeItemLevel = Math.max(0, Math.floor(Number(upgradeItemLevel) || 0));
 
     // Recalculate materials fresh (inventory may have changed since button was rendered)
     const ignoreQueue = config.getSetting('actions_missingMaterialsButton_ignoreQueue') || false;
     const accountForQueue = !ignoreQueue;
-    const freshMaterials = calculateMaterialRequirements(actionHrid, numActions, accountForQueue, {
-        ownerId: RESERVATION_OWNER,
-    });
+    const freshMaterials = atUpgradeItemLevel(
+        calculateMaterialRequirements(actionHrid, numActions, accountForQueue, {
+            ownerId: RESERVATION_OWNER,
+        }),
+        storedUpgradeItemLevel
+    );
 
     if (!(await openWhereBought(freshMaterials))) return;
 
@@ -706,6 +714,56 @@ async function handleMissingMaterialsClick(actionHrid, numActions) {
 
     // Setup inventory listener for live updates
     setupInventoryListener();
+}
+
+/**
+ * Re-read the bill's upgrade item at the enhancement level it is really wanted at.
+ *
+ * `calculateMaterialRequirements` costs every line as the unenhanced item, which
+ * is right for an action panel: the game's own craft consumes whatever copy you
+ * point it at, and the panel is looking at the piece in your bag. It is wrong for
+ * a caller saving towards a refinement that RETAINS enhancement — a ★+12 is made
+ * from a +12 base, so a +0 in the bag is not stock against it and the +0 order
+ * book is not where it is bought.
+ *
+ * Only the upgrade item moves. The inputs are consumables and stay +0 whatever
+ * the output's level. `queued` is dropped to 0 on a levelled line because queue
+ * accounting counted +0 copies: a queued craft eating unenhanced bases is not
+ * competing for the +12, and carrying its figure across would understate the
+ * shortfall. Reservations are re-read at the level, which the ledger keys on.
+ *
+ * @param {Array<Object>} materials - From `calculateMaterialRequirements`
+ * @param {number} level - The level the upgrade item is wanted at; 0 leaves the bill alone
+ * @returns {Array<Object>} The same lines, the upgrade item re-counted at `level`
+ */
+function atUpgradeItemLevel(materials, level) {
+    if (!(level > 0) || !Array.isArray(materials)) return materials;
+    const inventory = dataManager.getInventory?.() || [];
+
+    return materials.map((material) => {
+        if (!material?.isUpgradeItem) return material;
+
+        // Exact match: a +13 is not spendable as a +12 either, since the craft
+        // would carry the wrong level through to the output
+        const have = inventory
+            .filter((item) => item.itemHrid === material.itemHrid && (item.enhancementLevel || 0) === level)
+            .reduce((sum, item) => sum + (item.count || 0), 0);
+        const reserved = reservedElsewhere(material.itemHrid, level, { excludeOwner: RESERVATION_OWNER });
+        const available = Math.max(0, have - reserved);
+        const missing = Math.max(0, material.required - available);
+        const reservedNote =
+            missing > 0 && have >= material.required
+                ? shortfallNote(missing, material.itemHrid, level, { excludeOwner: RESERVATION_OWNER })
+                : '';
+
+        const updated = { ...material, enhancementLevel: level, have, queued: 0, available, missing };
+        // The +0 line's reservation fields described a different piece
+        delete updated.reserved;
+        delete updated.reservedNote;
+        if (reserved > 0) updated.reserved = reserved;
+        if (reservedNote) updated.reservedNote = reservedNote;
+        return updated;
+    });
 }
 
 /**
@@ -1435,9 +1493,12 @@ function updateTabsOnInventoryChange() {
         // Production mode
         const ignoreQueue = config.getSetting('actions_missingMaterialsButton_ignoreQueue') || false;
         const accountForQueue = !ignoreQueue;
-        updatedMaterials = calculateMaterialRequirements(storedActionHrid, storedNumActions, accountForQueue, {
-            ownerId: RESERVATION_OWNER,
-        });
+        updatedMaterials = atUpgradeItemLevel(
+            calculateMaterialRequirements(storedActionHrid, storedNumActions, accountForQueue, {
+                ownerId: RESERVATION_OWNER,
+            }),
+            storedUpgradeItemLevel
+        );
     } else if (storedMaterialList) {
         updatedMaterials = materialsFromList(storedMaterialList.lines, storedMaterialList.ownerId || RESERVATION_OWNER);
     } else {
@@ -1498,11 +1559,9 @@ function updateTabBadge(tab, material) {
         statusText = `Sufficient (${formatWithSeparator(material.required)})`;
     }
 
-    // Title case: capitalize first letter of each word
-    const titleCaseName = material.itemName
-        .split(' ')
-        .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-        .join(' ');
+    // The same name the tab was built with, level and all — a live update that
+    // dropped the "+12" would rename the tab out from under the listing it opens
+    const titleCaseName = materialTabName(material);
 
     // Update badge HTML
     badgeSpan.innerHTML = `
@@ -1659,6 +1718,7 @@ export async function openMaterialsList(lines, { ownerId = null } = {}) {
     storedActionHrid = null;
     storedNumActions = 0;
     storedEnhancementContext = null;
+    storedUpgradeItemLevel = 0;
     storedMaterialList = { lines: wanted, ownerId };
 
     // A caller that keeps a claim of its own has already made it (the crafting
@@ -1681,10 +1741,15 @@ export async function openMaterialsList(lines, { ownerId = null } = {}) {
  *
  * @param {string} actionHrid - The action whose inputs are wanted
  * @param {number} [numActions] - How many of it
+ * @param {Object} [options] - Options
+ * @param {number} [options.upgradeItemLevel] - The enhancement level the action's upgrade item
+ *   is wanted at. A refinement that retains enhancement is made FROM a base already at the
+ *   output's level, so a caller saving towards a ★+12 needs the +12 listing rather than the
+ *   +0 one. Defaults to 0, which is every action panel and every plain craft — unchanged.
  * @returns {Promise<void>}
  */
-export async function openMissingMaterials(actionHrid, numActions = 1) {
-    await handleMissingMaterialsClick(actionHrid, numActions);
+export async function openMissingMaterials(actionHrid, numActions = 1, { upgradeItemLevel = 0 } = {}) {
+    await handleMissingMaterialsClick(actionHrid, numActions, upgradeItemLevel);
 }
 
 export default {

@@ -363,6 +363,114 @@ describe('the marketplace clear-all control', () => {
         expect(handleGoToMarketplace).toHaveBeenCalledWith('/items/cedar_lumber', 0);
     });
 
+    test('an upgrade item wanted at a level is counted, named and opened at that level', async () => {
+        const { container } = buildMarketplaceDom();
+        const handleGoToMarketplace = vi.fn();
+        const root = document.createElement('div');
+        root.id = 'root';
+        root._reactRootContainer = {
+            current: { stateNode: { handleGoToMarketplace }, child: null, sibling: null },
+        };
+        document.body.appendChild(root);
+        state.items = {
+            '/items/shard': { name: 'Shard', isTradable: true },
+            '/items/furious_spear': { name: 'Furious Spear', isTradable: true },
+        };
+        // A +10 in the bag is not stock against a +12, and the +0 order book is
+        // not where a +12 is bought
+        state.inventory = [{ itemHrid: '/items/furious_spear', enhancementLevel: 10, count: 1 }];
+        state.actionMaterials = [
+            { itemHrid: '/items/shard', itemName: 'Shard', missing: 267, required: 267, isTradeable: true },
+            {
+                itemHrid: '/items/furious_spear',
+                itemName: 'Furious Spear',
+                missing: 0,
+                required: 1,
+                have: 1,
+                queued: 0,
+                available: 1,
+                isTradeable: true,
+                isUpgradeItem: true,
+            },
+        ];
+
+        await openMissingMaterials('/actions/refine', 1, { upgradeItemLevel: 12 });
+
+        const spearTab = container.querySelector('[data-item-hrid="/items/furious_spear"]');
+        // The +10 stopped counting, so the line is short again
+        expect(spearTab.getAttribute('data-missing-quantity')).toBe('1');
+        spearTab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+        expect(handleGoToMarketplace).toHaveBeenCalledWith('/items/furious_spear', 12);
+    });
+
+    test('a copy already at the level is stock, and the consumables are untouched by it', async () => {
+        const { container } = buildMarketplaceDom();
+        state.items = {
+            '/items/shard': { name: 'Shard', isTradable: true },
+            '/items/furious_spear': { name: 'Furious Spear', isTradable: true },
+        };
+        state.inventory = [{ itemHrid: '/items/furious_spear', enhancementLevel: 12, count: 1 }];
+        state.actionMaterials = [
+            { itemHrid: '/items/shard', itemName: 'Shard', missing: 267, required: 267, isTradeable: true },
+            {
+                itemHrid: '/items/furious_spear',
+                itemName: 'Furious Spear',
+                missing: 1,
+                required: 1,
+                have: 0,
+                queued: 0,
+                available: 0,
+                isTradeable: true,
+                isUpgradeItem: true,
+            },
+        ];
+
+        await openMissingMaterials('/actions/refine', 1, { upgradeItemLevel: 12 });
+
+        expect(
+            container.querySelector('[data-item-hrid="/items/furious_spear"]').getAttribute('data-missing-quantity')
+        ).toBe('0');
+        // The shards are +0 consumables whatever level the output is wanted at
+        expect(container.querySelector('[data-item-hrid="/items/shard"]').getAttribute('data-missing-quantity')).toBe(
+            '267'
+        );
+    });
+
+    test('a caller that names no level gets the bill it always got', async () => {
+        const { container } = buildMarketplaceDom();
+        const handleGoToMarketplace = vi.fn();
+        const root = document.createElement('div');
+        root.id = 'root';
+        root._reactRootContainer = {
+            current: { stateNode: { handleGoToMarketplace }, child: null, sibling: null },
+        };
+        document.body.appendChild(root);
+        state.items = { '/items/furious_spear': { name: 'Furious Spear', isTradable: true } };
+        state.inventory = [];
+        state.actionMaterials = [
+            {
+                itemHrid: '/items/furious_spear',
+                itemName: 'Furious Spear',
+                missing: 3,
+                required: 4,
+                have: 1,
+                queued: 0,
+                available: 1,
+                isTradeable: true,
+                isUpgradeItem: true,
+            },
+        ];
+
+        await openMissingMaterials('/actions/refine', 1);
+
+        const tab = container.querySelector('[data-item-hrid="/items/furious_spear"]');
+        expect(tab.getAttribute('data-missing-quantity')).toBe('3');
+        tab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+        expect(handleGoToMarketplace).toHaveBeenCalledWith('/items/furious_spear', 0);
+    });
+
     test('a single tab can still be dismissed on its own, leaving the rest (including the clear-all control) in place', async () => {
         const { container } = buildMarketplaceDom();
 

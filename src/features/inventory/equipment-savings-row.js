@@ -1402,14 +1402,17 @@ function costOf(itemHrid, enhancementLevel) {
     const recipe = recipeFor(itemHrid);
     const materials = craftMaterialsCost(itemHrid, recipe, enhancementLevel);
 
-    if (materials === null) return { cost: null, ask, crafted: true, recipe };
+    if (materials === null) return { cost: null, ask, crafted: true, recipe, upgradeBaseLevel: 0 };
     // The trade-in still applies: crafting the replacement does not stop you
     // selling the piece it replaces
     return {
-        cost: noSell ? materials : Math.max(0, materials - wornBid),
+        cost: noSell ? materials.cost : Math.max(0, materials.cost - wornBid),
         ask,
         crafted: true,
         recipe,
+        // The level the base was priced at, carried out so the Missing Mats
+        // button shops for the same thing this figure paid for
+        upgradeBaseLevel: materials.upgradeBaseLevel,
     };
 }
 
@@ -1427,7 +1430,9 @@ function costOf(itemHrid, enhancementLevel) {
  *
  * @param {string} itemHrid - The finished piece
  * @param {Object|null} recipe - From `recipeFor`
- * @returns {number|null} Coins for one, or null when it cannot be priced
+ * @param {number} [enhancementLevel] - The level the output is wanted at
+ * @returns {{cost: number, upgradeBaseLevel: number}|null} Coins for one and the
+ *   level its base was shopped for, or null when it cannot be priced
  */
 function craftMaterialsCost(itemHrid, recipe, enhancementLevel = 0) {
     const planner = craftingPlanCalculator()?.computeBestCraftingPlan;
@@ -1449,18 +1454,21 @@ function craftMaterialsCost(itemHrid, recipe, enhancementLevel = 0) {
                 total += plan.totalCost;
             }
 
-            const base = upgradeBaseCost(recipe, enhancementLevel, plannerBase);
-            if (base === null) return null;
-            total += base;
+            const base = upgradeBaseRoute(recipe, enhancementLevel, plannerBase);
+            if (base.cost === null) return null;
+            total += base.cost;
 
-            return total / (recipe.outputCount > 0 ? recipe.outputCount : 1);
+            return {
+                cost: total / (recipe.outputCount > 0 ? recipe.outputCount : 1),
+                upgradeBaseLevel: base.level,
+            };
         } catch (error) {
             console.error('[EquipmentSavings] The crafting planner failed, falling back to material asks:', error);
         }
     }
 
-    const flatBase = upgradeBaseCost(recipe, enhancementLevel, plannerBase);
-    if (flatBase === null) return null;
+    const flatBase = upgradeBaseRoute(recipe, enhancementLevel, plannerBase);
+    if (flatBase.cost === null) return null;
     const flat = craftCost({
         inputItems: recipe?.inputItems,
         priceOf: (hrid) => getItemPrices(hrid, 0)?.ask || 0,
@@ -1469,7 +1477,7 @@ function craftMaterialsCost(itemHrid, recipe, enhancementLevel = 0) {
         haveBase: true,
         upgradeAsk: 0,
     });
-    return flat === null ? null : flat + flatBase;
+    return flat === null ? null : { cost: flat + flatBase.cost, upgradeBaseLevel: flatBase.level };
 }
 
 /**
@@ -1488,29 +1496,58 @@ function craftMaterialsCost(itemHrid, recipe, enhancementLevel = 0) {
  * @returns {number|null} Coins, 0 when the base in hand suffices, null when unpriceable
  */
 export function upgradeBaseCost(recipe, enhancementLevel, priceBase) {
+    return upgradeBaseRoute(recipe, enhancementLevel, priceBase).cost;
+}
+
+/**
+ * The same figure, and WHICH shop it was costed at.
+ *
+ * The cost alone cannot tell the Missing Mats button what listing to open: the
+ * two routes buy different things. Winning on `directAsk` means the base is
+ * bought already at the level, so the bill wants that level's listing. Winning
+ * on the run means what is bought is a +0 to enhance, so the bill wants the +0
+ * — which is what the button has always opened, and is right for that route
+ * alone. Both come out of one comparison here so the panel's figure and the
+ * button's listing can never be reasoning about different routes.
+ *
+ * `level` is the level to SHOP for, not the level wanted: it is 0 whenever the
+ * run supplies the enhancement, and 0 for every recipe that does not retain
+ * enhancement at all.
+ *
+ * @param {Object|null} recipe - From `recipeFor`
+ * @param {number} enhancementLevel - The level the OUTPUT is wanted at
+ * @param {Function} priceBase - +0 base price (planner or ask), null when unpriceable
+ * @returns {{cost: number|null, level: number}} Coins for the base, and the level to buy it at
+ */
+export function upgradeBaseRoute(recipe, enhancementLevel, priceBase) {
     const baseHrid = recipe?.upgradeItemHrid;
-    if (!baseHrid) return 0;
+    if (!baseHrid) return { cost: 0, level: 0 };
 
     const needsLevel = recipe.retainAllEnhancement ? enhancementLevel || 0 : 0;
     if (needsLevel <= 0) {
-        if (ownsBase(baseHrid)) return 0;
-        return priceBase(baseHrid);
+        if (ownsBase(baseHrid)) return { cost: 0, level: 0 };
+        return { cost: priceBase(baseHrid), level: 0 };
     }
 
     const held = highestOwnedLevel(baseHrid);
-    if (held !== null && held >= needsLevel) return 0;
+    // Already in the bag at the level: nothing to buy, but the bill is still
+    // ABOUT that level, and a tab reading "sufficient" against +0 copies while
+    // the +12 sits unspent would be the same lie the other way round
+    if (held !== null && held >= needsLevel) return { cost: 0, level: needsLevel };
 
     const candidates = [];
     const directAsk = getItemPrices(baseHrid, needsLevel)?.ask || 0;
-    if (directAsk > 0) candidates.push(directAsk);
+    if (directAsk > 0) candidates.push({ cost: directAsk, level: needsLevel });
 
     const run = enhancementCost(baseHrid, needsLevel, held ?? 0);
     if (run !== null) {
         const fresh = held !== null ? 0 : priceBase(baseHrid);
-        if (fresh !== null) candidates.push(run + fresh);
+        if (fresh !== null) candidates.push({ cost: run + fresh, level: 0 });
     }
 
-    return candidates.length ? Math.min(...candidates) : null;
+    if (!candidates.length) return { cost: null, level: needsLevel };
+    // Ties go to the listing, which is the one route the button can shop for
+    return candidates.reduce((best, entry) => (entry.cost < best.cost ? entry : best));
 }
 
 /**
@@ -1537,6 +1574,7 @@ export function watchedTargets() {
             direct,
             mode,
             enhanceSource,
+            upgradeBaseLevel,
         } = costOf(itemHrid, enhancementLevel);
 
         const worn = wornRivalOf(itemHrid);
@@ -1570,6 +1608,9 @@ export function watchedTargets() {
             // Which of the two paths every figure below is counted along
             mode: mode || 'direct',
             recipe,
+            // Which listing the craft's base was costed at, so the Missing Mats
+            // button opens that one rather than always the +0
+            upgradeBaseLevel: upgradeBaseLevel || 0,
             noSell: targetNoSell(itemHrid, enhancementLevel),
             ownNoSell: target.noSell !== undefined,
             worn: worn ? { ...worn, name: nameOf(worn.itemHrid), bid: wornBid } : null,
@@ -1889,6 +1930,22 @@ function toggle(label, on, onChange, title) {
 }
 
 /**
+ * Open the listing for the piece a row is actually about.
+ *
+ * A watched target is an item AND a level, and the two are one thing here — the
+ * row says "Furious Spear +12" and the marketplace it opens has to be the +12
+ * order book, not the +0 one that costs a fifth as much. `linkToMarketplace`
+ * hands its navigate only an hrid, so the level rides along in the closure
+ * rather than in a wider signature every unlevelled caller would have to grow.
+ *
+ * @param {Object} target - From `watchedTargets`
+ * @returns {Function} A navigate for `linkToMarketplace`
+ */
+function openTargetListing(target) {
+    return (itemHrid) => navigateToMarketplace(itemHrid, target.enhancementLevel || 0);
+}
+
+/**
  * The one target the header watches, said large.
  *
  * @param {Object} target - From `watchedTargets`
@@ -1904,7 +1961,7 @@ function headline(target) {
     // A room has no item to draw or to open, so it is headlined by the artwork
     // of the skill it boosts instead
     const icon = target.house ? skillIcon(target.skill, 20) : itemIcon(target.itemHrid, 20);
-    linkToMarketplace(icon, target.itemHrid, navigateToMarketplace);
+    linkToMarketplace(icon, target.itemHrid, openTargetListing(target));
 
     const name = document.createElement('span');
     name.textContent = target.enhancementLevel ? `${target.name} +${target.enhancementLevel}` : target.name;
@@ -2070,12 +2127,12 @@ function targetCard(target) {
     });
 
     const icon = itemIcon(target.itemHrid, 22);
-    linkToMarketplace(icon, target.itemHrid, navigateToMarketplace);
+    linkToMarketplace(icon, target.itemHrid, openTargetListing(target));
 
     const name = document.createElement('span');
     name.textContent = target.enhancementLevel ? `${target.name} +${target.enhancementLevel}` : target.name;
     Object.assign(name.style, { flex: '1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
-    linkToMarketplace(name, target.itemHrid, navigateToMarketplace);
+    linkToMarketplace(name, target.itemHrid, openTargetListing(target));
 
     const cost = document.createElement('span');
     cost.textContent = target.cost === null ? 'no price' : formatKMB(target.cost);
@@ -2198,7 +2255,8 @@ function targetCard(target) {
         else if (target.ladder) card.appendChild(ladderLine(target.ladder, target.enhancementLevel));
     } else if (target.crafted) {
         card.appendChild(recipeLines(target));
-        if (target.recipe?.actionHrid) card.appendChild(missingMatsButton(target.recipe.actionHrid));
+        if (target.recipe?.actionHrid)
+            card.appendChild(missingMatsButton(target.recipe.actionHrid, target.upgradeBaseLevel || 0));
     } else if (target.ask > 0) {
         card.appendChild(priceLine('Ask Price:', formatWithSeparator(Math.round(target.ask)), ROW_COLORS.gold));
         // What it costs after the trade-in, which is the figure the bar fills
@@ -2269,9 +2327,14 @@ function targetCard(target) {
  * than rebuilding the marketplace tabs here, so the two cannot drift apart.
  *
  * @param {string} actionHrid - The craft
+ * @param {number} [upgradeBaseLevel] - The enhancement level the craft's base piece was
+ *   costed at, from `upgradeBaseRoute`. A refinement that retains enhancement is made
+ *   FROM a base already at the output's level, and the card counted buying one — so the
+ *   button has to open that level's listing or it quotes a different piece than the card
+ *   did. 0 (the default, and every plain craft) opens the +0 listing as before.
  * @returns {HTMLElement}
  */
-function missingMatsButton(actionHrid) {
+function missingMatsButton(actionHrid, upgradeBaseLevel = 0) {
     const button = document.createElement('button');
     button.textContent = 'Missing Mats Marketplace';
     Object.assign(button.style, {
@@ -2296,7 +2359,7 @@ function missingMatsButton(actionHrid) {
         }
         button.textContent = 'Opening…';
         try {
-            await open(actionHrid, 1);
+            await open(actionHrid, 1, { upgradeItemLevel: upgradeBaseLevel });
         } catch (error) {
             console.error('[EquipmentSavings] Opening the missing materials failed:', error);
             button.textContent = 'Could not open the marketplace';

@@ -104,6 +104,26 @@ function reservedBadgeLine(material) {
     return `<div style="font-size: 0.7em; color: #e8a87c;">${escaped}</div>`;
 }
 
+/**
+ * What to call a material line on its tab.
+ *
+ * A line may name an enhancement level — the piece a refinement is made FROM,
+ * or a gear swap from the simulators' Upgrade tab — and the tab then opens that
+ * level's order book. Saying the level is what stops the tab reading as the +0
+ * item whose price is a fifth of what is about to be spent.
+ *
+ * @param {Object} material - A material line
+ * @returns {string} Title-cased name, with `+N` when the line names a level
+ */
+export function materialTabName(material) {
+    const titleCase = String(material?.itemName || '')
+        .split(' ')
+        .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+        .join(' ');
+    const level = Math.max(0, Math.floor(Number(material?.enhancementLevel) || 0));
+    return level > 0 ? `${titleCase} +${level}` : titleCase;
+}
+
 export function createMaterialTab(material, referenceTab, onClickCallback, options = {}) {
     // Clone reference tab structure
     const tab = referenceTab.cloneNode(true);
@@ -136,11 +156,7 @@ export function createMaterialTab(material, referenceTab, onClickCallback, optio
     // Update text content
     const badgeSpan = tab.querySelector('[class*="TabsComponent_badge"]');
     if (badgeSpan) {
-        // Title case: capitalize first letter of each word
-        const titleCaseName = material.itemName
-            .split(' ')
-            .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-            .join(' ');
+        const titleCaseName = materialTabName(material);
 
         badgeSpan.innerHTML = `
             <div style="text-align: center;">
@@ -411,10 +427,7 @@ export function updateTabBadge(tab, material) {
         statusText = `Sufficient (${formatWithSeparator(material.required)})`;
     }
 
-    const titleCaseName = material.itemName
-        .split(' ')
-        .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-        .join(' ');
+    const titleCaseName = materialTabName(material);
 
     badgeSpan.innerHTML = `
         <div style="text-align: center;">
