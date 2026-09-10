@@ -129,17 +129,18 @@ export const settingsGroups = {
             },
             startupRecovery_autoReload: {
                 id: 'startupRecovery_autoReload',
-                label: 'Reload the page by itself when Toolasha misses the login data',
+                label: 'Recover by itself when Toolasha misses the login data',
                 type: 'checkbox',
                 default: true,
                 help:
                     'Once in a while the game sends its opening character data a moment before Toolasha is ' +
                     'listening, and there is no second copy — every panel stays empty for the rest of the ' +
-                    'session and only a reload brings them back. When that has actually happened, and only then, ' +
-                    'the page reloads itself once, about five seconds in, before you have clicked anything. Turn ' +
-                    'this off to be asked first: you get the same offer as a notice with a Reload button, so ' +
-                    'nothing is lost either way. A page that comes back broken always asks rather than reloading ' +
-                    'again.',
+                    'session. When that has actually happened, and only then, the connection is dropped about ' +
+                    'five seconds in, before you have clicked anything: the game opens a new one by itself and ' +
+                    'the data arrives with it, so nothing you have typed or opened is lost. Only if that has ' +
+                    'not worked a few seconds later does the page reload. Turn this off to be asked first: you ' +
+                    'get the offer as a notice with a Reload button. A page that comes back broken always asks ' +
+                    'rather than trying again.',
             },
         },
     },
