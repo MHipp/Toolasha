@@ -6,6 +6,14 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### A character switch stops leaving three listeners behind every time
+
+Measured in the running game rather than read out of the source: every character switch left four listeners on the message bus that nothing could ever remove, and they stacked for as long as the tab stayed open. This is not the race the rest of this release fixes — that one is confirmed closed by the same measurement — but a plainer thing sitting underneath it. A feature that starts a helper of its own has to stop it too, and three did not.
+
+The house cost display was started by the house panel and never stopped by it, so its inventory and room-level listeners built up one pair per switch. The party DPS panel and the production arbitrage board each build a panel shell whose frame subscribes to character switches, then dropped the handle on teardown while the subscription stayed — a shell can now be destroyed rather than only hidden, which is what those two wanted all along. The house display also refused a second start, since the panel and the setting toggle could each begin one without knowing about the other.
+
+A survey of all sixty-four cases of a feature starting a helper found these three were the only ones that accumulated. Around a dozen more leave a helper running after the feature stops without stacking up, which is a smaller problem and left for its own pass.
+
 ### Leftovers: things you deleted stay deleted, and four more features stop leaking on a switch
 
 Syncing across devices could undo a removal. A claim the crafting planner released came back as a live reservation — so materials read as spoken for by a plan that no longer existed, and every other plan's shortfall was wrong until it expired, up to a week later. That one did not even need a second device: a second tab was enough. Pressing Clear on the prediction or enhancement calibration wiped them locally and a pull from a device that had not cleared refilled them. And a guild trial roster could show one player twice, once under the name they were first seen by and once under their id, after the row was matched up and a peer still held the old one. Removals now travel with the data in each case, and the trial roster works out the duplicate again on every merge rather than remembering that it once deleted it.
