@@ -37,7 +37,7 @@ const game = vi.hoisted(() => ({
     characterData: null,
     dmHandlers: {},
     trialNames: [],
-    alerts: { status: [], payouts: [], reset: 0 },
+    alerts: { status: [], payouts: [], reset: 0, started: 0, stopped: 0 },
     recorder: { recording: false, activity: [], lifecycle: [], downloads: [], startedBy: null, endedBy: null },
     scoreboardToggles: 0,
     breakdown: {},
@@ -198,6 +198,8 @@ vi.mock('./guild-trial-recorder.js', () => ({
 }));
 vi.mock('../notifications/guild-trial-alerts.js', () => ({
     default: {
+        initialize: () => (game.alerts.started += 1),
+        cleanup: () => (game.alerts.stopped += 1),
         noteTrialStatus: (status) => game.alerts.status.push(status),
         notePayout: (payout) => game.alerts.payouts.push(payout),
         reset: () => (game.alerts.reset += 1),
@@ -5844,6 +5846,22 @@ describe('the sub-modules initialize() started, when the feature is switched off
         guildMemberSkills.progress();
 
         expect(game.wsHandlers.profile_shared).toBeTypeOf('function');
+    });
+
+    test('and the guild-chat alert listener goes with it too', async () => {
+        // Same shape, same file: `_forgetCharacter` calls `reset()`, which drops
+        // the pending start timer and keeps the chat listener, so only the
+        // teardown can stop it saying "a trial has begun" for a feature that is
+        // switched off.
+        game.alerts.started = 0;
+        game.alerts.stopped = 0;
+
+        await trialsFeature.initialize();
+        expect(game.alerts.started).toBe(1);
+
+        trialsFeature.cleanup();
+
+        expect(game.alerts.stopped).toBe(1);
     });
 
     test('tearing down a tracker that never started, or twice over, is not an error', () => {

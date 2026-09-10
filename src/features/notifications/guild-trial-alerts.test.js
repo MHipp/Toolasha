@@ -286,3 +286,35 @@ describe('resetting', () => {
         expect(game.sent).toEqual([]);
     });
 });
+
+/**
+ * The teardown half, which had no caller at all until Guild Trials grew one.
+ *
+ * The chat listener is what makes the "a trial has begun" alert work with the
+ * guild page shut, so nothing on the character-switch path removes it —
+ * `reset()` drops the pending start timer and deliberately leaves the listener
+ * up. That makes `cleanup()` the only thing that can stop it, and for a while
+ * nothing called it: turning Guild Trials off left the alert firing.
+ */
+describe('stopping the alerts', () => {
+    test('cleanup takes the chat listener off', () => {
+        expect(game.wsHandlers.chat_message_received).toBeTypeOf('function');
+
+        guildTrialAlerts.cleanup();
+
+        expect(game.wsHandlers.chat_message_received).toBeUndefined();
+        expect(guildTrialAlerts.initialized).toBe(false);
+    });
+
+    test('cleaning up twice, or before anything started, is not an error', () => {
+        expect(() => guildTrialAlerts.cleanup()).not.toThrow();
+        expect(() => guildTrialAlerts.cleanup()).not.toThrow();
+    });
+
+    test('and it can be started again afterwards', () => {
+        guildTrialAlerts.cleanup();
+        guildTrialAlerts.initialize();
+
+        expect(game.wsHandlers.chat_message_received).toBeTypeOf('function');
+    });
+});

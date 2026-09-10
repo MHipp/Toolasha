@@ -4727,6 +4727,12 @@ class GuildTrials {
         guildTrialTrace.cleanup?.();
         guildTrialAbilitiesFeature.cleanup();
         guildTrialScoreboard.close();
+        // Started from `initialize()` and stopped nowhere else: `_forgetCharacter`
+        // calls `reset()`, which drops the pending start timer but keeps the chat
+        // listener on purpose. With the feature switched off that listener stayed
+        // up, so a guild-chat line could still raise a "trial has begun" alert for
+        // a feature the player had turned off.
+        guildTrialAlerts.cleanup?.();
         // Before the capture's own teardown: the skills tracker's `offCaptured`
         // handle is a subscription *to* `guildLoadoutCapture`, so it gives it
         // back while there is still something to give it back to. Nothing else
