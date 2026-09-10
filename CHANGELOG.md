@@ -52,33 +52,21 @@ A feature that starts a helper has to stop it too, and three did not — so the 
 
 ### Leftovers: things you deleted stay deleted, and four more features stop leaking on a switch
 
-Syncing across devices could undo a removal. A claim the crafting planner released came back as a live reservation — so materials read as spoken for by a plan that no longer existed, and every other plan's shortfall was wrong until it expired, up to a week later. That one did not even need a second device: a second tab was enough. Pressing Clear on the prediction or enhancement calibration wiped them locally and a pull from a device that had not cleared refilled them. And a guild trial roster could show one player twice, once under the name they were first seen by and once under their id, after the row was matched up and a peer still held the old one. Removals now travel with the data in each case, and the trial roster works out the duplicate again on every merge rather than remembering that it once deleted it.
-
-Three of these were left open on purpose and stay that way: goal lists, the watchlist, and saved overlay layouts each weigh a returning deletion against losing an afternoon's work to a pull, and re-deleting costs one click.
-
-Four more features were still leaving a live listener behind on every character switch. Net worth was the worst and had no protection of any kind — each interrupted switch left another copy re-pricing your whole inventory on every price, settings or inventory event, permanently. The queue monitor left a second redraw timer, and its own note claimed the case was handled. The loadout snapshot leaked on a reconnect to the _same_ character, which its character-name check could not see. And the listing-age tracker both leaked and put the departing character's order books back over the arriving character's — books that feed the ledger's marks, guild credit valuation and the price the marketplace autofill suggests.
-
-**A test now catches the next one.** Twenty-seven of these have been fixed by hand across three sweeps, and nothing stopped the next one being written. Every feature's startup is now read at test time, and one that arms itself after waiting on stored data without checking it is still wanted fails the build, naming the file and the line and what to do about it. Anything genuinely exempt is listed with a sentence saying why — a reason nobody can write is a site that is not safe. Run against the twenty-seven as they were before their fixes, it flags every one, and it found the listing-age tracker, which three hand sweeps had missed.
+- Deletions no longer come back when another device or tab syncs: released crafting materials stayed reserved for up to a week, Clear on the prediction and enhancement calibration refilled itself, and a trial roster could list one player twice.
+- Goal lists, the watchlist and overlay layouts still restore on a pull, on purpose.
+- Net worth, the queue monitor, the loadout snapshot and the listing-age tracker stop leaving a live copy behind on every character switch.
 
 ### Leftovers: fourteen features stop leaving work behind on a character switch, and a deleted dungeon run stays deleted
 
-Switching character while a feature was still reading its own saved data left that feature's previous set of listeners, observers and timers running with nothing able to remove them — one more set every switch, for as long as the tab stays open. This is the other half of a race a recent round fixed nine of: those nine went quiet and stayed dead until a reload, which you could see; these fourteen carried on working twice, three times, four times, which you could not.
+Fourteen features left old listeners and timers running when you switched character mid-load, doing their work twice. Most doubled a number — combat statistics, labyrinth XP, order books — but the trade ledger kept recording for a character whose ledger you had switched off.
 
-Two of them were doing more than duplicating work. The trade ledger kept recording fills for a character whose ledger you had switched **off** — the setting arrives after the switch does, so it began loading under the default, then read the real value and shut down while the load was still in flight, and the tail that resumed wrote what it found. And the labyrinth room logs merged the departing character's stored sessions into the arriving character's memory. The inventory custom tabs were the only ones that never healed themselves: the panel handed its half-built copy away and lost the reference, so nothing could ever shut it down — three interrupted switches left four stylesheets and four sets of observers in the page.
-
-The rest were silently multiplying a number: doubled damage and consumable counts in Combat Statistics, doubled labyrinth XP rates and duplicate attempts in the clear-rate pool the simulator calibrates against, every order book processed twice into the bulk-sell decision, a duplicated market history report, and a task reroll walk that could advance two steps on one press. The dungeon panel stacked a second copy of itself and a second once-a-second read of your run history — a leak it had been quietly logging as a leak for some time.
-
-Separately: a deleted dungeon run stays deleted. Deleting a run, an outlier the tracker scrubbed, and a run mended by the date repair were all local facts, so syncing with a device that had not seen the removal brought them back. The mended ones were worst — repairing a run changes its identity, so the month-long broken copy returned **beside** the fixed one and dragged the pace average with it. Removals now travel with the history and are folded the way "delete all history" already was, and they are dropped once a clear has made them redundant, so the list cannot grow forever. A run you record again after deleting it is still wanted again.
-
-Also: the own-use tooltip's contract now says what drives its colour, which is how it came to show the same green for both answers in the first place.
+A deleted dungeon run now stays deleted across a sync, including outliers and runs the date repair mended — a mended run used to come back beside its fixed copy and drag the average down.
 
 ### Dungeon times a dd/mm clock turned into month-long runs
 
-On a client that writes dates day-first, the dungeon tracker read every chat timestamp back-to-front. A field over 12 was rescued as a day, so days 13-31 came out right and every day of 12 or less did not — twelve days in every month misread. Runs came out weeks long: a fourteen-minute clear was stored as twenty-nine days. Four separate copies of the same parser had it, and only one had been fixed; the three that write the stored records had not, so history kept filling with month-long runs even once the chat labels read correctly. All four now share one reading, which takes its order from the client and lets the digits overrule it where they can.
+On a day-first client the dungeon tracker read chat timestamps back-to-front, so twelve days of every month were misread and a fourteen-minute clear could be stored as twenty-nine days. All four copies of the parser now agree.
 
-Runs already stored that way are re-derived on the next load: both ends of a mangled run went through the same wrong reading, so the true length can be recovered from the record itself. It only rewrites a run when the repair is well-defined and the result is plausible — anything less certain is left exactly as it is, and nothing is deleted. It runs once.
-
-Two more from the same thread. A timestamp both of whose fields are over 12 is no date under any reading and is now dropped instead of being rolled into next year; and a run that spans New Year is a few minutes long instead of a year. The outlier scrub's console line also stops printing milliseconds with a seconds label, which made a correctly scrubbed fourteen-minute run look like ten days.
+Runs already stored wrong are repaired once on the next load, but only where the repair is certain — anything doubtful is left alone and nothing is deleted.
 
 ### "Own use: make vs buy" says which side the saving is on
 
@@ -86,123 +74,91 @@ The line showed the same green whether making or buying came out cheaper, and sa
 
 ### The performance panel stops calling waiting-around "CPU"
 
-Net worth deliberately hands the browser back control while it recalculates, but the panel timed the whole wait and filed it as processor time — so the largest line in a live capture read as half a second of the main thread being blocked when the thread was free the entire time. It was nearly diagnosed as the cause of a stutter it had nothing to do with. Anything that waits is now listed separately as wall time, and can no longer be blamed for a pause it merely spanned.
+The performance panel filed time spent waiting as processor time, so net worth's deliberate pause read as half a second of blocked main thread and was nearly blamed for a stutter it had nothing to do with. Waiting is now listed separately as wall time.
 
-The marketplace panel's once-a-second check for an open game window was searching the whole page each time. It now learns about windows as they open, which is how the rest of the script watches for them. (The far larger cost in that tick is the browser being asked for the pin's position on a page the game had just redrawn — that is work the browser has to do before it can paint either way, and the poll only pays it a moment earlier, so it stays.)
-
-On the test server, the ability book overlay panel now costs and buys through the Tester shop as the setting has always claimed — including the header's "cheapest next ability level", which was ranking by a price you would not have paid. The net worth tile that shares those figures says when it is quoting the shop.
+On the test server, the ability book overlay panel and the net worth tile now cost and buy through the Tester shop, as the setting always claimed.
 
 ### The Equipment Watch row stops re-costing every target on every redraw
 
-That one overlay row was the single most expensive thing on the page in three separate live captures — 77ms in one call, more than any websocket handler. It was solving the full protection sweep for every enhancing target from scratch each time it drew, though nothing about those targets had changed between draws: nearly two hundred Markov solves for the same answers. It now keeps each sweep against the things that decide it — the item, the levels, your bench, the material and protection prices — so a redraw where nothing moved reuses them, and a genuine change still sweeps again. Measured on a game-sized fixture, a redraw went from 18.7ms to 1.05ms.
+The Equipment Watch overlay row was the most expensive thing on the page — it re-solved the full protection sweep for every enhancing target on every redraw, though nothing had changed. It now reuses the answers until something that decides them moves: a redraw fell from 18.7ms to 1.05ms.
 
-On the test server, ability books in the Item Dictionary now follow the Tester shop setting, as its description always said they did: the cost is floored at the shop's price where the shop is cheaper — on both figures, since both are prices you would pay to buy a book — and the buy button takes you to the shop with the amount filled in, instead of to the marketplace. It fills the amount; pressing Buy is still yours.
+On the test server, Item Dictionary ability books follow the Tester shop setting, and the buy button takes you to the shop with the amount filled in.
 
 ### Features that a character switch used to break, and a lighter start
 
-Switching character while a feature was still reading its own saved data could leave that feature registered to nobody and marked as started, so the arriving character's copy never ran and the feature stayed dead until the page was reloaded. Nine are fixed, five of them in that worst state: the labyrinth tracker, the leaderboard and XP trackers, the task reroll tracker, the alchemy and enhancement pins, and the inventory sort. Two more turned out to be doing something different and worse than expected — the trade history could end up recording every fill twice for the rest of the session, and a modal drag could keep running after being switched off. A survey of all 87 feature initialisers found 38 that register something after a read and 29 exposed to this; the rest accumulate a duplicate registration per switch and are the next pass.
+Nine features could be left dead by switching character while they were still loading — the labyrinth tracker, the leaderboard and XP trackers, the task reroll tracker, the alchemy and enhancement pins and the inventory sort among them. Trade history could also start recording every fill twice.
 
-Startup reads less. Where a feature read several of its own records one after another, they now go in a single request instead of one apiece — five reads become one for the task reroll walk, ten become four for the collection filters. And the collection filters' rename of some long-retired keys now records that it has run, rather than checking, and sometimes writing, on every single load since. This matters most where several features start at once, which is now the normal case.
-
-The pformance panel can also finally tell anonymous timers apart. Every timer created before the panel opened landed in one row called `anon@?`, so the largest line in a live capture was an unknown number of different timers added together; each now gets its own row with a word lifted from its own source, so the next capture names them.
+Startup reads less: features that read several records now fetch them in one request, which matters most when several start at once.
 
 ### Audit round: a buy price that could go down, and a character switch that left the wrong things behind
 
-The Buy Now price cover could **lower** a price, which is the one thing it promised never to do. It decided whether to raise before waking the price control and wrote the answer a moment later — and waking that control hands you a live field, so pressing ×2 in between meant the script wrote its older, smaller number over yours. It also read the sleeping display, which shows a rounded figure, so a price of 470,432 looked like 470,000 and anything in between passed as a raise. Two more: it applied the _bottom_ of the tradable band as well as the top, which on a cheap ladder pushed the price up past the rung that covered the order, and a modal whose item it could not identify was priced off the ladder of whatever it had been armed for. All four are fixed, and the decision now happens against the field it is about to write.
+The Buy Now price cover could lower a price — the one thing it promised never to do — because it decided against a rounded, sleeping display and wrote its answer after you had already pressed ×2. It now decides against the live field it is about to write, and three related mispricings go with it.
 
-Switching character left work behind in two ways. The pause that keeps background work out of the way of startup only ever applied to the first startup of a session, so every switch after that put the arriving character's loading back into competition with it. And a feature that finished loading just after being shut down wrote itself back in, so the arriving character tore down the departing one's copy and never tore down its own.
-
-Two in the simulator. A worker that hit an error was put back in the warm pool with its diagnostic capture still switched on, which then ran for every later simulation that borrowed it. And a worker the browser kills answers nothing at all — that used to hold the whole warm pool open for the rest of the session; it now gives up after two minutes of silence, which no real run comes close to.
+Switching character no longer leaves the departing character's copy of a feature running in place of the arriving one's.
 
 ### Four features that were hidden behind a switch are now simply on
 
-Each of these was defaulted off out of habit rather than for a reason, and all four are the kind of thing you would want without having to find them first.
+Four features were defaulted off out of habit rather than for a reason, and are now simply on: the gear warning, which flags gear that would speed up your current action sitting unequipped in your bag; ability hovers showing your real cooldown and cast time; `[` and `]` to step between marketplace items; and Buy Now raising the price to cover the whole quantity.
 
-The gear warning is the one that was costing people: it says so in its own description — a crafting, cooking, gathering or enhancing action running while the piece that would speed it up sits unequipped in your bag. It stays silent unless something is actually wrong, and says nothing during a labyrinth run. Ability hovers now show what your cooldown and cast time really are with your haste and cast speed applied, adding nothing when those match the base figures. `[` and `]` step between marketplace items without going back to the list — a shortcut with nothing on screen until you press it. And Buy Now raises the price to cover the whole quantity, which is a better bargain than its description used to claim: the price is a limit, not a per-unit charge, so the units the cheapest listings cover are still bought at those prices.
-
-Anyone who would rather meet new switches turned off already has "New settings start turned off" for that.
+Prefer to meet new switches turned off? "New settings start turned off" still does that.
 
 ### Follow-ups: an all-zones sweep stops re-sending the game to itself, and reroll spend is right on a cold board
 
-A full all-zones sweep built a fresh worker for every zone and tier and copied the whole game's data into each one — thirty-six copies for a thirty-six tier sweep. The coordinator keeps its workers now, so it sends the data once per slot instead: four copies, not thirty-six. And pressing Simulate again no longer throws away the warm workers, so a second run starts where the first left off. Stopping a run keeps them; disabling the feature or switching character still releases everything, because a kept worker there would be holding a departed character's data.
+An all-zones sweep built a fresh worker per zone and tier and copied the whole game's data into each — thirty-six copies for a thirty-six tier sweep, now four. Pressing Simulate again keeps the warm workers.
 
-The reroll badge showed a board it had no figures for yet as "spent nothing". It reads the game's own count when it has nothing of its own, the way the task statistics popup already did, so a cold board shows what you really spent. That was also the last thing keeping the reroll tracker's stored data from loading alongside everything else at startup.
-
-And the last guess about which trial slot is yours is gone. It read "only one player's counters have been seen, so that must be you", which was true when the game only sent your own counters and is not true now that it sends everyone's — while spectating, one player seen means whoever was fighting. With the naming guard now total, that guess outranked portrait and vitals evidence, so it could put your name on someone else's row. Your slot comes from the roster or the stored id map, or it is left unknown.
+The reroll badge no longer reports a board it has no figures for as "spent nothing"; it falls back to the game's own count. Guild trials also stop guessing which slot is yours, which could put your name on someone else's row.
 
 ### Leftovers: a faster start, a warm simulation worker, and your own name where it belongs
 
-Seven more features now start alongside each other rather than queueing — about a second and a half of waiting on stored data, removed from every load. Two more were looked at and deliberately left as they are, with the reason written beside them: one has a badge that reads its figures with no fallback and would show an empty board as "spent nothing", and the other has nothing to wait for in the first place. Background work also now waits for startup to finish rather than for the browser's next idle moment, which in Chrome was landing in the middle of it and making both slower.
+Seven more features start alongside each other rather than queueing — about a second and a half off every load. Background work now waits for startup to finish rather than for the browser's next idle moment.
 
-A labyrinth fight re-ran its clear-chance replay every few seconds, and every replay built a new simulation worker and copied the whole game's data into it. The worker is kept warm between replays now and keeps the data it already holds, so only the first one pays. A worker holding data that has actually changed is thrown away rather than reused, so the answers cannot go stale, and everything that stops a simulation now also releases the warm ones.
-
-In guild trials, the last place your own name could be put on somebody else's row is closed: the rung that names the final unclaimed slot by elimination now goes through the same guard as every other one, and declines rather than guessing. And your own slot is found from a stored map of slots to character ids, so your row keeps your name through a refresh instead of falling back to "Player N" — a map another character recorded is refused outright.
+A labyrinth fight's clear-chance replay keeps its simulation worker warm instead of rebuilding it every few seconds. In guild trials your own row keeps your name through a refresh, and the last rung that could guess it wrong now declines.
 
 ### The trial scoreboard stops claiming every row is confirmed, and a lone attacker no longer takes a whole tick
 
-The game changed what it streams during a guild trial: action counters used to arrive for your own character only, and now arrive for every player present. Nothing was reporting a wrong total because of it — a full trial still reconciles to within 0.006% of the game's own figure — but two things quietly started meaning something else.
-
-The scoreboard's note about attack counters existed to say which rows the counters single out. With counters now covering everyone it was reading as "and 55 more carry own attack counters that confirm it directly", which asserts a confirmation the attribution does not make. It stays quiet now unless the counters really do cover a subset.
-
-And a tick where exactly one player's counter rose was being credited to that player in full, even in a snapshot showing the whole party — where the same tick used to be divided. On a real trial that moved about 0.32% of the damage onto individual names. It is split again above the crowding threshold; a lone attacker in a small skirmish still gets the credit, which is what that rule was always for. Party totals are unchanged either way.
-
-Also corrected: the watcher's own slot is now found from the roster's character id rather than inferred from the counters, which had stopped identifying anyone, and a good deal of documentation that still described the one-counter world.
+The game now streams action counters for every player in a guild trial, not just you, and two things quietly changed meaning. The scoreboard's note claiming counters confirm a row is shown only when they really do single one out. And a tick where one player's counter rose is split again in a crowded snapshot instead of being credited to them in full — about 0.32% of damage on a real trial. Party totals are unchanged.
 
 ### Startup runs the features that were meant to run together, and a guild trial costs less
 
-Features that were marked as safe to start alongside each other never did. The registry has always supported it, but the list of fields handed over at startup did not include the flag, so it arrived undefined and every feature waited for the one before it — measured across two real startup traces, not one feature's start ever overlapped another's. Fifteen of the sixteen marked features now start together; the sixteenth was deliberately left to wait, because what it installs is the second confirmation between a Decompose click and an item you cannot get back, and starting it late to save a moment is the wrong trade. A test now reads the registry to find every field it depends on and fails if one stops being handed over, which is the thing that would have caught this.
+Features marked as safe to start alongside each other never did; every one waited for the one before it. Fifteen of sixteen now start together; the sixteenth still waits, because what it installs is the confirmation between a Decompose click and an item you cannot get back.
 
-A guild trial streams about forty messages a second, and two pieces of work were being redone on every one of them: the loadout list, sorted and re-judged from scratch each time, and a page-wide search for the fight view that only stops once the fight has been identified — which never happens while you are spectating with the view closed. Both are now computed once and reused, worth several seconds of processor time over a trial. Every attributed number is unchanged, and that is asserted rather than assumed: the same captured trial replays to byte-identical output with the caches on and off.
-
-Two smaller things. The trial export now says what each compared figure actually measures, because Damage Taken compares our post-mitigation number against the game's pre-mitigation one and so reads as a large shortfall on every row for ever — the panel already explained this, the exported file did not. And the diagnostic trace can no longer hold an unbounded queue if stored data never loads: it keeps a bounded window, gives up waiting rather than holding for ever, and the file says outright that it is a window rather than the whole stream.
+A guild trial also stops redoing two pieces of work on every one of its forty messages a second — several seconds of processor time, with every attributed number unchanged.
 
 ### The breakdown link was being read as a drag, not a click
 
-This is why it never opened. The link is a span in the profile card's header, and that header is what you drag the card by. Pressing it started a drag, which captures the pointer and makes the browser deliver the click to the header instead of the link — so the link never heard it. A press that never moved could still get through, which is why it looked intermittent; move the mouse a pixel, as a hand does, and it was gone every time.
+The breakdown link sits in the profile card's header, which is also what you drag the card by — so pressing it started a drag and the click never reached the link. Moving the mouse a pixel, as a hand does, lost it every time.
 
-A press aimed at a control inside a drag handle is now a click. The rule is the one already visible on screen: a handle says `cursor: move` and a control says `cursor: pointer`, so anything from the press target up to the handle that reads as clickable is a control. That covers every panel in the script at once — there are 28 drag handles — rather than the previous list of tag names, which named only real buttons and inputs and missed every span.
+A press aimed at a control inside a drag handle is now a click, judged by the cursor the page already shows. That covers all 28 drag handles in the script.
 
 ### The breakdown link raises the panel instead of redrawing one you cannot see
 
-Pressing "breakdown" on a profile card did nothing after a page refresh, and this is why: the Build Score panel is restored open where you left it, at the same default position every unplaced panel uses, so it came back underneath another panel — measured live, the Session Briefing sits at exactly the same spot and a little higher in the stack. With the panel already open, the link only ever redrew it or closed it, and neither raises anything. So the press redrew something invisible, or shut something invisible.
-
-A press is now a request to see that build: the panel is raised and unfolded, and only closes when it was already in front, unfolded, and showing the same profile. And panels that have never been dragged no longer open on the exact same spot — they cascade, while a panel you have placed still opens precisely where you left it.
+Pressing "breakdown" after a page refresh did nothing, because the Build Score panel had been restored open underneath another panel — so the press only redrew or closed something you could not see. A press is now a request to see that build: the panel is raised and unfolded, and closes only when it was already in front showing the same profile. Panels you have never dragged now cascade instead of stacking on one spot.
 
 ### The action bar stops reading a percentage as a number of seconds
 
-On a long action the game writes `59% - 1m 28s` on the progress bar instead of a bare total. The countdown read that with `parseFloat` and stored **59 seconds** as the action's total length, then used it to judge whether the bar's animation could be trusted — so the check passed on some ticks and failed on others, and the label flipped between two different scales several times a second. It now recognises only the bare-seconds form and stands down on the rest, leaving the game's own readout, which has the real figures, in charge.
+On a long action the game writes `59% - 1m 28s` on the progress bar instead of a bare total, and the countdown read that as 59 seconds of action length. The check that followed passed on some ticks and failed on others, so the label flipped between two scales several times a second. It now recognises only the bare-seconds form and leaves the game's own readout in charge of the rest.
 
 ### The Buy Now price can raise itself until it covers what you asked for
 
-Missing Materials fills in 24, the top ask has 15, and pressing the button bought 15. The modal can now walk up the ask ladder to the lowest price whose cumulative supply covers the whole quantity — 470K to 471K in the case that prompted this — and stops there. It never climbs past the rung it needs and never past the tradable maximum, it only ever raises, and it reads the modal's own "Available At Price" line as the authority, stepping again only if a stale order book left it short. You still press Post Buy Order, with "You Pay" already showing what it will cost.
-
-The price is a limit rather than what every unit costs — each listing still sells at its own price, so only the units the cheapest listings could not cover pay more. It is still **off by default**, as new features are: turn on "raise a Buy Now price to cover the quantity" in the marketplace settings. It applies to every panel that fills a buy quantity, not just Missing Materials.
-
-Alongside it: the marketplace pushpin no longer draws on top of a house or action panel opened over the marketplace. The game's own modals sit far below where a comment in this repo claimed they did, so the pin was winning a contest it should never have been in.
+Missing Materials fills in 24, the top ask has 15, and the button bought 15. Buy Now can now walk up the ask ladder to the lowest price whose supply covers the whole quantity, and no further. The price is a limit, not a per-unit charge, so cheaper listings still sell at their own prices. Off by default — "raise a Buy Now price to cover the quantity" in marketplace settings. You still press Post Buy Order.
 
 ### Leftovers: enhancing rows count their protections, and two modals stop guessing which box is which
 
-An enhancing row's time and its material ledger both ignored protection items, so a climb that runs out of protections halfway still promised the full request. Both sides now charge the expected protection draw per attempt — the same figure the action bar already showed — and both stop at the same count, marked `~` because it is an expectation rather than a promise. Where a protection cannot be quantified at all it caps nothing and the figure is marked as an estimate, rather than reading as unlimited. The action bar's own duplicate cap is gone; there is one place that decides now. Switch it off with the existing protection setting and every figure returns to what it was.
+An enhancing row's time and its material ledger both ignored protection items, so a climb that runs out of protections halfway still promised the full request. Both now charge the expected draw and stop at the same count. The protection setting turns it off.
 
-Two modals stopped guessing. When nothing identifies the quantity field, the sell strip refuses the step and says so instead of reading the **price** box, and the buy-side autofill leaves the modal alone instead of writing a material count into the **enhancement level** box and then pressing Buy.
-
-Three smaller ones. The sell queue now empties and gives its claim back on a character switch, before the ledger moves, instead of leaving the departing character's stock claimed and the arriving one's queue full of somebody else's sales. The budget breakdown claims stock only once the window can definitely be closed, so a failure while it opens cannot leave stock claimed for a week with no window to close. And when Loadout Snapshot is off the sell strip says the loadouts were not checked, rather than saying nothing and reading as "nothing to hold back".
+Two modals stop guessing: the sell strip refuses a step rather than reading the price box as a quantity, and buy-side autofill leaves the modal alone rather than typing a count into the enhancement level box.
 
 ### Audit round: a watchlist crash that never happened, and a shared bag that forgot whose it was
 
-The watchlist measured a price move across the marker that means "nobody is on this side of the book". An item whose ask emptied while its bid never moved was drawn as a 53% fall; one with no book at all came out sign-flipped in the thousands of percent. A move is now measured only over sides both readings actually quote, and where there is no common side it says nothing rather than inventing a figure.
+The watchlist measured price moves across the marker that means "nobody is on this side of the book", drawing an emptied ask as a 53% fall. It now measures only over sides both readings quote.
 
-The shared inventory ledger did not notice a character switch. Until some unrelated write happened to load it, every plan on the arriving character read stock the departing one had claimed as free — reporting no shortfall where there was one. Worse, a load still in flight across the switch could return having loaded nothing and then be saved, filing that emptiness under the arriving character's name and silently dropping every goal and crafting-plan claim they had. Three more around it: an unreadable ledger was answered by overwriting it, the guided crafting walk's step hook outlived the walk that installed it and quietly re-claimed an abandoned plan for another feature's walk, and deleting a goal while the ledger was switched off left its claim behind to reappear when switched on again.
-
-Enhancement tooltips say when a quote is missing a price instead of leaving the line out — an unpriced material used to make the total come in under the item's own asking price and be coloured as profit. A sell-queue add whose session was torn down mid-wait now stands down rather than re-arming listeners on a disabled feature. And a marketplace snapshot cache stamped in the future is treated as expired rather than fresh, so a clock that steps backwards cannot pin hours-old prices as current.
-
-Also checked and deliberately left alone: the price band's floating-point rounding, which widens a band by one increment on about a quarter of real items. Measured against the live client — a published value of 1,821,000 shows a tradable range of 1650K to 2010K, exactly what this reproduces, where exact arithmetic gives neither end. The game's own ladder carries the same rounding, so matching it is what being right means; a test now records the measurement so it is not "corrected" later.
+The shared inventory ledger did not notice a character switch, so plans read the departing character's claimed stock as free — and a load caught mid-switch could file emptiness under the arriving character and drop every claim they had.
 
 ### Bulk Sell checked an enhancement level it was never actually reading
 
-The strip's Confirm compares the enhancement level in the modal against the one it queued, but the read never found the game's label — it looked inside the input's own wrapper, where the game puts it in a sibling. So it answered "+0" for every modal. Enhanced items could therefore never be confirmed from the strip at all; and a plain item queued against a modal showing an enhanced copy of the same thing at the same count passed every check, the level being the only thing that told them apart. It reads the real field now, and an enhanced step refuses outright when no level can be read rather than assuming zero.
+Bulk Sell's Confirm compares the modal's enhancement level against the one it queued, but it was looking in the wrong place and answered "+0" every time — so enhanced items could never be confirmed from the strip, and a plain item could pass against an enhanced copy of the same thing. It reads the real field now.
 
-Two more from the same look. Pressing Start before the loadout list had finished loading queued the gear saved in your loadouts, holding nothing back while reporting that it had — an unloaded list reads as empty, which is indistinguishable from having none. Start waits for it now. And a sell modal you opened yourself during a run had its quantity, and its price, overwritten with the queued sale's; the prefill checks the modal is showing the item it queued.
+Start also waits for your loadout list to load, instead of queueing the gear it was meant to hold back.
 
 ### A counted enhancing row shows the time its materials cover
 
@@ -210,7 +166,7 @@ The last place a queued row still promised work its materials could not pay for:
 
 ### Chat history is filed under a tab's name, never its position
 
-A tab whose strip had not drawn yet was keyed by position, so restored messages could land in whatever tab later sat at that index — a whisper reappearing in a public tab's scrollback. History is written only once a tab can be named, and a tab that gains its name later starts persisting then rather than losing what came before. Records already filed by position are dropped rather than restored, since nothing on record says which tab they belonged to.
+A tab whose strip had not drawn yet was keyed by position, so restored messages could land in whatever tab later sat at that index — a whisper reappearing in a public tab's scrollback. History is now written only once a tab can be named, and a tab that gains its name later starts persisting then. Records already filed by position are dropped rather than restored, since nothing says which tab they belonged to.
 
 ### The leak canary can watch anything that will report a count
 
@@ -218,67 +174,51 @@ It could only see the shared registries, which left the two collections most lik
 
 ### And the marker, the badge, and the dungeon you are looking at
 
-"Avg from here" marks the team and dungeon the panel is actually showing — a run in progress first, then whatever the history is filtered to — instead of whichever run happened to be stored most recently, which could quietly reset a different dungeon's average. Where the panel genuinely does not say, it asks rather than picking. And a marketplace tab keeps its "reserved by" note when the inventory updates, instead of losing the line that explains why stock you can see is not yours to use.
+"Avg from here" marks the team and dungeon the panel is actually showing — a run in progress first, then whatever the history is filtered to — instead of whichever run was stored most recently, which could quietly reset a different dungeon's average. Where the panel does not say, it asks. And a marketplace tab keeps its "reserved by" note when the inventory updates.
 
 ### The profile's breakdown link opens on the first press
 
-It could be pressed and do nothing at all. Opening the breakdown redrew the panel whenever the profile it was pointed at changed and a panel object existed — but that object outlives the panel being taken off the page, so it redrew something invisible and stopped there. Measured on a live page: the panel opened and closed perfectly once it had been built, and only the press that mattered, the first one after opening a profile, was swallowed.
-
-It now asks whether the panel is actually on screen rather than whether one was ever made. Pressing it on the same profile twice still puts it away; pressing it while looking at somebody else redraws for them instead of closing, which is the press where closing would look most like a failure.
+The profile's breakdown link could be pressed and do nothing at all: it asked whether a panel object existed rather than whether the panel was on screen, and that object outlives the panel, so the first press after opening a profile was swallowed. It now asks what is actually on screen. Pressing it twice on the same profile still puts it away; pressing it while looking at someone else redraws for them.
 
 ### The device-local rule now holds in every direction, and restored chat is sanitised properly
 
-Chat history is kept on your machine and is meant never to leave it. Two ways it still could:
+Chat history is kept on your machine and two routes could still let it out. The rule that strips it was written for one store only and is now enforced wherever a device-local record lives, and importing a settings file — the one route in that never checked — now drops it too.
 
-The rule that strips it was written per store, and the rule it enforces is not — it applied to the settings store alone, so the same record written anywhere else would have gone to the sync gist and into backup files unnoticed. It is enforced everywhere now, whichever store a device-local record lives in.
-
-And every route _out_ stripped it while one route _in_ did not: importing a settings file never checked. A file exported by an older build, or hand-edited, could plant somebody else's whisper markup in your own store, after which your own history feature would keep it as if you had typed it. That import now drops it and takes the rest of the file as before.
-
-Restored messages are also sanitised for more than event attributes. A link that runs script rather than navigating, an animation that writes such a link back after the sweep, a background image fetched from a stranger's server the moment old scrollback is drawn — none of those needed a click to matter, and all are removed now. A message that fails to parse costs only itself instead of the rest of the buffer.
+Restored messages are also sanitised properly: script-bearing links, animations that rewrite them, and background images fetched from a stranger's server are removed.
 
 ### Bulk Sell's own Confirm button works, and says why when it will not
 
-It pressed nothing at all. It looks for the game's confirm button by name, and the names it knew did not include the one the game actually draws — "Post Sell Order" — so it refused every time. It now knows the four names the game's own string table defines. In a language other than English it will still refuse, because those names are translated and the game offers nothing to translate through; it fails closed and the game's own button is unaffected.
+Bulk Sell's own Confirm pressed nothing at all: it looked for the game's confirm button by name and did not know the one the game draws — "Post Sell Order". It now knows all four names the game defines. In another language it will still refuse, since those names are translated; the game's own button is unaffected.
 
-It also refused _silently_, which is why it read as a broken button rather than a cautious one: the reason was written after the item, the price and the decision, past where the strip runs out of room. A refusal now comes first, and the whole line is readable by hovering.
+A refusal now says why, at the start of the line instead of past where the strip runs out of room.
 
 ### The marketplace opens at the enhancement level a watched upgrade was costed at
 
-Watching an enhanced item and pressing "Missing Mats Marketplace" opened the order book for the plain, unenhanced item. The panel costs an upgrade by whichever is cheaper — buying the finished item at its level, or buying a plain one and enhancing it — and the button now opens whichever of those the panel actually costed, so the price on the card and the listing you land on are the same decision. Clicking a watched item's icon or name follows its level too. An item with no enhancement is unchanged.
+Watching an enhanced item and pressing "Missing Mats Marketplace" opened the order book for the plain, unenhanced item. The panel costs an upgrade by whichever is cheaper — buying it at its level, or buying a plain one and enhancing it — and the button now opens whichever of those it actually costed. Clicking a watched item's icon or name follows its level too.
 
 ### Three ways a dungeon average could still be wrong
 
-Clearing the run history left behind the runs chat had already labelled, so numbering carried on past the deletion and the lifetime average still reached over runs that were meant to be gone. An annotation pass overtaken by a character switch carried on and folded the departing character's runs into the arriving one's totals. And because a reset marker syncs by taking the newest stamp, a device with a badly wrong clock could set one in the future and blank a dungeon's average for as long as that date stood — an impossible stamp is now read as the skew it is, and pressing "start the average here" on a correct clock takes it back.
+Three ways a dungeon average could still be wrong: clearing the history left behind runs chat had already labelled, so numbering carried on past the deletion; an annotation pass overtaken by a character switch folded the departing character's runs into the arriving one's totals; and a device with a badly wrong clock could set a reset marker in the future and blank an average. An impossible stamp is now read as the skew it is.
 
 ### When the script starts too late to catch your character, it says so instead of blaming itself
 
-Your character's data is sent once, in the moment after the game connects, and nothing ever sends it again. A page that loads the script a fraction too late — likelier when other userscripts are loading alongside — misses it, and every panel then sits empty for the rest of the session while the game plays on perfectly. The message it printed said the connection hook may have failed, which was the one thing that was definitely fine: messages were arriving the whole time.
+Your character's data is sent once, just after the game connects, and a page that loads the script a fraction too late misses it — every panel then sits empty for the session. The message blamed the connection hook, which was the one thing that was fine.
 
-It now tells the two apart. If nothing at all has come through, the old warning stands, because then the hook really may be at fault. If messages are arriving and only your character is missing, it says that plainly, says why nothing will fix it on its own, and offers a reload — offers, never performs one, since a reload lands wherever you happen to be. Real character data arriving late takes the offer back.
+It now tells the two apart: if messages are arriving and only your character is missing, it says so and offers a reload — offers, never performs.
 
 ### The performance panel can say how much of the hitching was not ours
 
-Three additions, all behind a switch on the panel's own header and off until you turn them on.
-
-The stall ledger already saw every block over 50ms, whoever caused it, but could only name our own work. It now also reports the time during which **nothing of ours was running** — the honest form of "this was not us". A stall we only partly caused contributes only the part we did not cover, and each row says which it was rather than rounding it to one side. It cannot name a culprit: the game's own work and every other browser extension land in the same figure, because no browser interface attributes a task to an extension.
-
-A leak canary watches what the script itself is holding — listeners, observers, timers, timeouts, DOM handlers — and flags a count that has never once gone down. That is the half we can act on, since a number that only climbs is ours to fix. It sees what registers a count; a feature holding a private list of its own is invisible to it until it registers one.
-
-And a heap-size trend, where the browser offers one. It covers the whole tab — the game, this script, and anything else installed — so it can tell you a leak exists and roughly how fast, and never whose.
+Three additions to the performance panel, all behind a switch on its own header and off until you turn them on: the stall ledger now also reports the time when nothing of ours was running; a leak canary flags a count of listeners, observers or timers that has never once gone down; and a heap-size trend where the browser offers one. None can name a culprit — the tab's other work lands in the same figures.
 
 ### Two Combat Simulator figures now read in the unit you compare them in
 
-An expanded upgrade row quotes profit per day rather than per hour, so the gain sits in the same unit as the cost above it — an upgrade worth a few thousand coins an hour reads as noise beside a price in the hundreds of millions, and as something you can weigh when it is a day's worth. The percentage beside it is the same either way.
-
-The Summary's deaths tile is per hour, to three decimals, matching the Overview row and the DPH column instead of being the one figure on screen in another unit. It read per day to avoid an hourly rate rounding to a zero that looks like "never"; three decimals answers that without the change of unit, and 0.020 is a number you can act on.
+Two Combat Simulator figures now read in the unit you compare them in. An expanded upgrade row quotes profit per day, so the gain sits in the same unit as the price above it — a few thousand coins an hour reads as noise beside hundreds of millions. And the Summary's deaths tile is per hour to three decimals, matching the Overview row and the DPH column.
 
 ### Bulk Sell has its own Confirm button, so your cursor stays in one place
 
-A run of fifty items meant moving between the assistant's strip and the game's confirm button on every one. The strip now carries its own Confirm, and the game's button keeps working exactly as before — both routes take the same path, so a sale advances the walk the same way whichever you use.
+A run of fifty items meant moving between the assistant's strip and the game's confirm button on every one. The strip now carries its own Confirm; the game's button still works exactly as before.
 
-It only ever presses once per click, and it refuses unless the open modal really is the sale the assistant queued: the right item, the right enhancement level, the right quantity. When it refuses it says which of those is wrong rather than doing nothing. Confirming a step twice sells once. Vendor sales, which use a menu rather than a modal, are unchanged and still ask for the game's own control.
-
-This does mean the assistant now presses a button on your behalf, which it previously never did. One click of yours is still exactly one sale — that has not changed — and the note in the code that claimed otherwise has been rewritten to say what it actually does.
+It presses once per click, and refuses unless the open modal really is the sale it queued — right item, right level, right quantity — saying which is wrong when it refuses. Vendor sales still use the game's own control.
 
 ### The room tooltips agree with each other, and say how many tries a room takes
 
@@ -290,77 +230,69 @@ The panel's Avg Run and the "pace vs your avg" chip were still measured against 
 
 ### Chat history survives a reload, and stays on your machine
 
-The extended chat history kept what the game evicts, but only until the page reloaded. It is now written to disk per character and restored above the live messages, whispers and private tabs included. Item links in restored messages are made clickable again by this script rather than by the game's own handlers, which cannot be saved; a link that cannot be understood is left plain rather than looking clickable and doing nothing, and markup a game update has changed renders as text instead of breaking the buffer.
+The extended chat history now survives a reload: it is written to disk per character and restored above the live messages, whispers and private tabs included. Item links are made clickable again; one that cannot be understood is left plain rather than looking clickable and doing nothing.
 
-None of it leaves the machine. The record is excluded from the cross-device sync payload in both directions and from the full backup, and the settings export — the third way that store leaves a machine, and the file people paste into a chat when they want help — was still carrying it, so it strips the same keys now. Restored messages are also marked as scrollback, so the dungeon tracker no longer reads last session's key counts as this session's events and invents a run spanning the reload.
+None of it leaves your machine — it is stripped from cross-device sync, from backups, and now from the settings export people paste into chat when they want help.
 
 ### The profile card's breakdown opens, and opens for anyone
 
-Clicking "breakdown" could do nothing at all: the panel decided whether it was open by asking what it was holding rather than what was on the page, so a shell that had been torn off — or one whose first open failed part way through — was treated as open for the rest of the session, and every click quietly closed something invisible. A failed open now cleans up after itself instead of poisoning the button.
+Clicking "breakdown" could do nothing at all: the panel decided whether it was open by what it was holding rather than what was on the page, so a shell that had been torn off counted as open for the rest of the session. A failed open now cleans up after itself.
 
-The link is also no longer limited to your own profile. It opens the breakdown for whoever you are looking at, titled with their name, and a player who hides their equipment gets the note saying so rather than a total presented as fact.
+The link also works on anyone's profile now, titled with their name; a player who hides their equipment gets a note saying so rather than a total.
 
 ### Queued rows, trial tiles and the Iron Bell loop stop quoting figures they cannot back
 
-A queued action that asks for more than its materials cover now shows the time it can actually run rather than the time it was asked for, so a row no longer contradicts the very ledger it feeds — and a row that can do nothing says so. The same fault sat in the alt-readiness projection, which had been reporting a character busy long past the point its materials run out.
+A queued action that asks for more than its materials cover now shows the time it can actually run, and a row that can do nothing says so.
 
-The DPS meters and unit badges join the buff strips in staying out of a guild trial you are only watching: your own fight's figures were being painted onto the trial's tiles, and the trial's boss took whatever the first monster of your fight was carrying. The badges keep their own trial reading, which is a thing they are meant to draw — only the wrong one is turned away.
-
-The Iron Bell loop charged a whole decompose action to every fruit, when one action takes two. Time per fruit was half as long as reported, so gold per hour, gold per day and the cowbell figures were all understated. The fee had the same fault in the other direction and the two had been cancelling; both are corrected together, because fixing one alone would have left the fee rate wrong instead.
-
-And in the Lab Simulator's upgrade table, a row nobody measured is no longer printed as a confident zero — the shortlist is measured, everything else now says plainly that it was not looked at.
+DPS meters and unit badges stay out of a guild trial you are only watching; the Iron Bell loop no longer charges a whole decompose action to each fruit, which understated gold per hour; and the Lab Simulator no longer prints unmeasured upgrade rows as zero.
 
 ### A dungeon run is coloured against the average its own line reports
 
-With a window set, the green-or-red on each run compared against your all-time average — the very figure the window exists to escape, so every run after a change read green for good. It now judges a run against the number printed beside it. A run behind a reset marker, which shows no average at all, is drawn neutral rather than measured against a figure it is not part of.
-
-Two more in the same area: a run that chat labelled before anything had banked it was dropped from the lifetime average the moment the history was rebuilt, and a backfilled run now matches the tracker's own copy of it exactly rather than by a tolerance.
+With a window set, each run's green-or-red was compared against your all-time average — the very figure the window exists to escape, so every run after a change read green. A run is now judged against the number printed beside it, and a run behind a reset marker is drawn neutral rather than measured against an average it is not part of.
 
 ### Party chat stopped counting each dungeon run twice, and the average stopped counting runs it knows nothing about
 
-Run numbers could jump — 225 to 315 in one step — and the trailing average could read barely half the runs behind it, on a run that took the usual time. A pass that had already labelled a line kept its place in the numbering by writing down the time printed in chat, which is the same instant the tracker banks but rounded to the second; the next pass read that back as a _second_ run sitting beside the real one. Every run so labelled was counted twice, and the phantom carried no time, so the average divided by runs it had nothing to add for. Reloading was what made it obvious rather than what caused it: a fresh page re-labels the whole visible history at once, minting every phantom in one go.
+Run numbers could jump — 225 to 315 in one step — and the trailing average could read half the runs behind it. A pass that had already labelled a chat line wrote down the time printed there, which the next pass read back as a second, timeless run.
 
-A run labelled earlier is now remembered as what it is and pairs with the tracker's own copy instead of standing next to it. The pairing is one for one, so a single stored run can no longer answer for several chat lines. And a run whose length is genuinely unknown is left out of the average rather than counted as nothing — the label says how many runs it actually averaged, and a window with nothing usable says nothing at all.
+A labelled run now pairs one for one with the tracker's own copy, and a run of genuinely unknown length is left out of the average rather than counted as nothing.
 
 ### A trial you are watching no longer wears your own fight's buffs
 
-The buff strips draw into the battle panel's unit area, and a spectated guild trial draws its fight into that same area — so with your own combat running, your live buffs were painted onto your tile in the trial, and the trial boss got whatever the monster in your fight's first slot was carrying. Nothing about it looked wrong: the durations ticked, the icons were real, they were simply somebody else's. Strips are now drawn only in your own panel, which also means they reappear the moment you go back to it.
+The buff strips draw into the battle panel's unit area, and a spectated guild trial draws its fight into that same area — so with your own combat running, your live buffs were painted onto your tile in the trial, and the trial boss wore whatever the first monster of your fight was carrying. Strips are now drawn only in your own panel, and reappear the moment you go back to it.
 
 ### A setting you changed is no longer undone by the next reload, or by your other window
 
-Two faults sat behind the checkbox that would not stay unticked. A box already saved with two disagreeing answers is now read as the one you last chose rather than the one you replaced, so a character stuck in the wrong state comes right on its own instead of waiting to be clicked again.
+Two faults sat behind the checkbox that would not stay unticked. A box saved with two disagreeing answers is now read as the one you last chose, so a character stuck in the wrong state comes right on its own.
 
-And a save no longer writes this window's whole idea of your settings over what is stored. It writes the settings this window actually changed, and leaves the rest as it found them — so the same character open in two places stops quietly reverting whatever the other one just changed. A deliberate reset to defaults still writes everything, and says so rather than relying on the difference going unnoticed.
+And a save no longer writes this window's whole idea of your settings over what is stored — only what this window actually changed, so the same character open twice stops reverting the other's changes.
 
 ### A checkbox you unticked no longer comes back ticked after a reload
 
-Some checkboxes are written by a setter that always stored the answer in the field a dropdown uses rather than the one a checkbox uses. Nothing complained: the entry ended up holding both answers, the new one was read for the rest of the session, and the old one was read from the next reload onwards, when the entry is rebuilt and the extra field is gone. So the change looked like it took and quietly undid itself — the Lab Simulator's two Uncapped boxes were where this showed. The value now goes to the field the setting actually uses, the other is removed rather than left to be picked up later, and an entry already carrying two answers is repaired the next time it is written.
+Some checkboxes were written by a setter that stored the answer in the field a dropdown uses rather than the one a checkbox uses. The change held for the session and quietly undid itself on the next reload — the Lab Simulator's two Uncapped boxes were where this showed. The value now goes to the right field, and an entry already carrying two answers is repaired the next time it is written.
 
 ### Stop actually stops the Lab Simulator's upgrade analysis
 
-Stop on the Upgrade tab set the flag the analysis checks between one simulation and the next, and nothing else — so whatever was already running ran to the end first. With Uncapped ticked that simulation has a million-hour budget and no fight cap, and Stop looked like it had done nothing at all when in fact it had been heard and was waiting on a sim that was never going to finish. It now ends the running work the way the Single Sim and Skilling Stop buttons always have.
+Stop on the Lab Simulator's Upgrade tab only set a flag checked between one simulation and the next, so whatever was already running ran to the end first. With Uncapped ticked that is a million-hour budget and no fight cap, so Stop looked like it had done nothing at all. It now ends the running work, the way Single Sim and Skilling Stop always have.
 
 ### The Lab Simulator's precision and fight-cap controls now govern the single-fight upgrade run
 
-Precision ±, Max fights and Uncapped sat above the Upgrade tab doing nothing whenever it ran against one fight: the panel handed them over, but the analysis behind it never took them, so its baseline ran the plain time budget instead — and since every candidate is played at the baseline's fight count, that set the sample size for the whole comparison. The all-fights run and the combat simulator both honoured the same controls, which is why the difference never showed. Runs will now end where the controls say rather than where the clock did.
+Precision ±, Max fights and Uncapped sat above the Upgrade tab doing nothing whenever it ran against one fight: the panel handed them over and the analysis never took them. Since every candidate is played at the baseline's fight count, that set the sample size for the whole comparison. Runs will now end where the controls say.
 
-This is the third control found drawn, saved and quietly ignored, so the check for it is no longer one field at a time: the panel's own call is now read against what the analysis binds, and any field handed over and never taken fails the build unless it is listed with a reason.
+This is the third control found drawn, saved and quietly ignored, so a check now fails the build on the next one.
 
 ### The Lab Simulator ranks upgrades by the room levels they buy, and names the floor
 
-An upgrade's worth in the labyrinth is not a percentage, it is whether it takes you a floor deeper — so the Upgrade tab can now rank by exactly that: how many room levels each upgrade adds to the deepest room you still clear at your configured rate, and which floor that reaches. A target floor can be named instead, and its requirement is the level of its own exit room, since a floor you cannot finish is a floor you have not got. Measuring a level costs a search of simulations rather than one, so the table is ranked cheaply first and only the leaders are measured properly; everything else reads as no change, and says so. Off until switched on, and the existing columns still mean what they meant.
-
-The floor the levels are read against comes from the game's own guide — floor 1 runs 20 to 40 and every floor adds 20 — and is checked against 120 rooms actually recorded in a labyrinth log rather than taken on trust. Rooms turned up on the exact top and bottom of two of those floors, which is what pins the boundaries rather than merely fitting inside them.
+An upgrade's worth in the labyrinth is not a percentage, it is whether it takes you a floor deeper. The Upgrade tab can now rank by exactly that — how many room levels each upgrade adds to the deepest room you still clear at your rate, and which floor that reaches — or against a target floor you name. Only the leaders are measured properly; everything else reads as no change, and says so. Off until switched on.
 
 ### A queued action now counts what it makes, and the Iron Bell panel stops quoting percentages a hundred times over
 
-Queued actions already spent what they used; now they also credit what they produce, so a queue that forages, decomposes and then coinifies the essence is costed as the chain it is rather than three strangers. A crafted intermediate is credited exactly. A gathered or alchemical yield can only ever be an expectation, so those figures carry a `~` and everything downstream of one carries it too — a projected quantity is never presented as stock in hand. An endless producer credits nothing, since it never finishes; one that merely repeats until its materials run out credits every action it performs. The alt-readiness projection takes only the exact half, on the same argument it already refuses to guess at enhancing.
-
-The Iron Bell Farming panel quoted every percentage a hundred times too large — a loop split reading `2,881%` where it meant 29%, and the decompose and coinify success rates alongside it. The plan checklist folds away once its stages are done, keeping its summary in the header. And the panel will now size a batch for you: enter a number of hours or a number of cowbells and it works out the three action counts, balanced so no step asks for more than the step before it produced, then walks you through queueing them — opening each action with the count already typed into the game's own box. It never presses; one click stays one game action, and an alchemy step waits until you have put the right item in the slot.
+- Queued actions now credit what they produce, so a queue that forages, decomposes and coinifies is costed as the chain it is. Gathered and alchemical yields are expectations, marked `~`.
+- The Iron Bell Farming panel quoted every percentage a hundred times too large — `2,881%` where it meant 29%.
+- It will also size a batch: enter hours or cowbells and it works out the three action counts and walks you through queueing them, never pressing.
 
 ### The dungeon average can follow recent runs instead of every run ever
 
-A change that makes your runs a minute faster used to take hundreds more runs to show up, because the party-chat average covered every run on record. It can now cover the last N instead, labelled with what it counted — `Avg last 20` — and a button in the Run History header starts a fresh average from this moment without deleting anything. Both are per team and dungeon, so one party's reset leaves another alone, and the marker travels between your devices. Left alone, the average is exactly what it was.
+A change that makes your runs a minute faster used to take hundreds more runs to show up, because the party-chat average covered every run on record. It can now cover the last N instead, labelled `Avg last 20`, and a button in the Run History header starts a fresh average from this moment without deleting anything. Both are per team and dungeon, and travel between your devices. Left alone, the average is what it was.
 
 ### Lab Simulator honours the guild's own shrine levels
 
@@ -368,104 +300,83 @@ Lab Sim's Upgrade tab gained the Guild Shrine "Guild-allowed only" option the co
 
 ### Every queued action was costed as if it had the whole bag to itself
 
-The queue tooltip, the queue edit menu and the alt-readiness projection each worked out what a queued action could do against the inventory as it stands now, and then did the same for the next one, and the next — so three actions drawing on one stack of materials each reported that whole stack as theirs. Everything downstream inherited it: the "Complete at" clock ran late by whatever the earlier rows would really have consumed, and the projection that says when a character goes idle said hours later than the truth. Alchemy was the same story against the coin balance, one fee charged three times over from the same purse.
+The queue tooltip, its edit menu and the alt-readiness projection each costed a queued action against the whole bag, so three actions drawing on one stack of materials each claimed it. The "Complete at" clock ran late, the idle projection said hours later than the truth, and alchemy charged one fee three times.
 
-The queue is now walked as a queue: each action spends what it actually performs — materials net of Artisan, upgrade pieces, catalysts, coin costs and alchemy fees — and the next one is costed against what is left. A row with nothing left to work with says so, with a zero rather than a number it cannot back. A single action on its own is unchanged: it still prices against the full bag, which is the right basis when nothing is queued ahead of it.
-
-Also here: an empty bag showed the edit menu's current action as never-ending rather than as stalled, because a real limit of zero was being read as no limit at all.
+The queue is walked as a queue now: each action spends what it performs, and the next is costed against what is left.
 
 ### A frame the game sent that was not text could stop the game reading it
 
-The script reads every message on its way past by replacing the property the game reads it from, and it did its own work inside that read. A binary frame reached a line that assumed text, and the error that raised came out of the game's own read rather than ours. It survived in practice only because a second, safer path screens those frames first — and that path does not exist on a page where another script has replaced the socket, which is exactly the case where two scripts are installed together. Non-text frames are now turned away before anything touches them, and nothing the script does inside that read can cost the game a message again.
-
-The guild credit exchange advisor priced a whole conversion at the best price on the book, and the Max button beside it fills the box with everything you hold — so the routine case quoted thousands of units at a price that covers the first few. It walks the book now, and where the book is too thin to cover the batch it says so and declines to rank rather than quoting units that are not there.
-
-The Lab Simulator lists labyrinth rooms in the order the game lists them rather than alphabetically, in both the Configure dropdown and the Upgrade tab's room checkboxes. And three more of the game's own anchors are watched for renames: the leaderboard table, the item picker, and the names in the trial stats table.
+- A binary frame from the game could raise an error inside the game's own read of it, costing the game a message where another script has also replaced the socket. Non-text frames are turned away first now.
+- The guild credit exchange advisor priced a whole conversion at the best price on the book; it walks the book now, and declines to rank where the book is too thin.
 
 ### A sync pull no longer overwrites your dungeon run history, or undoes what you deleted
 
-The dungeon tracker wrote every run to a store nothing had claimed for syncing, so a pull took whichever device's copy it found and discarded the other — not only when something was deleted, but on every pull, and the pace figures and chat averages are computed from what survived. It has a merge now: two devices that each watched different runs end with both. The check that is meant to catch an unclaimed store only knew how to inspect one kind of record, so a whole store could go unclaimed unseen; it now requires every store to be claimed or to name a reason.
+The dungeon tracker wrote runs to a store nothing had claimed for syncing, so every pull kept one device's copy and discarded the other. It merges now.
 
-Deleting something and then syncing put it back, everywhere it could: a cleared loot log, alchemy history or net worth point; a deleted market listing; a treasure tally you had reset; the fights behind a labyrinth accuracy Reset or a replay check Forget. Each of those now records the deletion itself, so the pull carries the fact that you deleted rather than only the rows you deleted. Activity a second device recorded after your reset still survives it, and a deletion arriving from elsewhere that would empty a record you did not just clear is refused rather than applied.
-
-Five other records were looked at and deliberately left alone — a watchlist tick, a goal, an overlay layout and a room log all come back on the next pull by design, on the argument that losing an afternoon's work to a sync is worse than an unwanted row reappearing.
+Deleting also sticks: a cleared loot log, alchemy history or net worth point, a deleted listing, a reset treasure tally and a labyrinth Reset all used to come back on the next pull. Watchlist ticks, goals and overlay layouts still do, by design.
 
 ### The dungeon average is back in party chat after a reload
 
-Reloading mid-run left the script unable to name the dungeon a run belonged to — the chat line that says so had scrolled away, and the run itself was not restored until the next battle. Every run then scored as unknown, so party chat got a bare time with no run number and no average, and the messages were marked done, so they never gained one. It now asks the tracker what dungeon you are provably in, and a history annotated while nothing could name it is redone once something can.
-
-Also: a key count whose timestamp could not be read left the run anchored to a value that was not a number, and a run in that state was never banked at all.
+Reloading mid-run left the script unable to name the dungeon a run belonged to, so every run scored as unknown and party chat got a bare time with no run number and no average — and the messages were marked done, so they never gained one. It now asks the tracker what dungeon you are provably in, and re-annotates a history that was labelled while nothing could name it.
 
 ### Audit round: the buff strip showed your whole loadout, and a shopping trip claimed itself twice
 
-The combat buff strip drew a chip for every buff a unit carried — achievements, community buffs, house rooms and drinks included — and labelled each by the stat it moves, so five sources of wisdom read as the same buff five times. It shows fight state now: only what an ability applied, and one cast draws one chip however many effects it granted, with a count on the icon and the full list on hover. On a real party that is one chip a player where there were nineteen.
-
-Two faults in the reservation ledger, both of which made it wrong at exactly what it is for. Opening a plan's shopping list claimed the same bill twice, once for the plan and once for the panel, so every line read its own requirement as taken by somebody else — a bag with a hundred planks in it reported a hundred short. And the line that explains which plan holds the stock stayed silent in its commonest case, which is a full bag and a plan that says otherwise. The guided walk also advanced past a step whose action was already running when the walk started, since the game's queue message names existing actions alongside new ones; and a character switch during a replan could write the departing character's claims into the arriving character's ledger.
-
-Three features drawing on a combat unit each insisted on being the last thing in the tile, so any two of them on together moved each other's work every tick. The buff strip's countdown also kept ticking after a fight ended, redrawing into a panel that was no longer there. The gear warning was positioned once and never again, so a resize or a rotation left it over the game's own controls. And a pushed update of the game's published item values was trusted without checking it was neither empty nor older than what was already held.
+- The combat buff strip drew a chip for every buff a unit carried, so five sources of wisdom read as the same buff five times. It shows only what an ability applied now, one chip per cast.
+- Opening a plan's shopping list claimed the same bill twice, so a bag with a hundred planks reported a hundred short.
+- The gear warning is repositioned on a resize, instead of sitting over the game's own controls.
 
 ### Follow-ups: numbers read by the game's own locale, and tabs that merge item by item
 
-Every number this script reads back out of the game's text is now captured as well as parsed by the game's locale. Eighteen patterns still assumed a comma between thousands, so in a language that groups with a full stop they captured only the first digit group — and one of them mis-read the number rather than shortening it.
-
-Custom inventory tabs merge item by item instead of tab by tab, so two devices that each add something to the same tab before syncing keep both. Deletions still win where they should: a copy that has seen the deletion and kept the item is what makes it stale news. A pull that would empty most of a tab is refused rather than half-applied.
-
-The Skilling Optimizer's protect-from level rule is published for a companion script to read, rather than being copied there and left to drift. And several tasks that share a crafting chain can be walked as one guided walk, with the shared steps queued once at the summed count.
+- Every number the script reads out of the game's text now follows the game's locale. Eighteen patterns assumed a comma between thousands, so a language that groups with a full stop captured only the first digit group.
+- Custom inventory tabs merge item by item, so two devices that each add something to the same tab keep both.
+- Several tasks sharing a crafting chain can be walked as one guided walk, with the shared steps queued once.
 
 ### Plans share one bag, and a crafting plan can walk you through itself
 
-Two features adapted in idea from MWITools (attribution in `third-party/mwitools/`), both off by default:
+Two features adapted from MWITools (attribution in `third-party/mwitools/`), off by default:
 
-- **One inventory between plans.** Every plan used to work out its shortfall against the same bag, so two plans that each needed 500 logs both read those 500 as theirs. With the reservation ledger on, a plan writes down what it has claimed and the others plan against what is left: the goal planner and the crafting plan hold their claims until changed or deleted, the missing-materials and budget panels hold theirs only while open, and an item queued for selling stops counting as a crafting material. Where a shortfall exists only because something else claimed the stock, the line says which plan did. With the setting off every figure is what it was before.
-- **A guided walk through a crafting plan.** A button under the plan's steps takes them leaves first: for each one it opens the game on that action and types the count into the game's own box, then waits — it never presses, so one click is always exactly one game action. A step the plan says to buy opens the marketplace instead and waits for the item to arrive. Skip and Stop are on the strip; a reload or a character switch ends the walk.
+- **One inventory between plans.** Two plans that each needed 500 logs both read those 500 as theirs. With the reservation ledger on, each plan claims what it uses and the rest plan against what is left.
+- **A guided walk through a crafting plan.** It opens the game on each step with the count typed in and waits. It never presses: one click is one game action.
 
 ### A sync pull says what it reconciled, the readiness card names who is short, and the census watches the spawn tables
 
-Seven smaller features, all informational, all off by default except the two safety warnings:
+Seven smaller features, off by default:
 
-- **Sync pull summary.** After each pull the notice says how many records were combined, written whole, or held back unreadable, with a panel listing each combined key and the merge that handled it. Counts come from what the pull already computed; a figure the pull cannot back is reported as unknown rather than guessed.
-- **Who is short of keys.** The dungeon readiness card lists each party member below the key count, sorted by shortfall, with a copy button for pasting into party chat. A member whose count was never seen reads as unknown, not zero.
-- **Spawn table divergence.** The spawn census now compares the rosters it records against the simulator's fitted spawn tables, with an exact expectation for each species rather than a sampled one, and alerts only when a species is far outside the table or the game's tables have changed — so a game-side change is noticed the day it happens rather than when clear times drift.
-- **Net worth forecast.** A collapsed section under the history chart projects a p10–p90 fan to a chosen horizon, with drift, volatility, doubling days and the probability of reaching a target by day 30, 60 and 90. The hourly series is reduced to one sample per day first, since hourly returns would read the drift as twenty-four times what it is.
-- **What a plan save changed.** Saving a guild trial ability plan reports which players changed kit, were added, or were removed since the last save, so the lead knows what to announce.
-- **Running two scripts.** If the MWITools userscript is also installed, a warning names the overlap once per load; neither script warned about the other before.
-- **Panels behind the phone keyboard.** Panels that size against the viewport now size against the visible one, so the keyboard no longer hides the bottom of the palette or settings on a phone.
+- **Sync summary.** What each pull combined or held back.
+- **Key shortfalls.** Party members below the key count.
+- **Spawn divergence.** An alert when the game's spawn tables change.
+- **Net worth forecast.** A p10–p90 fan under the history chart.
+- **Plan save diff.** Which players changed kit since the last save.
+- **Two scripts.** A warning if MWITools is also installed.
+- **Phone keyboard.** Panels size against the visible viewport.
 
 ### Buff bars under combat units, a wrong-gear warning, and live market values — adapted from MWITools
 
-Three features adapted from the MWITools userscript (CC-BY-NC-SA-4.0, the same licence as this script; attribution in `third-party/mwitools/`), each re-implemented in this script's own idiom and off by default:
+Three features adapted from MWITools (attribution in `third-party/mwitools/`), off by default:
 
-- **Buff and debuff bars.** An icon strip beneath every combat unit — you, your party, each monster — with a live countdown on each effect, read from the game's own buff maps rather than inferred, so a resisted debuff is never painted. Whether an effect is a buff or a debuff is decided by who it lands on, not by its type, because a debuff arrives as a damage effect whose buffs land on the target.
-- **Wrong-gear warning.** A pill in the header when your kit contradicts what you are doing: skilling gear worn into combat, or a production action running while its efficiency piece sits unequipped in your bag. Every rule is checked against the item data at runtime and skipped if the data does not confirm it — which is how it was noticed that the enchanted gloves' enhancing bonus is speed, not efficiency.
-- **Live market values.** The game pushes an update when its published item values refresh; this script never listened for it, so official-value pricing was stale until reload. It is applied now.
-
-Also from the same review: the header's current-action anchors join the canary list so a game refactor there is reported, and every number read back out of game-drawn text now parses by the game's locale instead of assuming English separators, with the remaining hardcoded capture patterns noted for a later pass.
+- **Buff and debuff bars.** An icon strip with a live countdown beneath every combat unit, read from the game's own buff maps.
+- **Wrong-gear warning.** A pill when your kit contradicts what you are doing — skilling gear worn into combat, or an efficiency piece left in your bag.
+- **Live market values.** Official-value pricing was stale until reload; the game's push is applied now.
 
 ### Audit round: excluding your coins made the net worth chart's Inventory line dive by that amount
 
-Coin can be excluded from net worth, and the total honoured that — but the history kept writing the full coin balance into its gold field, and the chart draws Inventory as everything minus gold. Anyone who excluded coins got an Inventory line and rate that dropped by their whole balance. Three more in net worth: switching the value source (order book or the game's published value) never re-priced anything until an unrelated update happened; a recalculation still running when you switched character could paint the departing character's total under the arriving one; and offline production income could be filed under the wrong character on a fast switch.
+Coin can be excluded from net worth and the total honoured that, but the history kept writing the full coin balance into its gold field — so anyone who excluded coins got an Inventory line and rate that dropped by their whole balance.
 
-Three faults in yesterday's own fixes: the performance panel, just restored to the palette, closed itself on every character switch; a second combat sim import wiped the note listing what the first import could not place; and a second guild trial divided its damage by a clock the first trial had started, so its damage per second read as a fraction of the truth.
-
-In the companion script, the enhance-to-sell tooltip now says which of three things happened when a row is priced without protection — nothing priced, protection tried and not worth it, or the run too short for protection to apply — rather than one sentence that was wrong for the third.
+Three more: switching the value source never re-priced anything until some unrelated update, a character switch could paint the departing character's total under the arriving one, and offline income could land on the wrong character.
 
 ### Leftovers: two devices that watched one fight now combine what they saw
 
-A combat session archived by two devices — one that saw the first hour, one that took over for the last five minutes — was stored under one key, and a sync pull let whichever copy arrived second replace the other. The two are combined now: every running total takes the larger reading, the start the earlier, the end the later, and anything that is a rate or a falling stack size is recomputed or taken from the later copy rather than maxed. And the labyrinth ledger no longer opens a run from a sighting that carries no start stamp; a real run always has one, and inventing an identity for one that does not is how phantom runs and double counts happen.
+A combat session archived by two devices — one that saw the first hour, one the last five minutes — was stored under one key, and a sync pull let whichever arrived second replace the other. They are combined now: running totals take the larger reading, the start the earlier, the end the later, and rates are recomputed rather than maxed.
 
 ### Audit round: the performance panel is back in the palette, and a guild trial no longer inherits the last one's damage
 
-Ctrl+K lost the PFormance panel when the palette moved to feature-registered entries: the panel's registration was written but nothing ever ran it. It is registered by the palette itself now, unconditionally like the health report, and a test pins every entry the palette has always had. A new guild trial carried the previous trial's banked damage, deaths and support forward — a fix two rounds ago cleared the reported figures and boss sheets but not the banked history — so a fresh trial could open showing hundreds of thousands of damage already done.
-
-The pasted ability plan cut a hyphenated player name at the hyphen and read the rest as abilities; a colon is now tried first, and a bare hyphen separates only when spaced on both sides. A corrected duplicate line for a player now replaces the earlier one instead of being ignored. And a sync pull could revert a re-captured player to a stale kit, since two authoritative captures were merged by argument order rather than by when they were taken.
-
-Three faults in this morning's own work: the Crafting Plan sized the remainder under a multi-output intermediate by an upper bound on the yield, so it could ask for one log too many; a piece a swap takes off and puts straight back on was listed as something to buy; and an imported item the sim could not place was reported only in the console, where nobody reads it — the sim editor names it now.
-
-In the companion script, the enhance-to-sell row compared candidates across target levels by raw cost, so it always settled on the shallowest profitable level and never surfaced a deeper, more profitable one; it now picks the cheapest way into each level, then the most profitable level.
+- Ctrl+K lost the PFormance panel when the palette moved to feature-registered entries; it is registered by the palette itself now.
+- A new guild trial carried the previous one's banked damage, deaths and support forward, so it could open showing hundreds of thousands of damage already done.
+- A pasted ability plan cut a hyphenated player name at the hyphen, and a corrected duplicate line now replaces the earlier one.
 
 ### A labyrinth run's leftovers could be overwritten with a full pile
 
-After a run ends the game keeps re-sending the labyrinth state for a while, grid and path still attached, with the supply counts now showing the restocked pile. The run ledger read one of those re-sends as a new run starting under the finished run's own key, with a full pile in hand and nothing spent. Within a session the repeat was swallowed; across a reload it was not, and the memory copy won over the stored one — so a run's true leftovers were replaced by the capacity. That is why the Consumables panel's "left over after the last runs" line showed a full 400 torches for runs that had plainly been used. A run that has been seen to end is no longer reopened by a re-send, and a run already in the ring keeps its first recorded ending. Records already overwritten cannot be told from a run abandoned at the door and are left to age off.
+After a run ends the game keeps re-sending the labyrinth state with the supply counts already restocked, and the run ledger read one of those as a new run starting under the finished run's key — so a run's true leftovers were replaced by the full pile. That is why the Consumables panel showed 400 torches left over from runs that had plainly been used. A run seen to end is no longer reopened by a re-send.
 
 ### The Lab Simulator's Market button opens every piece of a multi-item upgrade
 
@@ -477,61 +388,50 @@ An upgrade that swaps one item for two — a two-hander for a weapon and shield,
 
 ### Five fixes ported from upstream
 
-An offline gap could graft one dungeon run onto the next. On page load the tracker restored a parked run whenever the dungeon matched, with only a ten-minute staleness clock as the guard; waves run about thirty-five seconds, so a short reconnect could span a run boundary and the old run's waves and times were carried into the new one. Restoration now waits for the first battle message and restores only when it names the same battle, at the cost of one wave during which the card shows the dungeon rather than the run.
-
-The Crafting Plan re-expanded intermediates you already own: fifty Umbral Leather in the bag did nothing to shorten the hides on the missing list. Owned intermediates are now credited before the remainder is expanded, with one stock ledger across the plan so the same items are not credited twice. A MooPass that expired before your offline window even began was marking a trustworthy offline cap as unknown. The Enhancement Tracker could not start if you enabled it, or reloaded, after a run's first action message had already gone by; it now reads the action already running. And a combat sim import of an item the game data could not resolve guessed its equipment slot from a string; it now skips the item and says so.
-
-Checked and not needed: upstream's achievement-tier sim buffs (the fork has had them through its shared buff pipeline), its profile-score freeze fix (the fork already prices on worker threads), its profile-score provenance work (a feature the fork does not have), and its offline-attention lookahead patch (the fork's projection never stopped looking ahead in the first place).
+- An offline gap could graft one dungeon run onto the next; a parked run now waits for a battle naming it.
+- The Crafting Plan re-expanded intermediates you already own, so owned leather never shortened the missing list.
+- An expired MooPass marked a trustworthy offline cap as unknown.
+- The Enhancement Tracker reads the action already running, so enabling it mid-action works.
+- A combat sim import now skips an item it cannot resolve, and says so.
 
 ### Leftovers: the sim's spawn-table assumption is now stated and pinned
 
-The dungeon spawn rule lets a table become eligible from the wave its key names, while the note beside it said a species from that table is first seen one wave later. Both are right: in every dungeon that wave is a fixed roster and never reaches the random draw. That fact was in the game data and nowhere else, so it is now stated in the code and pinned by a test that fails if a future dungeon breaks the shape.
-
-Also: the storage health panel no longer redisplays counts from an earlier refresh when the latest one failed, the trade ledger's eviction sweep tells an unlistable store from an empty one like the rest of the storage layer, and a dead buff-removal method that would have dropped every source of a buff instead of one is gone.
+The dungeon spawn rule lets a table become eligible from the wave its key names, while the note beside it said a species from that table is first seen one wave later. Both are right, and the fact is now stated in the code rather than left implicit. Also: the storage health panel no longer redisplays counts from an earlier refresh when the latest one failed.
 
 ### Sync no longer stalls on a device whose clock is wrong
 
-Whether a downloaded sync is newer than the one you last accepted was decided by comparing wall-clock timestamps from the pushing device. A device with a fast clock pushed a stamp from the future, and every other device then skipped correctly-stamped payloads as "older" until real time caught up — nothing lost, but sync silently stopped while reporting up to date. Ordering now uses a counter that only ever moves forward and that every device adopts on receipt, so no clock can stall it. The counter lives in the manifest beside the timestamp, not in the payload: an older build ignores it and keeps working exactly as before, an old gist applies exactly as before, and a mixed fleet keeps syncing indefinitely. Only a device still on the older build can stall on a fast clock, because it has no counter to consult.
+Whether a downloaded sync was newer than the one you last accepted was decided by the pushing device's clock. A device running fast pushed a stamp from the future, and every other device then skipped correct payloads as "older" until real time caught up — nothing lost, but sync silently stopped while reporting up to date. Ordering now uses a counter that only moves forward, so no clock can stall it. Older builds keep working unchanged.
 
 ### Audit round: six alerts marked themselves delivered before they were
 
-The same fault as the guild trial alert two rounds ago, in six more places: the market undercut, price target, savings goal, combat consumable, empty queue and labyrinth stopped alerts all advanced their "already told you" guard the instant the condition fired, before checking whether the notice reached anything. A notice that landed nowhere — no toast host mounted yet, right after a load — was marked told and then silenced until the condition reversed and re-triggered, which for a price that never recovers or a run that is over is never. Each now retries until a delivery succeeds.
+Six alerts marked themselves delivered before they were: market undercut, price target, savings goal, combat consumable, empty queue and labyrinth stopped. A notice that landed nowhere — no toast host mounted yet — was silenced until the condition re-triggered, which for a price that never recovers is never. Each retries until delivery succeeds.
 
-A combat sim fix from a fortnight ago covered one of three revive paths. A player who died in a dungeon and was healed at the clear, or who fell in a wipe and was restored at the restart, came back with every timed buff on them made permanent for the rest of the run, so party dungeon sims read optimistic. And the tooltip's profit section could say "no market data" for an item the calculator had just priced from the game's official value, because one field bypassed the reconciliation every other price goes through.
+Also: a player revived in a dungeon kept every timed buff for the rest of the run, so party dungeon sims read optimistic.
 
 ### Audit round: a sync pull could wipe records it was meant to combine
 
-Two records the replay checker keeps — every recording you have watched and every check you have run — were missing from the list of things a pull merges rather than replaces, so a sync overwrote them with whatever the sending device had. They live in the settings store, which every sync scope carries, so this fired on the smallest sync you can configure. That is the third time a record has been forgotten this way, so there is now a test that walks the source and fails when a new one is added without being registered.
-
-A pull could also overwrite a record whose local copy it had failed to read. The code that guards against that could not tell a read that failed from a key that was simply absent, and in the failed case handed the record to the blind overwrite it exists to prevent — destroying exactly the entries the failure had hidden, while the pull reported that records had been combined. And a device running an older build stripped every setting id it did not recognise the first time you toggled anything, so settings made on a newer build vanished from the account.
-
-Clearing a history could still report success while deleting nothing: the delete calls answer rather than throw when a database is unavailable — during a backup restore, for one — and nobody read the answer. The alchemy trackers also threw away the session in progress on a clear that was refused, so nothing was deleted and something was lost anyway.
-
-Elsewhere: Queue Time Left counted the action already in progress at its full duration, overestimating by up to one action; the Goal Planner could file a plan under whoever you switched to mid-removal; and the budget calculator's breakdown modal left a key listener behind every time it was closed with the mouse.
+- A sync pull overwrote, rather than merged, the replay checker's two records — every recording watched and every check run.
+- A pull could also overwrite a record whose local copy it had failed to read, destroying exactly what the failure had hidden.
+- Clearing a history could report success while deleting nothing, when the database was unavailable.
+- Queue Time Left counted the action already in progress at its full duration, overestimating by up to one action.
 
 ### The leftovers: a panel that could not tell "empty" from "could not look"
 
-Storage diagnostics no longer report a store the browser could not list as holding zero records — it says the size is unreadable, which is the truth. Clearing a history that cannot be listed now refuses outright rather than deleting nothing, forgetting everything, and letting the next read bring it all back; the alchemy history viewers say the clear did not happen instead of announcing success over data that is still there. And the trade ledger's day records, one per character per trading day, are budgeted per character rather than against a store-wide limit they share with account-wide caches, so a multi-character account no longer trips a warning no single character is near.
+Storage diagnostics no longer report a store the browser could not list as holding zero records — it says the size is unreadable. Clearing a history that cannot be listed now refuses outright rather than deleting nothing.
 
-In the Skilling Optimizer, a skill whose unequipped actions are all unpriced has a baseline of zero, and a gain over zero was being shown as no gain at all — the best upgrade on the board rendered a blank where its gain should be and sorted as though it did nothing. Those gains now show as new rather than as a percentage of nothing, and the list ranks them by the size of the gain.
+In the Skilling Optimizer, a gain over a baseline of zero showed as no gain at all, so the best upgrade on the board rendered blank and sorted as though it did nothing. It reads as new now.
 
 ### Audit round: a late read could erase the guard that stops history being overwritten
 
-The worst of these is a data-loss race, and it is the same shape as the fix it defeated. When a read of your history cannot list the store, it raises a flag, and that flag is the only thing stopping the next save from writing over records it never read. But a read abandoned by a character switch — about a character who has already left — cleared that flag on its way out, so a save that was about to decline went ahead and wrote its in-memory list, which for a recorder that appends is a single entry, over a month of data.
-
-Two faults in yesterday's own dungeon fixes were caught here. Excluding unvalidated runs from the recovery bound excluded every solo run, since a solo run is timed by the client's own clock and says so — so a player who had only ever soloed a dungeon lost the bound entirely and fell back to a 45-minute ceiling, which is looser than what they had before. And a run parked mid-dungeon by an older version was refused outright on completion, because the battle that restored it was the one message whose roster was never read.
-
-The storage health panel also could not see the networth detail snapshots at all, which is the one thing in that store that can leak — they are dropped by a delete nobody waits for, so a delete that never lands grows the store an entry an hour.
-
-In the companion script, a flip whose size was cut down by a thin top of book had a chip that said so and a tooltip that did not — and for a size you typed in yourself, that tooltip asserted the request was inside both caps while naming a limit far below it.
+- A read of your history abandoned by a character switch cleared the flag that stops the next save overwriting records it never read — so a save could write a single entry over a month of data.
+- A player who had only ever soloed a dungeon fell back to a looser 45-minute recovery ceiling.
+- The storage health panel could not see the net worth detail snapshots, the one thing in that store that can grow unchecked.
 
 ### Follow-ups: a pace bound that only ever widened, and a party run filed as solo
 
-Four fixes carried over from the last audit round. When a dungeon run's start had to be recovered from chat, the check on whether that start was plausible was drawn from your longest run ever — and a recovered run then banked its own recovered duration into that same history, so each recovery raised the ceiling for the next one and the bound only ever loosened. It now comes from the median of your clean runs, and recovered or unvalidated runs no longer get a vote.
+When a dungeon run's start had to be recovered from chat, the plausibility check came from your longest run ever — and each recovery banked its own duration back into that history, so the ceiling only ever loosened. It comes from the median of your clean runs now.
 
-A party run whose "Key counts" messages never reached the client was banked as a solo run, dragging solo averages down with party clears and filing them under a one-name party that could never match the real one. Composition now comes from the fight itself rather than from chat, so a run that cannot say who was in it is not recorded at all.
-
-The guild trial "starts soon" alert marked itself announced before it was delivered, so a notice that reached no channel — the page hidden with no notification permission — was never retried and the cycle passed in silence. And the storage health panel compared per-character history budgets against every character's records added together, warning that you were over budget when no single character was close.
+A party run whose key-count messages never arrived was banked as solo, dragging solo averages down. Composition now comes from the fight itself rather than chat.
 
 ### Housekeeping
 
@@ -539,27 +439,21 @@ The changelog was the only CRLF file in the repo while Prettier was configured f
 
 ### Audit round: a history that could not be read was being written back empty
 
-The worst of these could lose months of records. When the browser cannot list a store — a dropped database connection, a tab under memory pressure — it answers with an empty list, which is indistinguishable from a store that really is empty. The chunked history believed it, and the next save wrote that emptiness over the real data: one hourly networth snapshot could replace a month's series with a single point, and the same shape applied to alchemy sessions, the loot log and task completions. An unreadable listing is now told apart from an empty one, and a save that cannot see what it is replacing declines to run.
-
-Two records were also missing from the sync merge registry, so a pull overwrote them instead of combining: your task reroll history, in a feature whose whole job is counting what rerolls cost you, and your labyrinth fight outcomes along with every clear-rate verdict resting on them.
-
-Three of yesterday's own fixes had introduced new faults, all caught here. Mirroring live buffs into the game data also wiped every house room the update did not mention, so a sim export taken after a house upgrade lost the rest of the house. Charging dungeon keys against profit charged them twice on the ROI board, where a column quietly meant two different things depending on which data it drew from. And admitting negative labyrinth skip thresholds lost the value that means "never set", so every skill and monster row grew a clear-rate badge, and queued a simulation, for a skip nobody had configured.
-
-Elsewhere: the key craft cost was remembered across a character switch, so an alt could be valued with your main's cheaper keys, and a price that could not be read was remembered as free, which inflated net worth; the dungeon readiness card could not tell you from the rest of the party for the whole of a battle, listing your own gear as someone else's; the Optimizer's top-ranked upgrade could show no cost at all when it was free; and the loot pivot re-summed the entire history on every keystroke.
+- When the browser cannot list a store it answers with an empty list, and the next save wrote that emptiness over the real data — a month of net worth history replaced by one point. It is told apart from an empty store now.
+- A sync pull overwrote rather than merged your task reroll history and labyrinth outcomes.
+- The key craft cost survived a character switch, so an alt could be valued with your main's keys.
 
 ### What your actions actually earned, not what they were predicted to earn
 
-Every rate in the script until now was a prediction from game data. The new Loot & XP pivot reads the loot log instead and reports what each action really paid: time spent, gold per hour at ask and bid, and experience per hour for each skill it trained, with a combined line for actions that train several. Both money columns are kept rather than picking one, because the gap between them is itself the finding — an action thin at bid and fat at ask is one whose income depends on patience. Off by default.
-
-The loot log now keeps 2,000 sessions rather than 500, which is what makes a pivot worth reading. That raise also exposed a cost worth fixing: merging the log re-parsed every timestamp inside a sort comparator on every update, thousands of times per message.
+Every rate in the script until now was a prediction from game data. The new Loot & XP pivot reads the loot log instead and reports what each action really paid: time spent, gold per hour at ask and bid, and experience per hour for each skill it trained. Both money columns are kept, because the gap between them is itself the finding. Off by default. The loot log now keeps 2,000 sessions rather than 500.
 
 ### The Skilling Optimizer can tell you what an upgrade costs and when it pays back
 
-Equipment Progression showed how much more XP or gold each upgrade would earn and never what it cost, so the one question it could not answer was whether to buy it. Rows now carry the upgrade's price and, where it earns more gold, how long it takes to repay itself, and the list can be sorted by best value, payback, cost, or either gain. Both legs of the price follow your own pricing mode. An upgrade that cannot be priced says so and sorts last, rather than looking free and therefore infinitely good. Skilling action lists are also in the game's own order now instead of by level and name, and the action picker gained a search box.
+Equipment Progression showed how much more XP or gold each upgrade would earn and never what it cost, so the one question it could not answer was whether to buy it. Rows now carry the price and, where it earns gold, how long it takes to repay itself, and the list sorts by best value, payback, cost or either gain. An upgrade that cannot be priced says so and sorts last, rather than looking free.
 
 ### A steadier queue popup, a third Artisan rounding mode, and runway on the battle grid
 
-The queued actions popup jumped between roughly 164 and 338 pixels wide as our own injected rows gained and lost their "complete at" text; it now holds one width. Missing materials gain a hybrid rounding mode that takes the worst case on short queues and the expected value on long ones, since each existing mode is wrong at one end. And the in-battle Consumables grid can show how long each food and drink lasts, read from the same forecast the consumables panel uses so the two cannot disagree, reddening at the same threshold that triggers the low-consumable alert. Both new options are off by default.
+The queued actions popup jumped between roughly 164 and 338 pixels wide as our injected rows gained and lost their "complete at" text; it now holds one width. Missing materials gain a hybrid rounding mode that takes the worst case on short queues and the expected value on long ones. And the in-battle Consumables grid can show how long each food and drink lasts. Both new options are off by default.
 
 ### Ability tooltips can show the cooldown you actually get
 
@@ -567,61 +461,55 @@ The game's ability tooltip only ever shows base cooldown and cast time, so the n
 
 ### Upstream sweep: live buffs, a duplicated core module, and the bundle limit
 
-A comparison against upstream turned up three real bugs here and two of our own. Every buff map was read once at login and never again, so a house upgrade, tea swap, re-equip or guild buff purchase left the enhancement, action timing and clear-rate readouts working from stale figures for the rest of the session; they now follow the game's live updates. A profit calculation still running when you switched character could paint the departing character's figure into the arriving one's action bar. And a queue shorter than one action cycle could report a finish time below a single cycle.
-
-Two more came out of checking upstream's bundling work, which does not apply here — this fork split its bundles differently and its largest is well under the limit. But the duplication check only ever policed shared utilities, never core, and extending it found the connection state duplicated into two bundles: two copies of a supposed singleton, each with its own socket listeners and its own idea of whether the connection was up. Separately the bundle size ceiling had drifted from 2 MB to 3.5 MB on the reading that it was a duplication proxy; it is a hard delivery limit, and is now enforced as one.
-
-In the combat simulator: a unit that died and was revived kept its buffs for the rest of the fight, because dying swept away the timers that would have expired them. A Szerra import ignored the guild shrine levels its own export format carries, so imported characters simulated with every shrine switched off. And a dungeon's entry and chest keys were charged only in the results detail view, so zone rankings, upgrade advice and task profit all read dungeon income with the keys unpaid.
-
-Also fixed: negative labyrinth skip thresholds were clamped to zero when read back, so a saved negative threshold lost its badge and mis-compared against recommendations; and Iron Cow mode no longer strips the date and time format preferences, which are not market data.
+- Every buff map was read once at login and never again, so a house upgrade or tea swap left the enhancement and clear-rate readouts stale.
+- A profit calculation caught by a character switch could show the departing character's figure in the arriving one's action bar.
+- In the combat simulator: a revived unit kept its buffs, a Szerra import ignored guild shrine levels, and dungeon keys went unpaid outside the results view.
 
 ### Step between marketplace items without going back to the grid
 
-Checking live prices across a set of items meant opening one, clicking "View All Items" at the far left, opening the next, and repeating. The marketplace now remembers the list you were looking at, so `[` and `]` move straight to the previous or next item's order book, and Escape returns to the grid. There are matching arrows beside the game's own Refresh button, with the position in the list, so the keys are discoverable and the ends of the list are visible before you hit them. It follows whatever filter is applied, so a sweep covers the handful you filtered to rather than the whole catalogue. Off by default; the keys are named in its setting.
+Checking live prices across a set of items meant opening one, clicking "View All Items", opening the next, and repeating. The marketplace now remembers the list you were looking at, so `[` and `]` move straight to the previous or next item's order book and Escape returns to the grid. Matching arrows sit beside the game's Refresh button. It follows whatever filter is applied. Off by default.
 
 ### The task zone number updates when you reroll
 
-Rerolling a task left the old zone number beside the new task until you tabbed away and back. Yesterday's performance work gave that label's handler a class filter, and the shared page watcher only notices elements being _inserted_ — a reroll rewrites the task's text in place, so nothing fired. It had been relying on unrelated page activity to re-run it. It now listens for the game's own quest update, which is what every other task feature already uses and is a far better signal than incidental churn. The other five filtered handlers were checked for the same shape: each either has its own watcher for in-place changes or cannot be affected.
+Rerolling a task left the old zone number beside the new task until you tabbed away and back: a reroll rewrites the task's text in place, and the shared page watcher only notices elements being inserted. It now listens for the game's own quest update, which is what every other task feature already uses.
 
 ### Dungeon keys can be priced as you actually get them, and the setting reaches everything it claimed to
 
-Key pricing gains two options beside ask and bid: follow whatever the profit calculator is set to, or value a key at what it costs you to craft one. The setting can also be cycled straight from the dungeon card in the consumables panel, which is the same global setting rather than a copy — the chip says so, since changing it also moves net worth, item tooltips, combat income and the ROI board.
+Key pricing gains two options beside ask and bid: follow whatever the profit calculator is set to, or value a key at what it costs you to craft one. It can be cycled straight from the dungeon card; changing it also moves net worth, item tooltips, combat income and the ROI board.
 
-Getting there turned up a quieter problem. Six places read that setting by using it directly as a lookup into a price list, so anything other than ask or bid found nothing and fell back to the ask while appearing to honour your choice. Net worth, the inventory badges, item tooltips, the combat breakdown and the chest risk model all did this. They now resolve the setting properly, so the new options work everywhere the help text promises — and that help text has been rewritten to name every feature it governs, having listed three of seven.
+Six places read that setting as a direct price lookup, so anything but ask or bid quietly fell back to ask. Fixed.
 
 ### Plan any number of dungeon runs, and see whether crafting the keys beats buying them
 
-The readiness card's run count only cycled a fixed list, so a plan of 2,753 runs was not expressible and cycling from one silently restarted at 1. The count can now be typed and is remembered, while the chip still cycles for anyone who preferred that. And the missing-keys figure no longer assumes you would buy finished keys: it prices crafting them against buying them, says which is cheaper and by how much, states the pricing basis it used for both sides, and reports the bench time without pretending time is gold. When a material or the market has no price, it says so rather than showing a free craft.
+The readiness card's run count only cycled a fixed list, so a plan of 2,753 runs was not expressible. It can now be typed and is remembered, while the chip still cycles. And the missing-keys figure no longer assumes you would buy finished keys: it prices crafting them against buying them, says which is cheaper and by how much, and says so rather than showing a free craft when a price is missing.
 
 ### The dungeon readiness card can see your party's keys, and your own
 
-The card called every other party member "Unknown player — not in party data", while the game's own key-count message in party chat had been naming them and stating their exact entry key count all along. It now reads that message: every member appears by name with the keys they hold and the runs those cover. Food and drinks for anyone but you are still genuinely unreadable before the key is spent, so a member with counted keys still counts as only partly read and never shows green — the count is a ceiling on their runs, not their stopping point.
+The readiness card called every other party member "Unknown player", while the game's own key-count message in party chat had been naming them and their exact key count all along. It reads that now: every member appears by name with the keys they hold and the runs those cover.
 
-Your own keys were missing from the check entirely, which meant the card could name your coffee as the thing that stops you while four entry keys sat in the bag. The key line now also says how many more to buy when you are short of the planned runs, and the plan defaults to 100 runs rather than 5, which is roughly a day of dungeoning and matches the horizon the rest of the panel already used.
+Your own keys were missing from the check entirely, so the card could blame your coffee while four entry keys sat in the bag.
 
 ### The own-use tooltip line prices both halves the way you asked, and says which
 
-"Own use: make vs buy" costed your materials under whichever pricing mode you had chosen, then always priced the buy alternative at the ask. On bid-based modes that compared a cheap side against an expensive one and leaned toward "make it yourself" on the spread alone. Both halves now follow the same mode, and the line states the basis it used, so "buy" no longer has to be assumed. Anyone on the default hybrid mode sees no change, since hybrid buys at ask on both sides already; the modes that quote bids are the ones that were wrong.
+"Own use: make vs buy" costed your materials under whichever pricing mode you had chosen, then always priced the buy alternative at the ask — so bid-based modes compared a cheap side against an expensive one and leaned toward "make it yourself" on the spread alone. Both halves now follow the same mode, and the line states the basis it used. The default hybrid mode sees no change.
 
 ### Audit round: the spawn census was miscounting, and a finished run could land on the wrong character
 
-The census shipped counting some waves twice and losing others. Switching character re-read the stored tally into a tally that was still full, doubling everything; two tabs on one account each wrote the whole record back, so whichever flushed last erased the other's waves since it loaded; and the run boundary between two dungeon runs was being filed as if it were the last wave's duration. It also identified monsters by "not a player" rather than by being a monster, which is a weaker guarantee than a file you send to someone else deserves. Counts now hydrate once, tabs merge instead of overwrite, only real monsters are counted, and the export records a fingerprint of the spawn tables so a mid-collection game patch is visible rather than silent. Anything exported before this is not worth analysing.
-
-A dungeon run that finished while you were switching characters was banked under the arriving character — gone from the history of whoever ran it, and skewing the other one's averages for good. A queue edit while a run was on its first wave could make a reconnect look like a fresh start and wipe the run's progress. A dungeon cancelled after a refresh left the panel naming it for the rest of the session.
-
-On the performance side, yesterday's class filters accidentally made two handlers worse: a debounced handler re-expanded its own batch, so opening a full inventory ran the equipment-level pass hundreds of times instead of once. The party profile button's filter now anchors on the popup's modal, which another feature already relies on, rather than assuming the tab row's framework classes. The panel-size handler no longer runs on every element inserted anywhere for players who have never resized a panel. And the dungeon spawn rule keeps a dungeon's own band drawable in a hypothetical dungeon with seven or more lower tables, where the arithmetic would otherwise have excluded it entirely.
+- The spawn census shipped miscounting: a character switch doubled the tally and two tabs erased each other's waves. Counts hydrate once and tabs merge now — anything exported before this is not worth analysing.
+- A dungeon run that finished while you were switching characters was banked under the arriving character, gone from the history of whoever ran it.
+- Opening a full inventory ran the equipment-level pass hundreds of times rather than once.
 
 ### A party run picked up mid-way gets its real start back from chat
 
-A run joined after a refresh had no honest duration, so it was shown as watched-only and never recorded. In a party it does have one: the key-count message that ended the previous run is this run's start, it is stamped by the server, and it is still sitting in the chat log. The tracker now reads it back and treats the run as any other, so refreshing mid-dungeon no longer costs you the run. It only accepts an anchor that could plausibly belong to this run — no longer than half again your slowest recorded run of that dungeon, and consistent with the waves you have actually finished — and refuses rather than guesses when either check fails, leaving the run watched-only as before. The verdict is remembered, so a second refresh does not re-decide it against a chat log that has scrolled. Solo runs are unaffected: they have no server timestamps to recover.
+A run joined after a refresh had no honest duration, so it was shown as watched-only and never recorded. In a party it does have one: the key-count message that ended the previous run is this run's start, and it is stamped by the server. The tracker reads it back now, so refreshing mid-dungeon no longer costs you the run. It refuses rather than guesses when the anchor is implausible. Solo runs are unaffected.
 
 ### A run the tracker joined part-way no longer invents a duration
 
-Picking a run up mid-flight — after a refresh, say — used to start its clock at that moment and then present the result as the run's duration, so a dungeon twenty minutes in could read as ninety seconds. Worse, in a party that fabricated time could be written to history as if the server had confirmed it, quietly skewing your averages, the pace chip and the ROI board. Such a run is now marked as joined at its wave, shows what it watched rather than a duration it never saw, and is never banked. The flag survives a refresh, so a partial run cannot come back looking whole. The panel also shows the dungeon's name straight away on page load instead of staying blank until the next wave.
+Picking a run up mid-flight — after a refresh, say — used to start its clock at that moment and then present the result as the run's duration, so a dungeon twenty minutes in could read as ninety seconds. In a party that fabricated time could be written to history as if the server had confirmed it. Such a run is now marked as joined at its wave, shows what it watched, and is never banked.
 
 ### Solo dungeon runs are recorded at last
 
-History only ever kept runs a party's key-count messages could vouch for, so anyone running dungeons alone built no history at all. A solo run is now saved when the tracker watched the whole thing, timed by this client's clock and marked as such — history shows a small marker beside the time and the CSV gained a column for it — so it is never mistaken for a server-checked figure. Runs interrupted, joined late, or timed across a sleeping tab are still refused, since their clock cannot be trusted.
+History only ever kept runs a party's key-count messages could vouch for, so anyone running dungeons alone built no history at all. A solo run is now saved when the tracker watched the whole thing, timed by this client's clock and marked as such, so it is never mistaken for a server-checked figure. Runs interrupted, joined late, or timed across a sleeping tab are still refused.
 
 ### The dungeon tracker follows you when you switch dungeons
 
