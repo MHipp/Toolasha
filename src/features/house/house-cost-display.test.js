@@ -1,5 +1,5 @@
 /** @vitest-environment happy-dom */
-import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // A Mystical Study 5 -> 6 upgrade, the shape of the user's bug report: many
 // materials, several of them short, so the marketplace button is built too.
@@ -17,6 +17,7 @@ vi.mock('../../utils/house-cost-calculator.js', () => ({
         materials: MATERIALS,
         totalValue: 1_000_000,
     }),
+    getCurrentRoomLevel: () => 5,
     // Nothing in the inventory, so every material is short
     getInventoryCount: () => 0,
     getItemName: (hrid) => itemDetailMap[hrid]?.name ?? hrid,
@@ -131,6 +132,124 @@ describe('the section holds its own height inside the panel flex column', () => 
 
         houseCostDisplay.disable();
         expect(document.getElementById('toolasha-house-panel-layout')).toBeNull();
+    });
+});
+
+describe('the panel min-height fallback on browsers without :has()', () => {
+    // What this can and cannot show: happy-dom does no layout, so nothing here
+    // proves the Build button survives — only that the declaration a browser
+    // would need is set on exactly the browsers whose stylesheet rule was
+    // dropped, and taken off again on teardown. That the value is the right one
+    // was settled in a real browser against a reproduction of the game's box
+    // structure, with `:has()` simulated away.
+
+    const realCSS = globalThis.CSS;
+
+    /** Make `CSS.supports('selector(:has(*))')` answer `answer` */
+    function withHasSupport(answer) {
+        globalThis.CSS = { supports: () => answer };
+    }
+
+    /** Make the whole support probe throw, the way a hostile shim would */
+    function withThrowingSupports() {
+        globalThis.CSS = {
+            supports: () => {
+                throw new Error('nope');
+            },
+        };
+    }
+
+    /** The game's boxes: HousePanel_modalContent wrapping HousePanel_costs */
+    function buildPanel() {
+        const modalContent = document.createElement('div');
+        modalContent.className = 'HousePanel_modalContent__abc123';
+        const costsSection = document.createElement('div');
+        costsSection.className = 'HousePanel_costs__def456';
+        modalContent.appendChild(costsSection);
+        document.body.appendChild(modalContent);
+        return { modalContent, costsSection };
+    }
+
+    beforeEach(() => {
+        houseCostDisplay.disable();
+    });
+
+    afterEach(() => {
+        globalThis.CSS = realCSS;
+    });
+
+    test('sets the panel min-height when :has() is unsupported', async () => {
+        withHasSupport(false);
+        const { modalContent, costsSection } = buildPanel();
+
+        await houseCostDisplay.addCostColumn(costsSection, '/house_rooms/mystical_study', modalContent);
+
+        expect(modalContent.querySelector('.mwi-house-to-level')).toBeTruthy();
+        // The stylesheet rule was dropped whole, so `flex-shrink: 0` on the
+        // section would otherwise hand the entire deficit to the game's Build
+        // button. This is the same value the rule would have set.
+        expect(modalContent.style.minHeight).toContain('fit-content');
+    });
+
+    test('leaves the panel alone when :has() is supported', async () => {
+        withHasSupport(true);
+        const { modalContent, costsSection } = buildPanel();
+
+        await houseCostDisplay.addCostColumn(costsSection, '/house_rooms/mystical_study', modalContent);
+
+        expect(modalContent.querySelector('.mwi-house-to-level')).toBeTruthy();
+        // The sheet is doing the job. An inline style here would be a second
+        // opinion on the same property with no way to be overruled.
+        expect(modalContent.style.minHeight).toBe('');
+    });
+
+    test('treats a throwing or absent CSS.supports as unsupported', async () => {
+        withThrowingSupports();
+        const first = buildPanel();
+        await houseCostDisplay.addCostColumn(first.costsSection, '/house_rooms/mystical_study', first.modalContent);
+        expect(first.modalContent.style.minHeight).toContain('fit-content');
+
+        houseCostDisplay.disable();
+        globalThis.CSS = undefined;
+        const second = buildPanel();
+        await houseCostDisplay.addCostColumn(second.costsSection, '/house_rooms/mystical_study', second.modalContent);
+        // Failing this way costs one inline style on a browser that did not
+        // need it; failing the other way costs the Build button.
+        expect(second.modalContent.style.minHeight).toContain('fit-content');
+    });
+
+    test('tearing the section down clears it', async () => {
+        withHasSupport(false);
+        const { modalContent, costsSection } = buildPanel();
+        await houseCostDisplay.addCostColumn(costsSection, '/house_rooms/mystical_study', modalContent);
+        expect(modalContent.style.minHeight).toContain('fit-content');
+
+        // A room switch: the same panel redrawn for another room removes the
+        // old section first. An inline style has no `:has()` to stop matching.
+        houseCostDisplay.removeExistingColumn(modalContent);
+
+        expect(modalContent.querySelector('.mwi-house-to-level')).toBeNull();
+        expect(modalContent.style.minHeight).toBe('');
+    });
+
+    test('disabling the feature clears it', async () => {
+        withHasSupport(false);
+        const { modalContent, costsSection } = buildPanel();
+        await houseCostDisplay.addCostColumn(costsSection, '/house_rooms/mystical_study', modalContent);
+        expect(modalContent.style.minHeight).toContain('fit-content');
+
+        houseCostDisplay.disable();
+
+        expect(modalContent.style.minHeight).toBe('');
+    });
+
+    test('does not clear a min-height the game set itself', () => {
+        const { modalContent } = buildPanel();
+        modalContent.style.minHeight = '320px';
+
+        houseCostDisplay.removeExistingColumn(modalContent);
+
+        expect(modalContent.style.minHeight).toBe('320px');
     });
 });
 

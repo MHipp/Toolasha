@@ -82,12 +82,54 @@ const PANEL_LAYOUT_STYLE_ID = 'toolasha-house-panel-layout';
  * section — a room switch, `removeExistingColumn()`, a game update that renames
  * the class — leaves the panel exactly as the game styles it, with no undo to
  * remember. `disable()` takes the stylesheet out as well.
+ *
+ * A browser that does not understand `:has()` drops the whole rule, and then
+ * `flex-shrink: 0` is left in force with nothing absorbing the deficit — which
+ * is exactly the second bullet above, the Build button at 0px. A layout
+ * refinement that fails to apply is acceptable; a missing Build button is not,
+ * so `applyPanelMinHeightFallback()` sets the same `min-height` inline on those
+ * browsers. See `PANEL_MIN_HEIGHT` and `supportsHasSelector()`.
  */
+const PANEL_MIN_HEIGHT = 'fit-content';
+
+/**
+ * The values the inline fallback will try for `min-height`, in order.
+ *
+ * The stylesheet only ever needs the first: a browser new enough to understand
+ * `:has()` understands unprefixed `fit-content` too. The fallback runs on
+ * exactly the browsers that are not, and the band it covers reaches back past
+ * unprefixed sizing keywords (Safari before 15.4, Firefox before 94), so it
+ * tries the prefixed spellings when the plain one does not take. A value the
+ * browser cannot parse leaves `style.minHeight` empty, which is the test.
+ */
+const PANEL_MIN_HEIGHT_VALUES = [PANEL_MIN_HEIGHT, '-webkit-fit-content', '-moz-fit-content'];
+
 const PANEL_LAYOUT_CSS = `
     [class*="HousePanel_modalContent"]:has(.mwi-house-to-level) {
-        min-height: fit-content;
+        min-height: ${PANEL_MIN_HEIGHT};
     }
 `;
+
+/**
+ * Whether this browser supports `:has()` in a selector, and therefore whether
+ * PANEL_LAYOUT_CSS's rule is live.
+ *
+ * `CSS.supports('selector(…))` asks the browser the question directly, rather
+ * than inferring it from a user-agent string. Anything else — no `CSS`, no
+ * `CSS.supports`, a `supports` that throws on the `selector()` form — is read
+ * as unsupported: falling that way costs one inline style on a browser that did
+ * not need it (and which sets the same value the sheet would have), while
+ * falling the other way costs the player their Build button.
+ *
+ * @returns {boolean} True when the `:has()` rule can be relied on.
+ */
+function supportsHasSelector() {
+    try {
+        return typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && CSS.supports('selector(:has(*))');
+    } catch {
+        return false;
+    }
+}
 
 class HouseCostDisplay {
     constructor() {
@@ -280,10 +322,57 @@ class HouseCostDisplay {
             // Add "Cumulative to Level" section
             await this.addCompactToLevel(costsSection, houseRoomHrid, currentLevel);
 
+            // The section now carries `flex-shrink: 0`, so the panel has to be
+            // allowed to grow. Only needed where PANEL_LAYOUT_CSS's `:has()`
+            // rule was dropped — see applyPanelMinHeightFallback().
+            this.applyPanelMinHeightFallback(modalContent);
+
             // Mark this modal as processed
             this.currentModalContent = modalContent;
         } catch {
             // Silently fail - augmentation is optional
+        }
+    }
+
+    /**
+     * Set the panel's `min-height` inline on browsers without `:has()`.
+     *
+     * The stylesheet rule is the primary and stays the primary: where the
+     * browser understands `:has()` this does nothing, so the two can never
+     * disagree about the panel. Where it does not, the rule was dropped
+     * wholesale and this sets the same value the rule would have — the only
+     * difference being that an inline style has no self-scoping `:has()` to
+     * stop matching, so it has to be taken off by hand in
+     * `removeExistingColumn()` and `disable()`.
+     *
+     * @param {Element} modalContent - The HousePanel_modalContent element
+     */
+    applyPanelMinHeightFallback(modalContent) {
+        if (!modalContent || supportsHasSelector()) {
+            return;
+        }
+        for (const value of PANEL_MIN_HEIGHT_VALUES) {
+            modalContent.style.minHeight = value;
+            if (modalContent.style.minHeight) {
+                return;
+            }
+        }
+    }
+
+    /**
+     * Take the inline `min-height` back off the panel.
+     *
+     * Only clears a value this file put there, so a game update that starts
+     * setting its own `min-height` inline is left alone.
+     *
+     * @param {Element} modalContent - The HousePanel_modalContent element
+     */
+    clearPanelMinHeightFallback(modalContent) {
+        if (!modalContent) {
+            return;
+        }
+        if (PANEL_MIN_HEIGHT_VALUES.includes(modalContent.style.minHeight)) {
+            modalContent.style.minHeight = '';
         }
     }
 
@@ -303,9 +392,15 @@ class HouseCostDisplay {
             itemRequirementsGrid.style.gridTemplateColumns = '';
         }
 
-        // The panel's own `min-height` needs no undo here: PANEL_LAYOUT_CSS is
-        // gated on `:has(.mwi-house-to-level)`, so removing the section above
-        // has already stopped it matching.
+        // PANEL_LAYOUT_CSS needs no undo — it is gated on
+        // `:has(.mwi-house-to-level)`, so removing the section above has
+        // already stopped it matching. The `:has()`-less fallback is the
+        // opposite: an inline style scopes itself to nothing, so it has to be
+        // taken off here by hand. Done without re-asking whether `:has()` is
+        // supported — clearing a value that was never set is free, and gating
+        // the undo on the same flag as the do is one more way to leave it
+        // behind.
+        this.clearPanelMinHeightFallback(modalContent);
     }
 
     /**
@@ -1105,6 +1200,12 @@ class HouseCostDisplay {
         // Restore all grid columns
         document.querySelectorAll('[class*="HousePanel_itemRequirements"]').forEach((grid) => {
             grid.style.gridTemplateColumns = '';
+        });
+
+        // Removing the stylesheet above is enough for the `:has()` rule; the
+        // `:has()`-less fallback's inline style has to come off every panel.
+        document.querySelectorAll('[class*="HousePanel_modalContent"]').forEach((panel) => {
+            this.clearPanelMinHeightFallback(panel);
         });
 
         // Clean up marketplace tabs and observer
