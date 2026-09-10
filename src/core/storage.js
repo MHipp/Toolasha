@@ -100,6 +100,34 @@ const CHARACTER_FAMILY_BUDGETS = {
  */
 const MAX_FLUSH_ATTEMPTS = 3;
 
+/**
+ * How long one IndexedDB read may take before the connection is called wedged.
+ *
+ * Every read in this module settles from an event on its own request or its
+ * transaction — `success`, `error`, `abort`. That covers every way IndexedDB
+ * reports a failure and none of the ways it reports nothing at all: a
+ * transaction whose events never arrive leaves the promise pending for the life
+ * of the page, and a page whose settings load sits behind such a read never
+ * starts. That is what happened on 3.47.0 — startup stopped between
+ * `settings:storageReady` and `features:start` with an empty error log, because
+ * nothing had thrown; a read had simply never come back.
+ *
+ * Ten seconds because it must never fire on a healthy read and must still be a
+ * hiccup rather than a hang. Whole feature-startup chains measured 4.0 s
+ * (Chrome) and 4.7 s (Firefox) end to end; a single key read inside them is
+ * milliseconds, so ten seconds is two orders of magnitude past normal and is
+ * only ever reached by a connection that has stopped answering.
+ */
+const READ_TIMEOUT_MS = 10_000;
+
+/**
+ * What a raced read resolves to when the timeout won.
+ *
+ * A sentinel rather than `null`/`undefined` so a read that legitimately
+ * resolved to a falsy stored value is never mistaken for a wedge.
+ */
+const READ_WEDGED = Symbol('storage-read-wedged');
+
 class Storage {
     constructor() {
         this.db = null;
@@ -163,6 +191,18 @@ class Storage {
         this._reconnecting = false; // Guard against concurrent reconnection attempts
         this._dbNulledReason = null; // Track why db was last set to null
         this._lastReconnectFailureAt = 0; // When a reconnect last gave up, so waits do not pile up
+
+        /**
+         * Longest one read may take before the connection is called wedged.
+         *
+         * An instance field rather than the constant directly so a test can
+         * shrink it — see `READ_TIMEOUT_MS` for why it is as long as it is.
+         */
+        this.readTimeoutMs = READ_TIMEOUT_MS;
+        /** Reads that hit `readTimeoutMs`, for `diagnostics()` */
+        this._readTimeouts = 0;
+        /** What the last wedged read was, so the diagnosis is not lost */
+        this._lastReadTimeout = null;
 
         /**
          * Whether a write has failed for want of space.
@@ -236,9 +276,7 @@ class Storage {
                         reject(reopen.error);
                     };
                     reopen.onsuccess = () => {
-                        this.db = reopen.result;
-                        this._dbNulledReason = null;
-                        this._setupDbEventHandlers();
+                        this._adoptConnection(reopen.result);
                         resolve();
                     };
                     return;
@@ -248,9 +286,7 @@ class Storage {
             };
 
             request.onsuccess = () => {
-                this.db = request.result;
-                this._dbNulledReason = null;
-                this._setupDbEventHandlers();
+                this._adoptConnection(request.result);
                 resolve();
             };
 
@@ -268,9 +304,7 @@ class Storage {
                     reject(retry.error);
                 };
                 retry.onsuccess = () => {
-                    this.db = retry.result;
-                    this._dbNulledReason = null;
-                    this._setupDbEventHandlers();
+                    this._adoptConnection(retry.result);
                     resolve();
                 };
                 retry.onupgradeneeded = request.onupgradeneeded;
@@ -383,6 +417,102 @@ class Storage {
     }
 
     /**
+     * Race one read against `readTimeoutMs`.
+     * @param {Promise<*>} readPromise - The read, which settles from IndexedDB events
+     * @returns {Promise<*>} The read's value, or `READ_WEDGED` if the clock won
+     * @private
+     */
+    _raceReadTimeout(readPromise) {
+        let timer;
+        const timeout = new Promise((resolve) => {
+            timer = setTimeout(() => resolve(READ_WEDGED), this.readTimeoutMs);
+        });
+        return Promise.race([readPromise, timeout]).finally(() => clearTimeout(timer));
+    }
+
+    /**
+     * Throw away a connection that has stopped answering and open a new one.
+     *
+     * The measurement that motivated this: on the wedged page every read
+     * through this module hung forever while a transaction opened on a
+     * *freshly* opened connection to the same database returned at once. The
+     * database was healthy; the connection was not. Closing it and reopening is
+     * therefore the recovery, and it is the same recovery `onclose`/
+     * `onversionchange` already run — this just reaches it from the one signal
+     * IndexedDB never sends, which is silence.
+     * @returns {Promise<boolean>} Whether a connection is available afterwards
+     * @private
+     */
+    async _recoverWedgedConnection() {
+        if (this.db) {
+            try {
+                this.db.close();
+            } catch (error) {
+                console.warn('[Storage] Closing the wedged connection failed:', error);
+            }
+        }
+        this.db = null;
+        this._dbNulledReason = 'read-timeout';
+        // A reconnect that failed in the last 30 s normally suppresses the wait.
+        // This is new evidence, not a repeat of that outage, so it gets a turn.
+        this._lastReconnectFailureAt = 0;
+        return this._awaitConnection();
+    }
+
+    /**
+     * Run a read, and do not let it hang forever.
+     *
+     * Reads settle from IndexedDB events, so a connection that stops delivering
+     * them leaves the promise pending with nothing logged — indistinguishable,
+     * from outside, from a page that is still loading. Startup sits behind the
+     * settings read, so that is the whole script.
+     *
+     * The read is given one retry on a freshly opened connection before it is
+     * called unreadable, and that ordering matters: answering "unreadable"
+     * straight away would hand a caller schema defaults for settings that are
+     * on disk and readable, and the one thing worse than a hang is a startup
+     * that quietly saves defaults over a character's settings. Only when the
+     * new connection is silent too does the caller get the unreadable answer —
+     * the same one an aborted transaction already produces, which every caller
+     * here already handles (`settings-storage` sets `lastLoadReadable = false`
+     * and config keeps the map it has rather than overwriting it).
+     *
+     * Both timeouts are reported through `console.error` with the key and the
+     * store in the message, so the next occurrence lands in the error log
+     * instead of looking like "still loading".
+     * @param {string} op - Which read, e.g. `get`
+     * @param {string} target - The key, or the store for a whole-store read
+     * @param {string} storeName - Object store the read was against
+     * @param {*} unreadable - What this read returns when it could not be made
+     * @param {Function} run - Starts the read; called again for the retry
+     * @returns {Promise<*>} The read's value, or `unreadable`
+     * @private
+     */
+    async _guardedRead(op, target, storeName, unreadable, run) {
+        const first = await this._raceReadTimeout(run());
+        if (first !== READ_WEDGED) return first;
+
+        this._readTimeouts += 1;
+        this._lastReadTimeout = { op, target, storeName, at: Date.now() };
+        console.error(
+            `[Storage] ${op}(${target}) on store ${storeName} did not complete within ${this.readTimeoutMs} ms — ` +
+                'the IndexedDB connection has stopped answering. Reopening it and retrying the read once.'
+        );
+
+        if (await this._recoverWedgedConnection()) {
+            const second = await this._raceReadTimeout(run());
+            if (second !== READ_WEDGED) return second;
+            this._readTimeouts += 1;
+        }
+
+        console.error(
+            `[Storage] ${op}(${target}) on store ${storeName} could not be read on a reopened connection either — ` +
+                'answering as unreadable. Settings and history reads will fall back rather than overwrite.'
+        );
+        return unreadable;
+    }
+
+    /**
      * Get a value from storage
      * @param {string} key - Storage key
      * @param {string} storeName - Object store name (default: 'settings')
@@ -395,6 +525,18 @@ class Storage {
             return defaultValue;
         }
 
+        return this._guardedRead('get', key, storeName, defaultValue, () => this._runGet(key, storeName, defaultValue));
+    }
+
+    /**
+     * The body of `get` — one transaction, settling from its events.
+     * @param {string} key - Storage key
+     * @param {string} storeName - Object store name
+     * @param {*} defaultValue - Default value if the key is absent or unreadable
+     * @returns {Promise<*>} The stored value or default
+     * @private
+     */
+    _runGet(key, storeName, defaultValue) {
         return new Promise((resolve, _reject) => {
             try {
                 const transaction = this.db.transaction([storeName], 'readonly');
@@ -449,6 +591,22 @@ class Storage {
             return result;
         }
 
+        return this._guardedRead('getMany', `${keys.length} keys`, storeName, result, () =>
+            this._runGetMany(keys, storeName)
+        );
+    }
+
+    /**
+     * The body of `getMany` — one transaction carrying every key.
+     * @param {Array<string>} keys - Storage keys
+     * @param {string} storeName - Object store name
+     * @returns {Promise<Map<string, *>>} key → value, null where there was nothing to read
+     * @private
+     */
+    _runGetMany(keys, storeName) {
+        const result = new Map();
+        for (const key of keys) result.set(key, null);
+
         return new Promise((resolve) => {
             try {
                 const transaction = this.db.transaction([storeName], 'readonly');
@@ -501,6 +659,17 @@ class Storage {
             return null;
         }
 
+        return this._guardedRead('tryGet', key, storeName, null, () => this._runTryGet(key, storeName));
+    }
+
+    /**
+     * The body of `tryGet` — one transaction, settling from its events.
+     * @param {string} key - Storage key
+     * @param {string} storeName - Object store name
+     * @returns {Promise<{found: boolean, value: *}|null>} The read, or null when it could not be made
+     * @private
+     */
+    _runTryGet(key, storeName) {
         return new Promise((resolve) => {
             try {
                 const transaction = this.db.transaction([storeName], 'readonly');
@@ -1160,6 +1329,16 @@ class Storage {
             return [];
         }
 
+        return this._guardedRead('getAllKeys', storeName, storeName, [], () => this._runGetAllKeys(storeName));
+    }
+
+    /**
+     * The body of `getAllKeys` — one transaction, settling from its events.
+     * @param {string} storeName - Object store name
+     * @returns {Promise<Array<string>>} Array of keys
+     * @private
+     */
+    _runGetAllKeys(storeName) {
         return new Promise((resolve, _reject) => {
             try {
                 const transaction = this.db.transaction([storeName], 'readonly');
@@ -1209,6 +1388,16 @@ class Storage {
             return null;
         }
 
+        return this._guardedRead('tryGetAllKeys', storeName, storeName, null, () => this._runTryGetAllKeys(storeName));
+    }
+
+    /**
+     * The body of `tryGetAllKeys` — one transaction, settling from its events.
+     * @param {string} storeName - Object store name
+     * @returns {Promise<Array<string>|null>} The keys, or null when they could not be listed
+     * @private
+     */
+    _runTryGetAllKeys(storeName) {
         return new Promise((resolve) => {
             try {
                 const transaction = this.db.transaction([storeName], 'readonly');
@@ -1246,6 +1435,16 @@ class Storage {
             return {};
         }
 
+        return this._guardedRead('getAll', storeName, storeName, {}, () => this._runGetAll(storeName));
+    }
+
+    /**
+     * The body of `getAll` — one cursor walk, settling from its events.
+     * @param {string} storeName - Object store name
+     * @returns {Promise<Object>} Map of key → value
+     * @private
+     */
+    _runGetAll(storeName) {
         return new Promise((resolve, _reject) => {
             try {
                 const transaction = this.db.transaction([storeName], 'readonly');
@@ -1702,6 +1901,38 @@ class Storage {
     }
 
     /**
+     * Take a freshly opened connection as the live one, closing whatever it replaces.
+     *
+     * Every `open` path used to assign `this.db` directly, which is fine while
+     * exactly one open is ever in flight and silently leaks a connection when
+     * two are — the `onblocked` retry racing its own original, or a second
+     * `initialize()` starting before the first has resolved. A leaked
+     * connection is not inert: it holds the database open, so it blocks the
+     * next version upgrade (this database is shared with the upstream script,
+     * which does upgrade it) and it keeps receiving events nobody reads.
+     *
+     * The superseded connection's handlers are cleared before it is closed so
+     * its own teardown cannot null out the connection that replaced it.
+     * @param {IDBDatabase} db - The newly opened connection
+     * @private
+     */
+    _adoptConnection(db) {
+        const previous = this.db;
+        if (previous && previous !== db) {
+            previous.onversionchange = null;
+            previous.onclose = null;
+            try {
+                previous.close();
+            } catch (error) {
+                console.warn('[Storage] Closing a superseded connection failed:', error);
+            }
+        }
+        this.db = db;
+        this._dbNulledReason = null;
+        this._setupDbEventHandlers();
+    }
+
+    /**
      * Set up event handlers on the active DB connection.
      * @private
      */
@@ -1796,6 +2027,8 @@ class Storage {
             dbVersion: this.dbVersion,
             reconnecting: this._reconnecting,
             lastNullReason: this._dbNulledReason,
+            readTimeouts: this._readTimeouts,
+            lastReadTimeout: this._lastReadTimeout,
             pendingWrites: this.pendingWrites.size,
             activeTimers: this.saveDebounceTimers.size,
             restorePendingStores: this.restorePendingStores(),
