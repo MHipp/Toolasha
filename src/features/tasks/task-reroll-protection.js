@@ -19,6 +19,7 @@ import { questForTaskCard } from './task-card-quest.js';
 import { PANEL_Z_CAP } from '../../utils/panel-z-index.js';
 import { characterKey, readScopedFrom } from '../../utils/character-key.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 
 const STORAGE_KEY_PREFIX = 'taskProtectedHrids';
 
@@ -66,6 +67,16 @@ class TaskRerollProtection {
         // The protected list and the six cap records are still read together —
         // one JSON read and one readonly transaction for the rest — instead of
         // seven awaited round trips one after another.
+        //
+        // A character switch tearing the feature down while this read is in
+        // flight used to leave the resumed tail pushing four registrations
+        // into the `unregisterHandlers` array `disable()` had already emptied
+        // — live class observers and a settle-flow handler with no handle to
+        // remove them by. Idempotent (each repaint is gated on dataset flags
+        // or a full redraw), so the leaked registrations do no visible harm,
+        // but they would sit there doing a duplicate pass over every task
+        // card until the *next* switch's teardown clears the array wholesale.
+        const ticket = captureOwner(this);
         const [saved, caps] = await Promise.all([
             storage.getJSON(getStorageKey(), 'settings', []),
             storage.getMany(
@@ -82,6 +93,7 @@ class TaskRerollProtection {
             'settings',
             DEFAULT_COWBELL_THRESHOLD
         );
+        if (!stillOurs(ticket)) return;
 
         // Watch for task cards appearing. Draw at once so the protected border
         // is there the instant the card is — the observer only ever fires for a
@@ -830,6 +842,7 @@ class TaskRerollProtection {
     }
 
     disable() {
+        noteTeardown(this);
         for (const unregister of this.unregisterHandlers) {
             unregister();
         }

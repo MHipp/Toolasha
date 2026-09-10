@@ -34,6 +34,7 @@ import dataManager from '../../core/data-manager.js';
 import domObserver from '../../core/dom-observer.js';
 import webSocketHook from '../../core/websocket.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 import { textLines } from './guild-trials-scrape.js';
 import { gameDigitsSource } from '../../utils/number-parser.js';
 import {
@@ -244,6 +245,15 @@ class GuildLoadoutCapture {
         if (this.initialized) return;
         this.initialized = true;
 
+        // A character switch tearing the feature down while either read below
+        // is in flight used to leave the resumed tail pushing its two
+        // registrations into the `unregister` array `cleanup()` had already
+        // emptied — a live websocket pair and a live modal observer with no
+        // handle to remove them by. Idempotent (each capture folds into
+        // `this.record` by key), so reference-counted via `owners` the same
+        // as the array shape self-heals: the leaked pair lives on until the
+        // *next* switch's teardown clears the array wholesale.
+        const ticket = captureOwner(this);
         this.characterId = dataManager.getCurrentCharacterId?.() ?? null;
         this.startedAt = Date.now();
         this.record = await loadLoadouts(this.characterId, this.guildName);
@@ -259,6 +269,7 @@ class GuildLoadoutCapture {
             this.record = cleaned.record;
             await saveLoadouts(this.characterId, this.record, this.guildName);
         }
+        if (!stillOurs(ticket)) return;
 
         this.onUnitFetched = (message) => this._onUnitFetched(message);
         this.onNewBattle = (message) => this._onNewBattle(message);
@@ -281,6 +292,7 @@ class GuildLoadoutCapture {
         this.owners = Math.max(0, this.owners - 1);
         if (this.owners > 0) return;
 
+        noteTeardown(this);
         for (const unregister of this.unregister) unregister();
         this.unregister = [];
         this.timers.clearAll();

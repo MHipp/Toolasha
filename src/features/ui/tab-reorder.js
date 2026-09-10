@@ -11,6 +11,7 @@ import config from '../../core/config.js';
 import domObserver from '../../core/dom-observer.js';
 import dataManager from '../../core/data-manager.js';
 import storage from '../../core/storage.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 
 const STORAGE_KEY_PREFIX = 'tabOrder';
 
@@ -51,8 +52,20 @@ class TabReorder {
 
         this.isInitialized = true;
 
-        // Load saved order
+        // Load saved order.
+        //
+        // A character switch tearing the feature down while this read is in
+        // flight used to leave the resumed tail pushing its two registrations
+        // into the `unregisterHandlers` array `disable()` had already emptied
+        // — a live class observer and a live ready-catch-up with no handle to
+        // remove them by. Harmless in practice (the work they redo is
+        // idempotent, gated on `tab.dataset.mwiTabReorder`), but the leaked
+        // observer survives until the *next* switch's teardown clears the
+        // array wholesale, so guard it anyway rather than leave a stray
+        // registration sitting around for a character's whole session.
+        const ticket = captureOwner(this);
         this.savedOrder = await storage.getJSON(getStorageKey(), 'settings', null);
+        if (!stillOurs(ticket)) return;
 
         // Re-apply whenever React re-renders the tab container
         const unregister = domObserver.onClass('TabReorder', 'TabsComponent_tabsContainer', () => {
@@ -207,6 +220,7 @@ class TabReorder {
     }
 
     disable() {
+        noteTeardown(this);
         for (const unregister of this.unregisterHandlers) {
             unregister();
         }

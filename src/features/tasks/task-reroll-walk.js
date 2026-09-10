@@ -80,6 +80,7 @@ import taskSorter from './task-sorter.js';
 import { createMutationWatcher } from '../../utils/dom-observer-helpers.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { characterKey, readScopedFrom } from '../../utils/character-key.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 import {
     createFloatingWidget,
     widgetCheckboxRow,
@@ -448,6 +449,17 @@ class TaskRerollWalk {
         // transaction queues behind every one of theirs. Keys are built here,
         // before the read, so a switch landing inside it cannot make the read
         // and whatever is done with it name different characters.
+        // A character switch tearing the feature down while this read is in
+        // flight used to leave the resumed tail pushing its four
+        // registrations into the `unregisterHandlers` array `disable()` had
+        // already emptied — live handlers and observers with no handle to
+        // remove them by. Three of the four redo idempotent work and self-heal
+        // at the next switch's teardown, but the duplicate
+        // `document.addEventListener('click', spendHandler, true)` is not: a
+        // real click on the highlighted spend button would call
+        // `_manualPressed()` once per leaked listener, visibly double-advancing
+        // the walk on a single press.
+        const ticket = captureOwner(this);
         try {
             const protectedKey = protectedStorageKey();
             const batch = await storage.getMany([protectedKey, PANEL_POSITION_KEY, ...capKeys()], 'settings');
@@ -457,6 +469,7 @@ class TaskRerollWalk {
         } catch (error) {
             console.error('[TaskRerollWalk] Loading the walk’s stored state failed:', error);
         }
+        if (!stillOurs(ticket)) return;
 
         const unregisterPanel = domObserver.onClass('TaskRerollWalk-Panel', 'TasksPanel_taskSlotCount', (panel) => {
             this._injectButton(panel);
@@ -1821,6 +1834,7 @@ class TaskRerollWalk {
 
     /** Take the walk's control and widget off the page and stop listening. */
     cleanup() {
+        noteTeardown(this);
         this.stop();
         this.timerRegistry.clearAll();
         this.sortTimerRegistry.clearAll();

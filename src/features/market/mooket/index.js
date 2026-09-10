@@ -58,6 +58,7 @@ import {
 import { createCuratedRecord, mergeById } from '../../../utils/persisted-record.js';
 import { attachMinimize } from '../../../utils/panel-minimize.js';
 import { registerCommand, unregisterCommand } from '../../../utils/command-registry.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../../utils/init-ownership.js';
 
 const PANEL_ID = 'mwi-market-history-panel';
 const TAB_ID = 'mwi-market-history-tab';
@@ -229,6 +230,17 @@ class MarketHistoryPanel {
         if (!config.getSetting('market_pooledHistory')) return;
         this.isInitialized = true;
 
+        // A character switch tearing the feature down while either read below
+        // is in flight used to leave the resumed tail pushing its
+        // registrations into `cleanupRegistry`'s internal arrays, which
+        // `disable()`'s `cleanupAll()` had already emptied — live listeners,
+        // observers and the poll interval with no handle to remove them by.
+        // Only one of them is more than idempotent redraw work: a leaked
+        // `market_item_order_books_updated` listener could double-call
+        // `marketHistoryAPI.report(data)` for one order-book snapshot,
+        // double-reporting it to the shared pooled history for the window
+        // until the *next* switch's teardown clears the registry wholesale.
+        const ticket = captureOwner(this);
         await this.loadPrefs();
 
         registerCommand({
@@ -238,6 +250,7 @@ class MarketHistoryPanel {
         });
 
         await marketPriceStore.initialize();
+        if (!stillOurs(ticket)) return;
         marketHistoryAPI.connect();
 
         // The snapshot has no sizes but covers every item, so it fills in
@@ -310,6 +323,7 @@ class MarketHistoryPanel {
         // part-way once left `isInitialized` true with the panel already
         // removed, so the next initialize() returned early and every History
         // click after that read `.style` off a null panel until a refresh
+        noteTeardown(this);
         try {
             unregisterCommand('Market History Viewer');
             this.chart?.destroy();
