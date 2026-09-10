@@ -12,7 +12,7 @@ The What's New panel showed the same twelve entries to everyone, however long ag
 
 ### What's new shows what's new
 
-The panel was showing 20,000 characters of a changelog that had grown to 400,000 — an arbitrary slice, cut off mid-sentence, spanning releases long past. It now shows the twelve newest entries whole and says how many earlier ones it left out. Older entries have also been cut back to a couple of sentences each.
+The panel was showing 20,000 characters of a changelog that had grown to 400,000 — an arbitrary slice, cut off mid-sentence, spanning releases long past. It now shows only the changes since the version you were running, says how many earlier ones it left out, and older entries have been cut back to a couple of sentences each.
 
 ### Refreshing twice quickly no longer breaks Toolasha in every tab
 
