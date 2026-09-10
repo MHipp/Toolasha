@@ -2446,13 +2446,41 @@ if (isCombatSimulatorPage()) {
             // with the page. `pagehide` covers the bfcache case and
             // `visibilitychange`→hidden covers backgrounding, which is the last
             // event a discarded tab reliably gets.
+            //
+            // Only one of the three also gives the IndexedDB connection back,
+            // and the difference between them is the difference between a page
+            // that is ending and a page that might not be:
+            //
+            // - `visibilitychange`→hidden fires every time the tab is
+            //   backgrounded, which is constantly, and the page keeps running.
+            //   Closing here would leave a tab the user comes back to with no
+            //   database. Flush only.
+            // - `beforeunload` fires when a navigation *starts*, and that
+            //   navigation can still be called off — any handler on the page
+            //   that asks for a confirmation gives the user a Stay button, and a
+            //   page that stays must still have a database. Flush only. Nothing
+            //   is lost by waiting: when the unload does go through, `pagehide`
+            //   follows it, and `pagehide` cannot be cancelled.
+            // - `pagehide` is the page ending, in both of its endings — thrown
+            //   away, or frozen into the bfcache. Both want the connection
+            //   given back (see `storage.closeForTeardown()`), and the second
+            //   one gets it again on `pageshow`.
             const flushPendingWrites = () => {
                 storage.flushAll();
             };
             window.addEventListener('beforeunload', flushPendingWrites);
-            window.addEventListener('pagehide', flushPendingWrites);
             document.addEventListener('visibilitychange', () => {
                 if (document.visibilityState === 'hidden') flushPendingWrites();
+            });
+            window.addEventListener('pagehide', () => {
+                storage.closeForTeardown('pagehide');
+            });
+            // Unconditional rather than gated on `event.persisted`: a `pageshow`
+            // that follows a `pagehide` in the same page's life is a restore
+            // however it is labelled, and `reopenAfterRestore()` is a no-op
+            // unless `pagehide` actually closed the connection.
+            window.addEventListener('pageshow', () => {
+                storage.reopenAfterRestore();
             });
 
             // Initialize Data Manager immediately

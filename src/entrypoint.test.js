@@ -142,6 +142,9 @@ let mwiToolsDetected = false;
 /** `(message, options)` pairs passed to `Utils.toast.showToast` while the entrypoint loaded */
 const toastCalls = [];
 
+/** Storage lifecycle methods the entrypoint's page-teardown listeners called, in order */
+const storageCalls = [];
+
 /** A library stand-in: every property is a callable that returns another one */
 function makeStub() {
     return new Proxy(function stub() {}, {
@@ -157,7 +160,19 @@ function makeStub() {
 beforeAll(async () => {
     window.Toolasha = {
         Core: {
-            storage: { initialize: async () => {}, flushAll: () => {}, diagnostics: () => ({}) },
+            storage: {
+                initialize: async () => {},
+                flushAll: () => {
+                    storageCalls.push('flushAll');
+                },
+                closeForTeardown: () => {
+                    storageCalls.push('closeForTeardown');
+                },
+                reopenAfterRestore: () => {
+                    storageCalls.push('reopenAfterRestore');
+                },
+                diagnostics: () => ({}),
+            },
             config: {
                 Z_FLOATING_PANEL: 1100,
                 getSetting: (key) => settings[key],
@@ -268,6 +283,82 @@ describe('the registry the entrypoint builds', () => {
     test('carries health checks through, which is the whole point', () => {
         const withChecks = registered.filter((feature) => typeof feature.healthCheck === 'function');
         expect(withChecks.length).toBeGreaterThanOrEqual(12);
+    });
+});
+
+/**
+ * The page-teardown listeners.
+ *
+ * Three events say "the page may be going away" and they do not mean the same
+ * thing, which is what this is about. On 3.47.0 all three did the same thing —
+ * start a flush, open readwrite transactions, and never tell the connection to
+ * finalise — and a tab refreshed twice in quick succession left a transaction
+ * outstanding on the `settings` store. IndexedDB serialises a store across every
+ * connection on the origin, so that one orphan stopped the script in every tab
+ * until the *other* tabs were reloaded.
+ *
+ * What these tests prove is the wiring: which lifecycle call each event makes.
+ * They prove nothing about IndexedDB — happy-dom has no bfcache, and no test
+ * here can reproduce a browser holding a store across connections.
+ */
+describe('page-teardown listeners', () => {
+    /**
+     * Fire an event at a target and hand back what storage was asked to do.
+     * @param {EventTarget} target - `window` or `document`
+     * @param {string} type - Event type
+     * @returns {Array<string>} Storage lifecycle methods called, in order
+     */
+    function dispatch(target, type) {
+        storageCalls.length = 0;
+        target.dispatchEvent(new Event(type));
+        return storageCalls.slice();
+    }
+
+    /**
+     * Run a block with `document.visibilityState` forced.
+     * @param {string} state - `hidden` or `visible`
+     * @param {Function} run - What to run while it is forced
+     * @returns {*} Whatever `run` returned
+     */
+    function withVisibility(state, run) {
+        const original = Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState');
+        Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
+        try {
+            return run();
+        } finally {
+            delete document.visibilityState;
+            if (original) Object.defineProperty(Document.prototype, 'visibilityState', original);
+        }
+    }
+
+    // The event that must close, and the reason the whole change exists. It is
+    // also the only one of the three that cannot be called off.
+    test('pagehide gives the connection back', () => {
+        expect(dispatch(window, 'pagehide')).toEqual(['closeForTeardown']);
+    });
+
+    // A bfcache restore resumes a page whose connection was closed, and
+    // everything above the storage module still expects a database.
+    test('pageshow asks for the connection back', () => {
+        expect(dispatch(window, 'pageshow')).toEqual(['reopenAfterRestore']);
+    });
+
+    // `beforeunload` fires when a navigation *starts*, and any handler on the
+    // page that asks for confirmation gives the user a Stay button. A page that
+    // stays must still have a database — and when the navigation does go
+    // through, `pagehide` follows and closes there, so nothing is lost.
+    test('beforeunload flushes and does not close — the navigation can still be cancelled', () => {
+        expect(dispatch(window, 'beforeunload')).toEqual(['flushAll']);
+    });
+
+    // This one fires every time the tab is backgrounded, which is constantly,
+    // and the page keeps running the whole time.
+    test('visibilitychange→hidden flushes and does not close — the tab comes back', () => {
+        expect(withVisibility('hidden', () => dispatch(document, 'visibilitychange'))).toEqual(['flushAll']);
+    });
+
+    test('visibilitychange→visible does nothing at all', () => {
+        expect(withVisibility('visible', () => dispatch(document, 'visibilitychange'))).toEqual([]);
     });
 });
 

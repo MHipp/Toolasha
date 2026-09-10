@@ -128,6 +128,36 @@ const READ_TIMEOUT_MS = 10_000;
  */
 const READ_WEDGED = Symbol('storage-read-wedged');
 
+/**
+ * How long one IndexedDB write may take before it is reported as failed.
+ *
+ * Writes settle from the same events reads do — `success`, `error`, `abort` —
+ * and so have the same hole: a transaction whose events never arrive leaves the
+ * promise pending forever. A write is worse than a read when that happens,
+ * because things wait on writes finishing. `flushAll()` awaits `_inFlightWrites`
+ * before it snapshots the queue, and the character-switch drain awaits
+ * `flushAll()`; one write that never settles stalls both for the life of the
+ * page. And an outstanding readwrite transaction is not merely stuck — it holds
+ * its object store against *every* connection on the origin, this page's and
+ * every other tab's, because IndexedDB serialises readwrite transactions per
+ * store. That is how one wedged settings write stops the script in every tab.
+ *
+ * Longer than the read timeout because a legitimate write can genuinely be
+ * large: a restore or an import puts a whole store through one `putAll`
+ * transaction, where a read is a single key. Fifteen seconds is still far past
+ * anything measured and is only reached by a transaction that has stopped
+ * reporting.
+ */
+const WRITE_TIMEOUT_MS = 15_000;
+
+/**
+ * What a raced write resolves to when the timeout won.
+ *
+ * A symbol for the same reason `READ_WEDGED` is one: `false` and `[]` are both
+ * real answers a write can give, and neither may be confused with silence.
+ */
+const WRITE_WEDGED = Symbol('storage-write-wedged');
+
 class Storage {
     constructor() {
         this.db = null;
@@ -203,6 +233,28 @@ class Storage {
         this._readTimeouts = 0;
         /** What the last wedged read was, so the diagnosis is not lost */
         this._lastReadTimeout = null;
+
+        /**
+         * Longest one write may take before it is reported as failed.
+         *
+         * An instance field for the same reason `readTimeoutMs` is one: a test
+         * may not take fifteen seconds to watch a timeout happen.
+         */
+        this.writeTimeoutMs = WRITE_TIMEOUT_MS;
+        /** Writes that hit `writeTimeoutMs`, for `diagnostics()` */
+        this._writeTimeouts = 0;
+        /** What the last wedged write was */
+        this._lastWriteTimeout = null;
+
+        /**
+         * True from `closeForTeardown()` until `reopenAfterRestore()`.
+         *
+         * While it is up this page has said goodbye: the connection is closing
+         * and must not be replaced, because a page that opens a fresh
+         * connection on its way out is exactly the thing that can die holding a
+         * store. `_awaitConnection` reads it and declines to reconnect.
+         */
+        this._closingForTeardown = false;
 
         /**
          * Whether a write has failed for want of space.
@@ -513,6 +565,66 @@ class Storage {
     }
 
     /**
+     * Race one write against `writeTimeoutMs`.
+     * @param {Promise<*>} writePromise - The write, which settles from IndexedDB events
+     * @returns {Promise<*>} The write's result, or `WRITE_WEDGED` if the clock won
+     * @private
+     */
+    _raceWriteTimeout(writePromise) {
+        let timer;
+        const timeout = new Promise((resolve) => {
+            timer = setTimeout(() => resolve(WRITE_WEDGED), this.writeTimeoutMs);
+        });
+        return Promise.race([writePromise, timeout]).finally(() => clearTimeout(timer));
+    }
+
+    /**
+     * Run a write, and do not let it hang forever.
+     *
+     * What a timed-out write does *not* do is as deliberate as what it does.
+     *
+     * It is not dropped. The value stays in `pendingWrites` — that falls out of
+     * answering `false`, which is the same answer an aborted transaction gives,
+     * and both the debounced path and `flushAll` already requeue on it. Losing a
+     * character's settings silently would be worse than the hang this replaces,
+     * so nothing here throws the value away; `MAX_FLUSH_ATTEMPTS` is what keeps
+     * the requeue from being forever.
+     *
+     * It is not retried here, and the connection is not reopened. This is where
+     * writes part company with `_guardedRead`, which does both. A read has no
+     * side effect, so re-running it on a new connection can only produce a
+     * better answer. A write that timed out has an outstanding transaction that
+     * may yet commit: a second transaction for the same key would then be two
+     * writes of the same key committing in an order nobody controls, and on a
+     * store that has stopped answering it is one more transaction queued behind
+     * whatever is holding it. Reopening does not help either — the measurement
+     * behind this whole change was that a *fresh* connection could not read the
+     * `settings` store while the lock was held, because IndexedDB serialises a
+     * store across every connection on the origin. Recovery by reconnect is the
+     * read watchdog's job and it stays there; this one reports and answers.
+     * @param {string} op - Which write, e.g. `set`
+     * @param {string} target - The key, or a description for a bulk write
+     * @param {string} storeName - Object store the write was against
+     * @param {*} unwritten - What this write returns when it did not report back
+     * @param {Function} run - Starts the write
+     * @returns {Promise<*>} The write's result, or `unwritten`
+     * @private
+     */
+    async _guardedWrite(op, target, storeName, unwritten, run) {
+        const result = await this._raceWriteTimeout(run());
+        if (result !== WRITE_WEDGED) return result;
+
+        this._writeTimeouts += 1;
+        this._lastWriteTimeout = { op, target, storeName, at: Date.now() };
+        console.error(
+            `[Storage] ${op}(${target}) on store ${storeName} did not complete within ${this.writeTimeoutMs} ms — ` +
+                'the transaction is still outstanding and is holding that store against every tab. ' +
+                'Reporting the write as failed; its value stays queued for the next flush.'
+        );
+        return unwritten;
+    }
+
+    /**
      * Get a value from storage
      * @param {string} key - Storage key
      * @param {string} storeName - Object store name (default: 'settings')
@@ -710,6 +822,17 @@ class Storage {
     async set(key, value, storeName = 'settings', immediate = false) {
         if (this._refuseDuringRestore(key, storeName, 'save')) return false;
 
+        // The page has said goodbye and the connection is closing (see
+        // `closeForTeardown`), so this cannot be written now — but writers do
+        // still run at that point: any `beforeunload`/`pagehide` listener
+        // registered after the entrypoint's, and the character-activity
+        // projection is one. Queue rather than refuse, and ignore `immediate`,
+        // because there is no longer an immediate to be had: on a page being
+        // destroyed the value is no worse off than it was, and on a page being
+        // frozen into the bfcache the queue comes back with it and the next
+        // flush writes it.
+        if (this._closingForTeardown) return this._debouncedSave(key, value, storeName);
+
         if (!this.db && !(await this._awaitConnection())) {
             console.warn(`[Storage] Database not available, cannot save key: ${key}`);
             return false;
@@ -789,6 +912,18 @@ class Storage {
             console.warn(`[Storage] Database not available, cannot save key: ${key}`);
             return false;
         }
+        return this._guardedWrite('set', key, storeName, false, () => this._runSave(key, value, storeName));
+    }
+
+    /**
+     * Internal: the body of `_saveToIndexedDB`, without the watchdog.
+     * @param {string} key - Storage key
+     * @param {*} value - Value to store
+     * @param {string} storeName - Object store name
+     * @returns {Promise<boolean>} Whether the write landed
+     * @private
+     */
+    _runSave(key, value, storeName) {
         return new Promise((resolve, _reject) => {
             let settled = false;
             /**
@@ -1274,6 +1409,21 @@ class Storage {
         const superseded = this._supersedePending(`${storeName}:${key}`);
         for (const resolve of superseded?.resolvers || []) resolve(false);
 
+        return this._guardedWrite('delete', key, storeName, false, () => this._runDelete(key, storeName));
+    }
+
+    /**
+     * Internal: the body of `delete`, without the watchdog.
+     *
+     * A delete is a readwrite transaction like any other, so it can hold a store
+     * open like any other — the prune a rolling-window recorder runs is on the
+     * same footing as the write it follows.
+     * @param {string} key - Storage key to delete
+     * @param {string} storeName - Object store name
+     * @returns {Promise<boolean>} Success status
+     * @private
+     */
+    _runDelete(key, storeName) {
         return new Promise((resolve, _reject) => {
             try {
                 const transaction = this.db.transaction([storeName], 'readwrite');
@@ -1549,6 +1699,20 @@ class Storage {
             return [];
         }
 
+        return this._guardedWrite('putAll', `${keys.length} keys`, storeName, [], () =>
+            this._runPutAll(storeName, entries, keys)
+        );
+    }
+
+    /**
+     * Internal: the body of `_putAllWritten`, without the watchdog.
+     * @param {string} storeName - Object store name
+     * @param {Record<string, *>} entries - Map of key → value to write
+     * @param {Array<string>} keys - `Object.keys(entries)`, already computed
+     * @returns {Promise<Array<string>>} The keys that were written
+     * @private
+     */
+    _runPutAll(storeName, entries, keys) {
         return new Promise((resolve) => {
             try {
                 const transaction = this.db.transaction([storeName], 'readwrite');
@@ -1660,12 +1824,21 @@ class Storage {
             flushes.push(
                 (async () => {
                     let writtenKeys;
+                    // Whether the bulk transaction reported at all. A store that
+                    // did not answer within the write timeout is a store
+                    // something is holding, and the per-key retry below would
+                    // add one more transaction per key to the queue behind it —
+                    // each of which would sit out the same timeout. An abort is
+                    // different: the store answered, one key was poison, and
+                    // isolating it is exactly right.
+                    const timeoutsBefore = this._writeTimeouts;
                     try {
                         writtenKeys = new Set(await this._putAllWritten(storeName, entries));
                     } catch (error) {
                         console.error(`[Storage] Flush of store ${storeName} failed:`, error);
                         writtenKeys = new Set();
                     }
+                    const wedged = this._writeTimeouts > timeoutsBefore;
 
                     // One key the store refuses — an un-cloneable value, or the key whose
                     // size tipped the quota — aborts the whole transaction and takes every
@@ -1697,7 +1870,7 @@ class Storage {
                     const stragglers = items.filter(
                         (item) => !writtenKeys.has(item.key) && this.pendingWrites.get(item.timerKey) === item.pending
                     );
-                    if (stragglers.length > 0) {
+                    if (!wedged && stragglers.length > 0) {
                         const retried = await Promise.all(
                             stragglers.map((item) => this._putAllWritten(storeName, { [item.key]: item.pending.value }))
                         );
@@ -1749,6 +1922,114 @@ class Storage {
         }
 
         await Promise.all(flushes);
+    }
+
+    /**
+     * Land the pending writes and give the connection back, because the page is going away.
+     *
+     * The failure this exists to prevent, measured live on 3.47.0: a tab was
+     * refreshed twice in quick succession, and from then on every read of the
+     * `settings` store hung — in that tab and in every other tab on the origin —
+     * while reads of every other store on the same connection answered in
+     * milliseconds. Reloading the broken tab changed nothing; reloading the
+     * *other* tabs fixed it instantly. That is a readwrite transaction on
+     * `settings` left outstanding by a torn-down page: IndexedDB serialises
+     * transactions per object store across every connection on the origin, so
+     * one orphan blocks that store everywhere until the connection holding it
+     * goes away. Nothing in this module ever told a connection to go away.
+     *
+     * `close()` is the lever, and the shape matters more than the call:
+     *
+     * - The flush is started but **not** awaited, and `close()` is called in the
+     *   same task. `flushAll()` opens its transactions synchronously when there
+     *   is nothing in flight, so by the time `close()` runs they exist — and
+     *   `close()` does not abort them. It sets the connection's close-pending
+     *   flag: no *new* transaction may be started on it, and the browser
+     *   finalises and releases it as soon as the outstanding ones finish.
+     *   Awaiting the flush first would be tidier and would also be a promise
+     *   this method cannot keep: on a real unload the page may not live long
+     *   enough to resume from an `await`, which is precisely the case that left
+     *   the orphan. Marking the connection close-pending is the part that has to
+     *   happen synchronously, and it is the part that is worth having.
+     * - The handlers are cleared first. `onclose` would otherwise call
+     *   `_reconnect()` and open a fresh connection on a page that is leaving —
+     *   the exact thing this is preventing. (A deliberate `close()` does not
+     *   fire `onclose` in a compliant browser; this does not depend on that.)
+     * - `_closingForTeardown` stops `_awaitConnection` reopening for the same
+     *   reason. Writes that flushAll had not yet opened a transaction for are
+     *   reported as failed and stay queued; on a page that is being destroyed
+     *   that costs nothing, and on a page that comes back (see
+     *   `reopenAfterRestore`) they are still in `pendingWrites` and are written
+     *   by the next flush.
+     *
+     * This is the `pagehide` handler's business only. `beforeunload` may be
+     * cancelled and `visibilitychange` says nothing about the page ending — see
+     * the listener block in `entrypoint.js` for why each of the three differs.
+     * @param {string} [reason='pagehide'] - Recorded for `diagnostics()`
+     * @returns {Promise<void>} The flush, for tests and for a caller that has time
+     */
+    closeForTeardown(reason = 'pagehide') {
+        if (this._closingForTeardown) return Promise.resolve();
+        this._closingForTeardown = true;
+
+        // Deliberately not awaited — see above. Its rejection is not anyone's to
+        // handle at this point, but an unhandled one would be logged as a script
+        // error on the way out.
+        const flush = this.flushAll().catch((error) => {
+            console.error('[Storage] Flush during page teardown failed:', error);
+        });
+
+        const db = this.db;
+        this.db = null;
+        this.available = false;
+        this._dbNulledReason = reason;
+        if (db) {
+            db.onversionchange = null;
+            db.onclose = null;
+            try {
+                db.close();
+            } catch (error) {
+                console.warn('[Storage] Closing the connection on page teardown failed:', error);
+            }
+        }
+        return flush;
+    }
+
+    /**
+     * Open a connection again after a page that said goodbye came back.
+     *
+     * `pagehide` fires for two different endings. One is the page being
+     * destroyed, where nothing after `closeForTeardown()` ever runs. The other
+     * is the bfcache: the page is frozen whole and may be restored and resumed,
+     * and then it needs a working database again — everything above this module
+     * still holds its state and will read and write as if nothing happened.
+     * Nothing runs while a page is frozen, so there is no window in which a
+     * read could find the closed connection; the first thing that runs on the
+     * way back is `pageshow`, and this is what it calls.
+     *
+     * Closing for the bfcache is not a concession to the destroy case, it is
+     * right in its own terms: a frozen page holding an IndexedDB connection is a
+     * page that can hold a store for as long as the user leaves the tab in the
+     * back-forward history, and browsers may evict it from the bfcache for
+     * holding one at all.
+     * @returns {Promise<boolean>} Whether a connection is available afterwards
+     */
+    async reopenAfterRestore() {
+        if (!this._closingForTeardown) return Boolean(this.db);
+        this._closingForTeardown = false;
+        // A reconnect that gave up before the page was frozen says nothing about
+        // now, and the wait it suppresses is the one this needs.
+        this._lastReconnectFailureAt = 0;
+
+        try {
+            await this.openDatabase();
+            this.available = true;
+            return true;
+        } catch (error) {
+            console.error('[Storage] Reopening IndexedDB after a bfcache restore failed:', error);
+            this.available = false;
+            return false;
+        }
     }
 
     /**
@@ -1998,6 +2279,12 @@ class Storage {
      */
     async _awaitConnection(timeoutMs = 5000) {
         if (this.db) return true;
+        // A page that has said goodbye does not open a connection. `pagehide`
+        // has already closed ours precisely so this origin holds none when the
+        // page dies, and reconnecting here would hand the dying page a fresh
+        // connection to leave a transaction on. A bfcache restore lifts this in
+        // `reopenAfterRestore()`, which opens the connection itself.
+        if (this._closingForTeardown) return false;
         const lost = Boolean(this._dbNulledReason) || this._reconnecting;
         if (!lost) return false;
         if (this._lastReconnectFailureAt && Date.now() - this._lastReconnectFailureAt < 30_000) return false;
@@ -2029,6 +2316,9 @@ class Storage {
             lastNullReason: this._dbNulledReason,
             readTimeouts: this._readTimeouts,
             lastReadTimeout: this._lastReadTimeout,
+            writeTimeouts: this._writeTimeouts,
+            lastWriteTimeout: this._lastWriteTimeout,
+            closingForTeardown: this._closingForTeardown,
             pendingWrites: this.pendingWrites.size,
             activeTimers: this.saveDebounceTimers.size,
             restorePendingStores: this.restorePendingStores(),
