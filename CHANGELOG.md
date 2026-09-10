@@ -6,6 +6,24 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### A load that misses the character data recovers itself instead of sitting dead
+
+The game sends your character once, right after the connection opens, and never again. If the script is still starting when that arrives — a cold cache, a slow browser, several userscripts sharing the page — it misses the only copy there will be, and every feature that waits for your character waits forever. Until now that meant thirty seconds of a dead script and then an offer to reload.
+
+The script can now tell that case apart from every other reason your character might be missing: it knows whether it was listening before the connection opened. When it can prove it was not, it reloads once, about five seconds in, rather than waiting out the timeout. Only on a page you have not touched yet, only once per tab, and never twice into the same failure — anything else falls back to asking, and the console says which condition stopped it. Turn off "recover a failed start by reloading" to always be asked instead. The offer stays either way; off means ask, not do nothing.
+
+Reading that setting needed care, because it is consulted on the one page where settings have not loaded: they are stored per character, and there is no character. Asked the ordinary way it would have answered "on" to somebody who had turned it off. The choice is now kept somewhere readable before anything else, and a preference that cannot be read at all counts as "ask me", never as consent.
+
+### Guild Trials leaves nothing running when you switch it off
+
+Two of its helpers had no way of being stopped. The chat alerts kept announcing that the guild trial had begun for a feature that was no longer on, and the member-skill tracker kept recording without the path that kept its records fresh — so its captures went stale across later character switches. Both are stopped with the rest of it now.
+
+**A test now catches the next one.** Every case of a feature starting a helper is read at test time — fifty-three of them — and one whose owner never stops it fails the build, naming the file, the line and the helper. Anything genuinely shared, or owned by somebody else, is listed with a sentence saying which. Run against the four already fixed, it flags every one, and it found the chat alerts on its first run.
+
+### The trade history's unreachable "clear everything" is gone
+
+No button or menu ever called it, and it would not have worked if one had: the record has no timestamps, so a clear would have been undone by the first sync with a device that had not cleared. The one dangerous write it needed — the one that skips the read-and-merge every other save does — goes with it.
+
 ### A buy box no longer opens with the previous character's quantity in it
 
 Pressing "buy books" on the ability panel arms the marketplace autofill with how many that character still needs and sends you to the market. The arming waits for the right book's buy box to open, which is a trip and several clicks away — and it was not dropped when you switched character in between. The arriving character's New Buy Listing then came up with the departed character's count already filled in. A buy box is somewhere you act on a number rather than just read it, so that one is worth knowing about. Switching now clears it, in the same place the panel already forgets its other per-character figures.
