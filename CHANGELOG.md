@@ -12,6 +12,8 @@ Reported by a player: on mobile the cumulative cost list for a house upgrade ran
 
 The material rows now scroll within whatever room the screen actually has, and the total and the button sit below them rather than at the end of the list, so they are on screen without scrolling to find them. Room is measured against the visible area rather than the screen, so the address bar and the on-screen keyboard are accounted for. A desktop-sized window fits the whole list as before and scrolls nothing.
 
+A long list — asking for the cost all the way to level 8, say — went wrong in a second way that had nothing to do with the screen size. The game lays that panel out as a column of a fixed height, so a section taller than the room left over gets squeezed, and ours was being squeezed well below the size of its own contents: the list, the total and the button ended up drawn outside its own border. The section now refuses to be squeezed and the panel grows to fit it instead, which is what the panel's own scrollbar is for. The game's Build button keeps its size either way, including on older browsers that cannot read the rule that does it.
+
 ### The bulk sell strip's buttons stay where you left them
 
 Confirm sat to the left of a button whose label changes as the run moves — Bulk Sell, Skip, Next — so every step nudged it sideways, and Stop and the tab picker appearing and disappearing moved it again. During a long run that means aiming at a button that will not be there. Every control now keeps its slot whatever the strip is saying, whether the strip is where it starts or somewhere you dragged it to.
