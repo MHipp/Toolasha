@@ -33,7 +33,9 @@ vi.mock('../../core/data-manager.js', () => ({
 
 vi.mock('../../utils/bundle-bridge.js', () => ({ missingMaterialsButton: null }));
 vi.mock('../../utils/tester-shop.js', () => ({ testerShopEnabled: () => false }));
-vi.mock('../../core/dom-observer.js', () => ({ default: { observe: () => () => {}, disconnect: () => {} } }));
+vi.mock('../../core/dom-observer.js', () => ({
+    default: { observe: () => () => {}, onClass: () => () => {}, disconnect: () => {} },
+}));
 
 const { default: houseCostDisplay } = await import('./house-cost-display.js');
 
@@ -74,6 +76,61 @@ describe('cumulative cost list height bound', () => {
         // It has no max-height and no height-constraining ancestor, so an
         // `overflow-y` here would be inert and misleading.
         expect(section.style.overflowY).toBe('');
+    });
+});
+
+describe('the section holds its own height inside the panel flex column', () => {
+    // What this can and cannot show: happy-dom does no layout, so none of these
+    // assert that anything actually fits, scrolls or is reachable — only that
+    // the two declarations the browser needs are both present and that the
+    // game-element rule is scoped so it undoes itself. Whether the resulting
+    // layout is right was settled in a real browser against a reproduction of
+    // the game's box structure, not here.
+
+    // The module is a singleton that remembers it has been initialized, so each
+    // test starts it from a known stopped state rather than inheriting the last.
+    beforeEach(() => {
+        houseCostDisplay.disable();
+    });
+
+    test('the section refuses to be shrunk below its contents', async () => {
+        const section = await render();
+        expect(section.style.flexShrink).toBe('0');
+        // The declaration this replaced. `min-height: 0` invited the flex line
+        // to squeeze the section past its own bounded list, which put the list,
+        // the total and the button outside the section's border.
+        expect(section.style.minHeight).toBe('');
+    });
+
+    test('the panel is allowed to grow, so nothing else has to shrink', () => {
+        houseCostDisplay.initialize();
+        const sheet = document.getElementById('toolasha-house-panel-layout');
+
+        expect(sheet).toBeTruthy();
+        expect(sheet.textContent).toContain('HousePanel_modalContent');
+        // `min-height` outranks a height or a max-height at used-value time, so
+        // this holds however the panel was being clamped. Without it, a section
+        // that will not shrink hands the whole deficit to the game's Build
+        // button, which collapses to 0px.
+        expect(sheet.textContent).toContain('min-height: fit-content');
+    });
+
+    test('the panel rule is scoped to panels this file has drawn into', () => {
+        houseCostDisplay.initialize();
+        const sheet = document.getElementById('toolasha-house-panel-layout');
+
+        // This is the undo. No house panel without our section matches, so a
+        // room switch, a removed column or a renamed game class all restore the
+        // game's own layout with nothing to remember.
+        expect(sheet.textContent).toContain(':has(.mwi-house-to-level)');
+    });
+
+    test('disabling the feature takes the stylesheet back out', () => {
+        houseCostDisplay.initialize();
+        expect(document.getElementById('toolasha-house-panel-layout')).toBeTruthy();
+
+        houseCostDisplay.disable();
+        expect(document.getElementById('toolasha-house-panel-layout')).toBeNull();
     });
 });
 

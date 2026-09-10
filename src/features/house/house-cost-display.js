@@ -12,6 +12,7 @@ import { createAutofillManager } from '../../utils/marketplace-autofill.js';
 import { testerShopEnabled } from '../../utils/tester-shop.js';
 import { missingMaterialsButton } from '../../utils/bundle-bridge.js';
 import domObserver from '../../core/dom-observer.js';
+import { addStyles, removeStyles } from '../../utils/dom.js';
 import {
     createMaterialTab,
     createClearAllTabsControl,
@@ -44,6 +45,49 @@ import {
  * genuinely does not fit.
  */
 const MATERIALS_LIST_MAX_HEIGHT = 'max(200px, calc(var(--toolasha-visual-viewport-height, 100vh) * 0.55))';
+
+const PANEL_LAYOUT_STYLE_ID = 'toolasha-house-panel-layout';
+
+/**
+ * The one game element this file restyles, and why it has to.
+ *
+ * `HousePanel_modalContent` is a flex column, so everything in it — the game's
+ * own costs, the game's **Build** button, and the section this file appends —
+ * is a flex item, and a flex line that asks for more height than the panel has
+ * takes the difference back out of its items.
+ *
+ * That is a fight nobody wins. Whichever item is willing to shrink is the one
+ * that gets ruined:
+ *
+ * - Leave our section shrinkable (`min-height: 0`, added in f094f9adc to stop
+ *   the Build button collapsing) and the section is squeezed below its own
+ *   contents — measured at 155px around a 352px materials list — so the list,
+ *   the total and the marketplace button all render *outside* the section's
+ *   rounded border. And the Build button still ends up 11px tall, because
+ *   shrinkage is shared out in proportion, not handed to one volunteer.
+ * - Make our section refuse to shrink (`flex-shrink: 0`) and the whole deficit
+ *   lands on the Build button, whose `overflow: hidden` resolves its automatic
+ *   minimum size to zero. It collapses to 0px. That is f094f9adc's bug, back.
+ *
+ * There is no split of a fixed height that is not somebody's bug, so the fix is
+ * to stop the height being fixed. `min-height` beats both `height` and
+ * `max-height` at used-value time, so `fit-content` makes the panel grow to
+ * hold its items however it was being clamped — a shrunken flex item, a
+ * percentage height, a max-height. Nothing has to give, and the modal's own
+ * scroller (`Modal_modalContent`, which is what the game provides for content
+ * that runs long) sees the true height and can reach the bottom of it.
+ *
+ * `:has(.mwi-house-to-level)` is the restore path. The rule only ever matches a
+ * house panel that is currently carrying this file's section, so removing the
+ * section — a room switch, `removeExistingColumn()`, a game update that renames
+ * the class — leaves the panel exactly as the game styles it, with no undo to
+ * remember. `disable()` takes the stylesheet out as well.
+ */
+const PANEL_LAYOUT_CSS = `
+    [class*="HousePanel_modalContent"]:has(.mwi-house-to-level) {
+        min-height: fit-content;
+    }
+`;
 
 class HouseCostDisplay {
     constructor() {
@@ -97,6 +141,11 @@ class HouseCostDisplay {
 
         this.isActive = true;
         this.isInitialized = true;
+
+        // See PANEL_LAYOUT_CSS: lets the game's house panel grow to hold the
+        // section this file appends, instead of squeezing it — or the game's
+        // Build button — to make room.
+        addStyles(PANEL_LAYOUT_CSS, PANEL_LAYOUT_STYLE_ID);
 
         // Setup cleanup observer for marketplace tabs (consistent with actions feature)
         this.cleanupObserver = setupMarketplaceCleanupObserver(
@@ -253,6 +302,10 @@ class HouseCostDisplay {
         if (itemRequirementsGrid) {
             itemRequirementsGrid.style.gridTemplateColumns = '';
         }
+
+        // The panel's own `min-height` needs no undo here: PANEL_LAYOUT_CSS is
+        // gated on `:has(.mwi-house-to-level)`, so removing the section above
+        // has already stopped it matching.
     }
 
     /**
@@ -406,13 +459,19 @@ class HouseCostDisplay {
     async addCompactToLevel(costsSection, houseRoomHrid, currentLevel) {
         const section = document.createElement('div');
         section.className = 'mwi-house-to-level';
+        // `flex-shrink: 0` replaces the `min-height: 0` that used to sit here.
+        // The list already has its own bound and its own scrollbar, so a section
+        // squeezed below that bound is not saving space, it is spilling its
+        // contents out of its own border. It is safe to refuse only because
+        // PANEL_LAYOUT_CSS lets the panel grow rather than pushing the deficit
+        // onto the game's Build button — the two go together.
         section.style.cssText = `
             margin-top: 8px;
             padding: 8px;
             background: rgba(0, 0, 0, 0.3);
             border-radius: 8px;
             border: 1px solid ${config.COLOR_BORDER};
-            min-height: 0;
+            flex-shrink: 0;
         `;
 
         // Compact header with inline dropdown
@@ -1034,6 +1093,7 @@ class HouseCostDisplay {
      * Disable the feature
      */
     disable() {
+        removeStyles(PANEL_LAYOUT_STYLE_ID);
         this._unregisterButtonRow?.();
         this._unregisterButtonRow = null;
         document.querySelectorAll('.mwi-house-all-rooms').forEach((el) => el.remove());
