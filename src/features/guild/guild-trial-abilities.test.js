@@ -45,6 +45,7 @@ const {
     playerKey,
     normalizeRoster,
     mergeStoredSessions,
+    dropRenamedPlayerDuplicates,
     captureFor,
     classSheet,
     expectedAuraHrids,
@@ -1089,5 +1090,107 @@ describe('re-capture races across a merge', () => {
             expect(merged.players['name:alice'].abilities).toEqual(newerKit);
             expect(merged.players['name:alice'].capturedAt).toBe(5000);
         }
+    });
+});
+
+describe('a peer resurrecting a rekeyed player does not double the roster', () => {
+    const player = (name, extra = {}) => ({
+        characterId: null,
+        name,
+        capturedAt: null,
+        capturedTier: null,
+        source: 'battle_unit_fetched',
+        classStats: null,
+        abilitiesAuthoritative: false,
+        abilities: null,
+        ...extra,
+    });
+
+    const session = (startedAt, players, extra = {}) => ({
+        startedAt,
+        lastActivityAt: startedAt,
+        guildName: 'Some Guild',
+        captureTier: null,
+        capturedTiers: [],
+        completedAt: null,
+        players,
+        roster: [],
+        ...extra,
+    });
+
+    test('the raw union still carries both keys (this is the bug, proven before the fix)', () => {
+        // What `mergeSessions`'s player loop produces *before* the collapse
+        // runs — a plain union of a local id-keyed player with a peer's
+        // pre-rekey name-keyed sighting of the same person.
+        const rawUnion = {
+            'id:42': player('Alice', { characterId: 42 }),
+            'name:alice': player('Alice'),
+        };
+
+        // Walking this roster the way any consumer does — by key — finds
+        // Alice twice, once under each key. That is the double-counted row.
+        const aliceRows = Object.entries(rawUnion).filter(([, entry]) => entry.name === 'Alice');
+        expect(aliceRows).toHaveLength(2);
+    });
+
+    test('mergeSessions collapses a peer copy that never saw the rekey', () => {
+        // Local device: recordCapture already rekeyed Alice onto her id and
+        // dropped the name-only key.
+        const local = session(1000, { 'id:42': player('Alice', { characterId: 42, capturedAt: 1000 }) });
+        // Peer's stored copy predates the rekey it has not pulled yet.
+        const stored = session(1000, { 'name:alice': player('Alice') });
+
+        for (const merged of [mergeStoredSessions(local, stored), mergeStoredSessions(stored, local)]) {
+            const aliceKeys = Object.keys(merged.players).filter((key) => merged.players[key].name === 'Alice');
+            expect(aliceKeys).toEqual(['id:42']);
+        }
+    });
+
+    test('the collapse keeps the counters from whichever side is missing them', () => {
+        const kit = [{ hrid: '/abilities/fierce_aura', level: 200 }];
+        // The id-keyed entry is freshly rekeyed and has not carried its kit
+        // over yet; the resurrected name key still has it.
+        const idOnly = session(1000, { 'id:42': player('Alice', { characterId: 42 }) });
+        const nameHasTheKit = session(1000, {
+            'name:alice': player('Alice', { abilities: kit, abilitiesAuthoritative: true, capturedAt: 900 }),
+        });
+
+        for (const merged of [mergeStoredSessions(idOnly, nameHasTheKit), mergeStoredSessions(nameHasTheKit, idOnly)]) {
+            expect(Object.keys(merged.players)).toEqual(['id:42']);
+            expect(merged.players['id:42'].abilitiesAuthoritative).toBe(true);
+            expect(merged.players['id:42'].abilities).toEqual(kit);
+            expect(merged.players['id:42'].characterId).toBe(42);
+        }
+    });
+
+    test('the fold is order-independent', () => {
+        const a = session(1000, { 'id:1': player('Alice', { characterId: 1 }) });
+        const b = session(1000, { 'name:alice': player('Alice') });
+
+        const ab = mergeStoredSessions(a, b);
+        const ba = mergeStoredSessions(b, a);
+
+        expect(Object.keys(ab.players)).toEqual(Object.keys(ba.players));
+    });
+
+    test('two different players who merely share a name are never collapsed', () => {
+        // No id links these two rows to each other — an id-less "Bob" beside
+        // an id-keyed "Bob" who really is a different Bob. Nothing here can
+        // tell them apart except identity, so both must survive.
+        const players = {
+            'id:1': player('Bob', { characterId: 1 }),
+            'id:2': player('Bob', { characterId: 2 }),
+        };
+
+        expect(dropRenamedPlayerDuplicates(players)).toEqual(players);
+    });
+
+    test('similar but not identical names are left alone', () => {
+        const players = {
+            'id:1': player('Bob', { characterId: 1 }),
+            'name:bobby': player('Bobby'),
+        };
+
+        expect(dropRenamedPlayerDuplicates(players)).toEqual(players);
     });
 });

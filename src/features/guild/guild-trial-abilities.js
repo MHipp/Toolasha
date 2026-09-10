@@ -317,6 +317,95 @@ export function sanitizeStoredSession(stored) {
 }
 
 /**
+ * Fold two captures of the same player into one, without losing either side's
+ * numbers.
+ *
+ * `held` is the id-keyed entry — the one {@link playerKey} prefers and the one
+ * that survives — `incoming` the name-keyed entry a merge resurrected. The
+ * ability-bearing fields follow the same rule {@link mergeSessions} already
+ * applies per player: never demote an authoritative kit to a stat-only
+ * sighting, and between two authoritative kits keep the one captured later (a
+ * tie goes to `incoming`, matching {@link mergeSessions}'s own tie-break).
+ * Every other field falls back across whichever side actually has it, so a
+ * class read or a capture tier seen only before the id arrived is not thrown
+ * away along with the key that held it.
+ *
+ * @param {Object} held - The id-keyed entry
+ * @param {Object} incoming - The name-keyed entry being folded into it
+ * @returns {Object} One entry, filed under the id key
+ */
+function mergePlayerEntries(held, incoming) {
+    const demotes = held?.abilitiesAuthoritative === true && incoming?.abilitiesAuthoritative !== true;
+    const bothAuthoritative = held?.abilitiesAuthoritative === true && incoming?.abilitiesAuthoritative === true;
+
+    let source = incoming;
+    if (demotes) {
+        source = held;
+    } else if (bothAuthoritative) {
+        const heldAt = Number(held.capturedAt);
+        const incomingAt = Number(incoming.capturedAt);
+        source = Number.isFinite(heldAt) && Number.isFinite(incomingAt) && heldAt > incomingAt ? held : incoming;
+    }
+    const other = source === held ? incoming : held;
+
+    return {
+        characterId: source.characterId ?? other.characterId ?? null,
+        name: source.name || other.name || null,
+        capturedAt: source.capturedAt ?? other.capturedAt ?? null,
+        capturedTier: source.capturedTier ?? other.capturedTier ?? null,
+        source: source.source ?? other.source ?? null,
+        classStats: source.classStats ?? other.classStats ?? null,
+        abilitiesAuthoritative: source.abilitiesAuthoritative === true,
+        abilities: source.abilities ?? other.abilities ?? null,
+    };
+}
+
+/**
+ * Collapse a resurrected name-only key back into its id-keyed twin.
+ *
+ * {@link GuildTrialAbilities#recordCapture} rekeys a player the moment an
+ * id-carrying sighting supersedes an earlier id-less one, deleting the old
+ * name key — but that delete only ever happens on one device's copy of the
+ * session. A pull from a peer who never saw the rekey brings the retired name
+ * key back, and the union above has no way to know the two keys are one
+ * player, so both would stand and double the roster.
+ *
+ * The discriminator is the normalized name — the same one {@link playerKey}
+ * itself falls back to for an id-less sighting — matched against every
+ * id-keyed entry's own name. It cannot fold two different players together:
+ * two roster members sharing that exact normalized name are already
+ * indistinguishable by name everywhere else in this module, so nothing here
+ * makes that ambiguity worse.
+ *
+ * @param {Object} players - name/id-keyed players, after the union
+ * @returns {Object} The same shape with every resurrected name key merged away
+ */
+export function dropRenamedPlayerDuplicates(players) {
+    const entries = Object.entries(players || {});
+    const idKeyByName = new Map();
+    for (const [key, entry] of entries) {
+        if (!key.startsWith('id:')) continue;
+        const name = String(entry?.name || '')
+            .trim()
+            .toLowerCase();
+        if (name) idKeyByName.set(name, key);
+    }
+
+    const result = { ...players };
+    for (const [key, entry] of entries) {
+        if (!key.startsWith('name:')) continue;
+        const name = String(entry?.name || '')
+            .trim()
+            .toLowerCase();
+        const idKey = name && idKeyByName.get(name);
+        if (!idKey || !result[idKey]) continue;
+        result[idKey] = mergePlayerEntries(result[idKey], entry);
+        delete result[key];
+    }
+    return result;
+}
+
+/**
  * The stored session and the one held in memory, as one session.
  *
  * Called when a storage read lands after the session has already started
@@ -368,7 +457,7 @@ export function mergeSessions(stored, live) {
         captureTier: stored.captureTier ?? live.captureTier ?? null,
         capturedTiers: [...new Set([...(stored.capturedTiers || []), ...(live.capturedTiers || [])])],
         completedAt: stored.completedAt ?? live.completedAt ?? null,
-        players,
+        players: dropRenamedPlayerDuplicates(players),
     };
 }
 
