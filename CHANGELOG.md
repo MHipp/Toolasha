@@ -6,6 +6,14 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Refreshing twice quickly no longer breaks Toolasha in every tab
+
+The cause of the tab that would not start, found and fixed. On the way out the script writes anything it has been holding, and it never told the database it was leaving — so a page torn down mid-write could leave that write outstanding. The browser lets one such write hold its shelf of the database against every tab at once, so one bad refresh stopped every open tab from reading its settings, for as long as they stayed open. Reloading the broken tab could not fix it, because the thing holding the shelf was in a different tab.
+
+The connection is now closed when the page actually ends, which is what lets the browser finish the write and let go. It is deliberately not closed when a tab is merely backgrounded or when a navigation begins that you might still cancel — both of those pages carry on, and a page put to sleep and woken again gets its database back.
+
+Writes have the same protection reads got: one that never comes back is reported with the key it was after rather than waiting forever, and its value is kept to be written again rather than quietly dropped. That also unblocks the things that wait on writes finishing — switching character, and the save on the way out.
+
 ### A stored read that never answers no longer takes the whole script down with it
 
 Reported from a live tab: after two quick refreshes, Toolasha simply never appeared — no panels, no tab, and nothing in the error log to say why. The database was open and healthy, and a fresh connection to it read fine; the connection the script already held had quietly stopped answering. Every read went out and never came back, so startup stopped before a single feature began and sat there looking like it was still loading.
