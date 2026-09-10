@@ -697,17 +697,20 @@ export default class CustomTabsUI {
         // Reload the config when the character changes, without waiting for the
         // feature registry to tear this UI down and build a new one.
         //
-        // `character_initialized` rather than `character_switched`: the data
-        // manager skips BOTH `character_switching` and `character_switched` when
-        // switches arrive inside its rapid-switch window (see
-        // `isRapidSwitch` in data-manager.js), and with them the whole
-        // disable()/initialize() cycle this feature used to depend on — so the
-        // UI kept the departing character's tabs while `getCurrentCharacterId()`
-        // already answered with the arriving one, and the next edit wrote one
-        // character's tabs under the other's key. `character_initialized` is
-        // emitted on every init, rapid or not, and only once the arriving
-        // character's data is actually in place, which is also the first moment
-        // a re-render has the right inventory to draw against.
+        // `character_initialized` rather than `character_switched`: it is emitted
+        // only once the arriving character's data is actually in place, which is
+        // the first moment a re-render has the right inventory to draw against.
+        // `character_switched` fires before that, so a re-render on it would draw
+        // the arriving character's tabs against the departing one's inventory.
+        //
+        // This listener used to be justified by a second claim as well — that the
+        // data manager skipped both `character_switching` and `character_switched`
+        // inside its rapid-switch window, taking the disable()/initialize() cycle
+        // with them. That is no longer true: both halves of the lifecycle now
+        // always fire, in the same order as a slow switch, and only the feature
+        // teardown is coalesced (`data-manager.js`, the block above
+        // `isRapidSwitch`, which now drives nothing but a warning). The reason
+        // above stands on its own and is the one that matters.
         // The returned promise is what an awaiting emitter (and the tests) can
         // wait on; the data manager does not await this event, and does not
         // need to — until it resolves, `_configCharId` is null and every write
