@@ -2805,6 +2805,91 @@ The 8/13 marketplace layout gave the price row its own "Max" button and put it a
 
 The simulator valued every drop at its gross market price, so profit ignored the sale tax entirely — which is why the 8/13 rise to 5% never moved it. Every drop-revenue path now nets the tax off each non-coin drop (cowbell bags at their own 18%): the Results **Summary** (Profit/day, Revenue), the **Drops** table's Gold columns, and the comparison/upgrade rows all go through one shared `taxedDropValue`. Coin drops stay whole, and the expected-value fallback is left alone since it is already taxed.
 
+## [3.47.0](https://github.com/Millennium44/Toolasha/compare/v3.46.0...v3.47.0) (2026-09-10)
+
+### Features
+
+- cost and buy ability books at the tester shop ([2e684ca](https://github.com/Millennium44/Toolasha/commit/2e684cab0f75edcb8a21d78b34f592fe24a74508))
+- put the startup-recovery reload behind a setting that can be read before settings load ([ef7854a](https://github.com/Millennium44/Toolasha/commit/ef7854a56f2ac8a21a4b63da1f26491a9d0dd7ba))
+- send the ability book buy button to the tester shop ([162d7e0](https://github.com/Millennium44/Toolasha/commit/162d7e0482c0ee4197847f1f2bed017d06243dee))
+- turn on the gear warning, ability timings and market item stepping ([ab79c7b](https://github.com/Millennium44/Toolasha/commit/ab79c7b455b906286e9c78855dc795a4b5b95f00))
+- turn the Buy Now price cover on by default ([24eda56](https://github.com/Millennium44/Toolasha/commit/24eda56cb82897609b06bda1c35baa700ae235cc))
+
+### Bug Fixes
+
+- a sim worker that stops answering no longer freezes the warm pool ([ddad466](https://github.com/Millennium44/Toolasha/commit/ddad466dcf0c686214e11313a84fdb172ddcab6f))
+- a sim worker that threw no longer carries its capture into the next run ([0b0e964](https://github.com/Millennium44/Toolasha/commit/0b0e964cfc6d36663fc1a7317802bb7e1ff81858))
+- a sync pull no longer resurrects a released inventory reservation ([015674d](https://github.com/Millennium44/Toolasha/commit/015674ddb1c29f5789b20ab585bfd4444512dd5f))
+- a sync pull no longer resurrects deleted dungeon runs ([eb0861a](https://github.com/Millennium44/Toolasha/commit/eb0861aaceba592143cbf782b52f7703d929c95d))
+- Clear survives a sync pull for prediction and enhancement calibration ([ca564cc](https://github.com/Millennium44/Toolasha/commit/ca564ccfadef239deff02c36cb6bf837dba29836))
+- close five self-healing switch-race leaks in the array-shaped sites ([a104def](https://github.com/Millennium44/Toolasha/commit/a104def79a3717d1bdce299812af4adaa03e2e3d))
+- close the startup gate again while a character switch re-initialises ([6704126](https://github.com/Millennium44/Toolasha/commit/6704126b9c5f06dd06aef5a8a3d244fcbfa64c37))
+- close three more character-switch race leaks, each a different sub-case ([55ac400](https://github.com/Millennium44/Toolasha/commit/55ac400f9536267e707831c73e9c5d70038b0bfb))
+- drop a feature instance that lands after its own teardown ([7a2b187](https://github.com/Millennium44/Toolasha/commit/7a2b187738acccca78c59580f6c65b1dba063479))
+- drop the trade history clear nothing could reach ([7613078](https://github.com/Millennium44/Toolasha/commit/7613078e709f2de7b31794084b727508b8ecc99f))
+- five more features survive a character switch landing inside their first read ([35aea00](https://github.com/Millennium44/Toolasha/commit/35aea00b416bd27917e2b9a7f1e009290baec98a))
+- floor ability book costs at the tester shop price ([ba2d62d](https://github.com/Millennium44/Toolasha/commit/ba2d62dedf692d7647e332d4f1e0c088b983b75c))
+- four features stop leaking a live registration per character switch ([52582fe](https://github.com/Millennium44/Toolasha/commit/52582fea29f81117577f7a283fd643f5bbef3aee))
+- guild trial roster no longer double-counts a rekeyed player after a peer merge ([ada4cac](https://github.com/Millennium44/Toolasha/commit/ada4cac28119c05b49ccd14007fd58d7046f0067))
+- item pins and inventory sort survive a switch during their first read ([1cddc26](https://github.com/Millennium44/Toolasha/commit/1cddc266019b144170f4f8ade253606fc778cdbf))
+- labyrinth tracker no longer dies for the rest of the session on a switch ([362d38e](https://github.com/Millennium44/Toolasha/commit/362d38e44714b3e8caa735d6069658e2f1855d77))
+- let a tab that already reloaded still try reconnecting ([0e011af](https://github.com/Millennium44/Toolasha/commit/0e011af749331d31683ce1a6cf0b556cf44acf1e))
+- **market:** decide the Buy Now raise against the woken price input ([7f37c66](https://github.com/Millennium44/Toolasha/commit/7f37c666b3232085a0af8f05b7a6096d39771f9f))
+- re-derive the dungeon runs a mm/dd chat-stamp misread mangled ([f99f67c](https://github.com/Millennium44/Toolasha/commit/f99f67c051c401cf98ba09f3b7b65694a1ea5272))
+- read dungeon chat dates in the client's own field order ([d039262](https://github.com/Millennium44/Toolasha/commit/d0392625527dd77ea99189102696f789346edc64))
+- read the tracker's own chat stamps in the client's field order too ([06f37e2](https://github.com/Millennium44/Toolasha/commit/06f37e2fc5c8de22f40367270c79355b4d3aca55))
+- recover a missed login payload by reconnecting before reloading ([43c81c6](https://github.com/Millennium44/Toolasha/commit/43c81c6aac181361ec3695b360570e6abd48e868))
+- recover from a missed init_character_data instead of sitting dead for 30 seconds ([6ae3022](https://github.com/Millennium44/Toolasha/commit/6ae3022917f975004213267e6aa58921fc69d6ea))
+- report the outlier scrub's durations in the unit it stores them in ([3ece667](https://github.com/Millennium44/Toolasha/commit/3ece667a19236900c6a5804e7087e05168032239))
+- retire the collection key rename once instead of on every load ([87cde55](https://github.com/Millennium44/Toolasha/commit/87cde55c42be8bf404411b88b20f50082380387a))
+- say when the skill books tile is quoting the shop ([fa50b33](https://github.com/Millennium44/Toolasha/commit/fa50b33a5e603b81cc06302a798dc4c072d214b4))
+- say which side the own-use saving is on ([c016034](https://github.com/Millennium44/Toolasha/commit/c0160341b63ba215f5c58e6bccf51571afa7fb16))
+- split the interval:anon@? bucket in the pformance stall ledger ([a5e4305](https://github.com/Millennium44/Toolasha/commit/a5e4305c884474911dac09e369a873cb3b0d664c))
+- stop an interrupted listing-age initialize re-arming and re-polluting ([006a486](https://github.com/Millennium44/Toolasha/commit/006a4863f9fa5c06d889b3d2fd33543b7e095ea0))
+- stop the guild member-skills tracker when Guild Trials is switched off ([a6d6540](https://github.com/Millennium44/Toolasha/commit/a6d6540e32be5bdf6c7a96330f6951687b13b983))
+- stop the guild trial chat alerts when Guild Trials is switched off ([57bfb20](https://github.com/Millennium44/Toolasha/commit/57bfb202440ce53803f50964b01afabfc6aa8f72))
+- stop the pformance table reporting elapsed time as CPU ([ea84b00](https://github.com/Millennium44/Toolasha/commit/ea84b003d97281a05588f44f068d18f07228b106))
+- stop two surviving helpers serving the departed character ([95d15e3](https://github.com/Millennium44/Toolasha/commit/95d15e35744f6a4b99a7a85ffb153a107be9ab1b))
+- tear down the sub-modules a feature's initialize started ([d86ec61](https://github.com/Millennium44/Toolasha/commit/d86ec61256af26d965cbdbc041d316ce08c5b15b))
+- the trade ledger and the custom tabs stop registering after their teardown ([cd03c77](https://github.com/Millennium44/Toolasha/commit/cd03c773340427477329a47c2c9eb2638ebf0c39))
+- three more features stop leaking a live registration per character switch ([fde5372](https://github.com/Millennium44/Toolasha/commit/fde5372cac12e9de3aea2c94b1b84295257e91d2))
+- write a stylesheet once per id instead of once per character switch ([4351589](https://github.com/Millennium44/Toolasha/commit/4351589e4ac3d1fe90a634db2702f1b3206391b3))
+
+### Code Refactoring
+
+- ownership tickets for work an initialize() suspends on ([a978eac](https://github.com/Millennium44/Toolasha/commit/a978eac5a4f45e87aa562483830e6d68fdcd8068))
+- share the tester shop walk as a util ([3146134](https://github.com/Millennium44/Toolasha/commit/31461348585a7bae93725bc136eb5aa5fd0fb81b))
+
+### Performance Improvements
+
+- ask once per modal, not once per second, in the market poll ([1201495](https://github.com/Millennium44/Toolasha/commit/12014957d43398558a037baef691becace9d7465))
+- batch the multi-key startup reads onto one transaction ([ed1eb0a](https://github.com/Millennium44/Toolasha/commit/ed1eb0a4c967a3443c4c1cbfd2827e0682bd91b4))
+- stop equipment watch re-sweeping every enhancing target per draw ([a7b03a0](https://github.com/Millennium44/Toolasha/commit/a7b03a0bff51de98b67bd484d393873ca871f23f))
+
+### Documentation
+
+- changelog for reconnecting before reloading ([318e1df](https://github.com/Millennium44/Toolasha/commit/318e1df336d4af9cab8dfe3d3b2f4d2dfc3e9ec3))
+- changelog for the audit round ([b1d0f30](https://github.com/Millennium44/Toolasha/commit/b1d0f30e54a9ed39ad66e6b1bf3b31c746643bc5))
+- changelog for the chat-date order and own-use direction fixes ([c9c3945](https://github.com/Millennium44/Toolasha/commit/c9c39455923e9bcbfc98e606ec5eb0a28dfd1fc2))
+- changelog for the duplicated stylesheet fix ([12d44b7](https://github.com/Millennium44/Toolasha/commit/12d44b7d901c5718045793ba03d406935a11ed42))
+- changelog for the equipment watch and tester shop work ([d0fb8c7](https://github.com/Millennium44/Toolasha/commit/d0fb8c7ba3e388e08096042c8345bf88b69ed599))
+- changelog for the pformance honesty and poll work ([171dbc3](https://github.com/Millennium44/Toolasha/commit/171dbc31b1f24a8510cbd58c825dca5074db634f))
+- changelog for the startup recovery, teardown pairing and dead clear ([612eac6](https://github.com/Millennium44/Toolasha/commit/612eac62da92402ca4f6f42a80964702f35fc08d))
+- changelog for the sub-module teardown leak ([4b8d09c](https://github.com/Millennium44/Toolasha/commit/4b8d09cae4dee37be9a904813c5adcc8f418f3e0))
+- changelog for the surviving-helper staleness fixes ([e45eeaf](https://github.com/Millennium44/Toolasha/commit/e45eeaff14fcd0166de8ecc24475e94f1fd30cfc))
+- changelog for the switch-race and startup read work ([26c4b62](https://github.com/Millennium44/Toolasha/commit/26c4b62b2c0b7209976639b04c72a99f6fc7ff26))
+- changelog for the switch-race leftovers and run tombstones ([101d6f6](https://github.com/Millennium44/Toolasha/commit/101d6f6e8b720927f7fd293184c9d31e55a466a3))
+- changelog for the sync-removal leftovers and the init race scan ([2935387](https://github.com/Millennium44/Toolasha/commit/2935387ba35815476274b7f241f6abbd0925ff08))
+- say what drives the own-use line's colour, and drop a stale let ([ac5309f](https://github.com/Millennium44/Toolasha/commit/ac5309f156beea7a78a712ab0761a7c337a6b2a8))
+- say what raising a Buy Now price actually costs ([7a6ed3d](https://github.com/Millennium44/Toolasha/commit/7a6ed3d6c66a6a1f0fc6965b7737407403bc0bab))
+- say what the startup recovery actually does now ([1a04f59](https://github.com/Millennium44/Toolasha/commit/1a04f5957efee56ad4ed49accb60fa6ec1bcceae))
+- the rapid-switch claim in custom tabs is no longer true ([021d093](https://github.com/Millennium44/Toolasha/commit/021d09313b28b6d0b1c2fa55dfdd5d96a75e9eb7))
+
+### Tests
+
+- a source scan that catches the next character-switch init race ([1ec42df](https://github.com/Millennium44/Toolasha/commit/1ec42df77985640056a20e82d8da537acdd070c8))
+- scan for sub-modules a feature starts and never stops ([1b4a335](https://github.com/Millennium44/Toolasha/commit/1b4a335fddc13470dab7e4734d9b6ea1fb8542ec))
+
 ## [3.46.0](https://github.com/Millennium44/Toolasha/compare/v3.45.0...v3.46.0) (2026-09-09)
 
 ### Features
