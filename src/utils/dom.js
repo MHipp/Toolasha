@@ -193,11 +193,26 @@ export function getOriginalText(element) {
 }
 
 /**
- * Add CSS to page
+ * Add CSS to page.
+ *
+ * With an id, the sheet is written once and rewritten in place afterwards.
+ * Callers run again on every character switch, and appending each time left one
+ * dead copy per switch in the head — ten of one sheet were counted in a live
+ * client after ten switches. Rewriting rather than skipping so a caller that
+ * rebuilds its CSS from a changed setting still takes effect.
+ *
  * @param {string} css - CSS rules to add
  * @param {string} id - Optional style element ID (for removal later)
  */
 export function addStyles(css, id = '') {
+    if (id) {
+        const existing = document.getElementById(id);
+        if (existing) {
+            existing.textContent = css;
+            return;
+        }
+    }
+
     const style = document.createElement('style');
 
     if (id) {

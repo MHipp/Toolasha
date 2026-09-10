@@ -136,6 +136,27 @@ describe('addStyles / removeStyles', () => {
     test('removeStyles does nothing when the id does not exist', () => {
         expect(() => removeStyles('nonexistent')).not.toThrow();
     });
+
+    test('an id is written once however many times its caller runs', () => {
+        // Every caller re-runs on a character switch. Appending each time left
+        // one dead sheet per switch in the head, for the life of the tab.
+        for (let i = 0; i < 5; i++) addStyles('.foo { color: red; }', 'repeat-style');
+        expect(document.querySelectorAll('#repeat-style').length).toBe(1);
+    });
+
+    test('running again with new CSS rewrites the sheet rather than skipping it', () => {
+        addStyles('.foo { color: red; }', 'themed-style');
+        addStyles('.foo { color: blue; }', 'themed-style');
+        expect(document.querySelectorAll('#themed-style').length).toBe(1);
+        expect(document.getElementById('themed-style').textContent).toBe('.foo { color: blue; }');
+    });
+
+    test('without an id every call still appends, since nothing identifies the sheet', () => {
+        const before = document.querySelectorAll('head style').length;
+        addStyles('.bar { color: red; }');
+        addStyles('.bar { color: red; }');
+        expect(document.querySelectorAll('head style').length).toBe(before + 2);
+    });
 });
 
 describe('dismissTooltips', () => {
