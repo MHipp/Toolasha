@@ -123,6 +123,15 @@ class TeaRecommendation {
         this.initialized = true;
 
         // Wait for action filter to initialize (it tracks the title element)
+        //
+        // This has the shape of the character-switch race fixed elsewhere —
+        // `initialized` set before an await, a teardown able to land inside it
+        // and the resumed tail registering observers regardless — but it is
+        // safe for one transitive reason: `actionFilter.initialize()` contains
+        // no `await` of its own, so this yields a single microtask tick and no
+        // teardown interleaves at that granularity. Add an await over there and
+        // this site becomes a real leak; give it an `init-ownership.js` ticket
+        // when you do.
         await actionFilter.initialize();
 
         // Observe for skill panel labels (includes "Consumables" label)

@@ -19,6 +19,7 @@ import dataManager from '../../core/data-manager.js';
 import config from '../../core/config.js';
 import storage from '../../core/storage.js';
 import { webSocketHook as sharedWebSocketHook } from '../../utils/bundle-bridge.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 
 const STORAGE_KEY_PREFIX = 'loadout_snapshots';
 
@@ -271,6 +272,7 @@ class LoadoutSnapshot {
 
         // Load from storage — loadouts_updated only fires when the user visits the loadouts
         // UI, so storage is always the source of snapshots at startup.
+        const ticket = captureOwner(this);
         if (Object.keys(this.snapshots).length === 0) {
             const storageKey = getStorageKey();
             // NOTE: getCurrentCharacterId() is set by the time this runs, because
@@ -288,7 +290,16 @@ class LoadoutSnapshot {
             // gear back, which makes that guard see a full cache and skip the
             // read, and every write path below then files the departing
             // character's loadouts under the arriving character's key.
-            if (getStorageKey() !== storageKey) return;
+            //
+            // The key comparison this replaces caught that switch and nothing
+            // else. A *reconnect* — `disable()` then `initialize()` again under
+            // the same character — leaves the key identical, so the suspended
+            // call sailed through and re-ran the whole tail below on top of the
+            // fresh call's: `characterInitializedHandler` holds one handle, so
+            // the fresh call's `character_initialized` listener was orphaned,
+            // live and unremovable, one per interrupted reconnect. Only the
+            // ticket's generation counter tells the two calls apart.
+            if (!stillOurs(ticket)) return;
             this.snapshots = loaded;
 
             // Fallback for Steam users: if storage is also empty, bootstrap from
@@ -489,6 +500,11 @@ class LoadoutSnapshot {
     }
 
     disable() {
+        // First of all, so an `initialize()` parked on the snapshot read cannot
+        // resume into the handler field this teardown is about to null — on a
+        // reconnect the storage key it checks is unchanged, so nothing else
+        // would stop it.
+        noteTeardown(this);
         try {
             if (this.loadoutsUpdatedHandler) {
                 getWebSocketHook().off('loadouts_updated', this.loadoutsUpdatedHandler);

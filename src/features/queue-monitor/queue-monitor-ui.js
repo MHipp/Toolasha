@@ -10,6 +10,7 @@ import storage from '../../core/storage.js';
 import { timeReadable } from '../../utils/formatters.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { registerFloatingPanel, unregisterFloatingPanel, bringPanelToFront } from '../../utils/panel-z-index.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 import queueSnapshot from './queue-snapshot.js';
 
 const PANEL_ID = 'toolasha-queue-monitor';
@@ -35,22 +36,33 @@ class QueueMonitorUI {
     /**
      * Initialize the UI
      *
-     * Guarded against being called twice without an intervening `disable()`.
+     * Two separate guards, because the leak has two shapes.
+     *
      * `character_initialized` fires on a plain WebSocket reconnect to the same
      * character, not only on a character switch, and the entrypoint's own
      * "first load" path re-runs `featureRegistry.initializeFeatures()` whenever
      * that event's `_isCharacterSwitch` flag is false — which it is on a
-     * reconnect. Without this guard a reconnect would register a second
-     * `setInterval` redraw loop and a second `character_initialized` listener
-     * every time it happened; only the most recently stored one could ever be
-     * torn down again, so every earlier one leaked for the rest of the session.
+     * reconnect. Unguarded, a reconnect would register a second `setInterval`
+     * redraw loop and a second `character_initialized` listener every time it
+     * happened; only the most recently stored one could ever be torn down
+     * again, so every earlier one leaked for the rest of the session.
+     *
+     * The `_initialized` flag closes only the *same-tick* case: a second call
+     * arriving before the first has suspended. It cannot close a teardown that
+     * lands inside the collapse-state read below, because `disable()` clears
+     * the flag — the suspended call then resumes past a guard that is no
+     * longer set and registers its interval and listener anyway, on top of
+     * whatever the fresh call registered. That is what the ownership ticket is
+     * for: it survives the flag being cleared and reset.
      */
     async initialize() {
         if (this._initialized) return;
         this._initialized = true;
 
         // Load collapse state
+        const ticket = captureOwner(this);
         this.collapsed = await storage.get('queueMonitor_collapsed', 'settings', false);
+        if (!stillOurs(ticket)) return;
 
         this._buildPanel();
         this._updateDisplay();
@@ -86,6 +98,9 @@ class QueueMonitorUI {
      * Disable and clean up
      */
     disable() {
+        // First of all, so an `initialize()` parked on the collapse-state read
+        // cannot resume into the interval and listener this is tearing down.
+        noteTeardown(this);
         this.timers.clearAll();
         if (this._boundOnInit) {
             dataManager.off('character_initialized', this._boundOnInit);

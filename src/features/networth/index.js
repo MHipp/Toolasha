@@ -15,6 +15,7 @@ import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { createPauseRegistry } from '../../utils/pause-registry.js';
 import networthCache from './networth-cache.js';
 import { registerRow } from '../../utils/overlay-rows.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 import { row, blank, ROW_COLORS } from '../../utils/overlay-format.js';
 import { formatLargeNumber } from '../../utils/formatters.js';
 import networthHistory from './networth-history.js';
@@ -55,7 +56,18 @@ class NetworthFeature {
         networthInventoryDisplay.setNetworthFeature(this);
 
         // Initialize exclusions from storage
+        const ticket = captureOwner(this);
         await performanceMonitor.span('init:networth', 'exclusions', () => initExclusions());
+        // A character switch tearing the feature down inside that read used to
+        // resume here regardless: `setupEventListeners()` below is
+        // unconditional, and it refills `priceUpdateHandler`,
+        // `pricingModeHandler` and `itemsUpdateHandler` — single fields, not an
+        // array — that `disable()` has just nulled. The arriving character's
+        // own initialize() then overwrites the handles, so the registrations
+        // made here can never be removed: one orphaned price, settings and
+        // inventory listener per interrupted switch, each re-pricing the whole
+        // inventory on every subsequent event for the life of the tab.
+        if (!stillOurs(ticket)) return;
 
         // Initialize header display (always enabled with networth feature)
         if (config.isFeatureEnabled('networth')) {
@@ -260,6 +272,9 @@ class NetworthFeature {
      * Disable the feature
      */
     disable() {
+        // First of all, so an `initialize()` parked on the exclusions read
+        // cannot resume into the handler fields this teardown is about to null.
+        noteTeardown(this);
         try {
             // Clear debounce timers
             clearTimeout(this.priceUpdateDebounceTimer);
