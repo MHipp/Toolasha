@@ -4727,6 +4727,14 @@ class GuildTrials {
         guildTrialTrace.cleanup?.();
         guildTrialAbilitiesFeature.cleanup();
         guildTrialScoreboard.close();
+        // Before the capture's own teardown: the skills tracker's `offCaptured`
+        // handle is a subscription *to* `guildLoadoutCapture`, so it gives it
+        // back while there is still something to give it back to. Nothing else
+        // called this — the switch path uses `forget()`, which keeps the
+        // `profile_shared` listener alive on purpose, so turning Guild Trials
+        // off mid-session left the tracker recording with the very path that
+        // kept its captures fresh now gone.
+        guildMemberSkills.cleanup();
         guildLoadoutCapture.cleanup();
         this.blockHtml.clear();
         document.querySelectorAll(`.${CSS_CLASS}`).forEach((el) => el.remove());

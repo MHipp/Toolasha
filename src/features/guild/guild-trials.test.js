@@ -277,6 +277,11 @@ const guildTrialAbilities = (await import('./guild-trial-abilities.js')).default
 // is reset on a guild/character switch, which a mock would paper over
 const guildTrialStatsModal = (await import('./guild-trial-stats-modal.js')).default;
 
+// Real, not mocked: what is under test is whether this feature's teardown
+// reaches the sub-module its initialize() started, and a mock is exactly the
+// thing that would report a call without proving the listener went away
+const guildMemberSkills = (await import('./guild-member-skills.js')).default;
+
 const { NOTICE_BOARD_NAME } = await import('./guild-notice-board.fixture.js');
 const { forecastTrial } = await import('./guild-trial-forecast.js');
 const { tierTimingAsForecast, tierTimingForecast } = await import('./guild-trial-tier-timing.js');
@@ -5784,5 +5789,66 @@ describe('the trial palette verbs', () => {
         game.recorder.downloadName = null;
 
         await expect(verb('Export trial JSON').run()).rejects.toThrow('the download could not be started');
+    });
+});
+
+/**
+ * The sub-modules `initialize()` starts, and whether the teardown reaches them.
+ *
+ * `initialize()` starts eight things that are not themselves registered
+ * features. Seven of them are stood back down by `cleanup()`; `guildMemberSkills`
+ * was not, and its `cleanup()` had no caller anywhere in the tree. The switch
+ * path hides it — `_forgetCharacter` calls `forget()`, which empties the
+ * captures but deliberately keeps the `profile_shared` listener, because the
+ * roster panel may still be open. So the gap only shows on a *settings* toggle:
+ * turn Guild Trials off and the tracker keeps listening and keeps filing
+ * captures, while the `forget()` that kept them character-fresh is gone with
+ * the feature — and every later switch files another guild's profiles under the
+ * departed guild's key.
+ */
+describe('the sub-modules initialize() started, when the feature is switched off', () => {
+    beforeEach(() => {
+        trialsFeature.cleanup();
+        guildMemberSkills.cleanup();
+        guildMemberSkills.forget();
+        resetTrialsSingleton();
+        delete game.wsHandlers.profile_shared;
+    });
+
+    afterEach(() => {
+        trialsFeature.cleanup();
+        guildMemberSkills.cleanup();
+        guildMemberSkills.forget();
+        resetTrialsSingleton();
+    });
+
+    test('turning the feature off takes the member-skills profile listener with it', async () => {
+        await trialsFeature.initialize();
+        // The premise: without this the assertion below would pass on a tracker
+        // that had simply never started
+        expect(game.wsHandlers.profile_shared, 'the skills tracker never started').toBeTypeOf('function');
+
+        trialsFeature.cleanup();
+
+        expect(game.wsHandlers.profile_shared).toBeUndefined();
+        expect(guildMemberSkills.initialized).toBe(false);
+    });
+
+    test('and the tracker still re-arms for the roster panel, which can outlive the feature', async () => {
+        await trialsFeature.initialize();
+        trialsFeature.cleanup();
+
+        // `cleanup()` is a teardown, not a kill switch: `progress()` re-arms on
+        // first look, which is what makes it safe for one of two callers to
+        // stand the tracker down
+        guildMemberSkills.progress();
+
+        expect(game.wsHandlers.profile_shared).toBeTypeOf('function');
+    });
+
+    test('tearing down a tracker that never started, or twice over, is not an error', () => {
+        expect(() => guildMemberSkills.cleanup()).not.toThrow();
+        expect(() => guildMemberSkills.cleanup()).not.toThrow();
+        expect(game.wsHandlers.profile_shared).toBeUndefined();
     });
 });
