@@ -814,3 +814,134 @@ describe('attachedAfterSocketOpen', () => {
         expect(webSocketHook.attachedAfterSocketOpen).toBe(false);
     });
 });
+
+describe('closeActiveGameSocket', () => {
+    /**
+     * A socket-shaped object that records the close and, like a real one,
+     * fires its close listener.
+     */
+    function liveSocket(readyState = 1) {
+        const listeners = new Map();
+        return {
+            url: 'wss://api.milkywayidle.com/ws',
+            send() {},
+            readyState,
+            closes: 0,
+            closeArgs: null,
+            addEventListener(type, handler) {
+                listeners.set(type, handler);
+            },
+            close(...args) {
+                this.closes += 1;
+                this.closeArgs = args;
+                this.readyState = 3;
+                listeners.get('close')?.({ type: 'close' });
+            },
+        };
+    }
+
+    beforeEach(() => {
+        webSocketHook.activeGameSocket = null;
+        webSocketHook.attachedSockets = new WeakSet();
+    });
+
+    test('closes the game socket the hook is listening to', () => {
+        const socket = liveSocket();
+        webSocketHook.attachSocketListeners(socket);
+
+        expect(webSocketHook.closeActiveGameSocket()).toBe(true);
+        expect(socket.closes).toBe(1);
+    });
+
+    test('sends nothing: a plain close, no code and no reason', () => {
+        const socket = liveSocket();
+        const send = vi.spyOn(socket, 'send');
+        webSocketHook.attachSocketListeners(socket);
+
+        webSocketHook.closeActiveGameSocket();
+
+        expect(socket.closeArgs).toEqual([]);
+        expect(send).not.toHaveBeenCalled();
+    });
+
+    test('a closed socket stops being the active one, so nothing closes twice', () => {
+        const socket = liveSocket();
+        webSocketHook.attachSocketListeners(socket);
+
+        expect(webSocketHook.closeActiveGameSocket()).toBe(true);
+        expect(webSocketHook.activeGameSocket).toBeNull();
+        expect(webSocketHook.closeActiveGameSocket()).toBe(false);
+        expect(socket.closes).toBe(1);
+    });
+
+    test('no socket at all is a false, not a throw', () => {
+        expect(webSocketHook.closeActiveGameSocket()).toBe(false);
+    });
+
+    test('a socket still connecting is left alone', () => {
+        const socket = liveSocket(0);
+        webSocketHook.attachSocketListeners(socket);
+
+        expect(webSocketHook.closeActiveGameSocket()).toBe(false);
+        expect(socket.closes).toBe(0);
+    });
+
+    test('a socket already closing is left alone', () => {
+        const socket = liveSocket(2);
+        webSocketHook.attachSocketListeners(socket);
+
+        expect(webSocketHook.closeActiveGameSocket()).toBe(false);
+        expect(socket.closes).toBe(0);
+    });
+
+    test('a foreign wrapper with no readyState is taken at its word', () => {
+        const socket = liveSocket();
+        delete socket.readyState;
+        webSocketHook.attachSocketListeners(socket);
+
+        expect(webSocketHook.closeActiveGameSocket()).toBe(true);
+        expect(socket.closes).toBe(1);
+    });
+
+    test('a socket that is not the game', () => {
+        webSocketHook.attachSocketListeners({ ...liveSocket(), url: 'wss://example.com/ws' });
+        expect(webSocketHook.closeActiveGameSocket()).toBe(false);
+    });
+
+    test('the newest game socket is the one that would be closed', () => {
+        const first = liveSocket();
+        const second = liveSocket();
+        webSocketHook.attachSocketListeners(first);
+        webSocketHook.attachSocketListeners(second);
+
+        expect(webSocketHook.closeActiveGameSocket()).toBe(true);
+        expect(second.closes).toBe(1);
+        expect(first.closes).toBe(0);
+    });
+
+    test("a departing socket's close does not clear the arriving one", () => {
+        // A character switch: the new socket attaches before the old one has
+        // finished closing, and the stale close must not leave us with nothing
+        const departing = liveSocket();
+        const arriving = liveSocket();
+        webSocketHook.attachSocketListeners(departing);
+        webSocketHook.attachSocketListeners(arriving);
+
+        departing.close();
+
+        expect(webSocketHook.activeGameSocket).toBe(arriving);
+    });
+
+    test('a close that throws is reported, not propagated', () => {
+        const socket = liveSocket();
+        socket.close = () => {
+            throw new Error('InvalidStateError');
+        };
+        const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+        webSocketHook.attachSocketListeners(socket);
+
+        expect(webSocketHook.closeActiveGameSocket()).toBe(false);
+        expect(errors).toHaveBeenCalled();
+        errors.mockRestore();
+    });
+});

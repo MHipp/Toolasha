@@ -77,6 +77,34 @@ const EARLY_RECOVERY_ATTEMPTS = 10;
  */
 const RELOAD_GUARD_KEY = 'toolasha.missedCharacterData.autoReloaded';
 
+/**
+ * Marks that this tab has already spent its one recovery socket close.
+ *
+ * Same storage and the same reasoning as {@link RELOAD_GUARD_KEY}: read
+ * synchronously, scoped to the one tab, and survives the reload the close falls
+ * back to — so a tab that closes, reconnects into the same broken state and
+ * then reloads cannot start closing sockets again on the page that comes back.
+ * A read that throws is taken as "already used", because failing towards not
+ * closing costs a reload and failing the other way is a loop.
+ */
+const SOCKET_CLOSE_GUARD_KEY = 'toolasha.missedCharacterData.socketClosed';
+
+/**
+ * How long the reconnect is given to deliver a fresh `init_character_data`
+ * before the reload takes over.
+ *
+ * Derived from what the reconnect actually costs, not rounded to taste. The
+ * live capture showed the client constructing new sockets within about two
+ * seconds of a close it never asked for; on top of that sits one handshake and
+ * one server push, call it another two on a slow link. Eight seconds is that
+ * four-second budget doubled, so a single failed first attempt and its backoff
+ * still fit. It also keeps the whole recovery — five seconds of evidence
+ * gathering plus this — at thirteen seconds, comfortably inside the
+ * thirty-second backstop this path replaced, so nothing waits longer than it
+ * used to.
+ */
+const RECONNECT_RECOVERY_WINDOW_MS = 8000;
+
 /** Events that count as the player having started using this page. */
 const INTERACTION_EVENTS = ['pointerdown', 'keydown', 'touchstart', 'wheel'];
 
@@ -206,6 +234,15 @@ class DataManager {
         this._pageInteracted = false;
         this._interactionWatchInstalled = false;
 
+        // True once this page has closed the game socket to force a reconnect.
+        // The session mark guards across the fallback reload; this guards
+        // within the page, where no storage is involved at all.
+        this._reconnectRecoveryAttempted = false;
+
+        // Handle to the wait for the reconnect's payload, so cleanup can drop
+        // it. Null when no reconnect is being waited on.
+        this._reconnectRecoveryTimeout = null;
+
         // Retry interval for loading static game data
         this.loadRetryInterval = null;
         this.fallbackInterval = null;
@@ -327,16 +364,29 @@ class DataManager {
      * per connection: the game persists none of it (`localStorageUtil` exposes
      * `getInitClientData` and `getMarketItemValues`, both static), and asking
      * the server for it would mean sending a message the client itself does not
-     * send at this point, which this script does not do. Reopening the socket is
-     * the only thing that makes the server send it again, and the cheapest,
-     * safest way to reopen the socket is the one the player already knows: a
-     * reload.
+     * send at this point, which this script does not do. A *new connection* is
+     * the only thing that makes the server send it again.
      *
-     * So the recovery *is* the reload — but taken automatically, once, and only
-     * on a page where it provably costs nothing. See
-     * {@link _reloadRecoveryBlockedReason} for what "provably" means here. When
-     * it does not hold, the reload is offered instead and the console says which
-     * condition stopped it.
+     * There are two ways to get one, and this takes the cheap one first:
+     *
+     * 1. Close the socket. The client opens a new one on its own — watched live:
+     *    two fresh sockets constructed within a couple of seconds of a close it
+     *    never requested, frames still arriving, the game itself unbothered — and
+     *    the tab keeps everything a reload would have thrown away.
+     * 2. Reload. Certain, and expensive: typing, scroll position, open panels,
+     *    all gone.
+     *
+     * The close is not kept as the whole recovery because a client that did
+     * *not* reconnect would be left with no socket at all, which is worse than
+     * the dead script it started from. So it is tried first and the reload sits
+     * behind it, unchanged and with every gate it has today, for when the
+     * payload does not come back inside
+     * {@link RECONNECT_RECOVERY_WINDOW_MS}.
+     *
+     * Both halves are taken automatically only on a page where they provably
+     * cost nothing — see {@link _reloadRecoveryBlockedReason} for what
+     * "provably" means. When that does not hold, the reload is offered instead
+     * and the console says which condition stopped it.
      * @private
      */
     _recoverMissedCharacterData() {
@@ -349,22 +399,163 @@ class DataManager {
             );
         }
 
+        if (this._tryReconnectRecovery()) {
+            return;
+        }
+
+        this._reloadNowOrOffer();
+    }
+
+    /**
+     * Try the cheap recovery: close the socket and let the client reconnect.
+     *
+     * Gated on {@link _reloadRecoveryBlockedReason} — the *same* conditions the
+     * automatic reload is gated on, deliberately, so the close never runs
+     * anywhere the reload would not have. The argument for reusing them rather
+     * than letting the close go unconditional:
+     *
+     * - The setting says "Reload the page by itself when Toolasha misses the
+     *   login data", and its help text promises the page reloads itself. A
+     *   player who turned that off asked not to have their session acted on
+     *   without being asked, and the close is such an action: it is cheap, but
+     *   it is cheap *only if the client reconnects*. That step is strongly
+     *   evidenced and not proven, and if it ever fails the player loses the
+     *   game connection too — a worse page than the dead one they had. The
+     *   player who declined automatic recovery is not the one who should absorb
+     *   the risk of the unproven step.
+     * - The interaction gate costs nothing to keep and bounds the blast radius:
+     *   a page the player has started using is left alone entirely, as today.
+     * - The once-per-tab reload guard implies the close too: a tab that already
+     *   reloaded for this failure and came back into it is looping, and adding a
+     *   socket close to a loop does not improve it.
+     *
+     * So the rule is one sentence: **the close happens exactly where today's
+     * automatic reload would have happened**, and the reload becomes what
+     * happens when it does not work.
+     *
+     * @returns {boolean} True when a close was taken and the reconnect is being
+     *   waited on. False means fall through to the reload, unchanged.
+     * @private
+     */
+    _tryReconnectRecovery() {
+        if (this._reloadRecoveryBlockedReason()) return false;
+        if (this._reconnectRecoveryAlreadyAttempted()) return false;
+        if (typeof this.webSocketHook?.closeActiveGameSocket !== 'function') return false;
+
+        // Recorded before it is taken, for the same reason the reload is: an
+        // unrecorded close is an unguarded one.
+        if (!this._markReconnectRecoveryAttempted()) return false;
+
+        if (!this.webSocketHook.closeActiveGameSocket()) {
+            // No live socket to close — a non-browser host, or a connection
+            // that has already gone. Exactly the path that shipped before.
+            return false;
+        }
+
+        console.error(
+            `[DataManager] Recovering: closing the game socket so the client reconnects and the server resends the payload. Nothing is sent on it. Falling back to a reload in ${RECONNECT_RECOVERY_WINDOW_MS / 1000} seconds if the payload does not arrive.`
+        );
+
+        this._reconnectRecoveryTimeout = setTimeout(() => {
+            this._reconnectRecoveryTimeout = null;
+            this._afterReconnectRecoveryWindow();
+        }, RECONNECT_RECOVERY_WINDOW_MS);
+
+        return true;
+    }
+
+    /**
+     * Decide, once the reconnect has had its window, whether it worked.
+     *
+     * `characterData` is set by the `init_character_data` handler and by
+     * nothing else, so its presence here is the payload having come back down
+     * a connection the client made on its own — the whole point of the close.
+     * @private
+     */
+    _afterReconnectRecoveryWindow() {
+        if (this.characterData) {
+            console.log(
+                '[DataManager] Recovered: the client reconnected on its own and the server resent the character payload. No reload needed.'
+            );
+            return;
+        }
+
+        console.error(
+            `[DataManager] The reconnect did not produce a character payload within ${RECONNECT_RECOVERY_WINDOW_MS / 1000} seconds; falling back to the reload.`
+        );
+        this._reloadNowOrOffer({ afterFailedReconnect: true });
+    }
+
+    /**
+     * Reload to recover the payload, or offer the reload when it may not be
+     * taken. Exactly the behaviour that shipped before the socket close was put
+     * in front of it, gates and all.
+     *
+     * The gates are re-read here rather than reused from the close: a window
+     * has passed since then, and a player who has started using the page in the
+     * meantime must not have it reloaded under them.
+     *
+     * @param {Object} [options] - Reload options
+     * @param {boolean} [options.afterFailedReconnect] - True when a recovery
+     *   close has already been taken, which changes what the toast can honestly
+     *   claim about the game
+     * @private
+     */
+    _reloadNowOrOffer(options = {}) {
         const blockedReason = this._reloadRecoveryBlockedReason();
         if (blockedReason) {
             console.error(
                 `[DataManager] Recovery attempted; the automatic reload was not taken because ${blockedReason}. Offering it instead.`
             );
-            this._offerReloadForMissedCharacterData();
+            this._offerReloadForMissedCharacterData(options);
             return;
         }
 
         if (!this._markReloadRecoveryAttempted()) {
-            this._offerReloadForMissedCharacterData();
+            this._offerReloadForMissedCharacterData(options);
             return;
         }
 
         console.error('[DataManager] Recovering: reloading the page once to make the server resend the payload.');
         this._performReload();
+    }
+
+    /**
+     * Whether this tab has already spent its one recovery socket close.
+     *
+     * The in-memory flag is what stops a loop inside one page — a reconnect
+     * that lands in the same broken state finds it set. The session mark is
+     * what carries the same answer across the fallback reload. A read that
+     * throws is "already used"; see {@link SOCKET_CLOSE_GUARD_KEY}.
+     * @returns {boolean}
+     * @private
+     */
+    _reconnectRecoveryAlreadyAttempted() {
+        if (this._reconnectRecoveryAttempted) return true;
+        try {
+            return window.sessionStorage?.getItem(SOCKET_CLOSE_GUARD_KEY) === '1';
+        } catch {
+            return true;
+        }
+    }
+
+    /**
+     * Record the recovery close before performing it.
+     *
+     * @returns {boolean} True when the mark is in place and the close may go
+     *   ahead. False means storage refused the write, and the caller falls
+     *   through to the reload path, which applies its own guard.
+     * @private
+     */
+    _markReconnectRecoveryAttempted() {
+        this._reconnectRecoveryAttempted = true;
+        try {
+            window.sessionStorage.setItem(SOCKET_CLOSE_GUARD_KEY, '1');
+            return true;
+        } catch (error) {
+            console.error('[DataManager] Could not record the recovery reconnect; not closing the socket:', error);
+            return false;
+        }
     }
 
     /**
@@ -601,9 +792,15 @@ class DataManager {
      * because an unconditional `location.reload()` could land mid-dungeon. One
      * persistent toast, shown at most once per page, dismissed the moment a real
      * `init_character_data` turns up late.
+     *
+     * @param {Object} [options] - Offer options
+     * @param {boolean} [options.afterFailedReconnect] - True when the recovery
+     *   already closed the socket and no reconnect brought the payload back.
+     *   The usual "the game itself is unaffected" line is then false — there is
+     *   no socket — so a different sentence is used.
      * @private
      */
-    _offerReloadForMissedCharacterData() {
+    _offerReloadForMissedCharacterData(options = {}) {
         if (this.missedCharacterDataPrompt) return;
 
         try {
@@ -615,18 +812,19 @@ class DataManager {
             const showToast = window.Toolasha?.Utils?.toast?.showToast;
             if (typeof showToast !== 'function') return;
 
+            const message = options.afterFailedReconnect
+                ? "Toolasha missed this login's character data, so its panels are empty, and reconnecting did not bring it back. Reload the page when convenient to restore Toolasha and the game connection."
+                : "Toolasha missed this login's character data, so its panels are empty. The game itself is unaffected — reload the page when convenient to bring Toolasha back.";
+
             this.missedCharacterDataPrompt =
-                showToast(
-                    "Toolasha missed this login's character data, so its panels are empty. The game itself is unaffected — reload the page when convenient to bring Toolasha back.",
-                    {
-                        kind: 'warn',
-                        duration: 0,
-                        action: {
-                            label: 'Reload the page',
-                            onClick: () => this._performReload(),
-                        },
-                    }
-                ) || null;
+                showToast(message, {
+                    kind: 'warn',
+                    duration: 0,
+                    action: {
+                        label: 'Reload the page',
+                        onClick: () => this._performReload(),
+                    },
+                }) || null;
         } catch (error) {
             // A page with no DOM, or a Utils bundle that never loaded, must not
             // turn a diagnostic into a thrown error inside an interval callback.
@@ -666,6 +864,11 @@ class DataManager {
         if (this.fallbackInterval) {
             clearInterval(this.fallbackInterval);
             this.fallbackInterval = null;
+        }
+
+        if (this._reconnectRecoveryTimeout) {
+            clearTimeout(this._reconnectRecoveryTimeout);
+            this._reconnectRecoveryTimeout = null;
         }
     }
 

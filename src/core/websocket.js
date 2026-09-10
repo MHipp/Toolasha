@@ -206,6 +206,19 @@ class WebSocketHook {
          * startup recovery reads it — see `_canRecoverEarly`.
          */
         this.attachedAfterSocketOpen = false;
+
+        /**
+         * The game socket this hook is currently listening to, or null when
+         * there is none.
+         *
+         * `currentWebSocket` above is the *constructor*; this is the instance.
+         * Held strongly, unlike `attachedSockets` and `socketDedupIds`, because
+         * a WeakSet cannot be asked "which one" — and cleared again the moment
+         * that socket closes, so nothing outlives its connection.
+         *
+         * The one reader is {@link closeActiveGameSocket}.
+         */
+        this.activeGameSocket = null;
         this.messageCleanupInterval = null;
         this.isSocketWrapped = false;
         this.originalWebSocket = null;
@@ -439,6 +452,10 @@ class WebSocketHook {
             return;
         }
 
+        // Before the dedup return, so this always names the most recent game
+        // socket even if something re-attaches to one we have already seen.
+        this.activeGameSocket = socket;
+
         if (this.attachedSockets.has(socket)) {
             return;
         }
@@ -458,6 +475,13 @@ class WebSocketHook {
         const events = ['open', 'close', 'error'];
         for (const eventName of events) {
             socket.addEventListener(eventName, (event) => {
+                // A closed socket is not the active one any more, and holding
+                // it would keep it alive for nothing. Only clear it if it is
+                // still ours: during a character switch the departing socket
+                // closes after the arriving one has already attached.
+                if (eventName === 'close' && this.activeGameSocket === socket) {
+                    this.activeGameSocket = null;
+                }
                 this.emitSocketEvent(eventName, event, socket);
             });
         }
@@ -491,6 +515,50 @@ class WebSocketHook {
 
             this.processMessage(data, socket);
         });
+    }
+
+    /**
+     * Close the game socket, so the client opens a new one and the server
+     * resends the payload it only sends per connection.
+     *
+     * The one caller is DataManager's startup recovery, for the case where
+     * `init_character_data` provably went missing. Closing is the cheapest
+     * thing that gets a fresh connection: the client reopens a socket it did
+     * not close (observed live — two new sockets constructed within a couple of
+     * seconds, frames continuing, the game unaffected), and unlike a reload it
+     * discards nothing the tab holds.
+     *
+     * **Nothing is sent.** `close()` with no code and no reason is a protocol
+     * close, not a message; this script never sends game traffic of its own,
+     * and this must not become the exception.
+     *
+     * Only a socket that is OPEN is touched. CONNECTING is a socket that has
+     * not had its chance yet, and CLOSING/CLOSED needs nothing from us. A
+     * foreign wrapper standing in for a real socket need not expose a numeric
+     * `readyState`, and is taken at its word — the same duck-typing
+     * {@link isGameSocket} uses.
+     *
+     * @returns {boolean} True when a live game socket was asked to close, false
+     *   when there was nothing to close or the close itself threw. False is the
+     *   caller's signal to fall back to the recovery it had before this.
+     */
+    closeActiveGameSocket() {
+        const socket = this.activeGameSocket;
+        if (!socket || typeof socket.close !== 'function') {
+            return false;
+        }
+        // 1 is OPEN.
+        if (typeof socket.readyState === 'number' && socket.readyState !== 1) {
+            return false;
+        }
+
+        try {
+            socket.close();
+            return true;
+        } catch (error) {
+            console.error('[WebSocket] Could not close the game socket for recovery:', error);
+            return false;
+        }
     }
 
     /**
