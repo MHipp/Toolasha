@@ -6,6 +6,14 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### A buy box no longer opens with the previous character's quantity in it
+
+Pressing "buy books" on the ability panel arms the marketplace autofill with how many that character still needs and sends you to the market. The arming waits for the right book's buy box to open, which is a trip and several clicks away — and it was not dropped when you switched character in between. The arriving character's New Buy Listing then came up with the departed character's count already filled in. A buy box is somewhere you act on a number rather than just read it, so that one is worth knowing about. Switching now clears it, in the same place the panel already forgets its other per-character figures.
+
+The guild loadout capture had the opposite problem: it is shared by Guild Trials and the guild roster and counts its users so the last one out shuts it down, but the roster never gave its turn back. With the roster on, the count only ever climbed, so the capture never shut down and stayed pinned to the first character of the session — filing the arriving character's guild roster into the departed character's record, and showing that character's sightings in loadout previews and ability sheets. With the roster off it tore down correctly, so whether it worked depended on which of the two features you had switched on.
+
+Five more shared helpers were checked in the same pass and deliberately left alone: each already handles a character switch itself, and stopping them when one of their users goes away would break the other.
+
 ### A character switch stops leaving three listeners behind every time
 
 Measured in the running game rather than read out of the source: every character switch left four listeners on the message bus that nothing could ever remove, and they stacked for as long as the tab stayed open. This is not the race the rest of this release fixes — that one is confirmed closed by the same measurement — but a plainer thing sitting underneath it. A feature that starts a helper of its own has to stop it too, and three did not.
