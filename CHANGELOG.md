@@ -2071,15 +2071,15 @@ Custom inventory tabs, custom price overrides, alchemy pins, planner goals, equi
 
 ### Skill XP, enhancement, treasure, watchlist, reroll and collection records survive failed reads
 
-The skill XP history, leaderboard XP history, enhancement sessions, chest tally, inventory watchlist, task reroll map and history, guild member skill captures, collection flags/favourites/counts, and the pooled market price cache and its watchlist now go through the shared persisted record: a read that cannot be made keeps the in-memory copy instead of blanking it, a save folds what is stored under memory (XP samples by time and re-thinned, tally counts by the larger, prices by the newer reading, the rest by id with memory winning) and is skipped when storage cannot be read first, and a character or guild switch forgets the departing record before the next load. User-curated lists (watchlist, favourites, sessions, the reroll map) merge only until read back, so a removal sticks once it has been. The helper also coalesces saves queued behind a running one and stands a save down across a reset, so a record written on every game event neither backs up behind debounced writes nor lands under the next character's key.
+The skill XP history, leaderboard XP history, enhancement sessions, chest tally, inventory watchlist, task reroll map, guild member skill captures, collection favourites and the pooled price cache now go through the shared persisted record: a read that cannot be made keeps the in-memory copy instead of blanking it, and a save folds what is stored under memory rather than overwriting it. User-curated lists merge only until read back, so a removal sticks once it has been.
 
 ### Combat and labyrinth histories survive failed reads and stale tabs
 
-The labyrinth room log, fight pool, fight-outcome totals, run ledger and best-level map, the combat replay check's observations and check history, the combat session history and consumable trackers, and the prediction/enhancement calibration ledgers now go through the shared persisted-record discipline: a read that cannot be made keeps the in-memory copy instead of blanking it, every save folds what is stored under memory (rooms, fights, runs, sessions and pairs unioned by identity; outcome buckets by whichever counted more; best levels by the higher) and is skipped when storage cannot be read first, and a character switch forgets the departing character's records before the next load. Intentional resets and "forget" buttons remain the one overwrite.
+The labyrinth room log, fight pool, run ledger and best-level map, the replay check's observations and history, the combat session history and consumable trackers, and the calibration ledgers now go through the same persisted-record discipline: a read that cannot be made keeps the in-memory copy instead of blanking it, and every save folds what is stored under memory. Intentional resets and "forget" buttons remain the one overwrite.
 
 ### Guild XP, trial records and the trial trace manifest survive failed reads and stale tabs
 
-The guild XP histories, the weekly trial record (and its work-base, roster and stats blobs), and the trial trace's manifest got the listing-log treatment: a read that cannot be trusted keeps the in-memory copy instead of blanking it, every save re-reads and folds what is stored under memory (samples unioned by time, memory winning; archived cycles never resurrected) and is skipped outright when storage cannot be read first. The trace holds its events and re-probes an unreadable manifest (for up to two minutes / 5000 events) rather than writing a fresh one that would orphan every stored chunk.
+The guild XP histories, the weekly trial record and the trial trace's manifest got the same treatment: a read that cannot be trusted keeps the in-memory copy instead of blanking it, and every save folds what is stored under memory rather than replacing it. The trace holds its events and re-probes an unreadable manifest rather than writing a fresh one that would orphan every stored chunk.
 
 ### A shared persisted-record helper for histories that must not be wiped
 
@@ -2087,15 +2087,17 @@ The guild XP histories, the weekly trial record (and its work-base, roster and s
 
 ### Trade ledger and trade history survive failed reads and stale tabs
 
-The fill ledger and the per-item last buy/sell prices got the same treatment as the listing log: a load whose read cannot be trusted keeps the in-memory copy instead of blanking it, and every save re-reads storage and folds it under memory (fills by listing, time and quantity; prices per item and side) before writing, skipping the write outright when storage cannot be read first — so a dropped IndexedDB connection or a second tab no longer erases what the other recorded.
+The fill ledger and the per-item last buy and sell prices got the same treatment as the listing log: a load whose read cannot be trusted keeps the in-memory copy instead of blanking it, and every save re-reads storage and folds it under memory before writing — so a dropped database connection or a second tab no longer erases what the other recorded.
 
 ### Storage waits out a dropped IndexedDB connection instead of answering with defaults
 
-When Chromium drops the IndexedDB connection (another tab upgrading the schema, memory pressure, an extension churning the database), reads used to answer with their defaults and writes were refused for the second or so the reconnect took — the window in which a module could load an "empty" record and write it back over real history. Every storage operation now waits (bounded, 5s) for the reconnect before proceeding, so a transient drop is a slightly slower read rather than a silent empty one; a reconnect that has recently failed is not waited on again.
+When Chromium drops the IndexedDB connection — another tab upgrading the schema, memory pressure, an extension churning the database — reads used to answer with their defaults, which is the window in which a module could load an "empty" record and write it back over real history. Every storage operation now waits up to five seconds for the reconnect, so a transient drop is a slower read rather than a silent empty one.
 
 ### Market history can no longer be wiped, and buy-form autofill stops fighting itself
 
-The personal listing log was rewritten wholesale from memory on every listing event, and a read that failed (IndexedDB connection dropped, another tab upgrading the database) came back as an empty log — the next event wrote that emptiness over the whole history, which is how days of Market History vanished and imports disappeared. Saves are now read-merge-write, serialized, and simply skipped when storage cannot be read first; a failed load keeps the in-memory copy; imports and Clear History go through the log's owner. Separately, every feature with a marketplace autofill watched every buy modal and wrote its own quantity, so a stale lazily-kept amount from one feature overrode the one you had just clicked ("needs 20 of one and 400 of the other, both tabs say 20"); now only the most recently set quantity fills, and a one-shot quantity is consumed by an actual buy form rather than by whatever modal opened first.
+The personal listing log was rewritten wholesale on every listing event, and a failed read came back empty — the next event wrote that emptiness over the whole history, which is how days of Market History vanished. Saves are read-merge-write now, and skipped when storage cannot be read.
+
+Every marketplace autofill also wrote its own quantity, so a stale amount could override the one you had just clicked. Only the most recently set quantity fills now.
 
 ### The trial diagnostic trace survives reloads and holds a full-hour fight
 
@@ -2103,11 +2105,11 @@ The opt-in trial trace no longer lives only in memory: events are kept as pre-st
 
 ### The idle plan is pinnable, and every Consumables section gets the Buy all walk
 
-The Idle plan heading gains two dropdowns: which combat loadout to plan for (default-starred, no longer hardwired to the default) and which simmed zone-and-tier rates its food — sims now file their measured rates per zone, so pinning "this zone at this tier" keeps that rating even as other zones are simmed. A pinned zone that has never been simmed says so instead of borrowing another zone's appetite. The Buy all walk added for the lab now also sits on your own combat section and the idle plan whenever two or more rows are short.
+The Idle plan heading gains two dropdowns: which combat loadout to plan for, and which simmed zone and tier rates its food — sims now file their measured rates per zone, so pinning a zone keeps that rating as others are simmed. A pinned zone never simmed says so instead of borrowing another zone's appetite. The Buy all walk now also sits on your own combat section and the idle plan.
 
 ### The Consumables panel's lab shortfall gets a Buy all walk, and sim rates land without a reload
 
-"Buy all ▶" on the Labyrinth heading walks the whole shortfall the way the Bulk Sell Assistant walks sell forms, in reverse: each step opens one item's recommended buy form, and a floating Next chip steps to the following item on your click — one click, one form, nothing bought until the game's own confirm. The panel also re-reads the sim's measured consumable rates (and the run ledger) every time it opens, so a just-finished sim rates the idle plan's food immediately instead of after the next page load.
+"Buy all ▶" on the Labyrinth heading walks the whole shortfall the way the Bulk Sell Assistant walks sell forms, in reverse: each step opens one item's recommended buy form, and a floating Next chip steps to the following item on your click. Nothing is bought until the game's own confirm. The panel also re-reads the sim's measured rates every time it opens.
 
 ### The labyrinth tick capture runs for an hour before stopping itself
 
@@ -2119,7 +2121,7 @@ The labyrinth room panel's uptime harness gains an outgoing section: the same pe
 
 ### The finished trial's readouts stay viewable until the next one starts
 
-When a trial ends the game tears the fight down and zeroes the cards, and every readout anchored to them vanished with them. The trials tab now draws a "Last trial" summary from the persisted record — final Party DPS/fill rate, banked tiers, stated points, and the recorder session's final per-player split — plus the payout strip, marked as finished with when the figures were last read, until the next trial's cards arrive. The Trial Abilities panel likewise keeps the last trial's completed roster (now surviving reloads, with a "From the last trial" header note) instead of blanking; a new trial's first capture still starts a fresh session. Display persistence only — a completed-phase render writes nothing.
+When a trial ends the game tears the fight down and zeroes the cards, and every readout anchored to them vanished with them. The trials tab now draws a "Last trial" summary from the persisted record — final Party DPS, banked tiers, stated points and the final per-player split — marked as finished, until the next trial's cards arrive. The Trial Abilities panel likewise keeps the last trial's completed roster instead of blanking.
 
 ### Your own "Seen loadouts" row stops reading "seen Just now" forever
 
@@ -2131,11 +2133,11 @@ At a live trial, "Open next Battle Info" found no clickable trial units while th
 
 ### The Party DPS sidecar sits to the right of the boss cards on every wave shape
 
-`grid-row:1` left the sidecar's column to auto-placement, which fills the first _free_ cell — a 2× Trial Badger wave with its cards centred left column 1 free, and the readout rendered LEFT of the bosses. The sidecar now gets an explicit `grid-column` computed per wave from the boss cards' own columns (one boss → 2, two centred badgers → 4, a four-monster swarm → 5), recomputed on every render pass so wave boundaries and boss remounts keep it to the right of the last card at its usual ~220px width.
+The Party DPS sidecar could render to the left of the boss cards: its column was left to auto-placement, which fills the first free cell, and a two-badger wave with its cards centred left column 1 free. The sidecar now gets an explicit column computed per wave from the boss cards' own columns, recomputed on every render, so wave boundaries and boss remounts keep it to the right of the last card.
 
 ### The trial abilities cycler stops being starved by fresh roster sheets
 
-"Open next Battle Info" drove the roster feature's cycler, which skips any fighter whose combat sheet is fresh in the shared loadout store — so sheets from `new_battle` or stat-only popups (which the trial session rejects) left the panel at 0/8 with nothing clickable. The trial panel now has its own cycler gated only by the session's outstanding list: it clicks every uncaptured participant, the local player's own card included, and re-offers anyone whose fetch never answered once a 20s window lapses. "Retry current player" re-asks immediately.
+"Open next Battle Info" drove the roster feature's cycler, which skips any fighter whose combat sheet is fresh — so sheets the trial session rejects left the panel at 0/8 with nothing clickable. The trial panel now has its own cycler gated only by the session's outstanding list: it clicks every uncaptured participant, and re-offers anyone whose fetch never answered after 20 seconds.
 
 ### The payout strip sits above the whole trial view
 
@@ -2143,11 +2145,11 @@ Placed before the monsters area, the payout became a middle column between the r
 
 ### Trial fixes from a live trial: your own kit, the payout's spot
 
-The Trial Abilities panel marked the local player "captured" off their own zone fight's `new_battle` — the _current_ kit, not the one the trial was entered with — while everyone else honestly said "needs Battle Info". The trial session now takes only Battle Info captures, the same source for every participant, and a restored session demotes any `new_battle` entry back to "needs Battle Info". The Trial payout also stops landing inside the combat fight's boss grid (where it overlapped the DPS sidecar) — in a fight it sits above the whole monsters area, full width and flat.
+The Trial Abilities panel marked the local player "captured" off their own zone fight — the current kit, not the one the trial was entered with — while everyone else honestly said "needs Battle Info". The session now takes only Battle Info captures, the same source for every participant. The Trial payout also stops landing inside the combat fight's boss grid, where it overlapped the DPS sidecar.
 
 ### Trial readout beside the card, payout flattened, capacity settings retired
 
-Per request: the In Progress skilling readout now sits to the right of the trial card as a sidecar that yields before the card ever shrinks (the card's flex-shrink is pinned), instead of being exiled to its own line; the Trial payout strip stays on top but flows as one wrapping line of figures rather than a half-panel stack; and the three labyrinth capacity settings are gone — the server states the final capacities on `characterInfo`, so there was nothing left to configure.
+The In Progress skilling readout now sits to the right of the trial card as a sidecar that yields before the card ever shrinks, instead of being exiled to its own line. The Trial payout strip flows as one wrapping line of figures rather than a half-panel stack. And the three labyrinth capacity settings are gone — the server states the final capacities, so there was nothing left to configure.
 
 ### The trial readout stops squashing the skilling card
 
@@ -2159,7 +2161,7 @@ Format Release Please committed through the repo's pre-commit hook, which re-ran
 
 ### Each labyrinth run's leftovers are on the record
 
-A new run ledger records what every run came back with — the torches, shrouds and beacons left unspent and the deepest floor reached (last 30 runs, per character). The Consumables panel's Labyrinth block lists the recent leftovers, and its hover prices every rush-for-exit floor in torches — grid math straight from the game guide (4×4 on floor 1, one wider per floor to 8×8; a rush crosses the shortest corner-to-corner path, everything else is a full clear) against your torch capacity — so "could rush come down a floor?" is a read, not a calculation.
+A new run ledger records what every labyrinth run came back with — the torches, shrouds and beacons left unspent and the deepest floor reached, for the last 30 runs. The Consumables panel's Labyrinth block lists the recent leftovers, and its hover prices every rush-for-exit floor in torches against your capacity, so "could rush come down a floor?" is a read rather than a calculation.
 
 ### Labyrinth capacities read themselves
 
@@ -2167,15 +2169,15 @@ The server states the final torch/shroud/beacon capacities outright on `characte
 
 ### The Consumables panel plans while idle, and insta sells report the real average
 
-With nothing being fought, the panel now plans from the default combat loadout instead of shrugging (setting, on by default): drinks rated arithmetically from buff duration and drink concentration, food rated from the last combat sim's measured use — which now survives reloads as a small per-zone summary saved when a sim finishes — with the simmed zone named in the heading, and food listed unrated until a sim has run. Bulk sell's depth-walked insta price is also now reported as what the fill actually earns — each unit sells at the best remaining bid, so the chip shows the volume-weighted average and names the walked floor separately.
+With nothing being fought, the Consumables panel now plans from the default combat loadout instead of shrugging: drinks rated from buff duration and concentration, food from the last combat sim's measured use — which now survives reloads — with the simmed zone named in the heading. Bulk sell's depth-walked insta price is also reported as what the fill actually earns, a volume-weighted average, with the walked floor named separately.
 
 ### The Consumables panel buys the way Bulk Sell sells
 
-The Buy links' order-or-instant call now runs the bulk-sell rulebook in reverse — a configurable spread floor, a minimum saving in coins, and a minimum order value all say "pay the ask", urgency still overrules everything, and the tooltip prices each hour of patience (saving ÷ expected fill time). A link now opens the very form its ⚡/⏳ recommendation points at with the quantity filled in (setting, on by default; nothing is bought until the game's own confirm). A new Labyrinth block plans full consumption per run — the whole torch/shroud/beacon capacity (capacities are settings: base 100/4/5 plus your upgrades) and one crate per selected slot — against a cycling 1/3/5/10/25-run target.
+The Consumables panel's Buy links now run the bulk-sell rulebook in reverse — a spread floor, a minimum saving in coins and a minimum order value all say "pay the ask", urgency overrules everything, and the tooltip prices each hour of patience. A link opens the very form its recommendation points at with the quantity filled in; nothing is bought until the game's own confirm. A new Labyrinth block plans full consumption per run.
 
 ### Bulk sell: depth-priced insta sells, and a Next click of its own
 
-An insta-sell's price now walks down the bid book until the depth covers the whole stack — the top bid's price only ever held for the top bid's quantity — and writes that price into the Sell Now form (waking the rebuilt price control first). And the run no longer opens the next item off the back of the confirm click: that click's one game action was the sale, so the chip now waits for its own Next press before opening the next book.
+An insta-sell's price now walks down the bid book until the depth covers the whole stack — the top bid's price only ever held for the top bid's quantity — and writes that price into the Sell Now form. And the run no longer opens the next item off the back of the confirm click: that click's one game action was the sale, so the chip waits for its own Next press.
 
 ### The ÷2/×2 buttons survive the rebuilt price control
 
@@ -2183,7 +2185,7 @@ The 8/14 game update replaced the listing form's price input with a display that
 
 ### The tradable-range clamp now computes the game's exact band
 
-The 8/14 hotfix defined the range as ±10% of value snapped outward to the price-increment ladder plus one increment per side. The ladder (`getBinnedPrice` in the game client — increments of roughly 0.17–0.5% of price, tiered by first digit) is now implemented as `priceIncrement`, and `bandFromValue` reproduces the game's real band bounds, verified against live captures from 16 coins to hundreds of billions. Every consumer of the clamp — tooltip prices, bulk sell, networth banding — tightens to the true range for free. The one remaining divergence is recalibration lag: a band chases a freshly moved value at ≤1% per hourly pass.
+The tradable-range clamp now reproduces the game's exact band rather than approximating it with ±10% snapped to the increment ladder. The ladder itself is implemented and verified against live captures from 16 coins to hundreds of billions, so every consumer — tooltip prices, bulk sell, net worth banding — tightens to the true range for free. The one remaining divergence is recalibration lag.
 
 ### A disconnected game no longer reads as a broken one
 
@@ -2195,35 +2197,35 @@ Logging the account in from another tab (or any socket loss) replaces the game w
 
 ### The zone decomposition is on the panel and in the export
 
-The Sim Accuracy panel now draws an "Incoming damage by ability" card after every check — one block per monster the recording fought, rows graded with the lab card's verdict glyphs, cast shares and means on hover, the wave-level DoT row labelled as such, and sim-only monsters listed as a footnote rather than findings. Refusals (party, mixed builds, foreign monsters, counterless recording) appear in the card in plain words. The decomposition also rides the export beside the comparison; it carries hrids and counters only, so the sanitized path needs nothing new.
+The Sim Accuracy panel now draws an "Incoming damage by ability" card after every check — one block per monster the recording fought, rows graded with the lab card's verdict glyphs, cast shares and means on hover, and sim-only monsters listed as a footnote rather than findings. Refusals appear in the card in plain words. The decomposition also rides the export.
 
 ### The uptime harness reaches zones
 
-`Toolasha.Debug.zoneUptimeHarness()` decomposes a recorded zone session's incoming damage per monster and per ability — real (from the recorder's counters) beside sim — reusing the lab harness's comparison unchanged and the very SimResult the Sim Accuracy check already ran, so it costs no second simulation. Multi-monster waves keep cast counts exact per monster; simultaneous swings share one payoff queue; damage-over-time is one wave-level row because the feed cannot say whose bleed it was. Counterless legacy recordings, parties, mixed builds, and foreign-zone recordings are refused by name instead of graded. `Toolasha.Debug.simAccuracyCheck()` runs the panel's check from the console, so the whole record-check-decompose loop can be driven without the overlay.
+A new zone uptime harness decomposes a recorded zone session's incoming damage per monster and per ability — real beside sim — reusing the lab harness's comparison and the very result the Sim Accuracy check already ran, so it costs no second simulation. Counterless legacy recordings, parties, mixed builds and foreign-zone recordings are refused by name instead of graded.
 
 ### CI: production bundles share one copy of the new utils again
 
-The band clamp had Core importing a Utils module, which inlined a second copy of the band cache (and server-gate) into the Core bundle — Core loads before Utils, so it can never treat Utils globals as externals; the clamp is now late-bound off `Toolasha.Utils.marketValues` at call time, passing prices through unbanded for the few startup milliseconds before Utils lands. The shared `scriptVersion()` helper joins the Utils externals map so combat/sim/ui stop carrying private copies. Dev builds were unaffected (they bundle everything); only `npm run build`'s sharing check caught it, which is what it is for.
+The band clamp had Core importing a Utils module, which inlined a second copy of the band cache into the Core bundle — Core loads before Utils, so it can never treat Utils globals as externals. The clamp is now late-bound at call time, passing prices through unbanded for the few startup milliseconds before Utils lands. Dev builds were unaffected.
 
 ### A Pool tab browses the recorded fights
 
-The recorder's pool — 160+ fights and counting — surfaced only through the Replay's top-three current-gear groups. A third tab beside Rooms/Accuracy now browses all of it: per monster and level, win rate, fight length, both damage rates, crit rate, the complete fraction and the mean attribution residual, with click-to-expand recent attempts, a this-gear/all-gear toggle, and a Save pool export that embeds the summary beside the raw attempts. Read-only and unfiltered — incomplete and wounded-start fights are part of what the pool holds — with no second destructive path: clearing stays on Accuracy's two-click Reset.
+The recorder's pool — 160-odd fights and counting — surfaced only through the Replay's top-three current-gear groups. A third tab beside Rooms and Accuracy now browses all of it: per monster and level, win rate, fight length, both damage rates, crit rate and the mean attribution residual, with click-to-expand recent attempts and a Save pool export. Read-only and unfiltered.
 
 ### Crit row hardening
 
-Three fixes from adversarial review of the new crit comparison: a legacy fight's stored `playerCrits: null` no longer reads as a real zero (the `Number(null)` trap — three unmeasured fights would have halved a true rate), an engine that counts crits but saw none now reads as a real 0% instead of "no data" (property presence is the discriminator), and the crit band is binomial over the pooled landed hits rather than fight-to-fight ratio spread, whose per-fight denominators are too small to band honestly.
+Three fixes from adversarial review of the new crit comparison: a legacy fight's stored null crit count no longer reads as a real zero, which would have halved a true rate; an engine that counts crits but saw none reads as a real 0% instead of "no data"; and the crit band is binomial over the pooled landed hits rather than fight-to-fight spread.
 
 ### Bulk sell: the spread rule in coins, and the band prices the patient side
 
-A fifth insta-sell rule states the spread idea in absolute coins: what the whole stack would earn by waiting — (ask − bid) × count after the 5% tax — insta-sells under a configurable amount, which sees what a percentage cannot (a cheap-item mountain still earns its listing; an expensive single with a hairline spread does not). The decision now prices the patient side at the band-clamped ask — a listing outside the tradable range is rejected by the server, so an unclamped stale ask overstated what waiting earns — while the insta price stays the real resting bid. The my-listings Top Order Price from a stale cached book is banded the same way.
+A fifth insta-sell rule states the spread idea in absolute coins: what the whole stack would earn by waiting, after tax, insta-sells under a configurable amount — which sees what a percentage cannot, since a cheap-item mountain still earns its listing and an expensive single with a hairline spread does not. The decision now prices the patient side at the band-clamped ask, because a listing outside the tradable range is rejected by the server.
 
 ### A scheduled trial gets a forecast before it starts
 
-A combat trial that has not started needs no live tier or clock to be projected — every trial opens on tier 1 with the whole hour ahead of it, which is exactly the case the ladder walk was built for. The scheduled card now shows "If it started now: ~T*n*" from the party damage estimated off captured loadouts, priced from the game's own tier data, with the coverage caveat. Scheduled skilling trials still refuse honestly: nothing is measured before the start.
+A combat trial that has not started needs no live tier or clock to be projected — every trial opens on tier 1 with the whole hour ahead of it, which is exactly the case the ladder walk was built for. The scheduled card now shows "If it started now: ~T*n*" from the party damage estimated off captured loadouts. Scheduled skilling trials still refuse honestly.
 
 ### The crit-rate tiebreaker the replay promised is now a row
 
-The recorder has kept each fight's crit count since it learned to; the replay never read it. The sim engine now counts landed crits per source (additive `crits` field, merged across worker chunks), and the lab replay compares your real crit share of landed hits against the sim's — the tiebreaker on a soft-hit gap: fewer real crits than predicted says the sim over-credits your crit roll, a matching rate points the gap at the monster's mitigation, and the diagnosis sentence now says which. Results from engines without the counter skip the row rather than comparing against a fabricated zero.
+The recorder has kept each fight's crit count since it learned to; the replay never read it. The sim engine now counts landed crits per source, and the lab replay compares your real crit share of landed hits against the sim's — the tiebreaker on a soft-hit gap. Fewer real crits than predicted says the sim over-credits your crit roll; a matching rate points at the monster's mitigation.
 
 ### Dead scrapers deleted, and starts-with selectors normalized
 
@@ -2231,7 +2233,7 @@ The character-sheet DOM extractors and the loadout-panel scrapers had no callers
 
 ### Zone fights reconcile their endpoints, and the panel states the attribution gap
 
-Every replayed zone fight now carries the lab's endpoint reconciliation: the wave's HP loss plus its self-healing is exactly the gross damage it took, and the signed residual over the counter-gated credited figure says how much the tick attribution missed (bleeds ring no hit counter; the 3 Hz feed merges frames). The recording card shows the gap as a data-quality line — it bounds how far observed DPS under-reads, which is exactly the direction that used to read as sim over-prediction.
+Every replayed zone fight now carries the lab's endpoint reconciliation: the wave's HP loss plus its self-healing is exactly the gross damage it took, and the signed residual says how much the tick attribution missed. The recording card shows the gap as a data-quality line — it bounds how far observed DPS under-reads, which is the direction that used to read as sim over-prediction.
 
 ### Zone recordings and Sim Accuracy exports say what produced them, and can go public
 
@@ -2243,19 +2245,19 @@ The game's stylesheets carry every CSS-module class whether or not its element i
 
 ### Sim Accuracy checks the survival claim
 
-The sim has always predicted deaths and the recorder has always counted them, and nothing compared the two — the number that decides whether a zone is safe to idle was the one output going unchecked. The comparison now has a Deaths row: the sim's death rate billed over the hours actually observed, with a Poisson band (rare counts spread as √expected, not as a percentage), shown only when it has something to say. One real death against a predicted zero is beyond noise by itself.
+The sim has always predicted deaths and the recorder has always counted them, and nothing compared the two — the number that decides whether a zone is safe to idle was the one output going unchecked. The comparison now has a Deaths row: the sim's death rate over the hours actually observed, with a Poisson band, shown only when it has something to say.
 
 ### Zone predictions carry an engine cohort marker
 
-Every stored calibration pair and every Sim Accuracy history row is now stamped with the script version that made its prediction — the lab's cohort lesson applied to zones, where a sim fix mid-ledger used to read as prediction drift. The calibration panel counts pairs from older versions among its combat caveats, and the Past Checks table tags rows from a different version and says why they are not a trend. (One shared `scriptVersion()` helper now replaces the four private copies.)
+Every stored calibration pair and Sim Accuracy history row is now stamped with the script version that made its prediction, so a sim fix mid-ledger no longer reads as prediction drift. The calibration panel counts pairs from older versions among its combat caveats, and the Past Checks table tags rows from a different version and says why they are not a trend.
 
 ### Bulk sell: insta-sell when the spread is a sliver, and banded prices everywhere
 
-A fourth insta-sell rule (`Insta-sell when the spread is under X%`, default off): with the game's finer price increments a listing often earns only a sliver over selling instantly, and inside the threshold that sliver is not worth a listing slot and the queue wait. And every cached price the script serves — all ~65 call sites — is now clamped into the game's tradable range at the one place they all read from (`marketAPI.getPrice`), so a stale snapshot price parked outside the band can no longer print a profit or valuation no order could actually reach. A missing side stays missing: the band never invents a price.
+A fourth insta-sell rule, off by default: with the game's finer price increments a listing often earns only a sliver over selling instantly, and inside a threshold that sliver is not worth a listing slot and the queue wait. And every cached price the script serves is now clamped into the game's tradable range at the one place they all read from, so a stale price parked outside the band cannot print a profit no order could reach.
 
 ### Canaries for the failure modes the health pass could not see
 
-Three blind spots closed. A React-migration canary now checks the fiber root's legacy key — fifteen features climb it for game methods, and a game React upgrade would fail them all to null with no error. The combat-score health check no longer anchors on the same hashed class the feature itself uses (a game rehash blinded check and feature together); the profile selectors are prefix-matched throughout. And the tooltip stack — hover-transient, so unreachable by the startup canary — de-hashes its content selectors and warns once per session if a tooltip renders content the script no longer recognizes, instead of every price injection just stopping.
+Three blind spots closed. A React-migration canary checks the fiber root's legacy key — fifteen features climb it for game methods, and a game React upgrade would fail them all silently. The combat-score health check no longer anchors on the same hashed class the feature itself uses, which blinded check and feature together. And the tooltip stack warns once per session if a tooltip renders content the script no longer recognises.
 
 ### Stale hardcoded class hashes replaced with prefix matches
 
@@ -2267,9 +2269,7 @@ The game renamed the chat sender element `ChatMessage_username` → `ChatMessage
 
 ### Lab fight recorder: a page reloaded mid-fight now watches the fight it lands in
 
-The room-log recorder learned which room it was standing in only from `labyrinth_updated`, which does not arrive after a reload until the attempt ends — so a fight joined by refreshing the page was not recorded as joined late; it was not recorded at all. The recorder now seeds its room context from the init character payload, so that fight is filed with `complete: false` like any other late join.
-
-Also: the cross-bundle globals test now resolves its paths portably, so the suite runs on Windows checkouts.
+The room-log recorder learned which room it was standing in only from a message that does not arrive after a reload until the attempt ends — so a fight joined by refreshing the page was not recorded as joined late; it was not recorded at all. The recorder now seeds its room context from the init character payload, so that fight is filed like any other late join.
 
 ### Lab tick capture file carries its own savedAt
 
@@ -2281,15 +2281,15 @@ A new setting (default off) captures the raw trial combat stream — battle star
 
 ### Trial Abilities panel: every participant's kit and party-wide aura coverage
 
-A new Abilities panel on the trials controls shows each trial participant's equipped abilities as Battle Info sheets are captured, one per player per one-hour trial (tier changes, slot reshuffles and deaths never invalidate a capture — players are keyed by character id). An "Equipped aura coverage" section names the highest equipped copy of each aura and its provider, flags redundant copies, and declares an aura MISSING only once every current participant has an authoritative capture — before that it reads Unknown, so a partial capture can never claim an aura is absent. The coverage-aware snapshot rides in the trial export.
+A new Abilities panel on the trials controls shows each participant's equipped abilities as Battle Info sheets are captured, one per player per hour-long trial — tier changes, slot reshuffles and deaths never invalidate a capture. An "Equipped aura coverage" section names the highest equipped copy of each aura and its provider, and declares an aura MISSING only once every participant has an authoritative capture; before that it reads Unknown.
 
 ### Lab fight recorder: fights measured from their battle-start snapshot, with damage reconciliation
 
-The per-room fight recorder now opens each attempt on the game's `new_battle` snapshot instead of the first compact tick, so the opening hit is counted rather than silently becoming the baseline (a real capture showed 2.5% of monster damage missing this way). Sparse ticks carrying only one side now merge into the retained fight state instead of being skipped (~20% of ticks were dropped from hit attribution). Each attempt stores start HP, monster self-healing, an unattributed-damage residual reconciling summed events against HP endpoints, explicit timing boundaries (duration no longer bills up to 4s of retry delay), and a completeness flag — fights cut off by leaving the room or stopping the feature stay out of duration/DPS aggregates, and the replay check prefers reconciled endpoint totals while reporting how many fights it dropped and why.
+The per-room fight recorder now opens each attempt on the game's own battle-start snapshot instead of the first compact tick, so the opening hit is counted rather than becoming the baseline — a real capture showed 2.5% of monster damage missing this way. Sparse ticks carrying only one side now merge into the retained fight state instead of being skipped. Fights cut off by leaving the room stay out of the duration and DPS aggregates.
 
 ### Lab live clear readout: one steady node instead of once-a-second flicker
 
-The in-header live clear-chance readout treated every sparse combat tick as a full snapshot and tore itself down whenever a tick carried only one side (~1 in 5 ticks), flashing and shifting the header — especially on mobile. It now keeps last-known state per side, updates one persistent node in place with tabular numerals and a preserved width reservation, shows a placeholder during the opening seconds instead of blinking, and resets only on real boundaries (`new_battle`, fight end, leaving, stale timeout, or the setting turning off). The skilling progress readout shares the same node-ensure helper, so a game header rerender restores either readout with its last text instead of blanking it.
+The in-header live clear-chance readout treated every sparse combat tick as a full snapshot and tore itself down whenever a tick carried only one side — about one in five — flashing and shifting the header, especially on mobile. It now keeps last-known state per side, updates one persistent node in place, shows a placeholder during the opening seconds, and resets only on real boundaries.
 
 ### Trial exports: mana history survives refreshes, and exports say what produced them
 
@@ -2305,11 +2305,11 @@ Tick captures now carry a capture id, how the capture ended, ring-buffer drops (
 
 ### Accuracy record: predictions stored at entry, model cohorts, calibration report, sanitized exports
 
-Each recorded lab fight now stores the clear prediction in effect when it happened plus a sim-model marker, so fights judged under the previous sim model are excluded from the headline numbers (with a count) instead of silently pooled — and a live prediction no longer retroactively judges history. The Accuracy tab gains a calibration card: reliability by probability band, Brier score and expected±sigma. Exports carry version/host/full-kit provenance and unrounded figures, and a new Sanitized export hashes names and strips ids for public bug reports.
+Each recorded lab fight now stores the clear prediction in effect when it happened plus a sim-model marker, so fights judged under the previous model are excluded from the headline numbers rather than silently pooled. The Accuracy tab gains a calibration card: reliability by probability band, Brier score and expected±sigma. A new Sanitized export hashes names and strips ids for public bug reports.
 
 ### Lab diagnostics: context-bound captures, honest blind-probe verdicts, harness statistics
 
-The uptime harness now refuses a held capture whose monster, room level or build fingerprint differs from the sim it would compare against, saying which field differs. Blind-probe effects the sim produced but the clicked snapshot happened not to show read as "not active in snapshot" instead of a finding, probes union three runs, and integer-multiple magnitude gaps read as stack differences. Harness rows gain per-hit means and sample counts, rows under five real casts read inconclusive, a mean-damage gap now fails a row that shares alone would pass, DoT rows compare per-tick on both sides (sim tick counts no longer inflate cast shares), and the header states fights and excluded partials.
+The uptime harness now refuses a held capture whose monster, room level or build fingerprint differs from the sim it would compare against, saying which field differs. Blind-probe effects the sim produced but the clicked snapshot happened not to show read as "not active in snapshot" instead of a finding. Harness rows gain per-hit means and sample counts, and rows under five real casts read inconclusive.
 
 ### Trial Party DPS panel sits beside the final boss in live fights
 
@@ -2317,7 +2317,7 @@ In the guild In Progress combat view the Party DPS/forecast block now joins the 
 
 ### Uptime harness: retries read as separate attempts, measured from their real start
 
-A tick capture spanning retries used to read as one long fight — the `new_battle` boundary wiped the very baselines the fight-splitter keyed on, and the server reuses battle ids so they cannot segment. Each `new_battle` now opens its own attempt and seeds the counters, health and prepared-ability from its full start snapshot, so the opening hit is measured instead of silently spent as a baseline. A capture that began mid-fight keeps that segment as a flagged partial, excluded from the aggregate; validated against a real three-retry capture (2 losses + 1 win, each attempt's duration and outcome correct). The harness also now refuses a capture from a different room level than the sim it would compare against.
+A tick capture spanning retries used to read as one long fight, because the battle-start boundary wiped the very baselines the fight-splitter keyed on. Each battle start now opens its own attempt and seeds its counters from the full start snapshot, so the opening hit is measured instead of spent as a baseline. A capture that began mid-fight is kept as a flagged partial, excluded from the aggregate.
 
 ### Recorded test fixtures regenerated with synthetic data
 
@@ -2325,7 +2325,7 @@ Recorded fixtures and test literals now use synthetic names, ids and placeholder
 
 ### Player-build check: the offense fold no longer double-applies persistent buffs
 
-The diagnostic folded your whole live buff map into the sim column, re-applying persistent ratios (the guild damage buff, the labyrinth combat-damage upgrade) the sim's build already carries — a ranged max hit read 1,029 against the game's 895. The fold now runs as a ratio against your buff map at fight start (kept from `new_battle`), so each effect counts exactly once and only what appeared, grew or expired mid-fight moves the column. The stat-check history also restores under its full recorded key again — an older restore collapsed every distinct buff-state snapshot of one monster/room down to the oldest and then saved the loss.
+The player-build check folded your whole live buff map into the sim column, re-applying persistent ratios the sim's build already carries — a ranged max hit read 1,029 against the game's 895. The fold now runs as a ratio against your buff map at fight start, so each effect counts exactly once. The stat-check history also restores under its full recorded key again.
 
 ### Lab capture button: live tick count, and no more silently lost captures
 
@@ -2333,7 +2333,7 @@ The capture button now shows the running tick count while recording, and a captu
 
 ### Lab sim: full monster abilities everywhere, honest attempt counting, and no double ticks
 
-Four structural fixes from an external calibration review, each verified against the code before changing it. The upgrade advisor (baseline, every candidate, community buffs, all-fights, combination check) and the live attempt-bar replay were still simulating monsters stripped of their tier-gated kit — stun, shred, self-buffs — while the tile badges and calibration replay simmed the full kit; full abilities are now the default for every labyrinth sim (persisted advisor results from before the change are discarded rather than compared against). Attempt counting now tracks resolved fights explicitly, so a capped run that ended on the killing blow no longer reports the impossible "100.4% clear". The websocket hook was delivering every message on its skip-dedup list twice (a getter/mark ordering bug) — raw tick captures were half duplicates; fixed at the hook, with capture-side dedup and a duplicates count in the export as a backstop. The live "clear from here" replay now wears the same ~ as the extrapolated estimate, since it restores health and the clock but not cooldowns or buffs. Also: the replay check no longer subtracts a restart idle the lab engine never inserts (it read sim dps a few percent high), and tick captures carry version/host metadata.
+The upgrade advisor and the live attempt-bar replay were still simulating labyrinth monsters stripped of their tier-gated kit — stun, shred, self-buffs — while the tile badges simmed the full kit. Full abilities are now the default for every labyrinth sim. Attempt counting tracks resolved fights explicitly, so a capped run no longer reports the impossible "100.4% clear". And the websocket hook was delivering some messages twice; fixed at the hook.
 
 ### Trial damage panel: the measured number next to the game's figure
 
@@ -2341,7 +2341,7 @@ Game-stats rows showed only how far the live measurement ran from the game's tot
 
 ### Notifications: your own skill milestones, and reaching a Time-to-Level target
 
-Two new opt-in notifications. One fires on the skill milestones the game broadcasts to guild chat ("… has reached level …" at 100, 105, and so on — not every level), keyed off that broadcast itself and matched to your character, so it needs a guild and guild chat coming through. The other fires when a skill reaches the target level you set in the Time to Level tile — the goal you chose, not the tile's implicit "next level" — once, re-arming when you pick a new target.
+Two new opt-in notifications. One fires on the skill milestones the game broadcasts to guild chat — level 100, 105, and so on, not every level — matched to your character, so it needs a guild and guild chat coming through. The other fires when a skill reaches the target you set in the Time to Level tile, once, re-arming when you pick a new target.
 
 ### Startup: a clear message when the code libraries can't load (usually GitHub)
 
@@ -2353,7 +2353,7 @@ A swap to path boots (Pathbreaker/Pathfinder/Pathseeker, base or refined) was al
 
 ### Guild trials: a loose next-tier estimate for trials you didn't join
 
-Trials you aren't in never stream a live fill bar, so they used to read "only trials you join". The Trials tab still states each card's running total points, which is now sampled over time to give a rough fill rate (pts/s), and — once the card has shown a couple of tier badges — a loose "next tier in ~Xm" and "~N more tiers before it ends". A whole-guild average off stated totals, not your own contribution, so keep the Trials tab open a few seconds for it to settle.
+Trials you are not in never stream a live fill bar, so they used to read "only trials you join". The Trials tab still states each card's running total points, which is now sampled over time to give a rough fill rate, and — once the card has shown a couple of tier badges — a loose "next tier in ~Xm". A whole-guild average off stated totals, not your own contribution.
 
 ### Lab diagnostics: stop two noise sources from crying wolf on Giant Mantis
 
@@ -2373,7 +2373,7 @@ A tile shrouded ahead of the frontier is free to walk over but was left blank wh
 
 ### Labyrinth path: an isolated cleared tile is no longer a free start
 
-A tile shrouded deep in the floor clears without you having walked to it, so it sits cut off from the entrance's cleared region. The planner treated every cleared tile as a free starting point, so the exit route "teleported" onto such a tile and skipped the rooms you'd actually fight through to reach it. Sources are now only the cleared ground flood-connected to the entrance; an isolated clear stays free to walk through once reached, but the rooms leading to it are costed.
+A tile shrouded deep in the floor clears without you having walked to it, so it sits cut off from the entrance's cleared region. The planner treated every cleared tile as a free starting point, so the exit route "teleported" onto such a tile and skipped the rooms you would actually fight through. Only cleared ground connected to the entrance counts as a source now.
 
 ### Labyrinth path: a just-shrouded tile no longer routes back through itself
 
@@ -2385,7 +2385,7 @@ The sim's player build is snapshot at fight start, before your precision self-bu
 
 ### Lab replay: two honesty fixes to the sim-vs-real comparison
 
-Both made the sim look weaker than it fights. (1) Your observed damage output now takes the larger of the tick-summed drops and the monster's endpoint HP loss — the 3 Hz feed misses hits that merged into one frame, and a monster that doesn't regen (most) has an exact HP-lost figure. (2) The sim's predicted per-fight rates (dps, damage taken, fight length) now divide by _in-fight_ seconds, excluding the 3s restart interval the engine inserts between fights — matching the observed side's pure fight duration.
+Two honesty fixes to the lab replay's sim-versus-real comparison, both of which had made the sim look weaker than it fights. Your observed damage output now takes the larger of the tick-summed drops and the monster's endpoint HP loss, since the feed misses hits that merged into one frame. And the sim's predicted per-fight rates divide by in-fight seconds, excluding the restart interval.
 
 ### Tick capture: stop when the fight leaves its monster
 
@@ -2397,7 +2397,7 @@ The skip-threshold table's clear-% badges simmed the _live run's_ room level for
 
 ### Lab sim: monsters open abilities at half-cooldown, fixing over-estimated clear rates
 
-The sim gave a labyrinth monster a _random_ first-cast delay (`[cd/2, cd)`, averaging 0.75×cooldown), but tick captures show the real game opens each ability at exactly **half its cooldown**, deterministically — Cyclops's specials at ~10s on a 20s cooldown, Toughness at ~15s on 30s, its guardian aura at 60s on 120s. That extra ~quarter-cooldown of delay robbed the monster of resistance-buff uptime (Toughness ≈ 48% sim vs ≈ 68% real), so the sim under-mitigated it, over-credited your damage per hit, and **over-estimated the clear rate** — the Cyclops bug. Labyrinth monsters now open at cd/2; zone sims keep the random de-sync a pack needs. Thanks to a Fable deep-dive for localizing it.
+The sim gave a labyrinth monster a random first-cast delay, but tick captures show the real game opens each ability at exactly half its cooldown — the Cyclops's specials at 10s on a 20s cooldown. That extra delay robbed the monster of resistance-buff uptime, so the sim under-mitigated it and over-estimated the clear rate. Labyrinth monsters now open at half cooldown; zone sims keep the random de-sync a pack needs.
 
 ### Settings: a "What's new" button to reopen the update notes
 
@@ -2409,15 +2409,15 @@ A monster's self-buffs and debuffs (Toughness, a guardian aura, a smoke burst) t
 
 ### Lab recorder: keep your crit count per fight
 
-The attribution decoder already worked out how many of your swings critted, but the recorder threw it away. Now each recorded attempt keeps `playerCrits`, so a replay export carries your real crit rate. That's the tie-breaker for a damage-per-hit shortfall: a real crit rate below what your crit buffs imply means the sim over-credits crits, while a matching one points the soft-hit gap at the monster's mitigation instead. Null on older recordings, so a rate reads as "unknown" rather than "zero".
+The attribution decoder already worked out how many of your swings critted, but the recorder threw it away. Each recorded attempt now keeps the count, so a replay export carries your real crit rate — the tie-breaker for a damage-per-hit shortfall. Older recordings read as "unknown" rather than "zero".
 
 ### Uptime harness: stop mislabelling auto-attacks as the last special
 
-The real-vs-sim attribution held the last special the monster cast and, because the payload only names a special on its cast tick (marking ordinary swings with `isAutoAtk`), never let go of it — so every auto-attack after a special inherited that special's label. The "real" column then reported special cast-shares the cooldowns physically can't produce (e.g. cyclops autoAttack at ~47% when the 20s cooldowns floor it near ~60%), which sent a bug hunt chasing a sim cadence problem that wasn't there. Auto-attack ticks now reset the label.
+The real-versus-sim attribution held the last special the monster cast and never let go of it, so every auto-attack after a special inherited that special's label. The "real" column then reported cast shares the cooldowns physically cannot produce, which sent a bug hunt chasing a sim cadence problem that was not there. Auto-attack ticks now reset the label.
 
 ### Monster Stat Check: export the player build, and a copy-all button
 
-The discrepancy-log export now carries the player-build (you vs sim) result and the live buffs behind it, not just the monster side — a monster can match perfectly while the sim builds _you_ wrong, and that half was missing from the export. Also surfaced the copy button (it was built but never mounted) and made it copy the whole session as text — player build plus every monster checked — so a bug report is one paste instead of several screenshots.
+The discrepancy-log export now carries the player-build result and the live buffs behind it, not just the monster side — a monster can match perfectly while the sim builds you wrong, and that half was missing. The copy button is also surfaced at last, and copies the whole session as text, so a bug report is one paste instead of several screenshots.
 
 ### Alchemy pins: smaller, less intrusive pin badges on touchscreens
 
@@ -2425,49 +2425,47 @@ On a touchscreen every item tile shows its pin (there's no hover to reveal it), 
 
 ### Labyrinth path: revealing more of the floor now ranks above torches
 
-The route planner treated "uncover more unknown rooms" as a sub-torch tiebreak that could never justify a single extra step, so it would skip a one-step detour that reveals a new room — even though an unknown room may hide a chest the planner can't yet see. Reveals now rank second, above torches (a shroud still trumps everything): the min-shroud base route is compared against routes that detour through one revealing room, and whichever uncovers the most _unique_ unknown rooms — then the fewest torches — wins. One detour at a time, so it opens the floor up without carpet-revealing, and it never spends an extra shroud to reveal. This is done above the shortest-path cost, since a single Dijkstra cost can't rank reveals over torches without negative edges.
+The route planner treated "uncover more unknown rooms" as a sub-torch tiebreak that could never justify a single extra step, so it skipped a one-step detour revealing a new room — which may hide a chest the planner cannot yet see. Reveals now rank second, above torches, with a shroud still trumping everything. One detour at a time, so it opens the floor up without carpet-revealing.
 
 ### Lab Sim: fold guild-shrine max HP / MP buffs into the sim player
 
-The combat engine mapped ~35 buff types onto stats but never mapped `/buff_types/max_hitpoints` or `/buff_types/max_manapoints`, so the guild shrine's +2% max-HP / +2% max-MP bonuses (and any other source of those types) were silently dropped — the HP/MP formula ran on the equipment ratio alone. The player build check surfaced it: max HP 2295 live vs 2250 sim, the whole gap in the ratio term. `updateCombatDetails` now folds both buff types (ratio and flat) into the max HP/MP formulas, applied inline so a repeated recompute can't re-accumulate them. Small on its own; it also means guild-shrine HP/MP no longer skews clear-chance predictions.
+The combat engine mapped about 35 buff types onto stats but never mapped max hitpoints or max manapoints, so the guild shrine's +2% bonuses were silently dropped. The player build check surfaced it: max HP 2295 live against 2250 simmed, the whole gap in that term. Both are folded in now, which also means guild-shrine HP and MP no longer skew clear-chance predictions.
 
 ### Labyrinth path: re-sync cleared tiles from the live grid before routing
 
-The route calc read cleared-tile state from the last `labyrinth_updated` websocket snapshot and only ever synced from the game's live client grid once (the seed bailed if a grid already existed), so after seeding it trusted that snapshot forever. A dropped `labyrinth_updated` — common on a throttled/backgrounded mobile tab — left a since-cleared tile still reading uncleared, and the planned route re-entered a room already finished. `runPathCalculation` now refreshes `isCleared` from the live React grid (authoritative even when a WS message was missed) before pathing, and again before the post-sim second pass. Fixes the "lab calc doesn't know I cleared tile 2" report; desktop was unaffected because its socket rarely drops the message.
+The route calculation read cleared-tile state from the last labyrinth snapshot and only ever synced from the game's live grid once. A dropped message — common on a throttled or backgrounded mobile tab — left a since-cleared tile still reading uncleared, and the planned route re-entered a room already finished. It now refreshes from the live grid before pathing. Desktop was unaffected, because its socket rarely drops the message.
 
 ### Lab Sim: uptime harness now attributes real incoming damage from the damage counter
 
-The harness's real side used to read the monster's attack counter against the player's **health drop**, which the tick feed corrupts: a cast ability's damage lands a tick or two after the swing (so the swing tick read as a miss and the damage piled onto whatever was casting when it finally showed), regeneration and a monster-"gone" render gap (health snapping to max) invented drops, and a 2s-cast ability's hit got mis-credited to the filler. On Salamander the real smoke_burst share swung 4%→26% across fights while the sim held steady — a diagnostic artifact, not a sim gap. It now detects an incoming attack from the **player's `dmgCounter` rising** (immune to regen, exact when the health snapshot lags), pairs each resolution to the monster's swing through a FIFO so a delayed hit lands on the ability that cast it, treats a counter rise with no pending swing as damage-over-time, and resets all baselines across a monster-gone gap so a stale health reading can't inflate the next hit — the same counter-based attribution the damage panel uses, pointed at the monster→player direction. Falls back to health drops when a capture lacks the counter. `compareIncoming` now also reports `castShareGap`, so a matching cast% with a damage gap reads as a per-cast magnitude issue rather than cadence.
+The uptime harness's real side read the monster's attack counter against your health drop, which the tick feed corrupts: a cast ability's damage lands a tick or two after the swing, regeneration and render gaps invent drops, and a slow-cast ability's hit gets credited to the filler. It now detects an incoming attack from your damage counter rising and pairs each resolution to the swing that caused it.
 
 ### Lab Sim: `Toolasha.Debug.uptimeTrace()` — raw tick trace of the armed capture
 
-Companion to the uptime harness for auditing its **real-side attribution**. Prints each captured tick — the monster's prepared `abilityHrid`, its attack counter, the player's HP, and the HP drop — with attack-counter rises flagged, so you can see where a hit actually lands relative to the ability label. The harness names a real hit by the previous tick's `abilityHrid`, which mis-credits an ability whose damage lands as the label flips to the next cast (e.g. a 2s-cast nuke); this trace makes that offset visible.
+A companion to the uptime harness for auditing its real-side attribution. It prints each captured tick — the monster's prepared ability, its attack counter, your HP and the drop — with attack-counter rises flagged, so you can see where a hit actually lands relative to the ability label. The harness names a real hit by the previous tick's label, and this makes that offset visible.
 
 ### Lab Sim: `Toolasha.Debug.monsterAbilityData()` — dump a monster's raw ability kit
 
-Read-only console diagnostic for tracing a cadence gap (the sim casting an ability more or less often than the real fight). Given a monster hrid (or the last tick-capture's monster), it prints the ability array **in cast order** — which is the sim's cast priority — with each ability's cooldown, its `defaultCombatTriggers` (the gates that decide when it fires), the buff uniqueHrids it applies, its per-effect damage shape (element, ratios, DoT — so a magnitude gap can be told from a cadence gap), and any keys on the monster's ability entry the sim ignores. Pairs with the uptime harness: the harness localises which ability is over/under-cast, this shows the data that drives it.
+A read-only console diagnostic for tracing a cadence gap — the sim casting an ability more or less often than the real fight. Given a monster, it prints the ability array in cast order, which is the sim's cast priority, with each ability's cooldown, the triggers that gate it, the buffs it applies and its per-effect damage shape. Pairs with the uptime harness, which localises which ability is over- or under-cast.
 
 ### Lab Sim: player build check — the sim's build of your character next to your live stats
 
-Closes the player-init gap. Every other check verifies how the sim builds the _monster_; none looked at how it builds _you_ — the gear, ability levels and persistent buffs (teas/community/guild/house) that decide your damage and mitigation. A **"Check my build"** button in the Monster Stat Check panel runs a one-fight sim probe and reads back the sim player's resolved `combatDetails` at the one faithful moment (first combat start, after `generatePermanentBuffs()` + `reset(0)`, before any transient combat buff), then diffs it field-by-field against your live in-game stats from clicking yourself in combat. Both sides carry the persistent buffs, so a `⚠ off` row is a real build difference — a gear, ability-level or buff-init gap — not a "which side has the buff?" question. Reads at fight start, so a transient combat buff (fury) or a monster debuff on you shows as an expected gap. Needs the same flag-gated capture hook pattern as the blind sim, off for every normal sim (`combat-simulator.js` snapshots the player build only when the probe asks). When Max HP disagrees by more than 1%, the check logs the term-by-term breakdown (stamina level, flat HP from gear, % HP buff) plus your active buff list to the console, so the differing input — and the buff behind it — is visible rather than just the total.
+Every other check verifies how the sim builds the monster; none looked at how it builds you — the gear, ability levels and persistent buffs that decide your damage and mitigation. A new "Check my build" button runs a one-fight probe and diffs the sim player's resolved stats field by field against your live in-game stats. Both sides carry the persistent buffs, so an "off" row is a real build difference.
 
 ### Lab Sim: uptime harness — the monster's incoming damage, per ability, real vs sim
 
-Closes the last diagnostic gap: **timing**. The stat check and blind sim confirm the sim's stats and buff production; neither can see how often a monster casts or how long its buffs stay up — which is what a "monster deals more damage than predicted" gap comes down to. `Toolasha.Debug.uptimeHarness()` decomposes the monster's incoming damage per ability from a tick capture (attack-counter rises named by the ability prepared the tick before; health falling with no attack is damage-over-time) and compares it against the sim's own per-ability attack histogram (already in `SimResult.attacks`, no engine change). The comparison is unit-free — cast share, damage share, mean damage per cast — so a `sim-under` on one ability points straight at a cadence or buff-uptime gap for that ability. Run it from a **"Run uptime harness"** button in the Monster Stat Check panel (or `Toolasha.Debug.uptimeHarness()`): with no capture yet for that monster the button **arms a tick capture on the spot** — fight the monster, then click again and the per-ability table renders in place. No separate Capture step. The copy button and the panel export include the result.
+The stat check and blind sim confirm the sim's stats and buff production; neither can see how often a monster casts or how long its buffs stay up — which is what a "monster deals more damage than predicted" gap comes down to. A new uptime harness decomposes the monster's incoming damage per ability from a tick capture and compares it against the sim's own histogram. With no capture yet, the button arms one on the spot.
 
 ### Monster stat check: the game's live stats next to the sim's
 
-New opt-in diagnostic (off by default, under Combat Features). With it on, clicking a monster in combat opens a floating panel that reads the game's live combat stats from the `battle_unit_fetched` message and compares them field-by-field against what the combat sim computes for the same monster — armour, the three resistances, evasion and accuracy ratings, max hit, max HP. Room level is backed out of the unit's scaled defence so the sim scales identically. This is the tool that would have caught the resistance-wipe bug on sight.
+A new opt-in diagnostic: clicking a monster in combat opens a panel comparing the game's live stats against the sim's — armour, resistances, evasion, accuracy, max hit and max HP.
 
-- **The sim is built with the unit's active effects applied, so the comparison is buffed-against-buffed.** The game's `combatBuffMap` records are the engine's own buff shape, so the same self-buffs (Toughness, elusiveness) and player shreds (pestilent shot, puncture) fold into the sim's accuracy, evasion, damage, armour and resistance ratings the way the game's did. With effects on both sides every row should match, and a `⚠ off` means the sim genuinely disagrees — a real modelling gap, not a "which side has the buff?" question. A **Sim: buffed / baseline** toggle switches the sim column to the unbuffed baseline instead, where each row is read against the active effects (`↑ buff` / `↓ debuff`) so the raw effect the game applied is visible — useful for spotting a base-stat or scaling error the buffed view would mask. Both views are computed per click and travel with the history entry.
-- **The panel grows to fit, resizes, and copies.** Its height now grows to show the whole readout without a scrollbar (capped just under the viewport), it is resizable from the corner, and a ⧉ button copies the on-screen comparison — stat rows, active effects and the blind-sim diff — as plain text for pasting.
-- **A "Run blind sim" button checks whether the sim produces the effects at all.** The buffed comparison verifies the sim's stat math _given_ the effects; this asks the deeper question — fed only the monster and its room level (never the live buffs), does the sim independently generate them? It runs a short blind fight in the sim worker with buff-capture on, then lists every effect either side has: `⚠ missing` (the game has it, the blind sim never produced it — an unmodelled ability or one its rotation never cast), `≠` different strength, `+` sim-only (usually timing), or a match. This is what catches "the sim never applies this monster's self-buff / your debuff", which the stat rows alone cannot. Needs a tiny, flag-gated capture hook in the combat engine (`CombatUnit.addBuff`) that is off for every normal sim.
-- **The log is now a labelled corpus: every distinct buff state is kept, not just the latest.** Each click is a deterministic test of the sim's stat arithmetic — the monster, the exact effects up, and the game's resolved totals — so keying the log by the effect set (not just monster+room) retains the monster unbuffed, part-stacked and fully stacked, each auto-diffed. The Cyclops-class bug (a buff wiped from the stat total) then flags on the first buffed sample, hands-free, and the exported log doubles as a regression fixture. An in-engine invariant test backs this up: `updateCombatDetails` must be idempotent and reconstructive (a fresh rebuild equals the incrementally-buffed unit).
-- **Session log you can page through, with discrepancies surfaced first.** Every clicked monster's comparison is kept for the session, deduped by monster, room level and effect set, and capped. A nav bar pages through them — ▲/▼ buttons or, while the pointer is over the panel, the ↑/↓ arrows — ordering the ones with a mismatch first (newest first), then the clean views, so paging lands on the problems before anything else. A `⚠ N` count, a red title, and the position/"how long ago" readout make a discrepancy view obvious; a fresh click jumps back to live. A **Show: all / ⚠ only** toggle is a non-destructive filter — it changes what you page through, never what is stored, so switching it can't lose views — and the nav controls stay visible even when the log is empty, so a filter can never strand you. **Clear** wipes the log; ⭳ downloads the log plus the current snapshot as JSON. The log and the view choices **persist across refreshes** (in the labyrinth store), so a survey carries over between sessions. `Toolasha.Debug.monsterStatCheck()` dumps the last comparison; `Toolasha.Debug.monsterStatCheckLog()` returns the whole log.
+- The sim is built with the unit's active effects applied, so an "off" row is a real modelling gap.
+- A "Run blind sim" button asks whether the sim produces those effects at all.
+- Every distinct buff state is kept and paged through, discrepancies first.
 
 ### Lab Sim: labyrinth monsters keep their resistance/armour self-buffs
 
-The room-level rescale of a labyrinth monster's armour and resistances reassigned them from base stats, wiping any resistance/armour **buff** the parent had folded in — so a monster's self-buffs (the Cyclops's Toughness and Guardian Aura) never mitigated anything and the sim over-credited your damage per hit (measured ~24% high, hit rate spot-on — a mitigation gap, not accuracy). The rescale now re-applies those buff boosts on top of the scaled base. Labyrinth clear-chance predictions for monsters that buff their own defence will drop toward reality; monsters without such buffs are unchanged.
+The room-level rescale of a labyrinth monster's armour and resistances reassigned them from base stats, wiping any resistance or armour buff the parent had folded in — so a monster's self-buffs never mitigated anything and the sim over-credited your damage per hit by about 24%. The rescale now re-applies those boosts on top of the scaled base. Predictions for monsters that buff their own defence will drop toward reality.
 
 ### Lab Sim: the Accuracy Reset button now also clears the recorded fights
 
@@ -2475,7 +2473,7 @@ Reset promised to "throw away every recorded fight" but only cleared the clear-c
 
 ### Lab Sim: calibration replay splits the damage gap into accuracy vs mitigation
 
-The passive fight recorder now keeps your per-fight swing counts (hits and misses, from the same `dmgCounter` the wire already sends), so the calibration replay can decompose a "sim over-credits your damage" verdict into **hit rate** (accuracy vs the monster's evasion) and **damage per hit** (what each landed hit does after mitigation). When one is off, the diagnosis now names it — fewer hits than predicted points at an unmodelled evasion buff (Guardian Aura); softer hits point at an unmodelled resistance/armour buff (Toughness). Both rates read off the sim's own attack tally, so no engine change. Older recordings without swing counts simply skip the two new rows.
+The passive fight recorder now keeps your per-fight swing counts, so the calibration replay can split a "sim over-credits your damage" verdict into hit rate and damage per hit. When one is off, the diagnosis names it: fewer hits than predicted points at an unmodelled evasion buff, softer hits at an unmodelled resistance or armour buff. Older recordings simply skip the two new rows.
 
 ### Lab Sim & Find Max Level build the monster with its full ability kit
 
@@ -2483,34 +2481,30 @@ The interactive **Lab Sim** run and **Find Max Level** were fighting a bare auto
 
 ### Guild trials: forecast box beside the fight, and the damage feed sees the whole wave
 
-- On the In Progress fight view a multi-enemy wave now attaches its forecast box the same way a single boss does — full-width below the enemy grid — instead of a narrow mirrored cell or an absolutely-positioned box that overflowed the panel and added a horizontal scrollbar. (A single boss is a one-column grid that already took the below-the-grid path; a wave is a multi-column grid, which diverged into the tile-row logic.)
-- The battle-feed path is no longer single-enemy: the spectated pool (`_readPool`) and the per-tier boss sheet now sum every enemy in a wave, so the stream-fed clear/kill-time and the damage ceiling reflect all of them. This fixes the Trial Swarm remaining bar (four monsters, previously read as one) and stops the false "measured damage runs over the bosses' combined health" note on multi-enemy waves.
+- On the In Progress fight view a multi-enemy wave now attaches its forecast box the way a single boss does — full width below the enemy grid — instead of an absolutely-positioned box that overflowed the panel.
+- The battle-feed path is no longer single-enemy: the spectated pool and the per-tier boss sheet now sum every enemy in a wave, so the clear and kill-time reflect all of them. This fixes the Trial Swarm remaining bar.
 
 ### Guild trials: multi-enemy combat waves are priced as one HP pool
 
-A combat trial that fields several enemies under one name — two "Trial Badger"s, say — was mishandled: the two cards collided on their name-based key, so the record kept only one badger's health bar and the clear was priced off half the wave. That made "Kill in", "Next tier HP" and the tier pace optimistic (the current tier read at ~1/N of its real HP) while the forecast's own wave total, summed from client data, disagreed. The same-named cards are now folded into one wave tile with their health bars summed before sampling, so the measured remaining, the rate and the party DPS all describe the whole wave and line up with the forecast.
+A combat trial that fields several enemies under one name — two "Trial Badger"s, say — was mishandled: the two cards collided on their name-based key, so the record kept only one badger's health bar and the clear was priced off half the wave. That made "Kill in", "Next tier HP" and the tier pace optimistic. Same-named cards are now folded into one wave tile with their health bars summed.
 
 ### Guild trials: overlay appears fast on the Trials and In Progress tabs, and each pass is cheaper
 
-Those two tabs were the slowest to show Toolasha's forecast boxes — up to ~5s. Switching to them fires no socket event, so first paint waited on a trailing-edge debounced DOM observer, and on the In Progress tab that debounce **starved**: the live bar/countdown re-armed the 100ms timer without pause so it never fired, falling back to the 5s sampler. Added an opt-in `maxWait` to the shared DOM observer's debounce (bounds how long it may defer under continuous churn) and set it to 400ms for the trials handler, so the tab now draws within that of opening whatever the churn. `maxWait` defaults to 0 (unbounded) for every other handler, so nothing else changes.
-
-The render pass itself is lighter too: the whole-panel element scan for trial cards now runs its two ancestor-climbing exclusions only on the handful of candidates instead of every element; the panel's text is walked once per pass and shared between the status and personal-stat readers rather than twice; and a forecast box in its shared row skips the per-box `getComputedStyle` squash probe (a wrapping row can't squash a card), leaving that check for the blocks that actually live in the game's own layout. That last one, plus the faster cadence, also shortens the moment where the In Progress unit icon is briefly squished before settling.
+The Trials and In Progress tabs were the slowest to show the forecast boxes — up to five seconds — because switching to them fires no socket event, and on the In Progress tab the live countdown kept re-arming the debounce so it never fired. A bounded deferral now draws the tab within 400ms whatever the churn. The render pass itself is lighter too.
 
 ### Guild trials: tiles stay in a row with boxes beneath, cleaner notes, and a scheduled start alert
 
-- The per-trial forecast boxes no longer sit in the grid cell beside each tile: each section now gathers its boxes into one full-width row (deferred past the tiles) that mirrors the tile grid's own columns, so the boxes line up in a row directly under the matching tiles — four across for skilling, two for combat. Fixes both the boxes landing beside the tiles and the flicker where they briefly appeared underneath and then jumped back — the layout now lives on a panel-owned row the per-block style reset can't wipe.
-- Dropped the "No Treasury level seen" note — a guild with no Treasury levels bought adds nothing to the token figures, so its absence is nothing to flag.
-- The **trial-starting** alert now anchors on the start instant (seen time + time-till-start) and arms a timer for the lead moment, so it still fires if the panel is closed after the cycle is glimpsed once — previously the panel had to stay open across the whole lead window.
+- The per-trial forecast boxes no longer sit in the grid cell beside each tile: each section gathers its boxes into one full-width row mirroring the tile grid's columns, so they line up directly under the matching tiles. This also fixes the flicker where they appeared underneath and jumped back.
+- The trial-starting alert now anchors on the start instant and arms a timer, so it still fires if the panel is closed after the cycle is glimpsed once.
 
 ### Lab Sim combat crates default to equipped too; recommendation & breakdown tooltips spell out the working
 
-- The **combat** sim's tea/coffee/food dropdowns had the same hardcoded-Expert bug as the skilling tab — so a fight was scored with an Expert coffee crate's **+15 combat levels** the character may not own. They now default to the equipped crates (manual pick still opts out), same as skilling.
-- The Automation-tab **recommendation badge** now has a full hover breakdown for skilling rooms — the room the recommended trigger maps to (and _why_ it's `trigger − 1` above you), the effective level, the success formula, the clear, and the crate tiers — matching the Lab Sim's row breakdown.
-- Both breakdowns now **name the crate tiers** driving the numbers and explain the `− 1` in words (a room is skipped once it's ≥ trigger above you, so the hardest you still fight is one below).
+- The combat sim's tea, coffee and food dropdowns had the same hardcoded-Expert bug as the skilling tab, so a fight could be scored with an Expert coffee crate's +15 combat levels the character may not own. They now default to the equipped crates.
+- The Automation tab's recommendation badge gains a full hover breakdown for skilling rooms — the room, the effective level, the success formula, the clear and the crate tiers.
 
 ### Lab Sim skilling: crates default to what you have equipped, plus a per-row calc breakdown
 
-The Skilling tab's tea/coffee/food dropdowns were hardcoded to **Expert**, so the sim scored a room against Expert crates the character may not own while the room level itself came from the equipped crate — the two halves disagreed, and the sim's clear read higher than the Automation tab's recommendation for the same skip trigger (e.g. Recommend +63 but the sim needing +67 to hit 30%). The dropdowns now default to the equipped crates (a manual pick still opts out for exploring). And every skilling row now has a hover breakdown showing the working: `Room = skip level + trigger − 1`, `Eff level = base + buffs`, the level gap, the success formula, and the clear — so a mismatch is visible at a glance. (Reported by Doobs.)
+The Skilling tab's tea, coffee and food dropdowns were hardcoded to Expert, so the sim scored a room against crates the character may not own while the room level itself came from the equipped crate — and the sim's clear read higher than the Automation tab's recommendation for the same trigger. They now default to the equipped crates. Every skilling row also gains a hover breakdown showing the working.
 
 ### Craft arbitrage adapter: expose `skipProcessing` and `timeCostPerHour`
 
@@ -2518,8 +2512,8 @@ The Skilling tab's tea/coffee/food dropdowns were hardcoded to **Expert**, so th
 
 ### Labyrinth auto-calc: stop the bar looping, and move the toggle inline
 
-- Auto-calc no longer re-runs the whole floor (refilling the progress bar) every time the game repaints the grid or our own badge draw trips the observer. An auto pass is now gated on a fingerprint of the rooms + gear + precision; when nothing that changes a result has changed, it silently restores any badges a re-render wiped from cache instead of re-simming.
-- The **Auto-calc** toggle now sits inline with the other controls instead of stranded on its own row below the full-width progress bar.
+- Auto-calc no longer re-runs the whole floor, refilling the progress bar, every time the game repaints the grid. A pass is gated on a fingerprint of the rooms, gear and precision; when nothing that changes a result has changed, it restores any badges a re-render wiped from cache instead of re-simming.
+- The Auto-calc toggle now sits inline with the other controls.
 
 ### Fix: the labyrinth "Enable auto-calc" button actually toggles the setting
 
@@ -2547,23 +2541,23 @@ The clear-chance tile badge ("100% 19s") no longer spills out of its coloured bo
 
 ### Guild trials: capture the game's own end-of-trial stats to check the measurement
 
-Toolasha now reads the game's authoritative per-member totals off the wire (`guild_trial_stats_updated` — exact damage, healing and pre-mitigation damage taken) and keeps them beside its own live measurement so the two can be compared. The comparison is persisted per encounter and survives a refresh until the week's ladder rolls over, and it rides along in the Export (`statsComparison`: measured vs reported, with the delta). Members are named through a character-id map accumulated across every tier, so the stats are still attributable after the per-wave roster has re-dealt.
+Toolasha now reads the game's authoritative per-member trial totals off the wire — exact damage, healing and pre-mitigation damage taken — and keeps them beside its own live measurement so the two can be compared. The comparison is persisted per encounter, survives a refresh until the week rolls over, and rides along in the Export.
 
 ### Fix: In Progress tab knows its tier right after a mid-trial refresh
 
-On the In Progress fight view, the trial's stated tier is now taken straight from the live spectator stream, so a mid-trial refresh no longer drops the card to "tier 1 / banked nothing" until you visit the Trials tab. The stream states the tier outright; it's applied as a floor (tiers only climb, so it can only raise the count) and, being this render's reading of a currently-flowing stream, can't go stale the way the persisted tier could. Previously the fight-view card ignored it because it already carried the boss bars, and fell back to the lagging badge.
+On the In Progress fight view, the trial's stated tier is now taken straight from the live spectator stream, so a mid-trial refresh no longer drops the card to "tier 1 / banked nothing" until you visit the Trials tab. It is applied as a floor, since tiers only climb, and being a reading of a currently-flowing stream it cannot go stale the way the persisted tier could.
 
 ### Guild trials: drop the partial-tier payout notes, shorten the forecast text
 
-The two partial-tier explanation paragraphs on the In Progress payout card ("Includes partial-tier credit…" and "… states N pts at T12 …") are gone — the credit still counts, it just isn't spelled out. Trimmed the wordiest forecast values too: "no data — only trials you join can be measured" → "only trials you join", "needs one tier's total to anchor the ladder" → "awaits a full tier", "nothing yet — tier N in progress" → "nothing yet · tier N". Full detail stays on hover.
+The two partial-tier explanation paragraphs on the In Progress payout card are gone — the credit still counts, it just is not spelled out. The wordiest forecast values are trimmed too: "no data — only trials you join can be measured" becomes "only trials you join", and "nothing yet — tier N in progress" becomes "nothing yet · tier N". Full detail stays on hover.
 
 ### Fix: personal combat no longer leaks into the trial DPS split
 
-While spectating a trial from the In Progress tab, the client's own side-combat (farming a zone) was being folded into the trial's per-player damage — a local build could read ~7× the boss's health and dominate the split (reported with a member farming a Chameleon zone during a Chameleon trial). The trial only ever streams over `guild_battle_updated`, so a `battle_updated` arriving while that spectator stream is live is now recognised as personal combat and dropped. This is the same separation KikiMeter (ZhuLiMoon) uses — credited in the code.
+While spectating a trial, the client's own side-combat was being folded into the trial's per-player damage — a local build could read seven times the boss's health and dominate the split. The trial only ever streams over its own channel, so a personal battle message arriving while that spectator stream is live is now recognised as personal combat and dropped.
 
 ### Fix: skilling trial panels no longer squash the unit icon (In Progress tab)
 
-On the skilling In Progress tab our injected blocks (the forecast and the payout) could land inside the non-wrapping `challengeArea` row beside the unit card, stealing its width and squashing the unit icon to ~42px (reported by Ana, tailoring). They were placed there by the pre-styles fallback and not re-placed, since each block's own anchor test read a block buried inside an ancestor row as still anchored. `_placeBlock` now re-homes **any** block that ends up inside a non-wrapping flex row — no full-width block belongs in one — so every panel lifts out onto its own line once the game's flex styles compute.
+On the skilling In Progress tab our injected forecast and payout blocks could land inside the non-wrapping row beside the unit card, stealing its width and squashing the unit icon to about 42 pixels. Any block that ends up inside a non-wrapping flex row is now re-homed — no full-width block belongs in one — so every panel lifts out onto its own line once the game's styles compute.
 
 ### Perf: party Profile button detection no longer scans the whole document
 
@@ -2583,7 +2577,7 @@ The compact-width action bar (clips the stats line instead of wrapping it) now t
 
 ### Docs: note the tradable-range band is a ~±10% approximation
 
-Documented that the market-value band clamp is a multiplicative ~±10% and runs one price increment tighter than the game's real range on each side (the 8/14 hotfix widened it by one increment) — an intentional, bounded approximation, since the game publishes only values, not range bounds, and the plugin has no increment-tier table. Audited the rest of the 8/13 + 8/14 marketplace/guild patches (hourly market updates, 1T max price, compact prices, game-provided values, shrine buff rates): all already handled or read from game data, no change needed.
+Documented that the market-value band clamp is a multiplicative ~±10% and runs one price increment tighter than the game's real range on each side — an intentional, bounded approximation, since the game publishes only values, not range bounds. The rest of the recent marketplace and guild patches were audited: all already handled or read from game data.
 
 ### Docs: settings notes now say 5% market tax (the calculations already did)
 
@@ -2599,7 +2593,7 @@ The first time the fork runs on a browser that already carries Toolasha data, it
 
 ### Labyrinth tile controls: tidy wrapping on narrow/mobile panels
 
-The labyrinth calculator's control bar (Calculate / Precision / Path / Clear≥ / Shroud / Beacons / Clear) was one flex row that wrapped item by item, so on a narrow panel labels got orphaned from their inputs and it read as a cramped, uneven column (reported by Ana on mobile). Each control's pieces are now a nowrap group — a label with its input, a button with its field — so the bar wraps _between_ controls into tidy rows and stays a single line when there's room.
+The labyrinth calculator's control bar was one flex row that wrapped item by item, so on a narrow panel labels got orphaned from their inputs and it read as a cramped, uneven column. Each control's pieces are now a nowrap group — a label with its input, a button with its field — so the bar wraps between controls into tidy rows.
 
 ### Fix: live clear-chance readout no longer shifts the fight header (mobile)
 
@@ -2611,7 +2605,7 @@ The in-fight clear-chance readout in the game header changed width every second 
 
 ### Profiles open directly everywhere, not just filled into chat
 
-Added a shared `openPlayerProfile()` that opens a player's profile through the game's own `handleViewProfile` (no chat needed), falling back to the `/profile` chat command only if that handler is missing. Every place that used to fill `/profile <name>` into chat and wait for Enter now opens the profile directly: clickable chat names, the combat DPS/portrait names, dungeon-history player names, the guild roster, and the guild member-skills cycler. The party-member Profile button uses the same helper. Their hover tooltips now read "Open <name>'s profile" instead of "Fill …into chat".
+Every place that used to fill `/profile <name>` into chat and wait for Enter now opens the profile directly through the game's own handler: clickable chat names, the combat DPS and portrait names, dungeon-history player names, the guild roster, and the guild member-skills cycler. Their hover tooltips read "Open <name>'s profile" instead of "Fill … into chat".
 
 ### Lab Simulator: Upgrade tab gets the full run-cap controls
 
@@ -2619,7 +2613,7 @@ The Upgrade tab now carries the same run controls as Single Sim — **Precision*
 
 ### Combat: "Profile" button on party members (opt-in)
 
-New setting "Combat: Profile button on party members" (off by default). When on, clicking another player's unit in group/party/dungeon combat adds a **Profile** button to the battle-unit popup's tab row (next to Battle Info / Stats) that opens their profile directly via the game's own `handleViewProfile` handler — so you no longer have to detour through "My Party", and it works whether or not chat is open (falling back to the `/profile` chat command only if that handler is ever missing). Shown for other players only. The popup is located by its tab labels and the player by the "name - Lv.N" header (hashed classes aren't relied on).
+New setting, off by default: clicking another player's unit in group, party or dungeon combat adds a **Profile** button to the popup's tab row that opens their profile directly, so you no longer detour through "My Party", and it works whether or not chat is open. Shown for other players only.
 
 ### Fix: tooltip feature was still skipped at the registry level with prices off
 
@@ -2627,20 +2621,18 @@ New setting "Combat: Profile button on party members" (off by default). When on,
 
 ### Lab Simulator: "Max Level" → "Single Sim", per-tab run caps with an Uncapped toggle
 
-The tab that sims one selected monster is now called **Single Sim**. Both the Single Sim and Upgrade tabs now carry their own run caps on their control row:
+The tab that sims one selected monster is now called **Single Sim**, and both it and the Upgrade tab carry their own run caps on their control row:
 
-- **Single Sim**: **Max fights** (the trial cap, previously hardcoded at 20000), **Max hrs** (simulated-time ceiling, default 24), and an **Uncapped** checkbox that ignores both numbers (they stay in the field) and runs to the precision target.
-- **Upgrade**: **Max hrs** (default 24) and its own **Uncapped** checkbox. This replaces the old shared "Hours" box on the Configure tab, which is removed.
-
-All four persist as settings and are scoped to their tab; the live labyrinth tile calculator keeps its own ceiling.
+- **Single Sim**: Max fights, Max hrs, and an **Uncapped** checkbox that ignores both and runs to the precision target.
+- **Upgrade**: Max hrs and its own Uncapped checkbox, replacing the old shared "Hours" box on the Configure tab.
 
 ### Fix: item tooltip went fully blank when "market prices" was turned off
 
-The whole tooltip module (prices, profit, expected value, enhancement path/milestones, ability status, gathering) was gated at startup on only `itemTooltip_prices` or pin-to-top being on, so anyone who turned market prices off but left profit/EV/enhancement on got a bare game tooltip with none of the Toolasha sections — the DOM observer never started. Init and the two "anything to do?" guards now key off _any_ enabled tooltip feature, and market data loads whenever a price-consuming section is on. Turning prices off now hides just the price line, as intended.
+The whole tooltip module — prices, profit, expected value, enhancement path, ability status, gathering — was gated at startup on market prices or pin-to-top being on, so anyone who turned prices off but left the rest on got a bare game tooltip with none of it. Init now keys off any enabled tooltip feature. Turning prices off hides just the price line, as intended.
 
 ### Item tooltip: option to cost profit from the direct recipe only
 
-New setting "Profit: direct recipe only (buy base items, no sub-craft chain)" (off by default). When on, each recipe ingredient is costed at its own market Ask/Bid and the calc stops there, instead of recursing into how a craftable ingredient is itself made — so a Holy Brush is figured as Rainbow Brush / Holy Cheese / Arcane Log bought at market, not the whole brush chain. Applies to both the detailed breakdown table **and** the profit/hr (no upgrade-item craft cost or chain time), so the two stay consistent. Overrides "Use crafting cost for upgrade items if cheaper" while on.
+New setting, off by default: "Profit: direct recipe only". With it on, each recipe ingredient is costed at its own market price and the calculation stops there, instead of recursing into how a craftable ingredient is itself made — so a Holy Brush is figured from bought components, not the whole chain. It applies to the breakdown table and the profit per hour alike.
 
 ### Combat lab sim: precision is now adjustable from the sim panel
 
@@ -2648,7 +2640,7 @@ The Monte-Carlo win-rate precision (`labyrinthSimPrecision`) was only reachable 
 
 ### Fix: stop the "Inventory Badge Manager failed to start" false alarm
 
-Its health check reported failure whenever the inventory was on screen but not yet priced — a normal "not yet" (the price badges render asynchronously, and don't render at all if the price-badge provider is off), most visible on a marketplace/mobile open. It now confirms health only when a priced container exists and otherwise stands down, never reporting failure (the real badge output is already health-checked by Inventory Badge Prices). No behaviour change to the badges themselves; just no more spurious startup notice.
+The Inventory Badge Manager's health check reported failure whenever the inventory was on screen but not yet priced — a normal "not yet", most visible on a marketplace or mobile open. It now confirms health only when a priced container exists and otherwise stands down, never reporting failure. No change to the badges themselves; just no more spurious startup notice.
 
 ### Fix: minify the @require bundles so they install under Steam's 2 MB limit
 
@@ -2656,19 +2648,19 @@ The production library bundles shipped unminified, so `sim`, `combat` and `ui` (
 
 ### CI: harden the release publish so large release notes can't break it
 
-The release workflow read the version's notes out of `CHANGELOG.md` with an `awk` that only stopped at the next `## [x.y.z]`, so the whole Fork Changelog (which sits above the version entries) bled into 3.0.0's notes — ~240 KB — and `git commit -m "$notes"` overflowed the OS argument limit, failing the publish to GreasyFork. The notes now stop at the next `##` or the first non-release-please `###`, and the userscript commit is written with `git commit -F` (a file) so notes of any size are safe. Added a `workflow_dispatch` `publish_version` input to re-publish a specific version through the same pipeline without cutting a new release.
+The release workflow read a version's notes out of CHANGELOG.md with an awk that only stopped at the next version heading, so the whole Fork Changelog bled into 3.0.0's notes — about 240 KB — and the commit overflowed the OS argument limit, failing the publish. The notes now stop at the next heading, and the userscript commit is written from a file so notes of any size are safe.
 
 ### Combat Profit: "Tax" button renamed to "Moopass", plus a real sale-tax toggle
 
-The panel's "Tax" toggle was actually the weekly **MooPass** cowbell cost, so it's renamed to match (the button and the "Pay the MooPass" card). A new **"Tax"** toggle now subtracts the **market sale tax** from combat income — netted at the source (`calculateIncome`, coin untaxed / cowbell 18% / else 5%), so the Daily Income stat, the Combat Profit panel, and the sim-vs-measured calibration all read post-tax. On by default; a remembered choice under the old "Tax" name migrates to Moopass.
+The Combat Profit panel's "Tax" toggle was actually the weekly MooPass cowbell cost, so it is renamed to match. A new **Tax** toggle now subtracts the market sale tax from combat income, netted at the source, so the Daily Income stat, the panel and the sim-versus-measured calibration all read post-tax. On by default; a remembered choice migrates.
 
 ### Fix: "auto-click max" was maxing the price, not the quantity
 
-The 8/13 marketplace layout gave the price row its own "Max" button and put it ahead of the quantity row, so the auto-click-max feature grabbed the first "Max"/"All" in the modal — the price one — which slammed the sell price to the top of the tradable range **and** left the quantity un-maxed (both halves of the reported "fills the max price, no longer maxes items"). It now scopes the search to the quantity inputs and excludes the price row, so it maxes the amount and leaves the price alone.
+The marketplace layout change gave the price row its own "Max" button and put it ahead of the quantity row, so auto-click-max grabbed the first Max in the modal — the price one — which slammed the sell price to the top of the tradable range and left the quantity un-maxed. It now scopes the search to the quantity inputs and excludes the price row.
 
 ### Combat sim nets the market sale tax off drop revenue
 
-The simulator valued every drop at its gross market price, so profit ignored the sale tax entirely — which is why the 8/13 rise to 5% never moved it. Every drop-revenue path now nets the tax off each non-coin drop (cowbell bags at their own 18%): the Results **Summary** (Profit/day, Revenue), the **Drops** table's Gold columns, and the comparison/upgrade rows all go through one shared `taxedDropValue`. Coin drops stay whole, and the expected-value fallback is left alone since it is already taxed.
+The simulator valued every drop at its gross market price, so profit ignored the sale tax entirely — which is why the rise to 5% never moved it. Every drop-revenue path now nets the tax off each non-coin drop, cowbell bags at their own 18%: the Results summary, the Drops table's Gold columns, and the comparison and upgrade rows. Coin drops stay whole.
 
 ## [3.47.0](https://github.com/Millennium44/Toolasha/compare/v3.46.0...v3.47.0) (2026-09-10)
 
