@@ -6,6 +6,16 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Leftovers: things you deleted stay deleted, and four more features stop leaking on a switch
+
+Syncing across devices could undo a removal. A claim the crafting planner released came back as a live reservation — so materials read as spoken for by a plan that no longer existed, and every other plan's shortfall was wrong until it expired, up to a week later. That one did not even need a second device: a second tab was enough. Pressing Clear on the prediction or enhancement calibration wiped them locally and a pull from a device that had not cleared refilled them. And a guild trial roster could show one player twice, once under the name they were first seen by and once under their id, after the row was matched up and a peer still held the old one. Removals now travel with the data in each case, and the trial roster works out the duplicate again on every merge rather than remembering that it once deleted it.
+
+Three of these were left open on purpose and stay that way: goal lists, the watchlist, and saved overlay layouts each weigh a returning deletion against losing an afternoon's work to a pull, and re-deleting costs one click.
+
+Four more features were still leaving a live listener behind on every character switch. Net worth was the worst and had no protection of any kind — each interrupted switch left another copy re-pricing your whole inventory on every price, settings or inventory event, permanently. The queue monitor left a second redraw timer, and its own note claimed the case was handled. The loadout snapshot leaked on a reconnect to the _same_ character, which its character-name check could not see. And the listing-age tracker both leaked and put the departing character's order books back over the arriving character's — books that feed the ledger's marks, guild credit valuation and the price the marketplace autofill suggests.
+
+**A test now catches the next one.** Twenty-seven of these have been fixed by hand across three sweeps, and nothing stopped the next one being written. Every feature's startup is now read at test time, and one that arms itself after waiting on stored data without checking it is still wanted fails the build, naming the file and the line and what to do about it. Anything genuinely exempt is listed with a sentence saying why — a reason nobody can write is a site that is not safe. Run against the twenty-seven as they were before their fixes, it flags every one, and it found the listing-age tracker, which three hand sweeps had missed.
+
 ### Leftovers: fourteen features stop leaving work behind on a character switch, and a deleted dungeon run stays deleted
 
 Switching character while a feature was still reading its own saved data left that feature's previous set of listeners, observers and timers running with nothing able to remove them — one more set every switch, for as long as the tab stays open. This is the other half of a race a recent round fixed nine of: those nine went quiet and stayed dead until a reload, which you could see; these fourteen carried on working twice, three times, four times, which you could not.
