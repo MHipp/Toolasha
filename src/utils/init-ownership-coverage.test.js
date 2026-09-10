@@ -337,25 +337,6 @@ const KNOWN_SAFE = {
         'the entry point also already has a dedicated race test in `src/entrypoint.test.js`.',
 };
 
-/**
- * Sites the scan flags that a human has read and could **not** clear — real
- * leaks of the known shape, left for a follow-up round rather than fixed here.
- *
- * Separate from `KNOWN_SAFE` on purpose. Filing a live leak as "safe" is how an
- * allowlist stops meaning anything; this map says the opposite — the site is
- * known bad and the entry is the ticket. An entry here is a debt, not a
- * clearance, and it should be deleted by fixing the site.
- */
-const KNOWN_UNFIXED = {
-    'src/features/market/estimated-listing-age.js#initialize':
-        '`isInitialized` is set before two storage reads and the tail runs `setupWebSocketListeners()`, ' +
-        '`setupObserver()` and `setupMyListingsObserver()` unconditionally, refilling the single ' +
-        '`unregisterWebSocket`/`unregisterObserver`/`unregisterMyListingsObserver` fields that ' +
-        '`disable()` has just nulled — the networth bug of 55ac400f9 exactly. `loadHistoricalData()` is ' +
-        "guarded by the module's own `_owner`/`_ownsMemory` pair but `loadOrderBooksCache()` is not, so " +
-        "the departing character's order-book cache is also written back over the arriving character's.",
-};
-
 const REPO_ROOT = process.cwd();
 const FEATURES_ROOT = resolve(REPO_ROOT, 'src/features');
 
@@ -400,9 +381,7 @@ describe('initialize() bodies that register after an await', () => {
     const flagged = scanFeatures().filter((finding) => !finding.hasMarker);
 
     test('every one of them either takes an ownership ticket or is a recorded exemption', () => {
-        const offenders = flagged.filter(
-            (finding) => !(finding.site in KNOWN_SAFE) && !(finding.site in KNOWN_UNFIXED)
-        );
+        const offenders = flagged.filter((finding) => !(finding.site in KNOWN_SAFE));
 
         const report = offenders
             .map((offender) => {
@@ -435,7 +414,7 @@ describe('initialize() bodies that register after an await', () => {
         // leaves an entry that would silently absorb a *new* flag at the same
         // path.
         const live = new Set(flagged.map((finding) => finding.site));
-        const stale = [...Object.keys(KNOWN_SAFE), ...Object.keys(KNOWN_UNFIXED)].filter((site) => !live.has(site));
+        const stale = Object.keys(KNOWN_SAFE).filter((site) => !live.has(site));
 
         expect(
             stale,
@@ -452,16 +431,6 @@ describe('initialize() bodies that register after an await', () => {
             reason.trim().split(/\s+/).length,
             `${site}'s reason is too short to be an investigation`
         ).toBeGreaterThan(8);
-    });
-
-    test('the unfixed sites are recorded as debts, not clearances', () => {
-        // Not an assertion about the count — it is here so that emptying the
-        // map is a deliberate act, and so the open leaks are named in the same
-        // file as the clearances rather than only in a commit message.
-        for (const [site, reason] of Object.entries(KNOWN_UNFIXED)) {
-            expect(reason.trim().split(/\s+/).length, `${site} needs the leak described`).toBeGreaterThan(8);
-            expect(site in KNOWN_SAFE, `${site} cannot be both cleared and unfixed`).toBe(false);
-        }
     });
 });
 

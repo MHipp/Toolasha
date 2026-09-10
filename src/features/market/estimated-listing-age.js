@@ -468,20 +468,42 @@ class EstimatedListingAge {
          * an emptied log over the arriving character's.
          */
         this._generation = 0;
+        /**
+         * Bumped by {@link disable} *first thing*, unlike {@link _generation}.
+         *
+         * The two answer different questions and that is why there are two.
+         * `_generation` says "the in-memory log has been dropped", and it is
+         * deliberately bumped last, in the `finally`, so the save
+         * `disable()` flushes on its way out still counts as the departing
+         * character's write. `_teardowns` says "a teardown has begun", which is
+         * the question an `initialize()` parked on a storage read has to ask
+         * before it resumes: everything it is about to do — repopulating the
+         * order-book cache, wiring the WebSocket hook and the two DOM
+         * observers — is work `disable()` is in the middle of undoing, and the
+         * flush window between the two bumps is long enough to resume inside.
+         */
+        this._teardowns = 0;
     }
 
     /**
      * A ticket saying whose listing log the work about to suspend is holding.
      *
-     * Both halves are needed. The character id is what the storage key has to
-     * be built from — `characterKey()` answers with whoever is current at the
-     * moment it is called, and the switch moves that the instant it settles,
-     * before `disable()` has had a turn — and the generation is what says
-     * whether `this.knownListings` is still the log this work was about.
-     * @returns {{generation: number, charId: string}} Pass to the two checks below
+     * All three parts are needed. The character id is what the storage key has
+     * to be built from — `characterKey()` answers with whoever is current at
+     * the moment it is called, and the switch moves that the instant it
+     * settles, before `disable()` has had a turn — the generation is what says
+     * whether `this.knownListings` is still the log this work was about, and
+     * the teardown count is what says whether a `disable()` has started since,
+     * which the other two miss for the length of the flush (see
+     * {@link _teardowns}).
+     * @returns {{generation: number, charId: string, teardowns: number}} Pass to the two checks below
      */
     _owner() {
-        return { generation: this._generation, charId: dataManager.getCurrentCharacterId() || 'default' };
+        return {
+            generation: this._generation,
+            charId: dataManager.getCurrentCharacterId() || 'default',
+            teardowns: this._teardowns,
+        };
     }
 
     /**
@@ -493,11 +515,19 @@ class EstimatedListingAge {
     }
 
     /**
-     * @param {{generation: number, charId: string}} owner - From {@link _owner}
-     * @returns {boolean} Whether the character it was taken under is also still the one in hand
+     * The strict check: the log is still ours, the character is still ours, and
+     * no teardown has begun. Anything about to *register* or *repopulate* asks
+     * this one; a write that only has to land under the right key asks
+     * {@link _ownsMemory}.
+     * @param {{generation: number, charId: string, teardowns: number}} owner - From {@link _owner}
+     * @returns {boolean} Whether this work may still touch the module
      */
     _stillOurs(owner) {
-        return this._ownsMemory(owner) && (dataManager.getCurrentCharacterId() || 'default') === owner.charId;
+        return (
+            this._ownsMemory(owner) &&
+            this._teardowns === owner.teardowns &&
+            (dataManager.getCurrentCharacterId() || 'default') === owner.charId
+        );
     }
 
     /**
@@ -581,11 +611,36 @@ class EstimatedListingAge {
 
         this.isInitialized = true;
 
+        // Taken before the first read, because everything below it belongs to
+        // the character that is current *now* and a switch tears the feature
+        // down while these reads are in flight. Note that the flag above stays
+        // set on an early return: `disable()` clears it, and the arriving
+        // character's own `initialize()` sets it again — moving the assignment
+        // down here instead would let this call's early return race the
+        // arriving call and leave the feature dead until a page reload.
+        const owner = this._owner();
+
         // Load historical data from storage
         await this.loadHistoricalData();
 
+        // Before the *first* side effect of the resumed tail, not merely before
+        // the three `setup*` calls: `loadOrderBooksCache()` assigns
+        // `this.orderBooksCache`, so a tail resuming past this point puts the
+        // departing character's books back over the arriving character's — the
+        // very cache `disable()`'s `finally` empties on purpose — and the next
+        // order-book message persists them.
+        if (!this._stillOurs(owner)) return;
+
         // Load cached order books from storage
         await this.loadOrderBooksCache();
+
+        // And again after it, because a teardown can land inside that read too.
+        // From here the tail registers: `setupWebSocketListeners()`,
+        // `setupObserver()` and `setupMyListingsObserver()` each refill a
+        // *single* `unregister*` field that `disable()` has just nulled, so a
+        // resumed tail leaves one live, unremovable WebSocket hook and two live
+        // DOM observers per interrupted switch, for the life of the tab.
+        if (!this._stillOurs(owner)) return;
 
         // Load initial listings from dataManager
         this.loadInitialListings();
@@ -891,13 +946,21 @@ class EstimatedListingAge {
      * Load cached order books from IndexedDB
      */
     async loadOrderBooksCache() {
+        // Guarded like `loadHistoricalData()`, and for the same reason: the
+        // assignment below is a *repopulation* of memory that `disable()`
+        // empties on purpose, so a read that settles after a teardown must drop
+        // what it read rather than install it. Without this the cache is the
+        // one piece of per-character memory a switch could not clear.
+        const owner = this._owner();
         try {
             const stored = await storage.getJSON(this.orderBooksCacheKey, 'marketListings', {});
+            if (!this._stillOurs(owner)) return;
             // Older blobs hold whole books; they load the same, and are trimmed
             // on the next write
             this.orderBooksCache = this._pruneOrderBooksCache(stored || {});
         } catch (error) {
             console.error('[EstimatedListingAge] Failed to load order books cache:', error);
+            if (!this._stillOurs(owner)) return;
             this.orderBooksCache = {};
         }
     }
@@ -2202,6 +2265,13 @@ class EstimatedListingAge {
      * Disable the estimated listing age feature
      */
     async disable() {
+        // First thing, before anything is unwired and before the flush below
+        // yields, so an `initialize()` parked on one of its two storage reads
+        // cannot resume into the fields this is about to null or the cache it
+        // is about to empty. `_generation` cannot serve here: it is bumped last
+        // on purpose, so the flush still counts as this character's write, and
+        // the window between the two is exactly where a resumed tail lands.
+        this._teardowns += 1;
         try {
             if (this.unregisterWebSocket) {
                 this.unregisterWebSocket();
