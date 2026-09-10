@@ -6,6 +6,16 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### A stored read that never answers no longer takes the whole script down with it
+
+Reported from a live tab: after two quick refreshes, Toolasha simply never appeared — no panels, no tab, and nothing in the error log to say why. The database was open and healthy, and a fresh connection to it read fine; the connection the script already held had quietly stopped answering. Every read went out and never came back, so startup stopped before a single feature began and sat there looking like it was still loading.
+
+Reads now give up after ten seconds, say so in the log with the key and the store they were after, reopen the connection and try once more — which is the case that gets your real settings back rather than defaults. Only if the fresh connection is silent too does it answer "unreadable", which is the behaviour that already existed and deliberately keeps your settings in memory rather than saving defaults over them. Nothing about a healthy read changes.
+
+What made this so hard to see is that nothing failed: no error, no rejection, just a promise that never settled, which is indistinguishable from a slow load. That is now the one thing it cannot do quietly.
+
+A superseded database connection is also closed instead of being left open, which could otherwise block a later upgrade.
+
 ### The house upgrade cost list is reachable on a phone
 
 Reported by a player: on mobile the cumulative cost list for a house upgrade ran off the bottom of the screen with no way to scroll it, so the Missing Mats Marketplace button underneath could not be reached at all. The list was marked scrollable but had no height to scroll within, which means it simply grew instead — on a desktop the page still reached the end, so it only ever showed up on a phone.
