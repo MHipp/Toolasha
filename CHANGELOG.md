@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The changelog now starts where you left off
+
+The What's New panel showed the same twelve entries to everyone, however long ago you last updated. Releases now stamp an invisible marker into the changelog, and the panel shows only the entries newer than the build you were running. Nothing changes until the first marked release goes out — until then the panel behaves exactly as it does today.
+
 ### What's new shows what's new
 
 The panel was showing 20,000 characters of a changelog that had grown to 400,000 — an arbitrary slice, cut off mid-sentence, spanning releases long past. It now shows the twelve newest entries whole and says how many earlier ones it left out. Older entries have also been cut back to a couple of sentences each.

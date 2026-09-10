@@ -510,3 +510,74 @@ describe('copy from another character', () => {
         expect(values).not.toContain(COPY_FROM_CHARACTER);
     });
 });
+
+describe('the changelog the popup draws', () => {
+    const base = { headline: 'x', forkChanged: false, newIds: [], turnedOff: new Set(), isNewcomer: false };
+
+    /** A slice with one released entry behind a marker and one still unreleased. */
+    const MARKED = [
+        '## Unreleased — branch `main`',
+        '',
+        '### Written since the release',
+        '',
+        'Body.',
+        '',
+        '<!-- shipped in 3.47.0 -->',
+        '',
+        '### Went out in 3.47.0',
+        '',
+        'Body.',
+        '',
+    ].join('\n');
+
+    test('shows only what is newer than the build the player was running', () => {
+        virtualChangelog.text = MARKED;
+        whatsNew._buildPanel({ ...base, sinceVersion: '3.47.0' });
+        const text = whatsNew.panel.textContent;
+        expect(text).toContain('Written since the release');
+        expect(text).not.toContain('Went out in 3.47.0');
+        whatsNew.close();
+    });
+
+    test('shows everything when the stored version predates every marker', () => {
+        virtualChangelog.text = MARKED;
+        whatsNew._buildPanel({ ...base, sinceVersion: '3.1.0' });
+        expect(whatsNew.panel.textContent).toContain('Went out in 3.47.0');
+        whatsNew.close();
+    });
+
+    test('never draws a marker', () => {
+        virtualChangelog.text = MARKED;
+        for (const sinceVersion of [null, '3.1.0', '3.47.0']) {
+            whatsNew._buildPanel({ ...base, sinceVersion });
+            expect(whatsNew.panel.textContent).not.toContain('shipped in');
+            whatsNew.close();
+        }
+    });
+
+    test('an unmarked changelog draws exactly as it does today', () => {
+        virtualChangelog.text = '### Combat\n\n- Something changed\n';
+        whatsNew._buildPanel({ ...base, sinceVersion: '3.40.0' });
+        const filtered = whatsNew.panel.textContent;
+        whatsNew.close();
+        whatsNew._buildPanel({ ...base, sinceVersion: null });
+        expect(whatsNew.panel.textContent).toBe(filtered);
+        whatsNew.close();
+    });
+
+    test('the copy button copies what is on screen, not the whole slice', async () => {
+        virtualChangelog.text = MARKED;
+        let copied = null;
+        whatsNew._writeClipboard = async (text) => {
+            copied = text;
+            return true;
+        };
+        whatsNew._buildPanel({ ...base, sinceVersion: '3.47.0' });
+        whatsNew.panel.querySelector('.toolasha-whats-new-copy-changelog').click();
+        await Promise.resolve();
+        expect(copied).toContain('### Written since the release');
+        expect(copied).not.toContain('### Went out in 3.47.0');
+        expect(copied).not.toContain('shipped in');
+        whatsNew.close();
+    });
+});

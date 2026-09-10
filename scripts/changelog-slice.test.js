@@ -105,7 +105,7 @@ describe('sliceForkChangelog', () => {
 
     test('returns nothing when there is no unreleased section', () => {
         const result = sliceForkChangelog('# Changelog\n\n## [3.47.0](x) (2026-09-10)\n\n* a fix\n');
-        expect(result).toEqual({ text: '', totalEntries: 0, shownEntries: 0, omittedEntries: 0 });
+        expect(result).toEqual({ text: '', totalEntries: 0, shownEntries: 0, omittedEntries: 0, markerVersions: [] });
     });
 
     test('falls back to the character clamp when the section has no entries', () => {
@@ -125,5 +125,49 @@ describe('sliceForkChangelog', () => {
         // never a sentence stopped mid-word.
         expect(/[.!?)`”]\s*$/.test(result.text.trim())).toBe(true);
         if (result.omittedEntries > 0) expect(result.text).toContain('not shown here');
+    });
+});
+
+describe('release markers', () => {
+    /** `changelogWith`, with a marker stamped before every `every`th entry. */
+    function markedChangelog(count, every) {
+        let version = 100;
+        return changelogWith(count).replace(/^### Entry (\d+)$/gm, (line, n) =>
+            Number(n) % every === 1 && Number(n) > 1 ? `<!-- shipped in 3.${version--}.0 -->\n\n${line}` : line
+        );
+    }
+
+    test('markers are not entries: the cap still counts entries', () => {
+        const result = sliceForkChangelog(markedChangelog(100, 3));
+        expect(result.shownEntries).toBe(DEFAULT_MAX_ENTRIES);
+        expect(result.totalEntries).toBe(100);
+        expect(result.omittedEntries).toBe(100 - DEFAULT_MAX_ENTRIES);
+    });
+
+    test('markers ship, so the runtime has something to filter on', () => {
+        const result = sliceForkChangelog(markedChangelog(100, 3));
+        expect(result.markerVersions.length).toBeGreaterThan(0);
+        for (const version of result.markerVersions) expect(result.text).toContain(`shipped in ${version}`);
+    });
+
+    test('a marker under the heading ships with the head', () => {
+        const changelog = changelogWith(3).replace(
+            '## Unreleased — branch `main`\n',
+            '## Unreleased — branch `main`\n\n<!-- shipped in 3.47.0 -->\n'
+        );
+        const result = sliceForkChangelog(changelog);
+        expect(result.markerVersions).toEqual(['3.47.0']);
+        expect(result.totalEntries).toBe(3);
+    });
+
+    test('the character ceiling still binds with markers present', () => {
+        const plain = sliceForkChangelog(changelogWith(100), { maxChars: 600 });
+        const marked = sliceForkChangelog(markedChangelog(100, 2), { maxChars: 600 });
+        // Markers cost bytes like anything else, so a marked section fits no
+        // more entries than a plain one and stays inside the same ceiling —
+        // plus the omission line, which the ceiling has never counted.
+        expect(marked.shownEntries).toBeLessThanOrEqual(plain.shownEntries);
+        expect(marked.omittedEntries).toBeGreaterThan(0);
+        expect(marked.text.length).toBeLessThanOrEqual(600 + 120);
     });
 });

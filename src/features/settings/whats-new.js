@@ -37,6 +37,7 @@ import { registerFloatingPanel, unregisterFloatingPanel, bringPanelToFront } fro
 import { openSettings } from '../ui/command-palette.js';
 import { askChoice } from '../../utils/choice-dialog.js';
 import { toolashaRoot } from '../../utils/bundle-bridge.js';
+import { filterChangelogSince } from './changelog-markers.js';
 import forkChangelog from 'virtual:fork-changelog';
 import forkOverview from 'virtual:fork-overview';
 
@@ -244,6 +245,7 @@ class WhatsNew {
             newIds: Array.isArray(data.newIds) ? data.newIds : [],
             turnedOff: [...(data.turnedOff || [])],
             isNewcomer: Boolean(data.isNewcomer),
+            sinceVersion: data.sinceVersion || null,
         };
         storage
             .setJSON(this._snapshotKey(), serial, 'settings')
@@ -260,6 +262,7 @@ class WhatsNew {
             newIds: Array.isArray(stored.newIds) ? stored.newIds : [],
             turnedOff: new Set(stored.turnedOff || []),
             isNewcomer: Boolean(stored.isNewcomer),
+            sinceVersion: stored.sinceVersion || null,
         };
     }
 
@@ -281,6 +284,7 @@ class WhatsNew {
                     newIds: [],
                     turnedOff: new Set(),
                     isNewcomer: false,
+                    sinceVersion: null,
                 }
             );
         } catch (error) {
@@ -352,6 +356,11 @@ class WhatsNew {
                 newIds: fresh,
                 turnedOff: new Set(turnedOff),
                 isNewcomer: false,
+                // What the changelog gets filtered against. Only within one
+                // fork: forks share version numbers, so "3.46.0" from another
+                // build names no point in this fork's history and would order
+                // against our markers as if it did.
+                sinceVersion: stored.fork === current.fork ? stored.version || null : null,
             };
 
             // Recorded now rather than after the popup, so a closed tab cannot
@@ -766,8 +775,14 @@ class WhatsNew {
     }
 
     /** @private */
-    _buildPanel({ headline, forkChanged, newIds, turnedOff, isNewcomer }) {
+    _buildPanel({ headline, forkChanged, newIds, turnedOff, isNewcomer, sinceVersion }) {
         this.close();
+
+        // What the changelog box shows: the entries newer than the build this
+        // player was running, when the shipped slice carries enough release
+        // markers to tell — and the whole slice, exactly as before, when it
+        // does not. See `changelog-markers.js` for which case is which.
+        const changelogText = filterChangelogSince(forkChangelog, sinceVersion).text.trim();
 
         const panel = document.createElement('div');
         panel.id = 'toolasha-whats-new';
@@ -869,7 +884,7 @@ class WhatsNew {
             body.appendChild(overview);
         }
 
-        if (forkChangelog?.trim()) {
+        if (changelogText) {
             const log = document.createElement('div');
             const heading = document.createElement('div');
             Object.assign(heading.style, {
@@ -901,7 +916,7 @@ class WhatsNew {
                 cursor: 'pointer',
             });
             copyChangelog.addEventListener('click', async () => {
-                const ok = await this._writeClipboard(forkChangelog.trim());
+                const ok = await this._writeClipboard(changelogText);
                 copyChangelog.textContent = ok ? 'Copied ✓' : 'Copy failed';
                 setTimeout(() => {
                     copyChangelog.textContent = 'Copy changelog';
@@ -918,7 +933,7 @@ class WhatsNew {
                 borderRadius: '6px',
                 padding: '8px 10px',
             });
-            renderForkMarkdown(box, forkChangelog.trim());
+            renderForkMarkdown(box, changelogText);
             log.appendChild(box);
             body.appendChild(log);
         }

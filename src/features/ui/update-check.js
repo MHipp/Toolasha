@@ -20,6 +20,7 @@ import config from '../../core/config.js';
 import storage from '../../core/storage.js';
 import { httpRequest } from '../sync/gist-client.js';
 import { openSettings } from './command-palette.js';
+import { compareVersions } from '../../utils/compare-versions.js';
 import { scriptVersion } from '../../utils/script-version.js';
 import { showToast } from '../../utils/toast.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
@@ -36,21 +37,11 @@ const STARTUP_DELAY_MS = 8 * 1000;
 /** The in-session repeat never runs hotter than this, whatever the setting says */
 const MIN_REPEAT_HOURS = 1;
 
-/**
- * Compare two dotted version strings numerically.
- * @param {string} a - One version, e.g. `3.17.0`
- * @param {string} b - Another
- * @returns {number} Negative when a < b, positive when a > b, 0 when equal
- */
-export function compareVersions(a, b) {
-    const left = String(a).split('.').map(Number);
-    const right = String(b).split('.').map(Number);
-    for (let i = 0; i < Math.max(left.length, right.length); i++) {
-        const diff = (left[i] || 0) - (right[i] || 0);
-        if (diff) return diff;
-    }
-    return 0;
-}
+// Lives in script-version.js so the what's-new changelog filter can order
+// versions without importing this feature (and its transport, toasts and
+// timers) to do it. Re-exported because this module's own tests and callers
+// have always taken it from here.
+export { compareVersions } from '../../utils/compare-versions.js';
 
 /**
  * The latest release version according to GitHub, or null.

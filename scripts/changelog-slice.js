@@ -19,6 +19,14 @@
  * direction. When entries are left out the slice says so in one line, so the
  * panel ends deliberately rather than just stopping.
  *
+ * Release boundaries ride along. A release stamps `<!-- shipped in x.y.z -->`
+ * under the unreleased heading (`scripts/stamp-changelog-version.js`), and the
+ * slice keeps those markers in what it ships so the panel can show a player
+ * only the entries newer than the build they were running — a runtime question
+ * the build cannot answer, since it does not know who is asking. Markers are
+ * comments: they are not entries, they do not count against the entry cap, and
+ * the panel strips them before drawing.
+ *
  * This lives outside `rollup.config.js` so it can be tested directly: it is the
  * only part of the plugin with any judgement in it.
  */
@@ -58,6 +66,24 @@ export function extractUnreleasedSection(changelog) {
 }
 
 /**
+ * Release boundaries present in a piece of changelog, in document order.
+ *
+ * Deliberately a copy of the reader in
+ * `src/features/settings/changelog-markers.js` rather than an import of it:
+ * this is build tooling and that is bundle code, and the shared thing is a
+ * one-line comment format written down in both places.
+ * @param {string} text - Changelog markdown
+ * @returns {Array<string>} The versions marked, newest first
+ */
+function markerVersionsIn(text) {
+    return String(text ?? '')
+        .split('\n')
+        .map((line) => /^<!--\s*shipped in\s+(\d+(?:\.\d+)*)\s*-->\s*$/.exec(line))
+        .filter(Boolean)
+        .map((match) => match[1]);
+}
+
+/**
  * The one line the panel shows in place of everything that did not fit.
  * @param {number} omitted - How many entries were left out
  * @returns {string} A markdown paragraph
@@ -73,6 +99,8 @@ function omissionNote(omitted) {
  * @property {number} totalEntries - `###` entries in the unreleased section
  * @property {number} shownEntries - How many of them the slice keeps
  * @property {number} omittedEntries - How many it leaves out
+ * @property {Array<string>} markerVersions - Release boundaries in the slice,
+ *   newest first — what the runtime filter has to work with
  */
 
 /**
@@ -92,7 +120,7 @@ export function sliceForkChangelog(changelog, options = {}) {
     const maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
     const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
     const section = extractUnreleasedSection(changelog);
-    if (!section.trim()) return { text: '', totalEntries: 0, shownEntries: 0, omittedEntries: 0 };
+    if (!section.trim()) return { text: '', totalEntries: 0, shownEntries: 0, omittedEntries: 0, markerVersions: [] };
 
     const lines = section.split('\n');
     const starts = [];
@@ -104,7 +132,7 @@ export function sliceForkChangelog(changelog, options = {}) {
     // character clamp. Degenerate, but it keeps the bundle guard honest.
     if (starts.length === 0) {
         const text = section.slice(0, maxChars);
-        return { text, totalEntries: 0, shownEntries: 0, omittedEntries: 0 };
+        return { text, totalEntries: 0, shownEntries: 0, omittedEntries: 0, markerVersions: markerVersionsIn(text) };
     }
 
     // Everything above the first entry — the section heading, plus any preamble
@@ -131,10 +159,12 @@ export function sliceForkChangelog(changelog, options = {}) {
     const omittedEntries = entries.length - kept.length;
     const parts = [head, ...kept];
     if (omittedEntries > 0) parts.push(omissionNote(omittedEntries));
+    const text = `${parts.filter(Boolean).join('\n\n')}\n`;
     return {
-        text: `${parts.filter(Boolean).join('\n\n')}\n`,
+        text,
         totalEntries: entries.length,
         shownEntries: kept.length,
         omittedEntries,
+        markerVersions: markerVersionsIn(text),
     };
 }

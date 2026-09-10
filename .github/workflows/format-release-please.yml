@@ -34,6 +34,18 @@ jobs:
             - name: Sync version across files
               run: npm run version:sync
 
+            # Draw the release boundary in the fork changelog while we still
+            # know where it is. The fork's "## Unreleased — branch `main`"
+            # heading is never rotated, so without a marker there is nothing in
+            # the file to say which entries belong to which release — which is
+            # what the what's-new panel needs to show a player only what changed
+            # since their build. package.json on this branch is release-please's
+            # bumped version, the same source the release build stamps @version
+            # from one step of release.yml over. Re-running is a no-op: a version
+            # already marked is left alone.
+            - name: Stamp the release into the changelog
+              run: npm run changelog:stamp
+
             - name: Run formatting
               run: npm run format
 

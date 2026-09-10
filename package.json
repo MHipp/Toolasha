@@ -23,6 +23,7 @@
         "lint:md:fix": "markdownlint \"**/*.md\" --ignore node_modules --fix",
         "lint:md:links": "find . -name '*.md' ! -path './node_modules/*' -exec markdown-link-check --quiet {} \\;",
         "version:sync": "node scripts/sync-version.js",
+        "changelog:stamp": "node scripts/stamp-changelog-version.js",
         "prepare": "husky"
     },
     "keywords": [
