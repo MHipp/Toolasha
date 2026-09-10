@@ -1106,13 +1106,11 @@ Alchemy sessions now record when they last acted, and the gold panel spreads eac
 
 ### Round 13: the rest of the fleet lands
 
-Twenty more commits from the audit round, integrated and re-verified:
+Twenty more commits from the audit round:
 
-- **Overlay**: a pinned column count now survives save, export and reapply (the field never round-tripped, so the pin's own honour-the-arriving-pin branch was dead code); undoing a layout switch restores the column count and its pin alongside the spans; and icon tiles redraw when their sprite sheet arrives instead of keeping a blank spacer forever under the identical-draw fast path.
-- **Networth**: a differential fixture proves the pruned worker closure prices every hrid the worker can reach; and a superseded recalculation can no longer overwrite a newer one's numbers when their completions invert.
-- **Loadouts**: the custom-tabs binding sync no longer overlooks the equipped copy (it required a count field equipped items don't carry, then wrote the lower duplicate's level back into the snapshot); the networth exclusion popup prices excluded loadouts at the level they actually wear.
-- **Performance**: the consumables panel and watchlist skip their swap when a redraw changes nothing, the watchlist leaves a folded panel alone, the action countdown skips its 100ms tick in a hidden tab, and the reroll spend badge stops rewriting an unchanged label on every combat tick.
-- **pformance tracing hardened**: timeout tracing installs even when a page restored a saved setTimeout; wrapper names survive minification (so prod traces don't collapse into one mangled call site); the call-site parser handles async/new/anonymous frames on both engines; per-metric history is bounded between reads; and stall attribution aligns on the monotonic clock, immune to NTP steps.
+- **Overlay**: a pinned column count survives save, export and reapply; undoing a layout switch restores it; and icon tiles redraw when their sprite sheet arrives instead of keeping a blank spacer forever.
+- **Loadouts**: the custom-tabs binding sync no longer overlooks the equipped copy and write a lower duplicate's level into the snapshot.
+- **Performance**: the consumables panel, watchlist, action countdown and reroll spend badge all skip work that changes nothing.
 
 ### Round 13: the gold panel's cost bases, corrected and extended
 
@@ -1120,7 +1118,7 @@ The audit fleet caught a regression in the day-old basis fallback: a decomposed 
 
 ### Round 13: labyrinth recommendations stop lying at the edges
 
-A recommend search whose sims were cancelled part-way (a Lab Sim Stop, a preempting sim run) was storing its partial lower bound as the final answer — an interrupted search now reports nothing. And a threshold that hit the top of the ±1000 window is badged "Rec: ≥+1000" with the tooltip saying the true trigger may be higher, instead of the clamp dressed as an answer. The skilling and enhancing formulas are pinned sane at extreme room levels by new tests.
+A recommend search whose sims were cancelled part-way was storing its partial lower bound as the final answer; an interrupted search now reports nothing. And a threshold that hit the top of the ±1000 window is badged "Rec: ≥+1000", with the tooltip saying the true trigger may be higher, instead of the clamp dressed as an answer.
 
 ### Round 13, first finding: the battle counter forgets the departing character
 
@@ -1140,15 +1138,11 @@ A character strong enough to clear every room in the search window was handed th
 
 ### Loadout gear is quoted at the level you own, everywhere
 
-The sweep for the same bug found four more raw readers, now resolved the same way: the labyrinth sim's loadout equipment buffs, the skilling optimizer's loadout comparison and its Load Loadout button, and the bulk-sell assistant's hold list — which now protects both the stored copy and the one the loadout would actually wear, so the equipped +20 can never be sold while a phantom +12 key stands guard.
-
-The map every calculator wears — enhancement predictions, profit tables — came from the loadout snapshot's stored levels, frozen at whatever the gear was when the loadout was last saved. The resolver that takes each slot to the highest copy owned existed but this path skipped it, so an enhancing outfit long since taken to +20 was still quoted at +12. Loadouts pinned with "use exact enhancement" keep their frozen level, as before.
+Every calculator that wears a loadout's gear — enhancement predictions, profit tables — read the snapshot's stored levels, frozen at whatever the gear was when the loadout was last saved, so an enhancing outfit long since taken to +20 was still quoted at +12. Four more readers now resolve to the level you actually own, including the bulk-sell hold list, so an equipped +20 can never be sold while a phantom +12 stands guard.
 
 ### The gold panel's cost bases fall back before giving up
 
-Alchemy outputs get the same fallback as the input, which is what makes the books balance: transmuting a cape into another unpriced cape used to charge the full material cost going in and credit nothing coming out, so cycling one cape three times read as three capes lost. Priced symmetrically, a returned item cancels a consumed one and only the real loss nets.
-
-Two of "Where the gold came from"'s exclusions get the deeper fallback the net worth engine already uses. An alchemy input with no market price is valued at its material cost, and an opened chest with no market price is netted against its expected value — so a transmuted cape or a labyrinth box no longer sends its whole session to the residual. Only when market price, expected value, and material cost all fail does an entry stay footnoted in the residual.
+Alchemy outputs get the same price fallback as the input, which is what makes the books balance: transmuting a cape into another unpriced cape used to charge the full material cost going in and credit nothing coming out, so cycling one cape three times read as three capes lost. An unpriced alchemy input is valued at its material cost and an opened chest against its expected value, so neither sends a whole session to the residual.
 
 ### Pick your own column count
 
@@ -1164,7 +1158,7 @@ The stall ledger's timer names were parsed from Chrome-shaped stacks by position
 
 ### The networth worker handoff stops cloning the world
 
-The last named stall: every chunk of every worker batch carried the entire action map and price map once per item — the structured clone of all that, several times per recalculation, was the remaining main-thread block. The batch message now carries a pruned recipe index and price map covering exactly what the batch's fallback chains can reach, shared once per chunk, and small batches are no longer split across the whole pool. The worker's valuation logic is unchanged and now pinned by behavior tests (priced stacks, production-cost fallback through the recipe index, enhanced items, honest zeros). A full recalculation now runs with no measurable stall.
+Every chunk of every net worth worker batch carried the entire action map and price map once per item, and cloning all that several times per recalculation was the remaining main-thread block. A batch now carries only what its own fallback chains can reach, shared once per chunk. The valuation logic is unchanged, and a full recalculation runs with no measurable stall.
 
 ### The networth engine explains its own last stall
 
@@ -1176,7 +1170,7 @@ The stalls and the widened attribution net (traced timers, message dispatch, eve
 
 ### The stall ledger's first conviction: the crafting-tile counts
 
-With every Toolasha timer now auto-reporting into the stall ledger (intervals and timeouts wrapped at boot, named by call site; game messages noted for correlation), the ledger immediately named the next stutterer: the "Can produce" refresh re-computed and re-laid-out every visible crafting tile in one burst after each action completion — a ~200ms stall. It now updates tiles a frame-slice at a time, the same clock-yield the networth engine uses (now a shared helper). Stalls on the test character dropped from seven in 30s (worst 209ms) to one 64ms slice.
+With every timer now reporting into the stall ledger, it immediately named the next stutterer: the "Can produce" refresh recomputed and re-laid-out every visible crafting tile in one burst after each action, a ~200ms stall. It now updates tiles a frame-slice at a time. Stalls on the test character dropped from seven in 30s, worst 209ms, to one 64ms slice.
 
 ### The pformance panel records stalls and names their suspects
 
@@ -1184,7 +1178,7 @@ Every stutter hunt so far began by hand-building a longtask observer in the cons
 
 ### The networth engine stops stalling the game every few seconds
 
-The real cause of the stuttering progress bars, found by phase-timing the calculation: every completed action re-ran the full networth valuation ~500ms later, a synchronous block of 150-300ms. Three fixes: item→crafting-action lookups come from a once-built index instead of scanning every action per item; the valuation and price-map loops hand the browser a frame every ~12ms instead of running to completion; and inventory-driven recalculations respect a 15s cooldown (a 30s ceiling guarantees freshness under continuous load, and market-price updates still refresh as before). Per-phase timings from the last run stay readable at `Toolasha.Market.networthCalculator.lastCalcPhases`.
+The stuttering progress bars: every completed action re-ran the full net worth valuation about half a second later, a synchronous block of 150–300ms. Item lookups now come from a once-built index, the valuation hands the browser a frame every 12ms or so, and inventory-driven recalculations respect a 15-second cooldown with a 30-second ceiling. Market-price updates still refresh as before.
 
 ### Reports say which build they came from
 
@@ -1196,11 +1190,9 @@ The once-a-second refresh rebuilt every visible tile's DOM even when it read exa
 
 ### Skilling gets its own Time to Level, and combat targets stop following the account
 
-Three fixes around one report — a tailoring character's Time to Level tile pinned to "Melee: —":
-
-- A new **Skill Time to Level** tile reports the skill the front queued action trains, and nothing else: no Combat Level target can redirect it, and a combat or labyrinth action blanks it. The Skilling preset uses it now.
-- The Combat Level panel's target selection is stored **per character**; the old account-wide value (the leak itself) is discarded rather than inherited.
-- The original Time to Level tile no longer lets a target gaining nothing pin the tile while a skilling skill climbs — the target waits in the tooltip. Inside combat, a chosen target still always wins.
+- A new **Skill Time to Level** tile reports the skill your front queued action trains and nothing else; no Combat Level target can redirect it, and a combat or labyrinth action blanks it.
+- The Combat Level panel's target selection is stored per character; the old account-wide value is discarded rather than inherited.
+- The original tile no longer lets a target gaining nothing pin it while a skilling skill climbs.
 
 ### Two preset tiles get the width their content needs
 
@@ -1212,11 +1204,11 @@ The battle counter and boss countdown recover from an in-place header rewrite vi
 
 ### Reverted: the combat-chip header watcher froze tabs
 
-The fix that re-injected the battle counter and boss countdown after an in-place header rewrite watched the combat header with a mutation observer — which, on the game's constantly-ticking header, fed back into itself and could hard-freeze the tab within half a minute of combat. Reverted (bisected and confirmed against live combat); the chips still work and still re-inject on each new battle, so the only regression is the original small gap after queuing an action mid-combat. A safe re-implementation will follow. Also, tiles may now span up to five columns instead of four, which reads imported freeform layouts at a finer, truer grain.
+The fix that re-injected the battle counter and boss countdown after an in-place header rewrite watched the combat header with a mutation observer, which on the game's constantly-ticking header fed back into itself and could hard-freeze the tab within half a minute of combat. Reverted. The chips still work and still re-inject on each new battle, so the only regression is the original small gap after queuing an action mid-combat.
 
 ### The overlay becomes a real grid
 
-The overlay's layout engine was replaced outright: tiles now live in a browser-native grid in reading order, with a column span and a natural height, instead of hand-placed pixel rectangles reconciled by five correction passes. Arranging is drag-to-reorder plus a right-edge width handle; overlaps, off-panel drops, and layout oscillation are structurally impossible now, and one saved arrangement is correct at every panel width (two columns by default, three when wide, one when narrow). Existing layouts migrate automatically — order and relative widths survive; the old data is kept untouched under its original key, so rolling back is just installing the previous version. Reset layout now asks first and restores the shipped Default; the gear popover says which layout is showing; Snap and Autogrid are gone because the grid does their jobs. Net: about 1,700 lines of layout machinery deleted. Freeform pixel placement is retired — that's the one deliberate loss.
+The overlay's layout engine was replaced outright: tiles now live in a browser-native grid in reading order, with a column span and a natural height, instead of hand-placed pixel rectangles. Arranging is drag-to-reorder plus a right-edge width handle; overlaps, off-panel drops and layout oscillation are now impossible, and one saved arrangement is correct at every panel width. Existing layouts migrate automatically. Freeform pixel placement is retired — that is the one deliberate loss.
 
 ### Skill Level joins the overlay
 
@@ -1224,7 +1216,7 @@ A skilling counterpart to the Combat Level tile: the skill your current action t
 
 ### The overlay stops jumbling
 
-The overlay's layout system was reworked end to end. Each built-in preset now materializes a designed two-column grid against the panel's real width — aligned rows, logical grouping, no truncated names — and switching to a preset now deterministically installs exactly its tiles and coordinates, including switching OFF tiles the preset doesn't name (previously a legacy layout's extras stayed on and got corner-packed underneath). New tiles flow to a corner of the existing arrangement instead of the first 10px sliver that fits; placements persist instead of reshuffling as tiles come and go; Autogrid packs real columns sized to the median tile; empty tiles compact to a thin named strip instead of leaving a hole or a tall blank band, and lines close up to what their tiles actually drew (hand-arranged layouts are left alone). Paired tiles align exactly, and a clipped character name says itself in full on hover. A panel scrollbar can no longer flip the arrangement into a single column (width is measured so tile height can't change tile width, and a near-miss squeezes columns a few pixels instead of reflowing); empty-tile strips stay inside their own cell at the line's height; and activity auto-switching reads the action queue alone — a labyrinth finished days ago no longer counts as a labyrinth run now, which could pin auto-switchers to the Labyrinth layout forever. Verified live: preset switch, reset, autogrid, and reloads each produce a stable, clean grid.
+The overlay's layout system was reworked end to end. Each built-in preset now materialises a designed two-column grid against the panel's real width, and switching to a preset installs exactly its tiles — including switching off ones the preset does not name. New tiles flow to a corner instead of the first sliver that fits, placements persist, empty tiles compact to a thin named strip, and a panel scrollbar can no longer flip the arrangement into a single column.
 
 ### Dropdowns are readable when open
 
@@ -1268,7 +1260,7 @@ The tea recommendation and skilling optimizer mark gold figures that lean on an 
 
 ### Seventh audit round: the deep passes and the review of the reviewers
 
-The audit's heaviest round yet — senior-model agents on the most delicate paths, plus first-ever deep reads of the files every earlier round skipped as too large. Rapid character switches (under a second apart) now run the full per-character lifecycle — settings, resets, and all — while still coalescing the expensive feature teardown to once per burst; before, the second character kept the first one's settings until a later slow switch. A verification pass re-derived every fix shipped in 3.28.0: most held, and the eight that didn't are corrected — most notably the notice log's switch handling, which had armed a write that could save an empty log over the departing character's entries, and the loadout badge listening for an event it could never receive. Deep passes found: the equipment-savings feature leaked a settings listener per character switch and could let a slow load overwrite the new character's goals; the guild exchange advisor misread the You-give field as whole exchanges, over-reporting credits several-fold on 5:1 and 10:1 conversions and double-scaling sell proceeds; the shrine planner's targets survived switches; an unsaved trial-plan draft could cross a guild switch and overwrite the new guild's plan on save; expired-listing matching and beyond-top-20 age matching ignored enhancement level, letting two levels of the same item swap fates; the listing refresh walk restarted from the top when a row lacked an id; the queue monitor stacked timers and listeners on every reconnect and could leak drag handlers; a second Welcome Back modal could tear down the first's block on the wrong character; the gathering luck window gains the same own-payout floor the combat one got; and the milkonomy export now includes the elite achievement tier it had silently dropped.
+The heaviest audit round yet, including first deep reads of the files earlier rounds skipped as too large. Rapid character switches now run the full per-character lifecycle, where the second character used to keep the first one's settings. Among the rest: the guild exchange advisor misread the You-give field as whole exchanges, over-reporting credits several-fold on 5:1 and 10:1 conversions, and an unsaved trial-plan draft could cross a guild switch and overwrite the new guild's plan.
 
 ### Seventh audit round: three conveniences
 
@@ -1276,7 +1268,7 @@ The diagnostics report names the enabled features instead of only counting them;
 
 ### Overlay tiles stop showing the previous character's numbers
 
-A full sweep of every overlay tile provider (38 of them) found seven that cached a value across a character switch — the overlay panel redraws on its own timer before late features reload, so those tiles briefly (or until a failed reload, indefinitely) showed the outgoing character's figures under the incoming character's name. Fixed: the watchlist, equipment savings, the four party combat-stat tiles, the Combat Level session (now cleared the moment the switch starts), the build score tile (which was never torn down on switch at all), time-to-level, and the notice log. The other thirty-one providers were verified to read live state or to be account-wide by design.
+A sweep of all 38 overlay tile providers found seven that cached a value across a character switch — the panel redraws on its own timer before late features reload, so those tiles showed the outgoing character's figures under the incoming character's name, sometimes indefinitely. The watchlist, equipment savings, the four party combat-stat tiles, the Combat Level session, the build score tile, time-to-level and the notice log are fixed.
 
 ### Missing-mats buy dialog fills its quantity again
 
@@ -1292,7 +1284,9 @@ An imported or profile-simmed player now gets the Achievements section: their co
 
 ### Sixth audit round: eleven fixes reaching into the engines
 
-Simulation engines: a labyrinth room at very low level could scale a monster's ability below level 1, computing a negative level bonus — now floored at the level-1 baseline; the drop-luck FFT window now sizes itself to the session's own payouts, so one huge rare drop can't alias the "how lucky was that" math into silent nonsense; a zero-balance risk-of-ruin run no longer prints "no ruin occurred" beside "ruin probability: 100%"; and the tea optimizer now flags recommendations that lean on an unpriced material instead of silently treating it as free. Enhancement: a Blessed Tea jump that passes over a milestone records it, and a stale pending-start flag no longer fragments the next character's session. Displays: inventory category totals update again when Sort and Badge Prices are both off; the equipment level overlay follows in-place item swaps (an attribute-only change the shared observer never saw); loadout enhancement badges refresh on inventory changes and character switches; marketplace owned-count badges reset when the character does; and the briefing overlay tile clears the previous character's market-fill count the moment a switch starts instead of showing it under the new character's name. Startup: a redundant settings read is gone and the startup trace gains sub-marks inside the settings window, so a future slow trace says exactly where the time went.
+Eleven fixes. A labyrinth room at very low level could scale a monster's ability below level 1; the drop-luck window now sizes itself to the session's own payouts, so one huge rare drop cannot skew it; and the tea optimizer flags a recommendation leaning on an unpriced material instead of treating it as free.
+
+Displays: inventory category totals update again with Sort and Badge Prices both off, and the equipment level overlay follows in-place item swaps.
 
 ### Sixth audit round: six conveniences
 
@@ -1304,7 +1298,7 @@ The vitest worker pool is capped at half the cores so a full run no longer starv
 
 ### Fifth audit round: fourteen fixes across combat, abilities, activity, and the market client
 
-Combat: the Combat Level panel's session and rate history reset on character switch instead of booking the whole gap between two characters' totals as one impossible session; the Party Loot "Combined" view sums experience again instead of always reading 0; a reconnect resend of a dungeon's first wave no longer wipes a run already in progress; the Sim Accuracy checker starts a fresh watch per character instead of comparing the new character against the old one's observations; loadout snapshots reload per character instead of serving the previous character's gear to the profit calculators; and a reconnect that skips a wave's opening message no longer blends the finished fight's damage into the new one or permanently disables monster-name recovery. Abilities: book targets reset on character switch instead of aiming an alt at the main's target level, and a maxed ability says it's at the cap instead of "0 books needed" with a broken input. Character select: the activity icon follows the queue like the text always did instead of staying pinned to the first action. Market client: simultaneous forced refreshes can no longer burst parallel requests past the dedup. Combat sim tools: exp rates with thousand separators parse instead of reading as untrained, and the level calculator starts sim-imported skills from their real level instead of level 1.
+Fourteen fixes. Combat: a reconnect resend of a dungeon's first wave no longer wipes a run already in progress; the Party Loot "Combined" view sums experience again instead of always reading 0; and loadout snapshots reload per character instead of serving the previous character's gear to the profit calculators. Abilities: a maxed ability says it is at the cap instead of "0 books needed" with a broken input.
 
 ### Fifth audit round: seven conveniences
 
@@ -1312,7 +1306,7 @@ Gold sources gains a Copy button; the net-worth chart shows the all-time high; t
 
 ### Fourth audit round: sixteen fixes across core, sync, networth, labyrinth, tasks, and actions
 
-Core: guild shrine hydration that resolves after a character switch is discarded instead of stamping one character's guild levels onto another. Sync: a superseded push or pull — say, an abandoned conflict dialog answered minutes later — can no longer overwrite the data of the sync that took over. Networth: a multi-day combat session partly covered by the loot log no longer double-spends its total across logged and fallback days, and net-worth exclusions reload per character instead of leaking (and corrupting) across a switch. Labyrinth: measured consumable use now survives mid-run shop top-ups — buying torches back mid-run used to erase earlier spending from the average. Tasks: a reroll-protection timer orphaned by a character switch can no longer stamp a stale confirmation that waves the next reroll through. Actions: the low-drink alert re-arms per character instead of firing once per session for whoever crossed first; the budget calculator's disabled widget can no longer be resurrected by a leaked observer; the production per-action breakdown's essence and rare-find lines now sum to their own header (they were inflated by the efficiency multiplier); the loot log's historical-entry delete button works again (it called a method that no longer exists); loot-log history can no longer write one character's records under another's keys when a switch lands mid-merge; the production arbitrage board abandons a departed character's still-running ranking and honors Recompute during a run; and the skilling optimizer clears its results on character switch instead of reopening with the previous character's numbers. Utility-level: ability-book costs round up to whole books (net worth and score were undercounting), and huge amounts gain T/Q tiers instead of printing four-digit billions.
+Sixteen fixes. A superseded sync push or pull can no longer overwrite the data of the sync that took over. Measured labyrinth consumable use survives mid-run shop top-ups, where buying torches back used to erase earlier spending from the average. The low-drink alert re-arms per character instead of firing once per session for whoever crossed first, and ability-book costs round up to whole books, which net worth and score were undercounting.
 
 ### Fourth audit round: three market conveniences
 
@@ -1320,7 +1314,7 @@ The Trade Ledger shows totals for the filtered item; the Philosopher's Stone Cal
 
 ### Third audit round: fourteen fixes across planner, alchemy, house, chat, and profiles
 
-Planner: craft-arbitrage input quantities now carry the same Artisan tea discount as their cost, the Queue Time Left tile rounds up to whole actions like the other-character estimate always did, and the goal planner fully resets on a character switch instead of showing the previous character's plans and repricing against their skills. Alchemy: decompose history counts batched successes from item deltas (efficiency procs were scored as one success), coinify logs when a sell price is missing instead of silently degrading, and the gold-protection action cap stops counting a partial stack's remainder as one more action. House: the panel's bid price was always identical to the ask; it now quotes real bids. Collections: click-to-navigate survives the panel remounting. Chat and profiles: interactive elements in extended chat history work again after the February fiber change, the mention badge toggles its popup instead of close-then-reopen fighting itself, pop-out chat relays are tagged per tab so a second logged-in character can't answer the wrong pop-out, the Elite-achievement whisper icon clears when the profile modal swaps to another player, enhancement calibration forgets its cache on character switch, and the ironcow panel stops showing the previous character's costing when the new one has none.
+Fourteen fixes. Craft-arbitrage input quantities now carry the same Artisan tea discount as their cost, and the goal planner fully resets on a character switch instead of repricing against the previous character's skills. Decompose history counts batched successes, where efficiency procs were scored as one. The House panel's bid price was always identical to the ask; it quotes real bids now. And interactive elements in extended chat history work again.
 
 ### Third audit round: six conveniences
 
@@ -1332,7 +1326,7 @@ A treasure room carrying a stray monster field in the game's data was classified
 
 ### The philo calculator's craft costs account for Artisan tea, and show their arithmetic
 
-The Philosopher's Stone Calculator's own refinement craft estimate priced the raw recipe — 100 shards when the game's requirement line says 88.9 with Artisan tea active — overstating cape costs there by the whole tea bonus. This was specific to that calculator: every other craft-cost surface (equipment savings, the crafting plan, missing-mats, the profit displays) already applied the artisan reduction. The calculator now does too, and hovering its ⚒ cost shows the full accounting: each material's effective count, unit price and subtotal, plus what happened to the base item (untradable bases add no market cost; a tradable-but-unlisted base is disclosed as understating rather than silently omitted).
+The Philosopher's Stone Calculator's own refinement craft estimate priced the raw recipe — 100 shards where the game's requirement line says 88.9 with Artisan tea active — overstating cape costs by the whole tea bonus. Every other craft-cost surface already applied it. Hovering the ⚒ cost now also shows the full accounting: each material's effective count, unit price and subtotal.
 
 ### Philosopher's Stone Calculator items click through to the marketplace
 
@@ -1344,15 +1338,15 @@ The game's level cell wraps "+9" onto its own line when font metrics leave it a 
 
 ### Five combat-sim fixes from the audit's deepest pass
 
-The skilling upgrade advisor no longer drops a valid candidate when two loadouts wear the same accessory at different enhancement levels; the labyrinth Upgrade Analyze button gains the reentrancy guard the combat one always had, so a double-click can't race two runs against one Stop flag; the labyrinth clear-chance badges refresh after buying combat token upgrades (cached results didn't account for the new levels, so badges could show slightly outdated figures until something else refreshed them); the consumables auto-rate stops guessing "self" from party-slot order, which could file your food usage under a party member; and the sim comparison view stops fabricating zero baselines for players absent from the comparison run.
+Five combat-sim fixes: the skilling upgrade advisor no longer drops a valid candidate when two loadouts wear the same accessory at different enhancement levels; the labyrinth Analyze button gains a reentrancy guard so a double-click cannot race two runs against one Stop; the clear-chance badges refresh after buying token upgrades; and the consumables auto-rate stops guessing "self" from party-slot order, which could file your food usage under a party member.
 
 ### Second audit round: four more fixes and six more conveniences
 
-Fixes: the damage-taken table no longer keeps departed party members (or hands their totals to whoever inherits the slot); the inventory badge cooldown stops being consumed by renders that bailed; a mid-run enhancement pickup infers the correct start level near the protection threshold; and an undercut alert can no longer be swallowed by its own predecessor's cooldown after you reprice — a reprice mints a fresh notification key. Features: mooket watchlist chips say how fresh their price reading is; the Trade Ledger gets an item filter (the CSV export follows it); the Combat Statistics popup copies as text; the attendance ledger tooltips each member's last-attended date; the gold-sources calendar clicks through to that day's breakdown; and the guild roster's contribution table exports to CSV.
+Fixes: the damage-taken table no longer keeps departed party members or hands their totals to whoever inherits the slot, and an undercut alert can no longer be swallowed by its predecessor's cooldown after you reprice. Conveniences: watchlist chips say how fresh their price reading is, the Trade Ledger gets an item filter, the Combat Statistics popup copies as text, and the guild roster's contribution table exports to CSV.
 
 ### Seven guild fixes from the audit fleet
 
-Trial state stops leaking across boundaries: a new trial no longer inherits the previous trial's game-reported totals and boss sheets; the personally-fought path resets its per-slot HP/MP baselines at wave boundaries like the spectated path always did, ending phantom revives and bogus healing swings when slots re-deal; and a character or guild switch mid-trial now closes the recording out properly — accruing it to the attendance ledger instead of leaving a forever-open session that never counted. The attendance ledger itself serialises its writes so two trials finishing close together can't clobber each other's rows, the ledger view guards against out-of-order redraws, the XP tracker stamps its guild id before awaiting the read so overlapping guild switches can't mismatch histories, and the skilling stats keep a stated zero consistently.
+Seven guild fixes. A new trial no longer inherits the previous trial's game-reported totals and boss sheets; the personally-fought path resets its per-slot HP and MP baselines at wave boundaries, ending phantom revives and bogus healing swings; and a character or guild switch mid-trial closes the recording out properly, accruing it to the attendance ledger instead of leaving a session that never counted.
 
 ### Pinned market tabs stop reading the next character's bags
 
@@ -1364,11 +1358,11 @@ Every floating panel now closes on Escape — most recently opened or raised fir
 
 ### Five market fixes from the audit fleet
 
-The price-history chart no longer stays blank after a character switch or feature re-enable (a stale drawn-key survived the teardown). Trade history finally shows last prices for non-equipment items — regular fills were written under an `undefined` enhancement key no reader ever looked up. The marketplace shortcut buttons (÷2/×2 and the quick-input accumulator) stop truncating comma-formatted figures now that the game's fields are text — one click could previously slam a 45M listing to 45. The shopping-list unclaimed-fill counting now also covers upgrade and protection items. And disabling the trade ledger or history around a character switch no longer folds the old character's in-memory records under the new character's stored data.
+Five market fixes. The price-history chart no longer stays blank after a character switch. Trade history finally shows last prices for non-equipment items. The marketplace ÷2/×2 and quick-input buttons stop truncating comma-formatted figures, which could slam a 45M listing to 45. And disabling the trade ledger around a switch no longer folds one character's records into another's.
 
 ### Three fixes from the audit fleet: races and free alchemy
 
-The consumable target could survive an overlapping character switch with the departed character's value — the load now carries a generation guard like the persisted records do. An alchemy session consuming an unpriceable input was valued as if the input were free, overstating the alchemy row; it now reports as unpriceable and is disclosed like the enhancement equivalent. And a combat run that ended while the tab was closed was silently dropped instead of archived — the restored snapshot now remembers its own session key, so the first new fight after a reload archives it properly and its loot reaches the gold attribution.
+An alchemy session consuming an unpriceable input was valued as if the input were free, overstating the alchemy row; it reports as unpriceable now. A combat run that ended while the tab was closed was silently dropped instead of archived — the restored snapshot remembers its own session key now, so the first new fight after a reload archives it and its loot reaches the gold attribution.
 
 ### Six small conveniences across the panels
 
@@ -1380,16 +1374,16 @@ A performance trace showed three startup paths awaiting the storage module's thr
 
 ### The restock tabs finally watch you buy
 
-The earlier missing-mats fix covered the action-panel tabs but not the shopping-list hand-off (the labyrinth Buy-all and the shrine plan use it) — those tabs were built once with static counts and never looked again. Each line now remembers the holdings it opened against and counts everything acquired since — inventory and bought-but-unclaimed buy-order units alike — so badges fall as purchases land, a filled line turns green, and clicking a half-filled tab arms the buy box with only what is left.
+The earlier missing-mats fix covered the action-panel tabs but not the shopping-list hand-off used by the labyrinth Buy-all and the shrine plan, so those tabs were built once with static counts and never looked again. Each line now counts everything acquired since it opened, so badges fall as purchases land, a filled line turns green, and clicking a half-filled tab arms the buy box with only what is left.
 
 ### The gold panel's unexplained residual now says what it was made of
 
-Four additions to "Where the gold came from", all aimed at the grey residual row:
+Four additions aimed at the gold panel's grey residual row:
 
-- a sub-line under it splits the window's measured change by asset — `gold · items · fixed` — off the same snapshots the change is measured from, so "the market repriced the vault" and "coins arrived from nowhere" stop reading the same. A category the snapshots cannot measure says so rather than showing a zero.
-- a "Market movement (last ~24h)" line prices the drift on stock held right through the item-level snapshot window, which is the one thing the today's-prices caveat says the panel cannot see. Scoped to the hours it really covers and never folded into the per-day table.
-- a **Tasks** row, from the reward payload the task completion tracker already records at each claim.
-- a **Chests opened** row, from a new per-day openings recorder: what came out, less what the chests were worth — realised luck against the expected value they were already carried at.
+- a sub-line splitting the measured change by asset — gold, items, fixed — so "the market repriced the vault" and "coins arrived from nowhere" stop reading the same.
+- a "Market movement (last ~24h)" line pricing drift on stock held through the window.
+- a **Tasks** row, from the reward payload each claim records.
+- a **Chests opened** row: what came out, less what they were worth.
 
 ### The trial signups block folds away
 
@@ -1401,7 +1395,7 @@ On My Listings and History the game keeps the last item's node in the DOM but hi
 
 ### Labyrinth restock: pick your per-run basis, and the measured figure stops lying
 
-A "measured / full capacity" pill on the Labyrinth block chooses whether a run is planned at the average your recorded runs actually spent or at the whole capacity every run (also a setting). And the measured average was badly low — a run first seen mid-way (a reload, a tab opened late) recorded "spent" from wherever it was joined, dragging 350-torch runs down to ~100. Only runs watched from the door count now; older records that cannot say which they were are excluded, so the figure rebuilds honestly over your next few runs.
+A "measured / full capacity" pill on the Labyrinth block chooses whether a run is planned at the average your recorded runs actually spent or at the whole capacity. The measured average was badly low — a run first seen mid-way recorded "spent" from wherever it was joined, dragging 350-torch runs down to about 100. Only runs watched from the door count now.
 
 ### The credit exchange gets a Max button and a held count per row
 
@@ -1409,15 +1403,15 @@ The exchange dialog's "You give" box gains a Max button that fills in everything
 
 ### Shrine buff levels stop leaking between characters
 
-The shrine planner could show another character's buff levels — "lvl 1" while the game said 3/3. The capture listens on the raw socket with no character scoping, so during a switch a late message from the departing character's stream was persisted under the arriving character's key. Every buff row names its owner, so a capture whose rows belong to someone else is now refused outright, and a persisted record contaminated before this fix is ignored on load and overwritten by the next clean capture.
+The shrine planner could show another character's buff levels — "lvl 1" while the game said 3/3 — because a late message from the departing character's stream was persisted under the arriving character's key. Every buff row names its owner, so a capture whose rows belong to someone else is refused outright, and a record contaminated before this fix is ignored and overwritten by the next clean capture.
 
 ### Missing-mats tabs count what a buy order has already bought
 
-The "Missing" badges on the marketplace hand-off tabs only counted the inventory, and items a buy order has filled sit unclaimed on the listing until collected — so a 112K purchase moved the badge not at all until a trip to My Listings. Bought-but-unclaimed units on your own buy orders now count as held, across the shrine hand-off, production recipes and enhancement lists alike; claiming moves them to the inventory and off the listing in the same breath, so nothing counts twice.
+The "Missing" badges on the marketplace hand-off tabs counted only your inventory, and items a buy order has filled sit unclaimed on the listing until collected — so a 112K purchase moved the badge not at all until a trip to My Listings. Bought-but-unclaimed units now count as held, and claiming moves them across in the same breath, so nothing counts twice.
 
 ### Gold attribution counts the fight you are still in, on days you actually live
 
-Two fixes to "Where the gold came from". A combat session only enters the archive when the NEXT one starts, so a character deep in one long fight had that whole run's loot in no session at all — the combat row read 0 while the residual carried the day; the run in progress now counts, deduplicated against the archive the moment it lands there. And days now run midnight to midnight in your local time instead of UTC, matching the net worth calendar, so an evening's grinding stops being split across two rows. (A follow-up closed the seam that left: the window's start date was still derived from the UTC calendar, which put an evening's Day view entirely in the future for anyone west of Greenwich.) A session's loot and consumables are also now spread across the days the run actually spanned, by time — a twelve-day AFK grind used to book everything to its start day, which sat outside every window.
+Two fixes to "Where the gold came from". A combat session only entered the archive when the next one started, so a character deep in one long fight had that whole run's loot in no session at all and the combat row read 0. The run in progress now counts. And days run midnight to midnight in your local time instead of UTC, so an evening's grinding is no longer split across two rows.
 
 ### The dual-install warning stops accusing the dev loader of being two scripts
 
@@ -1425,7 +1419,7 @@ Removing a setting from the schema made the next dev reload trip the dual-instal
 
 ### Character select tells you what your other characters are doing
 
-Each populated slot on the character-select screen now shows what that character is expected to be doing and the earliest point it may need attention — the action or queue ending, materials running out, or its own offline-progress cap. Combat, Labyrinth and Enhancing are always reported as having no knowable end time rather than guessed at, and a MooPass that could expire mid-offline-period drops the estimate rather than reassuring you falsely. Ported from upstream; on by default under General → "Character select: Show activity status".
+Each populated slot on the character-select screen now shows what that character is expected to be doing and the earliest point it may need attention — the action or queue ending, materials running out, or its offline-progress cap. Combat, Labyrinth and Enhancing are always reported as having no knowable end rather than guessed at. On by default under General.
 
 ### A run that starves of materials stops haunting the briefing
 
@@ -1445,15 +1439,15 @@ The unsigned-players list keeps left-click for drafting the whisper nudge; right
 
 ### Tea below an action's requirement stops being over-credited
 
-Efficiency for an action you are under-levelled for clamped the skill level up to the requirement before adding the tea's levels, so a tea that only partly closed the gap was paid as if it closed all of it — skill 18 on a level 20 action with a +3 tea read +3% level efficiency where the game gives +1%. The tea now adds to the real level first, which corrects profit displays, gathering profit, action times and the sims for those actions.
+Efficiency for an action you are under-levelled for clamped your skill level up to the requirement before adding the tea's levels, so a tea that only partly closed the gap was paid as if it closed all of it — skill 18 on a level 20 action with a +3 tea read +3% where the game gives +1%. Corrected across profit displays, action times and the sims.
 
 ### Level Malus now matches the server's own formula
 
-The MWI developer supplied the server-side implementation, which differs from what the fork inferred from the Game Guide: the 20%-and-ten-levels pair is one combined threshold, the comparison is strict, the penalty is continuous rather than stepped to whole percents, and it reads the raw unfloored Combat Level. Combat Level 40 in a party topping out at 50 is no penalty at all (was -15%), at 51 it is -7.5% (was -15%), and small gaps that used to round away now show their real fraction of a percent. Both the sim and the live drop model feed it unfloored levels now.
+The MWI developer supplied the server-side Level Malus formula, which differs from what the fork inferred from the Game Guide: the 20%-and-ten-levels pair is one combined threshold, the comparison is strict, and the penalty is continuous rather than stepped. Combat Level 40 in a party topping out at 50 is now no penalty at all, where it was -15%; at 51 it is -7.5%.
 
 ### The shared database keeps up with upstream, and a dead link goes away
 
-An upstream audit found the co-installed upstream script has moved the shared ToolashaDB to version 20 while this fork sat at 17 — if that script ran even once, this one would open the database into a VersionError and silently read defaults for everything. The fork now matches version 20, creates upstream's three new stores defensively, and — should the version ever drift again — reopens the database at whatever version it finds instead of going dark. The milkyway.market link (site permanently down) is removed along with its setting.
+The co-installed upstream script has moved the shared database to version 20 while this fork sat at 17 — if that script ran even once, this one would open the database into an error and silently read defaults for everything. The fork now matches version 20, and should the version ever drift again it reopens at whatever it finds instead of going dark.
 
 ### Trial Abilities and Guild Roster: names click through, controls stay put
 
@@ -1461,19 +1455,19 @@ Player names across the Trial Abilities panel (aura holders, the utility rosters
 
 ### Sync: two characters pushing at once no longer fails with HTTP 409
 
-Two tabs on the sync interval — different characters, same gist — could land their pushes at the same moment, and GitHub answers the loser with a 409. That push now retries up to twice with a short jittered pause and a fresh file listing, and only a conflict that never clears is surfaced, named as what it is. Tabs in the same browser also coordinate outright: while one tab's sync runs, another tab's interval tick skips (the database is shared — the winner is pushing it) instead of racing, and a manually clicked push still runs immediately.
+Two tabs on the sync interval could land their pushes at the same moment, and GitHub answers the loser with a 409. That push now retries twice with a jittered pause, and only a conflict that never clears is surfaced. Tabs in the same browser also coordinate: while one tab's sync runs, another's interval tick skips rather than racing. A manually clicked push still runs immediately.
 
 ### Trade Ledger: instant sales finally count, and rows open the marketplace
 
-A sell listing priced to fill the moment it was placed — how loot usually gets dumped — arrived already completed with no baseline to diff against, so the ledger silently recorded none of it; only listings that rested were ever counted. A live event whose listing is born terminal is now recorded in full, with a tombstone so claiming the proceeds can't count it twice (a completed listing first seen in a startup snapshot stays uncounted — there it can be history from before the ledger was watching). Item names in the ledger are also clickable now and open the marketplace at the item's enhancement level.
+A sell listing priced to fill the moment it was placed — how loot usually gets dumped — arrived already completed with no baseline to diff against, so the ledger recorded none of it; only listings that rested were ever counted. A listing born terminal is now recorded in full, with a tombstone so claiming the proceeds cannot count it twice. Item names in the ledger are also clickable.
 
 ### Party Loot: no more sideways scroll, instant history, and honest durations
 
-A coin count in the millions overflowed its fixed column and gave the whole panel a horizontal scrollbar — the count column now sizes to its content and counts past 100K compact to K/M form (exact figure in the tooltip). The session picker used to show only "Live Session" on first open until the next 5-second refresh; the archive read now redraws as soon as it lands. And sessions that showed "(—)" for their duration were short runs whose recorded duration went slightly negative from client/server clock skew — durations are now clamped at zero when recorded, and old skewed entries display as 0s instead of nothing.
+A coin count in the millions overflowed its fixed column and gave the whole Party Loot panel a horizontal scrollbar; the count column sizes to its content now and counts past 100K compact. The session picker redraws as soon as the archive read lands instead of showing only "Live Session" for five seconds. And durations that went slightly negative from clock skew are clamped at zero.
 
 ### Custom tabs: two more holes closed by an adversarial audit
 
-An audit of the merge and load paths against every known failure mode found two real bugs, now fixed. First, reviving a deleted tab subtree by editing one of its children brought back the subtree without its untouched siblings — the revival now carries the whole removal back with it, while a genuinely later deletion inside it still applies. Second, a tab record missing its `items` or `children` arrays — reachable via an imported file, a sync pull, or the co-installed upstream script writing the shared key — crashed the panel on every load until the key was cleared by hand; loads and imports now normalize the shape instead of trusting it. Every other invariant from the previous fix rounds was verified to hold.
+Two custom-tab bugs from an adversarial audit. Reviving a deleted tab subtree by editing one of its children brought back the subtree without its untouched siblings; the revival now carries the whole removal with it. And a tab record missing its items or children arrays — reachable via an import, a sync pull, or the co-installed upstream script — crashed the panel on every load until the key was cleared by hand.
 
 ### Tab exports name themselves
 
@@ -1481,47 +1475,49 @@ An exported custom-tabs layout now downloads as `toolasha-tabs-<character>-<mode
 
 ### Small sharpenings across the sims, trials and shrine planner
 
-Deaths/hr in the single-zone combat sim overview now shows three decimals, so a rare death stops rounding to 0.0. Character names in the trial results table are clickable and open the player's profile. The shrine planner's missing-mats view re-renders when an upgrade or inventory change makes materials newly missing (or newly covered), instead of only on open. And the "remembered results" banner on both the combat and lab sim Upgrade tabs now says whose run it was — character name, and for the combat sim the zone and tier it simulated — so a restored set can't be mistaken for the character or zone currently selected.
+Deaths per hour in the single-zone combat sim now shows three decimals, so a rare death stops rounding to 0.0. Character names in the trial results table open the player's profile. The shrine planner's missing-mats view re-renders when a change makes materials newly missing or newly covered. And the "remembered results" banner on both Upgrade tabs says whose run it was.
 
 ### The lab restock gets its own Buy all, and T21 stops pretending there's a T22
 
-The Labyrinth block on the consumables panel gains the same "Buy all N · cost" hand-off as the consumables footer — one click opens the marketplace with a tab per missing supply instead of a per-row trip each. And T21 being the final trial tier is now respected: the badge reads T21 rather than T21+ (a banked count above 21 clamps as the miscount it is), and a trial that has banked all 21 tiers shows one "Final tier" line instead of forecasting a next tier that cannot exist — while a trial still fighting T21 keeps its forecast, since reaching the top rung is a real prediction.
+The Labyrinth block on the consumables panel gains the same "Buy all N · cost" hand-off as the consumables footer — one click opens a tab per missing supply instead of a per-row trip each. And T21 being the final trial tier is now respected: the badge reads T21 rather than T21+, and a trial that has banked all 21 shows one "Final tier" line instead of forecasting a tier that cannot exist.
 
 ### The suggestions fold away, and you choose how missing credits are paid
 
-Suggested Next Buys collapses from its heading and remembers the fold per character. A new Missing credits: Auto · Tokens · Gold control picks how credit gaps are covered — Auto keeps the cheapest path per colour, Tokens forces the guild exchange wherever a rate exists, Gold forces the market wherever mats are priceable — with honest fallbacks either way and a tooltip naming the overpay when a forced path costs more than Auto would have. One mode drives the whole panel: rankings, affordability, the spend-everything walk, both mats buttons, the convert lines and the still-needed box all move together — which also fixed Auto double-billing the same shortfall as both a purchase and an exchange.
+Suggested Next Buys collapses from its heading and remembers the fold per character. A new Missing credits: Auto · Tokens · Gold control picks how credit gaps are covered, with a tooltip naming the overpay when a forced path costs more than Auto would have. One mode drives the whole panel — rankings, affordability, the spend-everything walk and the still-needed box — which also fixed Auto double-billing the same shortfall.
 
 ### Combat income is measured from your own battles, not just the Loot & XP Log
 
-The combat row read only the Loot & XP Log history, which the game syncs when that log is opened — a character who never opened it showed a confident "Combat drops: 0" while the whole week's income sat in the residual. Each day now uses the game's own log when it recorded that day and falls back to your battle-feed session loot when it didn't (own character only, never both), the basis says which fed what, and a day where combat demonstrably ran but neither source covered it is disclosed as a gap instead of read as zero. Coin drops are also finally worth their face value in both paths instead of pricing to nothing. Labyrinth end-of-run rewards remain invisible to both sources and stay in the residual — the gap note will say so on lab-heavy days.
+The combat row read only the Loot & XP Log history, which the game syncs when that log is opened — so a character who never opened it showed a confident "Combat drops: 0" while the whole week's income sat in the residual. Each day now falls back to your own battle-feed session loot, the basis says which fed what, and a day neither source covered is disclosed as a gap rather than read as zero.
 
 ### The shrine planner knows the real token rates and recommends the cheapest path
 
-The guild shop's actual token→credit rates are built in (green/brown/white/blue 1→10, purple/red 1→1, silver 10→1, gold 60→1; a live capture from the exchange still overrides them if the game rebalances). With every rate known, each suggested buy now recommends one cheapest plan per credit colour — convert tokens where tokens genuinely win, buy mats where the market wins, judged against the token's own gold value at its best use. In practice tokens go to the colour they buy the most of and everything else goes to gold; the affordability marks, the ranking, the spend-everything walk, the Missing Mats button and the convert lines all follow the recommended plan, and figures from the standard rates drop the ≈ they no longer need.
+The guild shop's actual token-to-credit rates are built in, with a live capture still overriding them if the game rebalances. With every rate known, each suggested buy recommends one cheapest plan per credit colour — convert tokens where tokens genuinely win, buy mats where the market wins. The affordability marks, the ranking, the spend-everything walk and the convert lines all follow that plan.
 
 ### The shrine planner stays inside its window and follows through to the exchange
 
-The Suggested Next Buys rows wrapped badly and ran off the modal's right edge; they now wrap within it, with credit names shortened in context ("12,000 Blue") and the full list in the tooltip. The affordable buys get their own Missing Mats Marketplace button plus a "then convert:" plan naming exactly what to exchange after buying. And spare guild tokens now count toward credit gaps: where the exchange rate has been seen, a buy short on credits shows the ≈token top-up that covers it, the spend-everything walk ranks by effective token cost, and the still-needed box says "or convert ≈N tokens" — a colour whose rate has never been captured says so instead of guessing.
+The Suggested Next Buys rows wrapped badly and ran off the modal's right edge; they wrap within it now, with credit names shortened in context and the full list in the tooltip. Affordable buys get their own Missing Mats Marketplace button plus a "then convert:" plan. And spare guild tokens count toward credit gaps, with a colour whose rate has never been captured saying so instead of guessing.
 
 ### Custom tabs: tombstones can no longer eat your tabs, and lost ones come back
 
-The deletion tombstones added two releases ago could delete every tab created before them — an unstamped tab counted as infinitely old, so any deletion record beat it, and this ran on every load. Since the pruned config only becomes permanent on the next save, affected tabs reappear on their own with this fix. Also: a merge can never empty most of a curated list any more (a mass-delete is held back and logged instead); exports no longer carry the tombstone map and imports strip it, stamp every tab, and give them fresh ids, so an imported file can't delete itself and two characters can't share tab ids; two load-race windows from the previous fix are closed (a reload that could leave the panel blank until refresh, and a save that could land against a half-loaded config); and running a second Toolasha userscript alongside this one — which shares its database and silently rewrites shared settings — is now detected and loudly warned about.
+The deletion tombstones added two releases ago could delete every tab created before them — an unstamped tab counted as infinitely old, so any deletion record beat it, and this ran on every load. Affected tabs reappear on their own with this fix.
+
+Also: a merge can never empty most of a curated list any more, exports no longer carry the tombstone map, and running a second Toolasha userscript alongside this one is detected and warned about.
 
 ### Labyrinth: combat rooms no longer flash 0% after a reload
 
-The Automation table drew failed or too-early sim results as a hard 0% (skilling rooms were unaffected — they're plain arithmetic). Failed sims now keep their placeholder and retry like the floor-map tiles always did; sims wait for loadout snapshots instead of silently running your worn gear; the persisted sim cache survives reloads instead of being discarded against a half-loaded fingerprint every time; badges redraw the moment snapshots land; a settings mismatch that re-simmed every room on every render is fixed; and cached results from older script versions are dropped rather than served.
+The labyrinth Automation table drew failed or too-early sim results as a hard 0%. Failed sims now keep their placeholder and retry the way the floor-map tiles always did, sims wait for loadout snapshots instead of silently running your worn gear, the persisted cache survives reloads, and cached results from older script versions are dropped rather than served.
 
 ### The guild trial diagnostic trace no longer rides along in backups and sync
 
-The opt-in trace (off by default) is deliberately large — a full trial can run 10–15 MB gzipped by itself, several times the rest of an account's data combined — and it already has its own dedicated export for when you actually want to share one. Nothing was excluding it from an ordinary backup or an "Everything" sync, so turning the trace on could quietly inflate both past what a gist can hold. Backups and sync payloads now leave it out; restoring an older backup that happens to carry one still works.
+The opt-in guild trial trace is deliberately large — a full trial can run 10–15 MB gzipped, several times the rest of an account's data combined — and nothing was excluding it from an ordinary backup or an "Everything" sync, so turning it on could quietly inflate both past what a gist can hold. Backups and sync payloads now leave it out.
 
 ### The shrine upgrade planner remembers your targets, suggests what to buy next, and hands off the shortfall
 
-Target levels typed into the guild credit exchange's Shrine Upgrade Planner used to reset every time the modal closed; they now persist per character, and a stale target below your current level is dropped automatically as you level up. A new "Suggested Next Buys" list shows every shrine buff's next level only, cheapest in guild tokens first, marked against your current token balance, with a running total of what you could afford to buy right now. The cost box nets against what you already hold and says so; whatever credit shortfall remains gets a "Missing Mats Marketplace" button that finds the cheapest raw material for each credit and sends the shortfall to the marketplace as ready-made tabs.
+Target levels typed into the Shrine Upgrade Planner used to reset every time the modal closed; they persist per character now, and a stale target below your current level is dropped as you level up. A new "Suggested Next Buys" list shows every shrine buff's next level only, cheapest in guild tokens first, and whatever credit shortfall remains gets a "Missing Mats Marketplace" button.
 
 ### Custom tabs survive a rapid character switch, and crafting prices can be forced fresh
 
-The sync-pull fix wasn't the whole story: switching characters quickly skips this feature's own re-init as a performance optimisation, and it kept saving under whoever the _current_ character had become while still holding the _previous_ one's tabs in memory — merging one character's tabs into another's, and deleting a shared tab (from Export/Import) if either side had removed it. The feature now refuses to save under a mismatched character and reloads its own tabs the moment the arriving character's data is ready, independent of that skip. Also: a "Refresh Prices" button next to Sort/Mode/Craft on crafting and gathering panels force-refetches the market and updates every visible Profit/hr figure in place, instead of having to open the marketplace per item.
+Switching characters quickly skips this feature's own re-init, and custom tabs kept saving under whoever the current character had become while still holding the previous one's tabs in memory — merging one character's tabs into another's. It now refuses to save under a mismatched character. Also: a "Refresh Prices" button on crafting and gathering panels updates every visible Profit/hr figure in place.
 
 ### Custom tabs know when they changed, so a sync fold picks the right copy
 
