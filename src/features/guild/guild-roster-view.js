@@ -744,6 +744,26 @@ export function registerGuildRosterRow() {
 /** Unsubscribe from the loadout capture's events; set in `initialize` */
 let offCaptured = null;
 
+/**
+ * Whether this feature is currently one of the capture's counted owners.
+ *
+ * `guildLoadoutCapture` is reference counted (`owners`) precisely because two
+ * features start it, and a count only works if every `initialize()` is paired
+ * with exactly one `cleanup()`. This one was not: the roster incremented on
+ * every character switch's re-init and never decremented, so `owners` could
+ * not reach zero and the capture was never torn down. It then kept
+ * `characterId`, `guildName` and `record` — all resolved once, in
+ * `initialize()` — pointed at the *departing* character for the rest of the
+ * tab's life, and `setGuildName()` filed the arriving character's guild roster
+ * under the departing character's storage key.
+ *
+ * Worse, which of the two shapes a user got depended on their settings. With
+ * Guild Trials on and the roster off, `owners` went 1 → 0 and the capture was
+ * correctly rebuilt per character; with the roster on, it never was. The safe
+ * build was the accident.
+ */
+let capturing = false;
+
 export default {
     name: 'Guild Roster',
     initialize: async () => {
@@ -751,7 +771,15 @@ export default {
         registerGuildRosterRow();
         // Idempotent, and the trials feature starts it too: either being on is
         // reason enough to be writing down what goes past
-        await guildLoadoutCapture.initialize();
+        //
+        // The flag is set from the *synchronous* half of that call — `owners`
+        // is incremented on its first line, before its own storage read — so a
+        // character switch tearing this feature down while that read is in
+        // flight still finds an owner to give back. Setting it after the await
+        // is how the count would go wrong again, just more rarely.
+        const started = guildLoadoutCapture.initialize();
+        capturing = true;
+        await started;
         // A landed sheet redraws the open panel at once — the Battle Info
         // cycler was waiting out the 3s refresh tick before offering the next
         // fighter. The timer stays as the fallback; `render` is a no-op while
@@ -762,6 +790,13 @@ export default {
     cleanup: () => {
         offCaptured?.();
         offCaptured = null;
+        // Give the owner back, once. `cleanup()` on the capture decrements and
+        // returns early while anything else still holds it, so this stops the
+        // capture only when Guild Trials is off — the whole point of counting.
+        if (capturing) {
+            capturing = false;
+            guildLoadoutCapture.cleanup();
+        }
         guildRosterPanel.hide({ remember: false });
         resetRosterFilter();
     },

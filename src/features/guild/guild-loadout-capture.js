@@ -299,6 +299,22 @@ class GuildLoadoutCapture {
         this.saveQueued = false;
         this.listeners.clear();
         this.initialized = false;
+
+        // The three fields `initialize()` resolves once, let go together.
+        //
+        // Nothing is relying on this any more, and the next `initialize()`
+        // reads the record back under whoever is current then — but only if
+        // `guildName` is not still naming the guild the *departing* character
+        // was in, since it is half of the storage key that read is made from.
+        // Guild Trials nulls it on its own character-switch path
+        // (`setGuildName(null)`); a tab with only the roster switched on has
+        // nothing that would, which is how a teardown that looked complete
+        // still handed the arriving character a key with the departed
+        // character's guild in it.
+        if (this.guildName !== null) this.guildEpochAt = Date.now();
+        this.guildName = null;
+        this.characterId = null;
+        this.record = { players: {}, updatedAt: 0 };
     }
 
     /**

@@ -972,7 +972,23 @@ registerCommand({
 // belongs to the departing character, closing the gap entirely — the same
 // fix the Combat Level panel already applies to its own history for the same
 // reason.
-dataManager.on('character_switching', () => abilityHistory.clear());
+dataManager.on('character_switching', () => {
+    abilityHistory.clear();
+    // The armed quantity is this character's shortfall — "2,809 more Puncture
+    // books to reach 100" is an answer about *their* ability levels — and
+    // `autofill` is one-shot but not time-bounded: it sits armed until a buy
+    // box for that book actually opens, which can be after a trip to the
+    // marketplace and a character switch on the way. Without this, the next
+    // character to open a New Buy Listing for that book gets the departed
+    // character's count typed in for them, and a buy box is a place the player
+    // acts on a number rather than merely reads one.
+    //
+    // `clearQuantity()` and not `cleanup()`: the observer is registered once,
+    // lazily, behind `autofillReady`, which nothing resets — tearing the
+    // observer down here would leave the arming machinery permanently dead
+    // instead of merely stale.
+    autofill.clearQuantity();
+});
 
 dataManager.on('character_switched', () => {
     resetAbilityTargets();

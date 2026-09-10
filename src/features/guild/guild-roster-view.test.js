@@ -63,6 +63,10 @@ vi.mock('./guild-member-skills.js', () => ({
 vi.mock('./guild-loadout-capture.js', () => ({
     default: {
         initialize: async () => {},
+        // Counted, not merely guarded: the roster is one of two owners, and
+        // `guild-roster-view.capture-ownership.test.js` is where the count
+        // itself is pinned down against the real module
+        cleanup: () => {},
         seen: () => [],
         onCaptured: (listener) => {
             tracker.capturedListeners.push(listener);
