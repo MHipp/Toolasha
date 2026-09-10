@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The house upgrade cost list is reachable on a phone
+
+Reported by a player: on mobile the cumulative cost list for a house upgrade ran off the bottom of the screen with no way to scroll it, so the Missing Mats Marketplace button underneath could not be reached at all. The list was marked scrollable but had no height to scroll within, which means it simply grew instead — on a desktop the page still reached the end, so it only ever showed up on a phone.
+
+The material rows now scroll within whatever room the screen actually has, and the total and the button sit below them rather than at the end of the list, so they are on screen without scrolling to find them. Room is measured against the visible area rather than the screen, so the address bar and the on-screen keyboard are accounted for. A desktop-sized window fits the whole list as before and scrolls nothing.
+
 ### The bulk sell strip's buttons stay where you left them
 
 Confirm sat to the left of a button whose label changes as the run moves — Bulk Sell, Skip, Next — so every step nudged it sideways, and Stop and the tab picker appearing and disappearing moved it again. During a long run that means aiming at a button that will not be there. Every control now keeps its slot whatever the strip is saying, whether the strip is where it starts or somewhere you dragged it to.
