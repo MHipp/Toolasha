@@ -33,6 +33,7 @@
 import config from '../../core/config.js';
 import { createPersistedRecord, mergeById } from '../../utils/persisted-record.js';
 import { registerSyncMerge } from '../../utils/sync-merge-registry.js';
+import { clearRecord, clearedRecord, entriesOf, mergeClearable } from '../../utils/cleared-record.js';
 import dataManager from '../../core/data-manager.js';
 import webSocketHook from '../../core/websocket.js';
 import { calculateGatheringProfit } from '../actions/gathering-profit.js';
@@ -58,9 +59,23 @@ const oldestFirst = (a, b) => (Number(a?.t) || 0) - (Number(b?.t) || 0);
  * @param {Array<Object>} memory - The in-memory ledger
  * @returns {Array<Object>}
  */
-export function mergeCalibrationRecords(stored, memory) {
+function unionCalibrationRecords(stored, memory) {
     return mergeById((record) => record?.id, oldestFirst)(stored, memory).slice(-MAX_RECORDS);
 }
+
+/**
+ * The union above, with Clear's epoch applied.
+ *
+ * Clear empties the ledger, and a union cannot say so — a peer's still-full
+ * copy wins the next pull and the pairs it just threw away come straight
+ * back, on the device that cleared them. `t` is when a pair was written (the
+ * run's own `endTime`, falling back to the moment it was recorded, so it is
+ * never absent), which is what lets a pair recorded on another device after
+ * the clear survive it. See utils/cleared-record.js.
+ */
+export const mergeCalibrationRecords = mergeClearable(unionCalibrationRecords, (record) => record?.t, {
+    label: 'prediction calibration',
+});
 
 /*
  * Registered so a cross-device sync PULL combines this record instead of
@@ -107,7 +122,7 @@ class PredictionCalibration {
         this.store = createPersistedRecord({
             base: 'calibration',
             store: STORE_NAME,
-            empty: () => [],
+            empty: () => clearedRecord(),
             merge: mergeCalibrationRecords,
             migrate: 'discard',
             label: 'PredictionCalibration',
@@ -135,7 +150,7 @@ class PredictionCalibration {
 
     /** Take the (merged) record back into the fields the rest reads */
     _sync() {
-        this.records = this.store.get();
+        this.records = entriesOf(this.store.get());
         for (const record of this.records) this.recorded.add(record.id);
     }
 
@@ -182,7 +197,7 @@ class PredictionCalibration {
             const store = this._store();
             // Pairs written before the read landed are folded under what is
             // stored; a read that could not be made keeps them as they are
-            store.set(this.records || []);
+            store.set(clearedRecord(this.records || []));
             await store.load();
             this._sync();
         } catch (error) {
@@ -349,18 +364,17 @@ class PredictionCalibration {
 
     /**
      * Persist the pairs, folding in what another tab wrote meanwhile. Skipped
-     * when storage cannot be read first.
-     * @param {{overwrite?: boolean}} [options] - `overwrite` for the one
-     *   intentional wipe, `clear`
+     * when storage cannot be read first. `clear()` writes through
+     * `clearRecord` instead — the one intentional wipe.
      * @returns {Promise<boolean>} Whether a write landed
      */
-    async _save({ overwrite = false } = {}) {
+    async _save() {
         const key = this._key();
         if (!key) return false;
         try {
             const store = this._store();
-            store.set(this.records || []);
-            const landed = await store.save({ overwrite });
+            store.set(clearedRecord(this.records || []));
+            const landed = await store.save();
             this._sync();
             return landed;
         } catch (error) {
@@ -427,7 +441,13 @@ class PredictionCalibration {
         this.records = [];
         this.recorded.clear();
         this.pending.clear();
-        await this._save({ overwrite: true });
+        // Notice a character switch before writing, same as `_save()`
+        this._store();
+        // Stamped, so the clear also survives the next sync pull instead of
+        // being restored by a peer whose copy still holds what was forgotten
+        // (utils/cleared-record.js)
+        await clearRecord(this.store);
+        this._sync();
     }
 
     /** Cleanup when disabled. */

@@ -86,7 +86,7 @@ vi.mock('../actions/loot-log-stats.js', () => ({
 // The work is supposed to wait for a quiet moment; a test has none to wait for
 vi.mock('../../utils/background-work.js', () => ({ runInBackground: async (name, work) => await work() }));
 
-const { PredictionCalibration, actionTypeOf } = await import('./prediction-calibration.js');
+const { PredictionCalibration, actionTypeOf, mergeCalibrationRecords } = await import('./prediction-calibration.js');
 
 /**
  * A loot log entry.
@@ -131,6 +131,21 @@ async function send(lootLog) {
     await calibration.queue;
 }
 
+/**
+ * The stored ledger's entries, unwrapping the `{clearedAt, entries}` shape a
+ * save now writes (cleared-record.js). A bare array, if a test wrote one
+ * directly, reads as itself.
+ */
+function storedEntries(key) {
+    const value = game.stored[key];
+    return Array.isArray(value) ? value : value?.entries || [];
+}
+
+/** Simulate another tab's write: the entries change, the clear epoch carries. */
+function writeStoredEntries(key, entries) {
+    game.stored[key] = { clearedAt: game.stored[key]?.clearedAt || 0, entries };
+}
+
 describe('actionTypeOf', () => {
     test('names the skill an action belongs to', () => {
         expect(actionTypeOf('/actions/milking/cow')).toBe('milking');
@@ -152,7 +167,7 @@ describe('pairing a forecast with a finished run', () => {
         expect(records).toHaveLength(1);
         expect(records[0]).toMatchObject({ id: 1, actionType: 'milking', predicted: 1000, actual: 500 });
         // The pair is persisted under this character's own key
-        expect(game.stored['lootLogHistory:calibration_char-1']).toHaveLength(1);
+        expect(storedEntries('lootLogHistory:calibration_char-1')).toHaveLength(1);
     });
 
     test('keeps the forecast taken while the run was going, not a later one', async () => {
@@ -213,7 +228,7 @@ describe('pairing a forecast with a finished run', () => {
 
         expect(written).toBe(true);
         // Same store, same key: one history, whoever measured the pair
-        expect(game.stored['lootLogHistory:calibration_char-1']).toHaveLength(1);
+        expect(storedEntries('lootLogHistory:calibration_char-1')).toHaveLength(1);
     });
 
     test('every pair carries its script-version cohort marker', async () => {
@@ -277,7 +292,7 @@ describe('pairing a forecast with a finished run', () => {
 
         const records = await calibration.getRecords();
         expect(records.find((r) => r.id === 1)).toBeUndefined();
-        expect(game.stored['lootLogHistory:calibration_char-2']?.find((r) => r.id === 1)).toBeUndefined();
+        expect(storedEntries('lootLogHistory:calibration_char-2').find((r) => r.id === 1)).toBeUndefined();
     });
 
     test('drops the oldest pairs rather than growing without end', async () => {
@@ -313,17 +328,17 @@ describe('the ledger survives a failed read and a second tab', () => {
         expect(await calibration.addRecord(pair('b', 2))).toBe(true);
 
         game.unavailable = false;
-        expect(game.stored[KEY].map((r) => r.id)).toEqual(['a']);
+        expect(storedEntries(KEY).map((r) => r.id)).toEqual(['a']);
         expect((await calibration.getRecords()).map((r) => r.id)).toEqual(['a', 'b']);
     });
 
     test('a save folds in pairs another tab wrote meanwhile', async () => {
         await calibration.addRecord(pair('a', 1));
-        game.stored[KEY] = [...game.stored[KEY], pair('c', 3)];
+        writeStoredEntries(KEY, [...storedEntries(KEY), pair('c', 3)]);
 
         await calibration.addRecord(pair('b', 2));
 
-        expect(game.stored[KEY].map((r) => r.id)).toEqual(['a', 'b', 'c']);
+        expect(storedEntries(KEY).map((r) => r.id)).toEqual(['a', 'b', 'c']);
         expect((await calibration.getRecords()).map((r) => r.id)).toEqual(['a', 'b', 'c']);
         // And the merged-in pair is known, so it is not accepted twice
         expect(await calibration.addRecord(pair('c', 3))).toBe(false);
@@ -338,15 +353,18 @@ describe('the ledger survives a failed read and a second tab', () => {
         game.unavailable = false;
         await calibration.addRecord(pair('c', 3));
 
-        expect(game.stored[KEY].map((r) => r.id)).toEqual(['a', 'b', 'c']);
+        expect(storedEntries(KEY).map((r) => r.id)).toEqual(['a', 'b', 'c']);
     });
 
-    test('clearing is the one overwrite', async () => {
+    test('clearing is the one overwrite, and stamps what it writes', async () => {
         await calibration.addRecord(pair('a', 1));
 
         await calibration.clear();
 
-        expect(game.stored[KEY]).toEqual([]);
+        expect(storedEntries(KEY)).toEqual([]);
+        // Stamped, so a peer's still-full copy cannot restore what was cleared
+        // on the next sync pull (utils/cleared-record.js)
+        expect(game.stored[KEY].clearedAt).toBeGreaterThan(0);
     });
 
     test('a character switch forgets the departing character’s pairs', async () => {
@@ -355,8 +373,47 @@ describe('the ledger survives a failed read and a second tab', () => {
 
         await calibration.addRecord(pair('z', 9));
 
-        expect(game.stored['lootLogHistory:calibration_char-2'].map((r) => r.id)).toEqual(['z']);
-        expect(game.stored[KEY].map((r) => r.id)).toEqual(['a']);
+        expect(storedEntries('lootLogHistory:calibration_char-2').map((r) => r.id)).toEqual(['z']);
+        expect(storedEntries(KEY).map((r) => r.id)).toEqual(['a']);
         game.characterId = 'char-1';
+    });
+});
+
+describe('Clear survives a sync pull', () => {
+    const pair = (id, t) => ({ id, actionType: 'combat', predicted: 1, actual: 1, t });
+    const pool = (entries, clearedAt = 0) => ({ clearedAt, entries });
+
+    test('a peer that still holds the cleared pairs does not bring them back', () => {
+        // This device cleared and pushed; a peer that had not cleared pulls.
+        // The plain union has no way to say a pair was thrown away, so without
+        // the epoch the peer's still-full copy restores it — and restores it
+        // back to this device on the next pull
+        const full = [pair('old-1', 500), pair('old-2', 600)];
+        const cleared = pool([], 1_000);
+
+        const peerPulled = mergeCalibrationRecords(full, cleared);
+        expect(peerPulled).toEqual(pool([], 1_000));
+        expect(mergeCalibrationRecords(cleared, peerPulled)).toEqual(pool([], 1_000));
+    });
+
+    test('a pair recorded elsewhere after the clear still arrives', () => {
+        const cleared = pool([], 1_000);
+        const peer = pool([pair('before', 500), pair('after', 2_000)], 1_000);
+
+        expect(mergeCalibrationRecords(cleared, peer).entries.map((r) => r.id)).toEqual(['after']);
+    });
+
+    test('the fold is order-independent', () => {
+        const cleared = pool([], 1_000);
+        const peer = pool([pair('before', 500), pair('after', 2_000)], 1_000);
+
+        expect(mergeCalibrationRecords(cleared, peer).entries.map((r) => r.id)).toEqual(['after']);
+        expect(mergeCalibrationRecords(peer, cleared).entries.map((r) => r.id)).toEqual(['after']);
+    });
+
+    test('a ledger no clear has touched folds exactly as it did', () => {
+        const merged = mergeCalibrationRecords([pair('mine', 5_000)], [pair('theirs', 6_000)]);
+        expect(merged.clearedAt).toBe(0);
+        expect(merged.entries.map((r) => r.id)).toEqual(['mine', 'theirs']);
     });
 });

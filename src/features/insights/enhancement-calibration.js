@@ -32,6 +32,7 @@
 import config from '../../core/config.js';
 import { createPersistedRecord, mergeById } from '../../utils/persisted-record.js';
 import { registerSyncMerge } from '../../utils/sync-merge-registry.js';
+import { clearRecord, clearedRecord, entriesOf, mergeClearable } from '../../utils/cleared-record.js';
 import dataManager from '../../core/data-manager.js';
 import { SessionState, getCurrentLegCounters } from '../enhancement/enhancement-session.js';
 import { attemptTailProbability } from '../enhancement/attempt-percentile.js';
@@ -52,9 +53,23 @@ const oldestFirst = (a, b) => (Number(a?.t) || 0) - (Number(b?.t) || 0);
  * @param {Array<Object>} memory - The in-memory observations
  * @returns {Array<Object>}
  */
-export function mergeEnhancementRecords(stored, memory) {
+function unionEnhancementRecords(stored, memory) {
     return mergeById((record) => record?.id, oldestFirst)(stored, memory).slice(-MAX_RECORDS);
 }
+
+/**
+ * The union above, with Clear's epoch applied.
+ *
+ * Clear empties the observations, and a union cannot say so — a peer's
+ * still-full copy wins the next pull and the observations it just threw away
+ * come straight back, on the device that cleared them. `t` is a session's own
+ * `endTime` (falling back to when it was recorded), never absent, which is
+ * what lets an observation another device wrote after the clear survive it.
+ * See utils/cleared-record.js.
+ */
+export const mergeEnhancementRecords = mergeClearable(unionEnhancementRecords, (record) => record?.t, {
+    label: 'enhancement calibration',
+});
 
 /*
  * Registered so a cross-device sync PULL combines this record instead of
@@ -81,7 +96,7 @@ class EnhancementCalibration {
         this.store = createPersistedRecord({
             base: 'calibrationEnhancing',
             store: STORE_NAME,
-            empty: () => [],
+            empty: () => clearedRecord(),
             merge: mergeEnhancementRecords,
             migrate: 'discard',
             label: 'EnhancementCalibration',
@@ -128,9 +143,9 @@ class EnhancementCalibration {
         const store = this._store();
         if (this.records && store.isLoaded()) return this.records;
         try {
-            store.set(this.records || []);
+            store.set(clearedRecord(this.records || []));
             await store.load();
-            this.records = store.get();
+            this.records = entriesOf(store.get());
         } catch (error) {
             console.error('[EnhancementCalibration] Could not read history:', error);
             this.records = this.records || [];
@@ -140,19 +155,18 @@ class EnhancementCalibration {
 
     /**
      * Persist the observations, folding in what another tab wrote meanwhile.
-     * Skipped when storage cannot be read first.
-     * @param {{overwrite?: boolean}} [options] - `overwrite` for the one
-     *   intentional wipe, `clear`
+     * Skipped when storage cannot be read first. `clear()` writes through
+     * `clearRecord` instead — the one intentional wipe.
      * @returns {Promise<boolean>} Whether a write landed
      */
-    async _save({ overwrite = false } = {}) {
+    async _save() {
         const key = this._key();
         if (!key) return false;
         try {
             const store = this._store();
-            store.set(this.records || []);
-            const landed = await store.save({ overwrite });
-            this.records = store.get();
+            store.set(clearedRecord(this.records || []));
+            const landed = await store.save();
+            this.records = entriesOf(store.get());
             return landed;
         } catch (error) {
             console.error('[EnhancementCalibration] Could not save history:', error);
@@ -243,7 +257,13 @@ class EnhancementCalibration {
     /** Forget every observation. */
     async clear() {
         this.records = [];
-        await this._save({ overwrite: true });
+        // Notice a character switch before writing, same as `_save()`
+        this._store();
+        // Stamped, so the clear also survives the next sync pull instead of
+        // being restored by a peer whose copy still holds what was forgotten
+        // (utils/cleared-record.js)
+        await clearRecord(this.store);
+        this.records = entriesOf(this.store.get());
     }
 
     /**

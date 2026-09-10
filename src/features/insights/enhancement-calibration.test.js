@@ -48,7 +48,7 @@ vi.mock('../../core/data-manager.js', () => ({
     default: { getCurrentCharacterId: () => game.characterId },
 }));
 
-const { EnhancementCalibration } = await import('./enhancement-calibration.js');
+const { EnhancementCalibration, mergeEnhancementRecords } = await import('./enhancement-calibration.js');
 
 /**
  * A completed session whose prediction carries its distribution.
@@ -75,6 +75,20 @@ function completedSession(overrides = {}) {
 }
 
 let calibration;
+
+/**
+ * The stored ledger's entries, unwrapping the `{clearedAt, entries}` shape a
+ * save now writes (cleared-record.js).
+ */
+function storedEntries(key) {
+    const value = game.stored[key];
+    return Array.isArray(value) ? value : value?.entries || [];
+}
+
+/** Simulate another tab's write: the entries change, the clear epoch carries. */
+function writeStoredEntries(key, entries) {
+    game.stored[key] = { clearedAt: game.stored[key]?.clearedAt || 0, entries };
+}
 
 // `game` is one fixture object shared by every test in the file, so each field a
 // test moves — the storage outage, the active character — has to come back here
@@ -103,7 +117,7 @@ describe('recording a completed session', () => {
         expect(record.tailProbability).toBeGreaterThan(0);
         expect(record.tailProbability).toBeLessThan(1);
         // Persisted under this character's own key
-        expect(game.stored['lootLogHistory:calibrationEnhancing_char-1']).toHaveLength(1);
+        expect(storedEntries('lootLogHistory:calibrationEnhancing_char-1')).toHaveLength(1);
     });
 
     test('declines a session still tracking, or stopped short of its target', async () => {
@@ -191,17 +205,17 @@ describe('the observations survive a failed read and a second tab', () => {
         await calibration.recordCompletion(completedSession({ id: 'session_2' }));
 
         game.unavailable = false;
-        expect(ids(game.stored[KEY])).toEqual(['session_1:5']);
+        expect(ids(storedEntries(KEY))).toEqual(['session_1:5']);
         expect(ids(await calibration.getRecords())).toEqual(['session_1:5', 'session_2:5']);
     });
 
     test('a save folds in observations another tab wrote meanwhile', async () => {
         await calibration.recordCompletion(completedSession({ endTime: 1 }));
-        game.stored[KEY] = [...game.stored[KEY], { id: 'theirs', t: 3 }];
+        writeStoredEntries(KEY, [...storedEntries(KEY), { id: 'theirs', t: 3 }]);
 
         await calibration.recordCompletion(completedSession({ id: 'session_2', endTime: 2 }));
 
-        expect(ids(game.stored[KEY])).toEqual(['session_1:5', 'session_2:5', 'theirs']);
+        expect(ids(storedEntries(KEY))).toEqual(['session_1:5', 'session_2:5', 'theirs']);
         expect(ids(await calibration.getRecords())).toEqual(['session_1:5', 'session_2:5', 'theirs']);
     });
 
@@ -214,7 +228,7 @@ describe('the observations survive a failed read and a second tab', () => {
         game.unavailable = false;
         await calibration.recordCompletion(completedSession({ id: 'session_3', endTime: 3 }));
 
-        expect(ids(game.stored[KEY])).toEqual(['session_1:5', 'session_2:5', 'session_3:5']);
+        expect(ids(storedEntries(KEY))).toEqual(['session_1:5', 'session_2:5', 'session_3:5']);
     });
 
     test('a character switch forgets the departing character’s observations', async () => {
@@ -223,8 +237,18 @@ describe('the observations survive a failed read and a second tab', () => {
 
         await calibration.recordCompletion(completedSession({ id: 'session_9' }));
 
-        expect(ids(game.stored['lootLogHistory:calibrationEnhancing_char-2'])).toEqual(['session_9:5']);
-        expect(ids(game.stored[KEY])).toEqual(['session_1:5']);
+        expect(ids(storedEntries('lootLogHistory:calibrationEnhancing_char-2'))).toEqual(['session_9:5']);
+        expect(ids(storedEntries(KEY))).toEqual(['session_1:5']);
+    });
+
+    test('clearing stamps the record so a peer cannot restore what was cleared', async () => {
+        await calibration.recordCompletion(completedSession());
+
+        await calibration.clear();
+
+        expect(storedEntries(KEY)).toEqual([]);
+        expect(game.stored[KEY].clearedAt).toBeGreaterThan(0);
+        expect(calibration.getCachedRecords()).toEqual([]);
     });
 
     test('disable() clears getCachedRecords() immediately, before any new session completes', async () => {
@@ -242,5 +266,44 @@ describe('the observations survive a failed read and a second tab', () => {
         calibration.disable();
 
         expect(calibration.getCachedRecords()).toBeNull();
+    });
+});
+
+describe('Clear survives a sync pull', () => {
+    const dated = (id, t) => ({ id, t });
+    const pool = (entries, clearedAt = 0) => ({ clearedAt, entries });
+
+    test('a peer that still holds the cleared observations does not bring them back', () => {
+        // This device cleared and pushed; a peer that had not cleared pulls.
+        // The plain union has no way to say an observation was thrown away, so
+        // without the epoch the peer's still-full copy restores it — and
+        // restores it back to this device on the next pull
+        const full = [dated('old-1', 500), dated('old-2', 600)];
+        const cleared = pool([], 1_000);
+
+        const peerPulled = mergeEnhancementRecords(full, cleared);
+        expect(peerPulled).toEqual(pool([], 1_000));
+        expect(mergeEnhancementRecords(cleared, peerPulled)).toEqual(pool([], 1_000));
+    });
+
+    test('an observation recorded elsewhere after the clear still arrives', () => {
+        const cleared = pool([], 1_000);
+        const peer = pool([dated('before', 500), dated('after', 2_000)], 1_000);
+
+        expect(mergeEnhancementRecords(cleared, peer).entries.map((r) => r.id)).toEqual(['after']);
+    });
+
+    test('the fold is order-independent', () => {
+        const cleared = pool([], 1_000);
+        const peer = pool([dated('before', 500), dated('after', 2_000)], 1_000);
+
+        expect(mergeEnhancementRecords(cleared, peer).entries.map((r) => r.id)).toEqual(['after']);
+        expect(mergeEnhancementRecords(peer, cleared).entries.map((r) => r.id)).toEqual(['after']);
+    });
+
+    test('a ledger no clear has touched folds exactly as it did', () => {
+        const merged = mergeEnhancementRecords([dated('mine', 5_000)], [dated('theirs', 6_000)]);
+        expect(merged.clearedAt).toBe(0);
+        expect(merged.entries.map((r) => r.id)).toEqual(['mine', 'theirs']);
     });
 });
