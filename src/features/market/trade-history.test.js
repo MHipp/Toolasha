@@ -160,16 +160,6 @@ describe('saves are gathered rather than made per fill', () => {
         });
     });
 
-    test('a clear supersedes a save that has not run yet', async () => {
-        tradeHistory.handleMarketUpdate({ endMarketListings: [order('/items/a', true, 1)] });
-        await tradeHistory.clearHistory();
-
-        expect(stored()).toEqual({});
-        // The gathered save must not come back and put the row in again
-        await tradeHistory.flushSave();
-        expect(stored()).toEqual({});
-    });
-
     test('a fill with no enhancementLevel on the wire is keyed the same as a lookup for level 0', async () => {
         // Most non-equipment orders come back with enhancementLevel omitted rather
         // than explicitly 0; the write key must normalize like every reader does.
@@ -245,18 +235,6 @@ describe('the history cannot be wiped by a failed read or a stale copy', () => {
         await tradeHistory.flushSave();
 
         expect(stored()).toEqual({ '/items/a:0': { buy: 1 }, '/items/b:0': { sell: 2 }, '/items/c:0': { buy: 3 } });
-    });
-
-    test('clearHistory is the one write allowed to lose rows, and stays cleared', async () => {
-        storageMock.storeFor('settings').set(KEY, { '/items/a:0': { buy: 1 } });
-        tradeHistory.history = { '/items/a:0': { buy: 1 } };
-
-        await tradeHistory.clearHistory();
-        expect(stored()).toEqual({});
-
-        tradeHistory.handleMarketUpdate({ endMarketListings: [order('/items/b', true, 2)] });
-        await tradeHistory.flushSave();
-        expect(stored()).toEqual({ '/items/b:0': { sell: 2 } });
     });
 });
 

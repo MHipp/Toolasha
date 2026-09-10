@@ -225,23 +225,18 @@ class TradeHistory {
      * because a blind overwrite from a possibly-empty copy is exactly the
      * accident this exists to prevent.
      *
-     * @param {Object} [options]
-     * @param {boolean} [options.overwrite=false] - Write the in-memory map as-is;
-     *   for clears, whose whole point is that the stored copy loses entries
      * @returns {Promise<boolean>} Whether a write landed
      */
-    async saveHistory({ overwrite = false } = {}) {
+    async saveHistory() {
         const run = async () => {
             try {
                 const storageKey = this.getStorageKey();
-                if (!overwrite) {
-                    const probe = await storage.tryGet(storageKey, 'settings');
-                    if (probe === null) {
-                        console.warn('[TradeHistory] History not saved: storage could not be read first');
-                        return false;
-                    }
-                    this.history = mergeHistory(probe.found ? probe.value : {}, this.history);
+                const probe = await storage.tryGet(storageKey, 'settings');
+                if (probe === null) {
+                    console.warn('[TradeHistory] History not saved: storage could not be read first');
+                    return false;
                 }
+                this.history = mergeHistory(probe.found ? probe.value : {}, this.history);
                 this.history = pruneHistory(this.history);
                 // Not `immediate`: a price recorded a heartbeat before the tab
                 // closes is not worth flushing the store on every fill for
@@ -255,6 +250,23 @@ class TradeHistory {
         // each miss the other's entries
         this._saveChain = (this._saveChain || Promise.resolve()).then(run, run);
         return this._saveChain;
+    }
+
+    /**
+     * Forget a save that has not run yet.
+     *
+     * Nothing in the feature needs this — the only caller is the test suite,
+     * resetting a pending timer between cases so one test's gathered save
+     * cannot land during the next. It is kept for that: the alternative is a
+     * test reaching into `_saveTimer` and calling `clearTimeout` itself, which
+     * is the same thing with the knowledge of how saves are scheduled moved
+     * somewhere it does not belong.
+     */
+    _cancelScheduledSave() {
+        if (this._saveTimer) {
+            clearTimeout(this._saveTimer);
+            this._saveTimer = null;
+        }
     }
 
     /**
@@ -283,14 +295,6 @@ class TradeHistory {
             this.saveHistory();
         }
         return this._saveChain;
-    }
-
-    /** Forget a save that has not run yet (a clear supersedes it) */
-    _cancelScheduledSave() {
-        if (this._saveTimer) {
-            clearTimeout(this._saveTimer);
-            this._saveTimer = null;
-        }
     }
 
     /**
@@ -346,16 +350,6 @@ class TradeHistory {
      */
     isReady() {
         return this.isLoaded;
-    }
-
-    /**
-     * Clear all trade history
-     */
-    async clearHistory() {
-        // A save gathered a moment ago would merge the rows back in
-        this._cancelScheduledSave();
-        this.history = {};
-        await this.saveHistory({ overwrite: true });
     }
 
     /**
