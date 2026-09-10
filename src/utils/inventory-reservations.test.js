@@ -84,6 +84,7 @@ const {
     heldInInventory,
     shortfallNote,
     mergeReservations,
+    RELEASED_KEY,
     flushReservationWrites,
     ensureReservationsLoaded,
     _resetReservations,
@@ -296,7 +297,10 @@ describe('the setting is off by default and off means inert', () => {
         mockConfig.enabled = false;
         expect(await release('missingMats')).toBe(true);
         await flushReservationWrites();
-        expect(mockStorage.storeFor('settings').get(KEY)).toEqual({});
+        // The claim is gone and the removal is written down: a release while
+        // off still has to outlive a peer that has not seen it
+        expect(Object.keys(mockStorage.storeFor('settings').get(KEY))).toEqual([RELEASED_KEY]);
+        expect(mockStorage.storeFor('settings').get(KEY)[RELEASED_KEY]).toHaveProperty('missingMats');
 
         // Switched back on, with the record read from storage rather than memory
         _resetReservations();
@@ -314,7 +318,8 @@ describe('the setting is off by default and off means inert', () => {
         mockConfig.enabled = false;
         expect(await releaseMissing('goal:', ['goal:b'])).toBe(1);
         await flushReservationWrites();
-        expect(Object.keys(mockStorage.storeFor('settings').get(KEY))).toEqual(['goal:b']);
+        expect(Object.keys(mockStorage.storeFor('settings').get(KEY)).sort()).toEqual([RELEASED_KEY, 'goal:b']);
+        expect(mockStorage.storeFor('settings').get(KEY)[RELEASED_KEY]).toHaveProperty('goal:a');
     });
 
     /*
@@ -519,5 +524,138 @@ describe('a ledger that could not be read is not a ledger that is empty', () => 
             { itemHrid: LOGS, count: 25 },
         ]);
         expect(allReservations()['goal:a'].lines).toEqual([{ itemHrid: LOGS, enhancementLevel: 0, count: 25 }]);
+    });
+});
+
+/*
+ * A released claim used to come back. The ledger is synced, `release()` left no
+ * trace of the removal, and the fold has no way to tell an owner this device
+ * DELETED from one it has simply never seen — so a peer that had not released
+ * yet pushed the claim straight back in, and every other plan's shortfall was
+ * then computed against stock reserved for a plan that does not exist.
+ */
+describe('a release outlives a peer that has not seen it', () => {
+    /** @returns {number} A stamp far enough from zero for the TTL to be meaningful */
+    const T0 = Date.UTC(2026, 5, 1);
+
+    /**
+     * @param {string} owner - Owner id
+     * @param {number} updatedAt - Claim stamp
+     * @param {number} [count] - Units of logs claimed
+     * @returns {Object} A one-owner ledger, as a peer would hold it
+     */
+    function peerLedger(owner, updatedAt, count = 300) {
+        return { [owner]: { label: owner, updatedAt, lines: [{ itemHrid: LOGS, count }] } };
+    }
+
+    test('a peer still holding a released claim does not bring it back', async () => {
+        vi.setSystemTime(T0);
+        await reserve('craftingPlan:/items/cheese', [{ itemHrid: LOGS, count: 300 }]);
+        // What a peer that synced before the release is still carrying
+        const peer = structuredClone(allReservations());
+
+        vi.setSystemTime(T0 + 1000);
+        await release('craftingPlan:/items/cheese');
+        await flushReservationWrites();
+
+        const folded = mergeReservations(mockStorage.storeFor('settings').get(KEY), peer);
+        expect(folded['craftingPlan:/items/cheese']).toBeUndefined();
+        vi.useRealTimers();
+    });
+
+    test('releaseMissing gets the same protection as release', async () => {
+        vi.setSystemTime(T0);
+        await reserve('goal:a', [{ itemHrid: LOGS, count: 300 }]);
+        await reserve('goal:b', [{ itemHrid: LOGS, count: 100 }]);
+        const peer = structuredClone(allReservations());
+
+        vi.setSystemTime(T0 + 1000);
+        expect(await releaseMissing('goal:', ['goal:b'])).toBe(1);
+        await flushReservationWrites();
+
+        const folded = mergeReservations(mockStorage.storeFor('settings').get(KEY), peer);
+        expect(folded['goal:a']).toBeUndefined();
+        expect(folded['goal:b']).toBeTruthy();
+        vi.useRealTimers();
+    });
+
+    test('a claim a peer made for the first time still arrives', () => {
+        const local = { [RELEASED_KEY]: { 'goal:a': T0 } };
+        const folded = mergeReservations(local, peerLedger('goal:b', T0 - 5000));
+        expect(folded['goal:b'].lines[0].count).toBe(300);
+    });
+
+    test('a claim re-made after the release is a new claim and survives', () => {
+        const local = { [RELEASED_KEY]: { 'goal:a': T0 } };
+        const folded = mergeReservations(local, peerLedger('goal:a', T0 + 1));
+        expect(folded['goal:a'].lines[0].count).toBe(300);
+        // …and one stamped at the release itself is the copy being released
+        expect(mergeReservations(local, peerLedger('goal:a', T0))['goal:a']).toBeUndefined();
+    });
+
+    test('the fold reads the same whichever side the tombstone is on', () => {
+        const tombstoned = { [RELEASED_KEY]: { 'goal:a': T0 } };
+        const stale = peerLedger('goal:a', T0 - 1000);
+        expect(mergeReservations(tombstoned, stale)['goal:a']).toBeUndefined();
+        expect(mergeReservations(stale, tombstoned)['goal:a']).toBeUndefined();
+        // The tombstone itself survives both ways round, or the next fold revives
+        expect(mergeReservations(tombstoned, stale)[RELEASED_KEY]).toEqual({ 'goal:a': T0 });
+        expect(mergeReservations(stale, tombstoned)[RELEASED_KEY]).toEqual({ 'goal:a': T0 });
+    });
+
+    test('two devices that both released one owner keep the later release', () => {
+        const a = { [RELEASED_KEY]: { 'goal:a': T0 } };
+        const b = { [RELEASED_KEY]: { 'goal:a': T0 + 5000 } };
+        expect(mergeReservations(a, b)[RELEASED_KEY]['goal:a']).toBe(T0 + 5000);
+        expect(mergeReservations(b, a)[RELEASED_KEY]['goal:a']).toBe(T0 + 5000);
+    });
+
+    test('a tombstone past the TTL is pruned and one inside it survives', async () => {
+        vi.setSystemTime(T0);
+        await reserve('goal:old', [{ itemHrid: LOGS, count: 300 }]);
+        await release('goal:old');
+        await flushReservationWrites();
+        expect(mockStorage.storeFor('settings').get(KEY)[RELEASED_KEY]).toEqual({ 'goal:old': T0 });
+
+        // Inside the TTL: still suppressing
+        _resetReservations();
+        vi.setSystemTime(T0 + RESERVATION_TTL_MS - 1000);
+        await loadReservations();
+        expect(mockStorage.storeFor('settings').get(KEY)[RELEASED_KEY]).toEqual({ 'goal:old': T0 });
+
+        // Past it: no claim it could suppress can still be alive, so it goes
+        _resetReservations();
+        vi.setSystemTime(T0 + RESERVATION_TTL_MS + 1);
+        await loadReservations();
+        await flushReservationWrites();
+        expect(mockStorage.storeFor('settings').get(KEY)).toEqual({});
+        vi.useRealTimers();
+    });
+
+    test('reserving the owner again drops its tombstone', async () => {
+        vi.setSystemTime(T0);
+        await reserve('goal:a', [{ itemHrid: LOGS, count: 300 }]);
+        await release('goal:a');
+        vi.setSystemTime(T0 + 1000);
+        await reserve('goal:a', [{ itemHrid: LOGS, count: 120 }]);
+        await flushReservationWrites();
+
+        const stored = mockStorage.storeFor('settings').get(KEY);
+        expect(stored[RELEASED_KEY]).toBeUndefined();
+        expect(reservedElsewhere(LOGS, 0, { excludeOwner: 'goal:b' })).toBe(120);
+        vi.useRealTimers();
+    });
+
+    test('the tombstones are not an owner anyone can see or claim under', async () => {
+        vi.setSystemTime(T0);
+        await reserve('goal:a', [{ itemHrid: LOGS, count: 300 }]);
+        await release('goal:a');
+        await flushReservationWrites();
+
+        expect(allReservations()).toEqual({});
+        expect(await loadReservations()).toEqual({});
+        expect(reservationDetail(LOGS)).toEqual({ total: 0, byOwner: [] });
+        expect(await reserve(RELEASED_KEY, [{ itemHrid: LOGS, count: 10 }])).toBe(false);
+        vi.useRealTimers();
     });
 });

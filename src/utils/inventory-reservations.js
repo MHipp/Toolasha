@@ -56,6 +56,11 @@
  *   on every write. Expiry always fails safe: the stock comes back, which is
  *   the behaviour of the whole feature being off.
  *
+ * Either way the removal has to be *written down* rather than merely done. The
+ * ledger is synced, so an owner that is simply gone is indistinguishable from
+ * one this device has never seen, and the fold puts a peer's still-live copy
+ * back. See {@link RELEASED_KEY}.
+ *
  * Adapted from MWITools procurementAssistant, CC-BY-NC-SA-4.0, see
  * third-party/mwitools/.
  */
@@ -88,6 +93,37 @@ const INVENTORY_LOCATION = '/item_locations/inventory';
  */
 export const RESERVATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
+/**
+ * Where the ledger remembers the owners it has RELEASED.
+ *
+ * The ledger is synced, and a removal that leaves no trace cannot be told from
+ * an owner this device has simply never seen. `delete ledger[owner]` was
+ * exactly that: {@link mergeReservations} folds per owner, finds no local
+ * entry — precisely because it was deleted — and writes the peer's still-live
+ * copy straight back. A plan the player finished, deleted or closed the panel
+ * on then holds stock back from every other plan for up to
+ * {@link RESERVATION_TTL_MS}, with nothing on screen to say why.
+ *
+ * So a release writes a tombstone here instead of nothing, the fold unions the
+ * two sides' tombstones — a removal only ever moves forward — and applies them
+ * to both sides on the way through.
+ *
+ * Shape: `{[ownerId]: releasedAt}`. Nothing but the moment, because the owner
+ * id is the key and nothing displays a tombstone. `releasedAt` is *the moment
+ * of the release*, not the released claim's own `updatedAt`, and the
+ * difference matters: a peer may have restamped the claim later than this
+ * device's copy without this device having pulled it, so pruning on the copy
+ * we happened to hold would drop the tombstone while a newer stale copy was
+ * still alive. The release moment bounds every copy that could exist.
+ *
+ * It lives inside the ledger rather than beside it in a key of its own so that
+ * one fold sees both halves at once: a tombstone and the claim it suppresses
+ * can never arrive in the wrong order, and there is no second record to keep
+ * in step. The cost is one reserved id in the owner namespace, kept out of
+ * sight by {@link allReservations} and refused by {@link reserve}.
+ */
+export const RELEASED_KEY = '__released';
+
 /** A runaway ledger is a slow read on every shortfall in the script */
 const MAX_OWNERS = 200;
 /** Per owner: a bill of materials, not a catalogue */
@@ -117,6 +153,14 @@ const MAX_LINES_PER_OWNER = 200;
  * loses to one that has a stamp, and to nothing else; a tie resolves to the
  * incoming copy on the registry's `(local, incoming)` convention.
  *
+ * Newer-wins alone, though, is newer-wins against the owners this device
+ * RELEASED — an owner with no local entry loses to a peer's copy every time,
+ * which is exactly how a finished plan came back as a live claim. So the two
+ * sides' {@link RELEASED_KEY} tombstones are folded first, as a union, and
+ * applied to both sides: the incoming one because it may carry a claim this
+ * device released, the local one because it may carry a claim the peer
+ * released and this device has not dropped yet.
+ *
  * @param {Object|*} local - This device's ledger
  * @param {Object|*} incoming - The downloaded ledger
  * @returns {Object} The folded ledger
@@ -125,19 +169,114 @@ export function mergeReservations(local, incoming) {
     const out = {};
     const base = local && typeof local === 'object' ? local : {};
     const fresh = incoming && typeof incoming === 'object' ? incoming : {};
+    const released = mergeTombstones(base[RELEASED_KEY], fresh[RELEASED_KEY]);
 
     for (const [owner, reservation] of Object.entries(base)) {
-        if (reservation && typeof reservation === 'object') out[owner] = reservation;
+        if (owner === RELEASED_KEY) continue;
+        if (reservation && typeof reservation === 'object' && !isReleased(released, owner, reservation)) {
+            out[owner] = reservation;
+        }
     }
     for (const [owner, reservation] of Object.entries(fresh)) {
+        if (owner === RELEASED_KEY) continue;
         if (!reservation || typeof reservation !== 'object') continue;
+        if (isReleased(released, owner, reservation)) continue;
         const held = out[owner];
         const mine = Number(held?.updatedAt);
         const theirs = Number(reservation.updatedAt);
         const keepMine = held && Number.isFinite(mine) && (!Number.isFinite(theirs) || mine > theirs);
         if (!keepMine) out[owner] = reservation;
     }
+    if (Object.keys(released).length) out[RELEASED_KEY] = released;
     return out;
+}
+
+/**
+ * Fold two sets of tombstones: the union, keeping the later release per owner.
+ *
+ * A union because a removal only moves forward — a device that has not seen a
+ * release holds no entry for it, and letting its silence win is the release
+ * coming undone, which is the whole bug. The *later* of two releases for one
+ * owner because that is the one that is still true: an owner id is reused (a
+ * crafting plan is keyed by the item its panel was showing, and the player
+ * reopens it), so release-claim-release is ordinary, and the last release is
+ * the one whose moment bounds every stale copy still in flight. Symmetric in
+ * both arguments, so a pull reads the same whichever side it arrives on.
+ *
+ * @param {*} local - This device's tombstones
+ * @param {*} incoming - The downloaded tombstones
+ * @returns {Object<string, number>} Owner id → the moment it was released
+ */
+function mergeTombstones(local, incoming) {
+    const out = {};
+    for (const side of [local, incoming]) {
+        if (!side || typeof side !== 'object') continue;
+        for (const [ownerId, at] of Object.entries(side)) {
+            // A tombstone that cannot be placed in time cannot be pruned by the
+            // TTL either, so it is not kept at all — an unbounded ledger is the
+            // thing this must not become, and losing one is a resurrection of
+            // one claim, which the TTL sweep already bounds
+            const stamp = Number(at);
+            if (!ownerId || ownerId === RELEASED_KEY || !Number.isFinite(stamp) || !(stamp > 0)) continue;
+            if (!(ownerId in out) || stamp > out[ownerId]) out[ownerId] = stamp;
+        }
+    }
+    return out;
+}
+
+/**
+ * Whether a tombstone covers this copy of an owner's claim.
+ *
+ * Covered means the claim was made no later than the release: it is the copy
+ * that was released, or an older one. A claim stamped *after* the release is a
+ * genuinely new claim on a reused owner id and survives — which is how a
+ * re-claim travels to a peer that still holds the tombstone, with no revival
+ * flag to sync. A claim with no usable stamp is covered, matching
+ * {@link sweepExpired}, which expires a stampless claim at once for the same
+ * reason: nothing can ever say when it was made.
+ *
+ * @param {Object<string, number>} released - Folded tombstones
+ * @param {string} ownerId - The owner
+ * @param {Object} reservation - The claim being folded
+ * @returns {boolean} Whether to drop it
+ */
+function isReleased(released, ownerId, reservation) {
+    if (!(ownerId in released)) return false;
+    const stamp = Number(reservation?.updatedAt);
+    return !Number.isFinite(stamp) || stamp <= released[ownerId];
+}
+
+/**
+ * The ledger as owners only, with the tombstones kept out of sight.
+ *
+ * Every caller that treats the ledger as "owner id → reservation" goes through
+ * here, so the reserved id cannot be mistaken for a plan by anything that
+ * iterates. The common ledger has no tombstones at all and is returned as-is.
+ *
+ * @param {Object} ledger - The stored ledger
+ * @returns {Object} Owner id → reservation
+ */
+function ownersOnly(ledger) {
+    if (!ledger || typeof ledger !== 'object') return {};
+    if (!(RELEASED_KEY in ledger)) return ledger;
+    const out = {};
+    for (const [ownerId, reservation] of Object.entries(ledger)) {
+        if (ownerId !== RELEASED_KEY) out[ownerId] = reservation;
+    }
+    return out;
+}
+
+/**
+ * Write down that an owner's claim was released, so no copy can bring it back.
+ * @param {Object} ledger - The ledger, mutated in place
+ * @param {string} ownerId - The owner released
+ * @param {number} now - Epoch ms
+ * @returns {void}
+ */
+function tombstone(ledger, ownerId, now) {
+    const released = ledger[RELEASED_KEY] && typeof ledger[RELEASED_KEY] === 'object' ? ledger[RELEASED_KEY] : {};
+    released[ownerId] = now;
+    ledger[RELEASED_KEY] = released;
 }
 
 /*
@@ -224,6 +363,7 @@ export function reservationsEnabled() {
 function sweepExpired(ledger, now) {
     let dropped = false;
     for (const [id, reservation] of Object.entries(ledger)) {
+        if (id === RELEASED_KEY) continue;
         const stamp = Number(reservation?.updatedAt);
         // A stampless entry is one this version did not write; it expires at
         // once rather than never, since nothing can ever restamp it
@@ -231,6 +371,54 @@ function sweepExpired(ledger, now) {
             delete ledger[id];
             dropped = true;
         }
+    }
+    return sweepTombstones(ledger, now) || dropped;
+}
+
+/**
+ * Drop the tombstones that can no longer change an outcome.
+ *
+ * {@link RESERVATION_TTL_MS} is the exact bound, and it is already the rule
+ * this file lives by rather than a horizon invented for the tombstones. A
+ * tombstone released at R only ever suppresses claims stamped at or before R,
+ * and the sweep above drops every claim older than one TTL wherever it came
+ * from — so once `now - R` passes the TTL there is no copy left anywhere that
+ * the tombstone could still be deciding about, and it goes. Exact, not merely
+ * sound: a claim stamped at R itself is suppressed right up to that moment.
+ *
+ * The count cap is the second half of the bound, for a session that churns
+ * more than {@link MAX_OWNERS} owners inside one TTL window. It evicts the
+ * oldest, which are the ones closest to being pruned anyway.
+ *
+ * @param {Object} ledger - The ledger, mutated in place
+ * @param {number} now - Epoch ms
+ * @returns {boolean} Whether anything was dropped
+ */
+function sweepTombstones(ledger, now) {
+    const released = ledger[RELEASED_KEY];
+    if (!released || typeof released !== 'object') return false;
+
+    let dropped = false;
+    for (const [ownerId, at] of Object.entries(released)) {
+        const stamp = Number(at);
+        if (!Number.isFinite(stamp) || now - stamp > RESERVATION_TTL_MS) {
+            delete released[ownerId];
+            dropped = true;
+        }
+    }
+
+    const ids = Object.keys(released);
+    if (ids.length > MAX_OWNERS) {
+        ids.sort((a, b) => Number(released[a]) - Number(released[b]));
+        for (const id of ids.slice(0, ids.length - MAX_OWNERS)) delete released[id];
+        dropped = true;
+    }
+
+    // An empty container is a key every reader would have to keep skipping and
+    // every sync payload would have to keep carrying
+    if (!Object.keys(released).length) {
+        delete ledger[RELEASED_KEY];
+        dropped = true;
     }
     return dropped;
 }
@@ -271,7 +459,7 @@ async function readLedger() {
  */
 export async function loadReservations() {
     if (!reservationsEnabled()) return {};
-    return readLedger();
+    return ownersOnly(await readLedger());
 }
 
 /**
@@ -306,7 +494,7 @@ async function ensureLoaded() {
 export function allReservations() {
     if (!reservationsEnabled()) return {};
     claim();
-    return record.get();
+    return ownersOnly(record.get());
 }
 
 /**
@@ -349,7 +537,7 @@ function cleanLines(lines) {
  * @returns {Promise<boolean>} Whether a write landed
  */
 export async function reserve(ownerId, lines, { label = '' } = {}) {
-    if (!reservationsEnabled() || typeof ownerId !== 'string' || !ownerId) return false;
+    if (!reservationsEnabled() || typeof ownerId !== 'string' || !ownerId || ownerId === RELEASED_KEY) return false;
     const clean = cleanLines(lines);
     if (!clean.length) return release(ownerId);
 
@@ -368,10 +556,18 @@ export async function reserve(ownerId, lines, { label = '' } = {}) {
         const now = Date.now();
         sweepExpired(ledger, now);
         ledger[ownerId] = { label: String(label || ownerId), updatedAt: now, lines: clean };
+        // The claim is stamped `now`, later than any tombstone the sweep just
+        // left standing, so the fold would keep it either way — dropping the
+        // entry is housekeeping, not correctness, and it is what keeps a
+        // reopened crafting-plan panel from carrying its own gravestone about
+        if (ledger[RELEASED_KEY]) {
+            delete ledger[RELEASED_KEY][ownerId];
+            if (!Object.keys(ledger[RELEASED_KEY]).length) delete ledger[RELEASED_KEY];
+        }
 
         // A cap that evicts the oldest claims rather than refusing the new one:
         // the newest claim is the one the player is looking at
-        const ids = Object.keys(ledger);
+        const ids = Object.keys(ledger).filter((id) => id !== RELEASED_KEY);
         if (ids.length > MAX_OWNERS) {
             ids.sort((a, b) => Number(ledger[a]?.updatedAt || 0) - Number(ledger[b]?.updatedAt || 0));
             for (const id of ids.slice(0, ids.length - MAX_OWNERS)) delete ledger[id];
@@ -400,12 +596,18 @@ export async function reserve(ownerId, lines, { label = '' } = {}) {
  * @returns {Promise<boolean>} Whether a write landed
  */
 export async function release(ownerId) {
-    if (typeof ownerId !== 'string' || !ownerId) return false;
+    if (typeof ownerId !== 'string' || !ownerId || ownerId === RELEASED_KEY) return false;
     try {
         await ensureLoaded();
         const ledger = record.get();
         if (!(ownerId in ledger)) return false;
+        const now = Date.now();
         delete ledger[ownerId];
+        // Not just `delete`: a peer that has not released yet still holds this
+        // claim, and the fold cannot tell a deletion from a claim it has never
+        // seen. See {@link RELEASED_KEY}.
+        tombstone(ledger, ownerId, now);
+        sweepTombstones(ledger, now);
         return await record.save({ overwrite: true });
     } catch (error) {
         console.error('[InventoryReservations] Releasing failed:', error);
@@ -433,13 +635,20 @@ export async function releaseMissing(prefix, liveIds) {
         await ensureLoaded();
         const live = new Set(liveIds || []);
         const ledger = record.get();
+        const now = Date.now();
         let dropped = 0;
         for (const id of Object.keys(ledger)) {
-            if (!id.startsWith(prefix) || live.has(id)) continue;
+            if (id === RELEASED_KEY || !id.startsWith(prefix) || live.has(id)) continue;
             delete ledger[id];
+            // Same reason as {@link release}: a deleted goal whose claim is
+            // only deleted comes back from the first peer that has not replanned
+            tombstone(ledger, id, now);
             dropped += 1;
         }
-        if (dropped) await record.save({ overwrite: true });
+        if (dropped) {
+            sweepTombstones(ledger, now);
+            await record.save({ overwrite: true });
+        }
         return dropped;
     } catch (error) {
         console.error('[InventoryReservations] Orphan sweep failed:', error);
@@ -674,6 +883,7 @@ export default {
     RESERVATIONS_KEY,
     RESERVATIONS_SETTING,
     RESERVATION_TTL_MS,
+    RELEASED_KEY,
     reservationsEnabled,
     loadReservations,
     ensureReservationsLoaded,
