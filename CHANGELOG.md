@@ -1784,24 +1784,13 @@ The hidden same-origin frame the websocket hook borrows a native getter from is 
 
 ### Per-player damage panel for normal combat
 
-- The guild trial's per-player board now exists for ordinary party and solo fights, off a new
-  Combat setting (`combatDpsPanel`, off by default): damage, damage taken and health restored per
-  member, ranked with shares, bars and rates. Opens from a "Per-player" button on the battle panel
-  and remembers where it was left.
-- The trial panel and this one draw with one shared renderer, so the two boards rank and share out
-  their rows by exactly the same rule. Trial behaviour is unchanged.
-- The third tab is health _received_, not healing done — the run feed carries no caster to credit a
-  rise to, and the panel says so rather than ranking a healer it cannot identify.
+- The guild trial's per-player board now exists for ordinary party and solo fights, behind a new Combat setting: damage, damage taken and health restored per member, ranked with shares, bars and rates. It opens from a "Per-player" button on the battle panel.
+- The third tab is health _received_, not healing done — the run feed carries no caster to credit a rise to, and the panel says so rather than ranking a healer it cannot identify.
 
 ### Class tags draw the class's own T95 weapon
 
-- The `[WATER]` / `[HEAL]` / `[TANK]` text chips beside names in the Trial Abilities panel and the
-  Trial damage panel are now a small weapon icon, so a crowded name row keeps its name.
-- Which weapon is a query against the game's item data — the top tier at or under level 95
-  matching the class's style and element — rather than a hardcoded list. Tank draws the Bulwark
-  line. The chip is still what's drawn before the game's data has loaded.
-- Nature is the healing element, so a nature caster is now classified as the party's Healer
-  rather than as a third mage bucket; Fire and Water stay as the two damage-mage classes.
+- The `[WATER]` / `[HEAL]` / `[TANK]` text chips beside names in the Trial panels are now a small weapon icon, so a crowded name row keeps its name. Which weapon is a query against the game's own item data rather than a hardcoded list.
+- Nature is the healing element, so a nature caster is now classified as the party's Healer rather than a third mage bucket.
 
 ### Total Level rate ranks stay among the top 100
 
@@ -1823,20 +1812,13 @@ An attribution audit found ports that predate this fork with no notice retained.
 
 ### Live DPS badges on combat unit portraits
 
-- A new Combat setting (off by default) draws "1,240/s · 22%" on every party tile in the battle
-  panel — the full card and the mini units beside it — matched by name, never by slot.
-- During a guild trial it reads the spectated trial split instead of this client's own fight, so
-  the fight view's twenty portraits carry figures too. Re-attaches when the Combat tab is left
-  and returned to, and never writes to the DOM per tick.
+- A new Combat setting, off by default, draws "1,240/s · 22%" on every party tile in the battle panel — the full card and the mini units beside it — matched by name, never by slot.
+- During a guild trial it reads the spectated trial split instead of this client's own fight, so the fight view's twenty portraits carry figures too.
 
 ### Class tags for trial rosters, inferred from the ability stream
 
-- Players in the Trial Abilities panel and on the trial scoreboard carry a small role tag —
-  Tank, Healer, Fire/Water/Nature Mage, Ranged, Melee — worked out from what they are seen
-  casting, so a roster of fifty is readable without clicking Battle Info on every one of them.
-- Read off the game's own ability data (effect type, combat style, damage type) rather than a
-  name list; each tag's tooltip names the abilities it was inferred from, and threat on a
-  captured stat sheet outranks the stream. A player nothing is known about gets no tag.
+- Players in the Trial Abilities panel and on the trial scoreboard carry a small role tag — Tank, Healer, Fire/Water/Nature Mage, Ranged, Melee — worked out from what they are seen casting, so a roster of fifty is readable without clicking Battle Info on every one.
+- Each tag's tooltip names the abilities it was inferred from, and a player nothing is known about gets no tag.
 
 ### The mana-drop attribution rung respects the collision threshold
 
@@ -1847,26 +1829,15 @@ An attribution audit found ports that predate this fork with no notice retained.
 
 ### Damage attribution counts bleeds, splits big collisions, and hardens the trial lifecycle
 
-Ideas adopted from KikiMeter (ZhuLiMoon, MIT) — see `docs/THIRD-PARTY-LICENSES.md`.
+Ideas adopted from KikiMeter (ZhuLiMoon, MIT).
 
-- Bleed and reflect damage is counted instead of discarded, so per-player tables no longer come
-  up short against the party total; it is labelled in the breakdowns and moves no hit or crit rate.
-- A tick several players share, with more than three present and nothing to separate them, is
-  split equally between them rather than handed to whoever swung last.
-- A monster whose maximum health changes is a new monster in that slot: re-baselined, and the
-  transition counts nothing.
-- `new_battle` skips the content-hash dedup — consecutive waves could collide in the hash window
-  and drop the message every baseline is seeded from.
-- Trial DPS freezes when the trial ends, and a stream quiet for three minutes is treated as ended;
-  a personal fight started while the game's own end-of-trial totals are still in flight no longer
-  disturbs them.
-- A player coming back from zero health is counted as a revive, not as healing.
-- `guild_updated.currentTrialsData` is now read: it says a trial is running without the guild panel
-  being open, and the In Progress card gains a Deadline line from its own countdown.
+- Bleed and reflect damage is counted instead of discarded, so per-player tables no longer come up short against the party total.
+- A tick several players share, with more than three present and nothing to separate them, is split equally rather than handed to whoever swung last.
+- Trial DPS freezes when the trial ends, and a stream quiet for three minutes is treated as ended.
 
 ### Equipment Watch prices refinement bases at the level the output needs
 
-A refinement recipe carries the base's enhancement into the ★ output, so a ★+12 is made from a +12 base — but the craft costing treated any owned base as free and priced a missing one at +0. The base is now costed at the output's level: a copy already there is consumed, a lower copy is an enhance run from where it stands, none at all is a fresh +0 plus the run (or a direct listing at the level, whichever is cheaper), and the card names the level it is counting.
+A refinement recipe carries the base's enhancement into the ★ output, so a ★+12 is made from a +12 base — but the craft costing treated any owned base as free and priced a missing one at +0. The base is now costed at the output's level: a copy already there is consumed, a lower copy is an enhance run from where it stands, and none at all is a fresh +0 plus the run.
 
 ### Foldable Trial Abilities cards, and the walk sorts after reading
 
@@ -1898,10 +1869,9 @@ marketplace.json is rate-limited and a burst of parallel fetches trips a tempora
 
 ### Lab sim: one calculate button, uncapped precision, and a cancel
 
-- The labyrinth control strip drew two calculate buttons at once (and a copy orphaned by a grid re-render kept its own); there is now exactly one, hidden entirely while auto-calc is on, and re-injecting the strip can no longer duplicate it.
-- An **Uncapped** toggle beside Precision ± lets a manual floor calculation run to its precision target instead of stopping at the fight budget and reporting a wide "(capped)" band; a 2,000,000-fight backstop still ends a run that can never converge.
-- The Automation tab gets its own Precision ± and Uncapped controls for its per-room sims and Recommend searches, so a plan can be pinned down harder than the map without slowing every tile badge.
-- Long runs are cancellable: the calculate button becomes **Cancel** with a room count while a calculation is in flight, and the Recommend button does the same. Cancelling terminates the worker and stops the rooms queued behind it, keeping every result already computed.
+- The labyrinth control strip drew two calculate buttons at once; there is now exactly one, hidden entirely while auto-calc is on.
+- An **Uncapped** toggle beside Precision ± lets a manual floor calculation run to its precision target instead of stopping at the fight budget and reporting a wide "(capped)" band.
+- Long runs are cancellable: the calculate button becomes **Cancel** while a calculation is in flight, keeping every result already computed.
 
 ### Auto-filled prices stay inside the tradable range
 
@@ -1981,11 +1951,11 @@ Custom inventory tabs, the guild exchange advisor, and the token-exchange captur
 
 ### Four fixes adopted from upstream's recent findings
 
-An upstream sweep turned up bugs our shared-lineage code still had: decompose profit ignored `bulkMultiplier`, undercounting items consumed multiple-per-action (e.g. Holy Milk) on both cost and output; the loot log matched rows to data by reverse-parsing locale-formatted dates (three hardcoded locales — any other silently showed nothing) and now matches by row position; inventory badges resolved items by translated display name and now use the locale-independent icon sprite; and "highest owned" enhancement resolution dropped equipped items lacking a count field, letting a lower duplicate in the bag outrank the worn copy.
+An upstream sweep turned up bugs our shared-lineage code still had: decompose profit ignored the bulk multiplier, undercounting items consumed several per action; the loot log matched rows by reverse-parsing locale-formatted dates and now matches by position; inventory badges resolved items by translated display name and now use the icon sprite; and "highest owned" enhancement resolution dropped equipped items, letting a bag duplicate outrank the worn copy.
 
 ### Sort the marketplace grid by alchemy profit
 
-The sort control gains a mode dropdown: alongside the existing production/gathering profit per hour, it can now rank items by what insta-buying them at ask, running their best alchemy action, and insta-selling the outputs at bid pays — per item or per hour. Every figure comes off the existing alchemy profit calculator, so catalysts, success rates, tea costs and the coin fee are already in it; only the pricing is forced to the insta flow, whatever the global pricing mode says. The chosen mode persists.
+The marketplace sort control gains a mode dropdown: alongside production and gathering profit per hour, it can rank items by what insta-buying them at ask, running their best alchemy action and insta-selling the outputs at bid pays — per item or per hour. Every figure comes off the existing alchemy profit calculator, so catalysts, success rates, tea costs and the coin fee are already in it.
 
 ### A sync pull combines both devices' histories instead of picking one
 
@@ -1993,15 +1963,15 @@ Pulling used to write whole storage keys, so two devices that had each opened ch
 
 ### Sync from the command palette, on hand-off, and both ways while two devices are open
 
-"Sync push" and "Sync pull" join the command palette when sync is configured. A new hand-off setting (off by default) pushes when this device stops being the active session — a few seconds after a character switch, and immediately when another login takes the session over — whose own startup pulls (now staggered at 20s/80s/200s so they cannot race the hand-off push) collect the changes. With auto-sync on, a silent pull also runs between the pushes, so two open devices converge instead of only pushing past each other; a silent pull applies only clean fast-forwards and stands down on conflict.
+"Sync push" and "Sync pull" join the command palette when sync is configured. A new hand-off setting, off by default, pushes when this device stops being the active session — a few seconds after a character switch, and immediately when another login takes over. With auto-sync on, a silent pull also runs between the pushes, so two open devices converge instead of only pushing past each other.
 
 ### Cross-device auto-sync stops dying quietly
 
-Three faults conspired: the change-detection hash included the payload's own timestamp, so "unchanged, skip" never fired and — worse — the hash remembered after a pull could never match a local rebuild, manufacturing a permanent "both sides changed" conflict; that conflict raised its dialog even from the silent startup pull, where nobody answers it; and the unanswered dialog held the sync busy, so every 15-minute auto-push declined without a word for the rest of the session. The hash now ignores the timestamp, the silent pull stands down instead of asking, and a sync wedged busy for over five minutes is taken over.
+Three faults conspired to kill cross-device auto-sync quietly: the change-detection hash included the payload's own timestamp, so a hash remembered after a pull could never match a local rebuild and manufactured a permanent "both sides changed" conflict; that conflict raised its dialog even from the silent startup pull, where nobody answers it; and the unanswered dialog held the sync busy for the rest of the session. All three are fixed.
 
 ### Trials you did not join are forecast from tier-clear timing, and wear their tier again
 
-The old "Est. fill ~x pts/s" fitted a rate to the card's stated points, which only move when a tier banks — a regression over a staircase. It now measures the gap between tier badges, whose pool size is known exactly, and reports the guild's work rate, the next tier's ETA and the tiers left by walking the ladder one tier at a time with the rate falling as the tiers climb (flattening at the Lv.300 cap, where success rates stop falling). Unjoined cards get their expected tier back — they could never produce the measured fill rate the old forecast demanded — and the small "T17" marker beside a card's "Lv.260" returns, no longer wiped for good by the game's first redraw and reading the banked count once the level caps.
+The old "Est. fill ~x pts/s" fitted a rate to the card's stated points, which only move when a tier banks — a regression over a staircase. It now measures the gap between tier badges, whose pool size is known exactly, and reports the guild's work rate, the next tier's ETA and the tiers left. Unjoined cards get their expected tier back, and the small "T17" marker beside a card's "Lv.260" returns.
 
 ### A lifecycle smoke test over every registered feature
 
@@ -2009,19 +1979,19 @@ Every feature in the four bundles is now put through teardown-before-init and a 
 
 ### Every feature now ends a character switch disabled, even when its teardown breaks
 
-The History-tab outage was one instance of a general shape: a teardown that throws part-way removes the feature's UI and then skips the line that clears its initialised flag, so the rebuild is turned away by its own guard and the feature is dead until a refresh. All 112 features that carry such a flag now clear it in a `finally`, and the registry names any feature whose teardown throws and says it may not come back cleanly, so the next one is visible in the first console screenshot.
+A teardown that throws part-way removes the feature's UI and then skips the line that clears its initialised flag, so the rebuild is turned away by its own guard and the feature is dead until a refresh. All 112 features that carry such a flag now clear it in a `finally`, and the registry names any feature whose teardown throws.
 
 ### The marketplace History tab stops "breaking until a refresh"
 
-Switching character (an ironcow to the main, say) disables every feature and re-initialises it; the price-history panel's disable threw on a misnamed cleanup call after it had already removed its panel, so it never marked itself disabled, the re-initialise skipped it, and every History click after that failed on the missing panel until a refresh. The call is fixed (in the My Listings price refresh too), disable now always ends disabled, and a click with no panel up does nothing instead of throwing. The panel's poll and the History / Bulk Sell tabs also now prefer the visible marketplace when the game leaves a hidden one in the DOM.
+Switching character disables every feature and re-initialises it, and the price-history panel's disable threw after it had already removed its panel — so it never marked itself disabled, the re-initialise skipped it, and every History click after that failed until a refresh. Disable now always ends disabled, and a click with no panel up does nothing instead of throwing.
 
 ### The build check's buff fold can no longer count a persistent buff twice
 
-The fold handed the sim the full live total of each buff type on top of the permanent buffs the sim player already held (guild HP, guild damage…), which showed as Max HP −1% / max hit −3% whenever no fight-start map had been seen. The live totals are now applied as per-type targets — the engine adds only the difference over what it holds — so a persistent buff comes out at zero delta and a transient one at full strength, with no fight-start map needed.
+The build check's buff fold handed the sim the full live total of each buff type on top of the permanent buffs the sim player already held, which showed as Max HP −1% and max hit −3% whenever no fight-start map had been seen. The live totals are now applied as per-type targets, so a persistent buff comes out at zero delta and a transient one at full strength.
 
 ### Monster stat check folds your active buffs into the sim and names which player it simmed
 
-The "you vs sim" build check now hands your live combat buffs to the sim player before its stats resolve, so armour, resistances, evasion, accuracy, max hit and HP all compare buffed against buffed instead of showing every self-buff as a gap — with a "Fold my active buffs" toggle for the raw view, a list of exactly which buffs were folded, and a callout for any the sim has no term for. Each section now states which player the sim was built from (your current build in a zone, the labyrinth loadout in the lab, your build at the trial tier in a guild trial), and the export carries it. Guild trial bosses are recognised as their own context: the verified health ladder is compared, everything else is marked "trial scaling not modelled" rather than shown as a bogus mismatch.
+The "you vs sim" build check now hands your live combat buffs to the sim player before its stats resolve, so armour, resistances, evasion, accuracy, max hit and HP compare buffed against buffed instead of showing every self-buff as a gap — with a "Fold my active buffs" toggle for the raw view. Each section states which player the sim was built from, and guild trial bosses are marked "trial scaling not modelled" rather than as a bogus mismatch.
 
 ### Combat summary ignores unit sheets instead of warning
 
@@ -2029,7 +1999,7 @@ Clicking a monster or yourself mid-fight sends the same websocket message as an 
 
 ### Monster stat check compares against your real build in a regular zone
 
-Opened on a zone monster, the blind sim, uptime harness and "you vs sim" build check ran the labyrinth setup — the lab loadout picked for that monster, the lab token level buffs, no food or drink — against the zone unit, then reported you "built differently" (stamina 165 vs 150, wrong armor). In a zone they now use the character as they stand, in that zone, at the unit's tier, with consumables and zone buffs and none of the lab extras; the labyrinth path is unchanged.
+Opened on a zone monster, the blind sim, uptime harness and "you vs sim" build check ran the labyrinth setup — the lab loadout, lab token buffs, no food or drink — against the zone unit, then reported you "built differently". In a zone they now use the character as they stand, in that zone, at the unit's tier, with consumables and zone buffs. The labyrinth path is unchanged.
 
 ### The "Below par" flag has its own switch
 
@@ -2041,7 +2011,7 @@ The "Buy all ▶" button in a section heading vanished the moment the walk hid t
 
 ### The reroll walk stops where the shield popup says, and picks the cheaper currency
 
-The walk now rerolls a task until the protection popup's "Block rerolls at" thresholds would block the next reroll, instead of counting to a reroll limit of its own — one rule for one decision. It prices both options for each card (the chooser's own Pay buttons, or the game's doubling ladder when the chooser is shut), values a cowbell through the Bag of 10 Cowbells and takes the cheaper one, saying which and why: "▶ Reroll #3 — 2🔔 (≈16K, cheaper than 20K🪙)". It is driven from a small floating panel on the Tasks page with a ⚙ for the currency preference and the discard-at-limit switch; the header 🎲 shows and hides it.
+The reroll walk now rerolls a task until the protection popup's "Block rerolls at" thresholds would block the next reroll, instead of counting to a limit of its own. It prices both options for each card, values a cowbell through the Bag of 10 Cowbells, and takes the cheaper one, saying which and why: "▶ Reroll #3 — 2🔔 (≈16K, cheaper than 20K🪙)". It is driven from a small floating panel on the Tasks page.
 
 ### Trial Abilities compares the captured kits against your ability plan
 
@@ -2061,7 +2031,7 @@ Paying for a reroll leaves the game's chooser open over the new task, and every 
 
 ### Trial Abilities keeps every Battle Info sheet, and its session survives a reload
 
-The capture session was written under the guild's key but read back under `default` (the guild's name arrives after the panel loads), so a reload showed 0 captured; and a sheet was judged by what the loadout store held a moment later rather than by the popup that had actually arrived, so Battle Info popups opened during a trial silently never registered. The session is now re-read when the guild's name lands, merges rather than replaces whatever arrived while it was loading, and a trial going live — not the first capture — is what starts a fresh session.
+The Trial Abilities capture session was written under the guild's key but read back under a default one, because the guild's name arrives after the panel loads — so a reload showed 0 captured. And a sheet was judged by what the loadout store held a moment later rather than by the popup that had arrived, so Battle Info popups opened during a trial silently never registered.
 
 ### Guild trial records, sessions and XP switch guilds cleanly
 
@@ -2069,23 +2039,23 @@ Changing guild without changing character used to carry the guild you left into 
 
 ### Seen loadouts stay in the guild they were seen in, and monsters are never members
 
-Changing guild used to hand the new guild the old guild's whole roster: the character-only record was adopted wholesale onto the new guild's key the first time it was empty. A guild key now takes only sightings from this session before its name arrived, the character-only key stops accumulating duplicates once a guild key exists (and is left on disk as legacy rather than deleted), and each guild's own record stays intact for if you go back. Battle Info sheets for monsters — any name the game data lists, not just trial bosses — are refused on capture and purged from anything already stored.
+Changing guild used to hand the new guild the old guild's whole roster: the character-only record was adopted wholesale onto the new guild's key the first time it was empty. A guild key now takes only sightings from this session before its name arrived, and each guild's own record stays intact for if you go back. Battle Info sheets for monsters are refused on capture and purged from anything already stored.
 
 ### Trial Abilities fills from the roster store, and the cycler reaches everyone
 
-The panel now adopts any Battle Info sheet the Guild Roster already holds for an outstanding player (taken since the session began), so it can never lag the roster's "seen 1m" again. "Open next Battle Info" asks players least-recently-asked first with your own card last — it used to re-click the first card in the DOM (yours) on every press and never reach the teammates beside it. Unit clicks also go through the game's own React handler, which the party cards require when a click is not a trusted user gesture.
+Trial Abilities now adopts any Battle Info sheet the Guild Roster already holds for an outstanding player, so it can never lag the roster's "seen 1m" again. "Open next Battle Info" asks players least-recently-asked first with your own card last — it used to re-click the first card in the page, which is yours, on every press and never reach the teammates beside it.
 
 ### Leaderboard rates: idle is a zero, and ranks are kept per view
 
-A reading that found the same value as the last one was never recorded, so a player not doing the skill sat on "1 reading" forever instead of the 0/h that was true — and that is why some rows had rates and others did not. An unchanged value is now recorded as a real zero once the board has had a refresh (20 min) to move; inside that window it is the same snapshot seen twice and is ignored. Idle runs keep their first and last reading, and a player idle across a whole day or week still reads a known 0. Rank is now tracked per board AND view (the Guilds tab's All / Standard / Ironcow / Casual, the player boards' Standard / Ironcow), so "▲10" no longer compares a guild's #11 on All with its #1 on Ironcow.
+A leaderboard reading that found the same value as the last one was never recorded, so a player not doing the skill sat on "1 reading" forever instead of the 0/h that was true. An unchanged value is now recorded as a real zero once the board has had a refresh to move. Rank is also tracked per board and view, so "▲10" no longer compares a guild's #11 on All with its #1 on Ironcow.
 
 ### Level boards read in levels per day and week; weekly boards in days and weeks
 
-Total Level now tracks the level itself (`Lv/day` · `Lv/week` · `Rank ↑ in`) instead of XP per hour over sums in the billions — the Guilds Level board stays on experience, `/h` · `/day`; the Guilds tab's Weekly boards (Points, Trials, Milking…) read `/day` · `/week` in their own unit. A measured week needs two readings more than a day apart; until then the week figure is the day projected and marked. Level-board series recorded as XP before this are dropped once.
+Total Level now tracks the level itself — Lv/day, Lv/week, Rank ↑ in — instead of XP per hour over sums in the billions; the Guilds Level board stays on experience. The Guilds tab's Weekly boards read /day and /week in their own unit. A measured week needs two readings more than a day apart; until then the week figure is the day projected, and marked.
 
 ### Leaderboard rate columns: per-day, catch-up time, rank movement, every board
 
-The leaderboard's rate columns now read `XP/h` · `XP/day` · `Rank ↑ in` — the day figure measured when two readings fall within 24h and projected (marked) otherwise; the catch-up column says how long until a row overtakes the one above at both rows' rates (a floor when the row above has no rate). Rank movement since the previous reading shows beside the game's rank (▲2 / ▼1). Columns are named for what the board counts (`Points/h` on Guild Points), and the Guilds tab's Level board is recorded like the rest. Fixed along the way: one-column boards (Guild Points, Buildings, Task Points…) were recorded as 0, so they could never show a rate; a weekly board's reset now restarts its series instead of freezing it.
+The leaderboard's rate columns now read XP/h, XP/day and Rank ↑ in — the day figure measured when two readings fall within 24h and projected, marked, otherwise. The catch-up column says how long until a row overtakes the one above at both rows' rates, and rank movement since the previous reading shows beside the game's rank. One-column boards were recorded as 0 and so could never show a rate; fixed.
 
 ### Leaderboard XP/h columns explain themselves, and record your own row
 
@@ -2097,7 +2067,7 @@ The archived-cycles block was also drawn on the In Progress tab, where the live 
 
 ### User-authored records (custom tabs, price overrides, pins, goals, settings) survive failed reads
 
-Custom inventory tabs, custom price overrides, alchemy item pins, goal planner goals, equipment savings goals, the philo calculator's cost overrides, named overlay layouts, and the settings map itself now follow the curated-record discipline: a read that cannot be made keeps what is in hand instead of blanking it, a save before the record has been read back folds the stored record under memory (and is refused when storage cannot be read first), and after a readable load a removal sticks. A settings map built from schema defaults because the store could not be read is never written whole — it goes through a merge-save that keeps every stored entry the session left at its default.
+Custom inventory tabs, custom price overrides, alchemy pins, planner goals, equipment savings goals, named overlay layouts and the settings map itself now follow the curated-record discipline: a read that cannot be made keeps what is in hand instead of blanking it, a save before the record has been read back folds the stored record under memory, and after a readable load a removal sticks.
 
 ### Skill XP, enhancement, treasure, watchlist, reroll and collection records survive failed reads
 
