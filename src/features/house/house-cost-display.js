@@ -716,8 +716,22 @@ class HouseCostDisplay {
             fragment.appendChild(button);
         }
 
+        // Every `items_updated` redraws this whole container, and an action
+        // completing is an `items_updated` — so a player reading the list while
+        // gathering had it yanked back to the top every few seconds. The rows
+        // are rebuilt rather than patched, so the scroller is a different
+        // element afterwards and its position has to be carried across by hand.
+        // A shorter list clamps the restored value on its own, and a player who
+        // was already at the top restores a 0 and notices nothing.
+        const previousScroll = container.querySelector('.mwi-cumulative-materials-list')?.scrollTop ?? 0;
+
         container.innerHTML = '';
         container.appendChild(fragment);
+
+        if (previousScroll > 0) {
+            const restored = container.querySelector('.mwi-cumulative-materials-list');
+            if (restored) restored.scrollTop = previousScroll;
+        }
     }
 
     /**

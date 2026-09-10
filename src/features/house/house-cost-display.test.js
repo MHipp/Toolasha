@@ -278,3 +278,33 @@ describe('Missing Mats Marketplace button placement', () => {
         expect(children[0].children.length).toBe(MATERIALS.length + 1);
     });
 });
+
+describe('the list keeps its place when an action redraws it', () => {
+    // happy-dom does no layout, so nothing here is really scrollable — but
+    // `scrollTop` is a settable property on the element, which is all this
+    // needs: the point is that the value is carried from the old scroller to
+    // the new one across a rebuild, not that either can actually scroll.
+    test('a redraw restores the scroll position onto the rebuilt list', async () => {
+        const section = await render();
+        const container = section.querySelector('.mwi-cumulative-cost-container');
+        const before = container.querySelector('.mwi-cumulative-materials-list');
+        before.scrollTop = 120;
+
+        // What an `items_updated` does — the same call the handler makes
+        await houseCostDisplay.updateCompactCumulativeDisplay(container, '/house_rooms/mystical_study', 5, 8);
+
+        const after = container.querySelector('.mwi-cumulative-materials-list');
+        expect(after).not.toBe(before); // genuinely rebuilt, not reused
+        expect(after.scrollTop).toBe(120);
+    });
+
+    test('a list read from the top stays at the top', async () => {
+        const section = await render();
+        const container = section.querySelector('.mwi-cumulative-cost-container');
+        container.querySelector('.mwi-cumulative-materials-list').scrollTop = 0;
+
+        await houseCostDisplay.updateCompactCumulativeDisplay(container, '/house_rooms/mystical_study', 5, 8);
+
+        expect(container.querySelector('.mwi-cumulative-materials-list').scrollTop).toBe(0);
+    });
+});
