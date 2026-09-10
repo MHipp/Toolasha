@@ -6,6 +6,18 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Leftovers: fourteen features stop leaving work behind on a character switch, and a deleted dungeon run stays deleted
+
+Switching character while a feature was still reading its own saved data left that feature's previous set of listeners, observers and timers running with nothing able to remove them — one more set every switch, for as long as the tab stays open. This is the other half of a race a recent round fixed nine of: those nine went quiet and stayed dead until a reload, which you could see; these fourteen carried on working twice, three times, four times, which you could not.
+
+Two of them were doing more than duplicating work. The trade ledger kept recording fills for a character whose ledger you had switched **off** — the setting arrives after the switch does, so it began loading under the default, then read the real value and shut down while the load was still in flight, and the tail that resumed wrote what it found. And the labyrinth room logs merged the departing character's stored sessions into the arriving character's memory. The inventory custom tabs were the only ones that never healed themselves: the panel handed its half-built copy away and lost the reference, so nothing could ever shut it down — three interrupted switches left four stylesheets and four sets of observers in the page.
+
+The rest were silently multiplying a number: doubled damage and consumable counts in Combat Statistics, doubled labyrinth XP rates and duplicate attempts in the clear-rate pool the simulator calibrates against, every order book processed twice into the bulk-sell decision, a duplicated market history report, and a task reroll walk that could advance two steps on one press. The dungeon panel stacked a second copy of itself and a second once-a-second read of your run history — a leak it had been quietly logging as a leak for some time.
+
+Separately: a deleted dungeon run stays deleted. Deleting a run, an outlier the tracker scrubbed, and a run mended by the date repair were all local facts, so syncing with a device that had not seen the removal brought them back. The mended ones were worst — repairing a run changes its identity, so the month-long broken copy returned **beside** the fixed one and dragged the pace average with it. Removals now travel with the history and are folded the way "delete all history" already was, and they are dropped once a clear has made them redundant, so the list cannot grow forever. A run you record again after deleting it is still wanted again.
+
+Also: the own-use tooltip's contract now says what drives its colour, which is how it came to show the same green for both answers in the first place.
+
 ### Dungeon times a dd/mm clock turned into month-long runs
 
 On a client that writes dates day-first, the dungeon tracker read every chat timestamp back-to-front. A field over 12 was rescued as a day, so days 13-31 came out right and every day of 12 or less did not — twelve days in every month misread. Runs came out weeks long: a fourteen-minute clear was stored as twenty-nine days. Four separate copies of the same parser had it, and only one had been fixed; the three that write the stored records had not, so history kept filling with month-long runs even once the chat labels read correctly. All four now share one reading, which takes its order from the client and lets the digits overrule it where they can.
