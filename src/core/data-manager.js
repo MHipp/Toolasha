@@ -607,10 +607,18 @@ class DataManager {
     _recoveryConsentBlockedReason() {
         const preference = this._autoReloadPreference();
         if (preference === 'off') {
-            return 'the automatic reload is turned off in the settings';
+            return 'automatic recovery is turned off in the settings';
+        }
+        if (preference === 'unset') {
+            // The setting ships off, so nothing mirrored is not "no answer yet,
+            // assume the default is fine" — the default *is* off. This branch
+            // exists rather than folding into 'off' so the log says which of
+            // the two it was: a player who chose no, or one who has never seen
+            // the switch.
+            return 'automatic recovery has not been turned on, and it ships off';
         }
         if (preference === 'unreadable') {
-            return 'the automatic-reload setting could not be read, and an unreadable preference is not consent';
+            return 'the automatic-recovery setting could not be read, and an unreadable preference is not consent';
         }
         if (this._pageInteracted) {
             return 'the player has already started using this page and a reload would discard it';

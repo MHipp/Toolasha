@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Recovering from a missed login by itself is now something you turn on
+
+It shipped on in 3.47.0. Dropping the connection or reloading the page is acting on your session without being asked, and that should be your call even on a page that has already failed to load — so it is off unless you tick it. Left off you are asked instead, which is what it always did for anyone who turned it off.
+
+Nothing having been chosen counts as off rather than as "take the default and go", which matters because the choice has to be read on a page where settings have not loaded.
+
 ### A load that misses the character data recovers without losing your tab
 
 When the opening character data goes missing, the connection is now dropped rather than the page: the game opens a new one by itself and sends the data again, so nothing you had typed, opened or scrolled to is lost. Reloading is what happens if that has not worked eight seconds later — measured against how long a reconnect actually takes, and still well inside the thirty seconds this used to sit through. Dropping the connection is held to the same conditions the reload was — your setting, and whether you have started using the page — with one deliberate exception: a tab that already reloaded once and came back broken still gets to try reconnecting. That tab has shown reloading does not help it, and being offered the reload again was the least useful thing that could happen to it.

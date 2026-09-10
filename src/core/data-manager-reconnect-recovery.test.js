@@ -128,6 +128,9 @@ beforeEach(() => {
     try {
         window.sessionStorage.clear();
         window.localStorage.clear();
+        // The setting ships off; these tests are about what happens once it is
+        // on, so they opt in the way a player who ticked the box does.
+        window.localStorage.setItem('toolasha.missedCharacterData.autoReload', '1');
     } catch {
         // A happy-dom without session storage is not what these tests are about
     }

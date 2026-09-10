@@ -43,14 +43,14 @@ describe('labyrinth defaults', () => {
 });
 
 describe('startup recovery defaults', () => {
-    test('the automatic reload ships on, and its help says how to be asked instead', () => {
+    test('automatic recovery ships off, and its help says what turning it on does', () => {
         const setting = getSettingDefinition('startupRecovery_autoReload');
-        // The only page this ever runs on is one that has already failed to
-        // load anything; defaulting to off would leave a broken page broken
-        expect(setting.default).toBe(true);
+        // Acting on the player's session without being asked is opt-in, even
+        // on a page that has already failed to load anything
+        expect(setting.default).toBe(false);
         expect(setting.type).toBe('checkbox');
         // Off means "ask me", never "do nothing", and the help has to say so
-        expect(setting.help).toMatch(/turn this off/i);
+        expect(setting.help).toMatch(/turn this on/i);
         expect(setting.help).toMatch(/reload button/i);
     });
 });

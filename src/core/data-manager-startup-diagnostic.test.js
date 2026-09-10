@@ -100,10 +100,13 @@ beforeEach(() => {
 
     try {
         window.sessionStorage.clear();
-        // The preference mirror lives here. Cleared to "nothing has ever been
-        // mirrored", which is a fresh install's first load — the case every
-        // test that does not set it is standing in.
+        // The preference mirror lives here. The setting ships OFF, so a cleared
+        // mirror means "recovery is not on" and nothing would be attempted —
+        // which is not what most of these tests are about. They set it to on,
+        // standing in for a player who ticked the box; the tests that care
+        // about it being off or unset say so themselves.
         window.localStorage.clear();
+        window.localStorage.setItem('toolasha.missedCharacterData.autoReload', '1');
     } catch {
         // A happy-dom without session storage is not what these tests are about
     }
@@ -514,16 +517,20 @@ describe('the automatic reload is a setting', () => {
         expect(errorText()).toContain('already reloaded once for the same failure');
     });
 
-    test('a fresh install, with nothing ever mirrored, takes the default and reloads', () => {
+    test('a fresh install, with nothing ever mirrored, asks rather than acting', () => {
         enterProvenMissedState();
+        window.localStorage.removeItem(RELOAD_RECOVERY_SETTING_MIRROR_KEY);
         expect(window.localStorage.getItem(RELOAD_RECOVERY_SETTING_MIRROR_KEY)).toBeNull();
 
         dataManager.initialize();
         vi.advanceTimersByTime(EARLY_WINDOW_MS);
 
-        // Nothing stored is not a choice, and the shipped default is on: this
-        // path is only reached on a page that is already provably broken
-        expect(reloads).toBe(1);
+        // The setting ships off, so nothing mirrored is not "no answer yet,
+        // take the default and go" — the default is to ask. Acting on the
+        // player's session unasked is opt-in even here.
+        expect(reloads).toBe(0);
+        expect(toastCalls).toHaveLength(1);
+        expect(errorText()).toContain('has not been turned on');
     });
 
     test('a preference that cannot be read means the toast, not the reload', () => {

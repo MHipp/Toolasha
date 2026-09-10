@@ -1011,15 +1011,15 @@ describe('a save carries the keys this client changed', () => {
 describe('startupRecovery_autoReload has to be mirrored, not read', () => {
     const KEY = 'startupRecovery_autoReload';
 
-    /** The character's real, stored answer: turned off. */
-    const storedOff = () => ({ [KEY]: { id: KEY, isTrue: false } });
+    /** The character's real, stored answer: turned on, against a default of off. */
+    const storedOn = () => ({ [KEY]: { id: KEY, isTrue: true } });
 
     test('the ordinary read answers the schema default on the page the recovery runs on', async () => {
-        settingsStorageMock.loadSettings.mockImplementation(() => Promise.resolve(storedOff()));
+        settingsStorageMock.loadSettings.mockImplementation(() => Promise.resolve(storedOn()));
         await config.loadSettings();
 
         // With a character, everything works and nothing here is interesting
-        expect(config.getSetting(KEY)).toBe(false);
+        expect(config.getSetting(KEY)).toBe(true);
 
         // The page the recovery actually runs on: the payload never arrived, so
         // there is no character id and no per-character settings to load
@@ -1027,13 +1027,15 @@ describe('startupRecovery_autoReload has to be mirrored, not read', () => {
         await config.loadSettings();
 
         // This is the bug a naive implementation would ship: the player said
-        // off, and the ordinary read says on
-        expect(config.getSetting(KEY)).toBe(true);
+        // on, and the ordinary read says off. The stored value has to differ
+        // from the schema default for this to prove anything, which is why it
+        // is `true` here — the default ships `false`.
+        expect(config.getSetting(KEY)).toBe(false);
         expect(config.characterSettingsLoaded).toBe(false);
 
         // The mirror, written while the character's settings were readable, is
         // the only thing on this page that still knows the answer
-        expect(dataManagerMock.mirrored).toEqual([false]);
+        expect(dataManagerMock.mirrored).toEqual([true]);
     });
 
     test('a load that could not read the store does not mirror its stand-in defaults', async () => {
