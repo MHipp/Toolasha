@@ -37,6 +37,10 @@ const dataManagerMock = vi.hoisted(() => ({
     characterId: 'char-1',
     getCurrentCharacterName: () => 'TestChar',
     getCurrentCharacterId: () => dataManagerMock.characterId,
+    // The startup-recovery mirror. Config hands the value over; data-manager is
+    // what stores it somewhere readable before the settings store is.
+    mirrored: [],
+    rememberAutoReloadPreference: (enabled) => dataManagerMock.mirrored.push(enabled),
 }));
 
 vi.mock('./settings-storage.js', () => ({ default: settingsStorageMock }));
@@ -73,6 +77,7 @@ beforeEach(() => {
     // flipped. Put every one of them back to the declared default so a test
     // gets the mock it was written against whatever ran before it.
     dataManagerMock.characterId = 'char-1';
+    dataManagerMock.mirrored = [];
     storageMock.restorePending = false;
     settingsStorageMock.lastLoadReadable = true;
     settingsStorageMock.loadSettings.mockReset().mockImplementation(() => Promise.resolve({}));
@@ -985,5 +990,74 @@ describe('a save carries the keys this client changed', () => {
 
         expect(settingsStorageMock.saveSettings).not.toHaveBeenCalled();
         expect(settingsStorageMock.saveSettingsKeepingStored).toHaveBeenCalled();
+    });
+});
+
+/**
+ * Why the startup-recovery reload cannot read its own setting the ordinary way.
+ *
+ * `data-manager` decides whether to reload about five seconds into a page where
+ * `init_character_data` never arrived. Settings here are per character and
+ * loaded only once there is a character id — `loadSettings()` returns before it
+ * touches storage without one (config.js:536-548), leaving the map holding
+ * nothing but defaults, and `getSetting()` then falls through to
+ * `SCHEMA_DEFAULTS` (config.js:735-765).
+ *
+ * So the ordinary read reports the shipped `true` to a player who turned it
+ * off, in precisely the situation the setting is for. These pin that, and pin
+ * the mirror that is the answer to it: a naive implementation passes the first
+ * assertion of the first test and fails the last.
+ */
+describe('startupRecovery_autoReload has to be mirrored, not read', () => {
+    const KEY = 'startupRecovery_autoReload';
+
+    /** The character's real, stored answer: turned off. */
+    const storedOff = () => ({ [KEY]: { id: KEY, isTrue: false } });
+
+    test('the ordinary read answers the schema default on the page the recovery runs on', async () => {
+        settingsStorageMock.loadSettings.mockImplementation(() => Promise.resolve(storedOff()));
+        await config.loadSettings();
+
+        // With a character, everything works and nothing here is interesting
+        expect(config.getSetting(KEY)).toBe(false);
+
+        // The page the recovery actually runs on: the payload never arrived, so
+        // there is no character id and no per-character settings to load
+        dataManagerMock.characterId = null;
+        await config.loadSettings();
+
+        // This is the bug a naive implementation would ship: the player said
+        // off, and the ordinary read says on
+        expect(config.getSetting(KEY)).toBe(true);
+        expect(config.characterSettingsLoaded).toBe(false);
+
+        // The mirror, written while the character's settings were readable, is
+        // the only thing on this page that still knows the answer
+        expect(dataManagerMock.mirrored).toEqual([false]);
+    });
+
+    test('a load that could not read the store does not mirror its stand-in defaults', async () => {
+        settingsStorageMock.lastLoadReadable = false;
+        settingsStorageMock.loadSettings.mockImplementation(() =>
+            Promise.resolve({ [KEY]: { id: KEY, isTrue: true } })
+        );
+
+        await config.loadSettings();
+
+        // Those are schema defaults standing in for settings that could not be
+        // read; mirroring them would put `true` over a stored `false`
+        expect(dataManagerMock.mirrored).toEqual([]);
+    });
+
+    test('flipping the switch mirrors it immediately, without waiting for a reload', async () => {
+        settingsStorageMock.loadSettings.mockImplementation(() =>
+            Promise.resolve({ [KEY]: { id: KEY, isTrue: true } })
+        );
+        await config.loadSettings();
+        dataManagerMock.mirrored = [];
+
+        config.setSetting(KEY, false);
+
+        expect(dataManagerMock.mirrored).toEqual([false]);
     });
 });

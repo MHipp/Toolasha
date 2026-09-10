@@ -41,3 +41,16 @@ describe('labyrinth defaults', () => {
         expect(help).toMatch(/confidence interval/i);
     });
 });
+
+describe('startup recovery defaults', () => {
+    test('the automatic reload ships on, and its help says how to be asked instead', () => {
+        const setting = getSettingDefinition('startupRecovery_autoReload');
+        // The only page this ever runs on is one that has already failed to
+        // load anything; defaulting to off would leave a broken page broken
+        expect(setting.default).toBe(true);
+        expect(setting.type).toBe('checkbox');
+        // Off means "ask me", never "do nothing", and the help has to say so
+        expect(setting.help).toMatch(/turn this off/i);
+        expect(setting.help).toMatch(/reload button/i);
+    });
+});

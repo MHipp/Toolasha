@@ -33,6 +33,22 @@ const SCHEMA_DEFAULTS = (() => {
 const RELOAD_WATCHDOG_MS = 15000;
 
 /**
+ * The one setting that has a reader which cannot wait for the settings store.
+ *
+ * Data-manager's startup recovery decides whether to reload the page about five
+ * seconds into a load where the character payload never arrived. There is no
+ * character then, so `loadSettings()` has populated nothing but schema defaults
+ * and `getSetting()` would answer `true` for a player who had turned this off.
+ * The value is therefore handed to data-manager whenever it is loaded or
+ * changed, and data-manager mirrors it into unscoped browser storage that it
+ * can read synchronously later. Config does not touch that storage itself: the
+ * module that reads the mirror is the one that should define it, and reaching
+ * for a named export of `data-manager.js` from here would break every test that
+ * mocks it with a bare default.
+ */
+const RELOAD_RECOVERY_SETTING_KEY = 'startupRecovery_autoReload';
+
+/**
  * Config class manages all script configuration
  * - Constants (colors, URLs, formatters)
  * - User settings with persistence
@@ -598,6 +614,11 @@ class Config {
             this.settingsMap = loadedMap;
             this.settingsOwner = characterId;
             this.characterSettingsLoaded = true;
+            // Only from the branch that actually read this character's settings.
+            // Mirroring the other branch's map would write the schema default
+            // over a stored `false` — the very substitution the mirror exists to
+            // stop.
+            this._mirrorReloadRecoverySetting(this.getSetting(RELOAD_RECOVERY_SETTING_KEY));
         }
 
         // Apply anything written while the map was empty, before either fan-out
@@ -723,6 +744,27 @@ class Config {
      */
     _markDirty(key) {
         this._dirtyKeys.add(key);
+    }
+
+    /**
+     * Hand the startup-recovery preference to the one reader that cannot wait
+     * for the settings store.
+     *
+     * Optional-chained: a test double standing in for data-manager has no such
+     * method, and a settings save is not the place to throw over a mirror.
+     * Whether the write lands is data-manager's business — a refused one leaves
+     * the mirror unreadable there, which makes the recovery ask rather than
+     * reload.
+     * @param {boolean} value - The value to mirror
+     * @returns {void}
+     * @private
+     */
+    _mirrorReloadRecoverySetting(value) {
+        try {
+            dataManager.rememberAutoReloadPreference?.(value === true);
+        } catch (error) {
+            console.warn('[Config] Could not mirror the startup-recovery setting:', error);
+        }
     }
 
     /**
@@ -875,6 +917,10 @@ class Config {
             this._writeSettingField(setting, value);
             this._markDirty(key);
             this.saveSettings();
+
+            if (key === RELOAD_RECOVERY_SETTING_KEY) {
+                this._mirrorReloadRecoverySetting(value);
+            }
 
             // Re-apply colors if color setting changed
             if (key === 'useOrangeAsMainColor') {

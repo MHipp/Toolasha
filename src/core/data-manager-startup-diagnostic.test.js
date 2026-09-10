@@ -44,7 +44,7 @@ vi.mock('./storage.js', () => ({
     },
 }));
 
-const { default: dataManager } = await import('./data-manager.js');
+const { default: dataManager, RELOAD_RECOVERY_SETTING_MIRROR_KEY } = await import('./data-manager.js');
 
 /** The 30-second fallback poll: 60 ticks of 500 ms. */
 const FALLBACK_WINDOW_MS = 30_000;
@@ -100,6 +100,10 @@ beforeEach(() => {
 
     try {
         window.sessionStorage.clear();
+        // The preference mirror lives here. Cleared to "nothing has ever been
+        // mirrored", which is a fresh install's first load — the case every
+        // test that does not set it is standing in.
+        window.localStorage.clear();
     } catch {
         // A happy-dom without session storage is not what these tests are about
     }
@@ -421,5 +425,167 @@ describe('automatic recovery from a proven missed payload', () => {
         expect(reloads).toBe(0);
         toastCalls[0].options.action.onClick();
         expect(reloads).toBe(1);
+    });
+});
+
+/**
+ * The switch over the automatic reload.
+ *
+ * The whole difficulty is that this decision is taken on a page where the
+ * character payload never arrived, and settings in this codebase are scoped to
+ * a character and loaded after one exists. So `config.getSetting()` here answers
+ * out of `SCHEMA_DEFAULTS` — `true` — however firmly the player turned it off.
+ * (`config.js:536-548` returns before touching storage when there is no
+ * character id; `config.js:735-765` then falls through to the schema.) A setting
+ * read that way would ignore the player in exactly the case it exists for, which
+ * is worse than having no setting, so the value is mirrored into `localStorage`
+ * as it changes and read from there.
+ *
+ * Off never means "do nothing": it means the toast, which is the same offer.
+ */
+describe('the automatic reload is a setting', () => {
+    const enterProvenMissedState = () => {
+        hookMock.messagesSeen = 14;
+        hookMock.attachedAfterSocketOpen = true;
+    };
+
+    /** Stand in for config having mirrored the player's choice at some earlier login. */
+    const mirrorPreference = (enabled) => dataManager.rememberAutoReloadPreference(enabled);
+
+    test('turned off, the page is not reloaded — the reload is offered instead', () => {
+        enterProvenMissedState();
+        mirrorPreference(false);
+
+        dataManager.initialize();
+        vi.advanceTimersByTime(EARLY_WINDOW_MS);
+
+        expect(reloads).toBe(0);
+        expect(toastCalls).toHaveLength(1);
+        expect(toastCalls[0].options.duration).toBe(0);
+        expect(errorText()).toContain('turned off in the settings');
+        // Turning it off must not spend the tab's one automatic reload either
+        expect(window.sessionStorage.getItem(RELOAD_GUARD_KEY)).toBeNull();
+    });
+
+    test('turned off, the offer still reloads when the player takes it', () => {
+        enterProvenMissedState();
+        mirrorPreference(false);
+
+        dataManager.initialize();
+        vi.advanceTimersByTime(EARLY_WINDOW_MS);
+        toastCalls[0].options.action.onClick();
+
+        expect(reloads).toBe(1);
+    });
+
+    test('turned on, the reload happens and every other gate still applies', () => {
+        enterProvenMissedState();
+        mirrorPreference(true);
+
+        dataManager.initialize();
+        vi.advanceTimersByTime(EARLY_WINDOW_MS);
+
+        expect(reloads).toBe(1);
+        expect(toastCalls).toHaveLength(0);
+        expect(window.sessionStorage.getItem(RELOAD_GUARD_KEY)).toBe('1');
+    });
+
+    test('turned on does not override the interaction gate', () => {
+        enterProvenMissedState();
+        mirrorPreference(true);
+
+        dataManager.initialize();
+        window.dispatchEvent(new Event('keydown'));
+        vi.advanceTimersByTime(EARLY_WINDOW_MS);
+
+        expect(reloads).toBe(0);
+        expect(errorText()).toContain('already started using this page');
+    });
+
+    test('turned on does not override the once-per-tab guard', () => {
+        enterProvenMissedState();
+        mirrorPreference(true);
+        window.sessionStorage.setItem(RELOAD_GUARD_KEY, '1');
+
+        dataManager.initialize();
+        vi.advanceTimersByTime(EARLY_WINDOW_MS);
+
+        expect(reloads).toBe(0);
+        expect(errorText()).toContain('already reloaded once for the same failure');
+    });
+
+    test('a fresh install, with nothing ever mirrored, takes the default and reloads', () => {
+        enterProvenMissedState();
+        expect(window.localStorage.getItem(RELOAD_RECOVERY_SETTING_MIRROR_KEY)).toBeNull();
+
+        dataManager.initialize();
+        vi.advanceTimersByTime(EARLY_WINDOW_MS);
+
+        // Nothing stored is not a choice, and the shipped default is on: this
+        // path is only reached on a page that is already provably broken
+        expect(reloads).toBe(1);
+    });
+
+    test('a preference that cannot be read means the toast, not the reload', () => {
+        enterProvenMissedState();
+
+        // Site data blocked. happy-dom's Storage is a Proxy whose set trap
+        // stores an item rather than replacing a method, so the whole object is
+        // swapped and put back by hand.
+        const descriptor = Object.getOwnPropertyDescriptor(window, 'localStorage');
+        Object.defineProperty(window, 'localStorage', {
+            configurable: true,
+            get: () => {
+                throw new Error('site data blocked');
+            },
+        });
+
+        try {
+            dataManager.initialize();
+            vi.advanceTimersByTime(EARLY_WINDOW_MS);
+        } finally {
+            Object.defineProperty(window, 'localStorage', descriptor);
+        }
+
+        expect(reloads).toBe(0);
+        expect(toastCalls).toHaveLength(1);
+        // An unreadable preference is not consent
+        expect(errorText()).toContain('unreadable preference is not consent');
+    });
+
+    test("the mirror outlives the page, so a load with no settings store still honours 'off'", () => {
+        // The login where the player turned it off: config had a character and
+        // handed the value over
+        dataManager.rememberAutoReloadPreference(false);
+        expect(window.localStorage.getItem(RELOAD_RECOVERY_SETTING_MIRROR_KEY)).toBe('0');
+
+        // The next page load is the broken one. No character, so config never
+        // loads this character's settings at all and nothing writes the mirror
+        // again — the value from last time is the only record there is.
+        enterProvenMissedState();
+        dataManager.initialize();
+        vi.advanceTimersByTime(EARLY_WINDOW_MS);
+
+        expect(reloads).toBe(0);
+        expect(toastCalls).toHaveLength(1);
+    });
+
+    test('a mirror write that storage refuses does not throw out of a settings save', () => {
+        const descriptor = Object.getOwnPropertyDescriptor(window, 'localStorage');
+        Object.defineProperty(window, 'localStorage', {
+            configurable: true,
+            get: () => ({
+                getItem: () => null,
+                setItem: () => {
+                    throw new Error('quota exceeded');
+                },
+            }),
+        });
+
+        try {
+            expect(() => dataManager.rememberAutoReloadPreference(false)).not.toThrow();
+        } finally {
+            Object.defineProperty(window, 'localStorage', descriptor);
+        }
     });
 });

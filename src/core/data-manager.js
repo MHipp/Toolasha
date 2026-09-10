@@ -80,6 +80,35 @@ const RELOAD_GUARD_KEY = 'toolasha.missedCharacterData.autoReloaded';
 /** Events that count as the player having started using this page. */
 const INTERACTION_EVENTS = ['pointerdown', 'keydown', 'touchstart', 'wheel'];
 
+/**
+ * Where the "reload by itself" preference is mirrored, for the one reader that
+ * cannot use the settings store.
+ *
+ * The setting itself lives in the normal per-character store like every other
+ * one. That store is unreachable here: it is keyed by character id, and this
+ * decision is made ~5 seconds into a page where the character payload never
+ * arrived, so there is no character id and `config.getSetting()` answers from
+ * `SCHEMA_DEFAULTS` — it would report the shipped `true` to a player who had
+ * turned it off, in exactly the situation the setting exists for.
+ *
+ * So config mirrors the value here every time it is loaded or changed, and this
+ * is what the recovery reads. `localStorage` and not the storage module for the
+ * same reasons `RELOAD_GUARD_KEY` above uses `sessionStorage`: it has to be
+ * readable synchronously, before anything else has loaded. `localStorage`
+ * rather than `sessionStorage` because the preference has to outlive the tab.
+ *
+ * Global, not per character. The point where it is consulted has no character
+ * to scope it to, so a per-character mirror could not be looked up at all. It
+ * holds the value of the last character whose settings were loaded — which, on
+ * a page that has just failed to load one, is the character most likely to be
+ * logging in again.
+ *
+ * Values are the strings `'1'` and `'0'`. Absent means no character's settings
+ * have ever been mirrored on this browser (a fresh install, first load), and
+ * the schema default applies.
+ */
+export const RELOAD_RECOVERY_SETTING_MIRROR_KEY = 'toolasha.missedCharacterData.autoReload';
+
 class DataManager {
     constructor() {
         this.webSocketHook = webSocketHook;
@@ -343,6 +372,9 @@ class DataManager {
      *
      * A reload is only free on a page the session has not started on. Each of
      * these is a way that stops being true:
+     * - the player asked to be asked: the setting is off, or its mirror cannot
+     *   be read at all. Off never means "do nothing" — the toast below is the
+     *   same offer, made rather than taken.
      * - already used: this tab reloaded once for this same failure and came back
      *   into it. Reloading again is a loop, and a loop is worse than a dead
      *   script — so the second time it asks instead.
@@ -359,6 +391,13 @@ class DataManager {
         if (typeof window === 'undefined' || typeof window.location?.reload !== 'function') {
             return 'this page has no window to reload';
         }
+        const preference = this._autoReloadPreference();
+        if (preference === 'off') {
+            return 'the automatic reload is turned off in the settings';
+        }
+        if (preference === 'unreadable') {
+            return 'the automatic-reload setting could not be read, and an unreadable preference is not consent';
+        }
         if (this._reloadRecoveryAlreadyAttempted()) {
             return 'this tab has already reloaded once for the same failure and came back into it';
         }
@@ -366,6 +405,60 @@ class DataManager {
             return 'the player has already started using this page and a reload would discard it';
         }
         return null;
+    }
+
+    /**
+     * What the player has said about reloading automatically.
+     *
+     * Read straight out of the mirror rather than through `config`, and not
+     * only because `config.js` imports this module and cannot be imported back.
+     * Late binding through `window.Toolasha.Core.*` — the documented way a Core
+     * file reaches a later bundle — would work and would still be wrong: it
+     * would reach a real `config` whose settings map, on this page, holds
+     * nothing but schema defaults, and get back `true` for a player who had
+     * turned it off. The problem is the load order, not the import, so the fix
+     * has to be a value that is readable before the settings store is. See
+     * {@link RELOAD_RECOVERY_SETTING_MIRROR_KEY}.
+     *
+     * @returns {'on'|'off'|'unset'|'unreadable'} `unset` when nothing has been
+     *   mirrored yet — a fresh install's first load — so the schema default
+     *   applies; `unreadable` when storage refused the read.
+     * @private
+     */
+    _autoReloadPreference() {
+        try {
+            const stored = window.localStorage?.getItem(RELOAD_RECOVERY_SETTING_MIRROR_KEY);
+            if (stored === null || stored === undefined) return 'unset';
+            return stored === '1' ? 'on' : 'off';
+        } catch {
+            // Site data blocked, a hardened profile, a sandboxed frame. The
+            // preference may well be "off" and there is no way to find out, so
+            // this falls towards asking rather than towards reloading.
+            return 'unreadable';
+        }
+    }
+
+    /**
+     * Mirror the "reload by itself" preference where the recovery can read it.
+     *
+     * Called by config every time this character's settings are loaded and
+     * every time the switch is flipped — config is the only thing that knows
+     * the real value, and this is the only thing that can read it at the moment
+     * it matters.
+     *
+     * A refused write is logged and left. The mirror then holds either the
+     * previous value or nothing; nothing reads as `unset`, which takes the
+     * schema default. On a browser storing nothing at all the read throws too,
+     * and that falls towards asking.
+     * @param {boolean} enabled - Whether the automatic reload is turned on
+     * @returns {void}
+     */
+    rememberAutoReloadPreference(enabled) {
+        try {
+            window.localStorage?.setItem(RELOAD_RECOVERY_SETTING_MIRROR_KEY, enabled ? '1' : '0');
+        } catch (error) {
+            console.warn('[DataManager] Could not record the automatic-reload preference:', error);
+        }
     }
 
     /**
