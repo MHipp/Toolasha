@@ -5,6 +5,7 @@ import { rollup } from 'rollup';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join, normalize } from 'path';
+import { sliceForkChangelog } from './scripts/changelog-slice.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -377,13 +378,18 @@ const buildExternal = (globalsMap) => (id) => globalsMap.has(normalizeModuleId(i
 
 // Custom plugin to import CSS as raw strings
 /**
- * Embed the current fork-changelog section as a virtual module.
+ * Embed the newest part of the fork-changelog section as a virtual module.
  *
  * The what's-new popup wants to show what changed, and CHANGELOG.md is where
  * that is already written — maintaining a second copy in code would drift by
- * the second release. The first "## Unreleased" section is what a dev build's
- * user is actually receiving, so that is the slice that ships, capped so a
- * long-lived branch cannot balloon the bundle.
+ * the second release. The "## Unreleased" section is what a build's user is
+ * actually receiving, but that heading is never rotated, so the section holds
+ * every change since the fork diverged; only its newest entries ship, whole and
+ * capped. `sliceForkChangelog` owns that choice and is tested directly.
+ *
+ * What ships is exactly what the panel shows, which is also what its "Copy
+ * changelog" button copies — including the line naming what was left out, so a
+ * pasted copy is not silently partial.
  */
 function changelogPlugin() {
     const id = 'virtual:fork-changelog';
@@ -394,19 +400,13 @@ function changelogPlugin() {
         },
         load(moduleId) {
             if (moduleId !== `\0${id}`) return null;
-            let section = '';
+            let text = '';
             try {
-                const changelog = readFileSync('CHANGELOG.md', 'utf-8');
-                const start = changelog.search(/^## Unreleased/m);
-                if (start !== -1) {
-                    const rest = changelog.slice(start);
-                    const end = rest.slice(3).search(/^## /m);
-                    section = end === -1 ? rest : rest.slice(0, end + 3);
-                }
+                text = sliceForkChangelog(readFileSync('CHANGELOG.md', 'utf-8')).text;
             } catch {
-                section = '';
+                text = '';
             }
-            return `export default ${JSON.stringify(section.slice(0, 20000))};`;
+            return `export default ${JSON.stringify(text)};`;
         },
     };
 }
