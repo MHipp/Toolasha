@@ -425,20 +425,24 @@ class DataManager {
      *   the risk of the unproven step.
      * - The interaction gate costs nothing to keep and bounds the blast radius:
      *   a page the player has started using is left alone entirely, as today.
-     * - The once-per-tab reload guard implies the close too: a tab that already
-     *   reloaded for this failure and came back into it is looping, and adding a
-     *   socket close to a loop does not improve it.
+     * - The once-per-tab *reload* guard is deliberately NOT inherited. That was
+     *   the original rule, on the reasoning that a tab which reloaded and came
+     *   back into the same failure is looping. It had it backwards: such a tab
+     *   has proved the expensive recovery does not work, while the cheap one has
+     *   not been tried and cannot loop, because it carries its own separate
+     *   mark. Under the old rule that page was offered the very reload that had
+     *   just failed it. See {@link _reconnectRecoveryBlockedReason}.
      *
-     * So the rule is one sentence: **the close happens exactly where today's
-     * automatic reload would have happened**, and the reload becomes what
-     * happens when it does not work.
+     * So the rule is: **the close happens wherever the player has consented and
+     * has not started using the page**, and the reload becomes what happens when
+     * the close does not work — or when the close has already been spent.
      *
      * @returns {boolean} True when a close was taken and the reconnect is being
      *   waited on. False means fall through to the reload, unchanged.
      * @private
      */
     _tryReconnectRecovery() {
-        if (this._reloadRecoveryBlockedReason()) return false;
+        if (this._reconnectRecoveryBlockedReason()) return false;
         if (this._reconnectRecoveryAlreadyAttempted()) return false;
         if (typeof this.webSocketHook?.closeActiveGameSocket !== 'function') return false;
 
@@ -582,6 +586,25 @@ class DataManager {
         if (typeof window === 'undefined' || typeof window.location?.reload !== 'function') {
             return 'this page has no window to reload';
         }
+        const shared = this._recoveryConsentBlockedReason();
+        if (shared) return shared;
+        if (this._reloadRecoveryAlreadyAttempted()) {
+            return 'this tab has already reloaded once for the same failure and came back into it';
+        }
+        return null;
+    }
+
+    /**
+     * The conditions both halves of the recovery answer to.
+     *
+     * Consent and the player's own use of the page: neither the close nor the
+     * reload may be taken against them. What is deliberately *not* here is the
+     * once-per-tab reload mark — see {@link _reconnectRecoveryBlockedReason}.
+     *
+     * @returns {string|null} A reason phrase for the log, or null to proceed
+     * @private
+     */
+    _recoveryConsentBlockedReason() {
         const preference = this._autoReloadPreference();
         if (preference === 'off') {
             return 'the automatic reload is turned off in the settings';
@@ -589,13 +612,29 @@ class DataManager {
         if (preference === 'unreadable') {
             return 'the automatic-reload setting could not be read, and an unreadable preference is not consent';
         }
-        if (this._reloadRecoveryAlreadyAttempted()) {
-            return 'this tab has already reloaded once for the same failure and came back into it';
-        }
         if (this._pageInteracted) {
             return 'the player has already started using this page and a reload would discard it';
         }
         return null;
+    }
+
+    /**
+     * Why the socket close must not be taken, or null when it may be.
+     *
+     * The same consent and interaction gates as the reload, and pointedly *not*
+     * the reload's once-per-tab mark. A tab that reloaded for this failure and
+     * came back into it has proved the expensive recovery does not work here;
+     * the cheap one has not been tried, cannot discard anything, and carries its
+     * own separate once-per-tab guard, so allowing it cannot loop. Refusing it
+     * there left the player being offered the reload they had just been failed
+     * by. Measured in the live client before this changed: with the reload mark
+     * set, the close was refused and never wrote its own mark.
+     *
+     * @returns {string|null} A reason phrase for the log, or null to proceed
+     * @private
+     */
+    _reconnectRecoveryBlockedReason() {
+        return this._recoveryConsentBlockedReason();
     }
 
     /**

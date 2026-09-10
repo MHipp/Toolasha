@@ -284,16 +284,52 @@ describe('the close is gated exactly as the reload is', () => {
         expect(errorText()).toContain('already started using this page');
     });
 
-    test('a tab that has already spent its reload does not get a close either', () => {
+    test('a tab that has already spent its reload still gets the close', () => {
+        // The reload was tried and the tab came back into the same failure, so
+        // the expensive recovery is known not to work here. The cheap one has
+        // not been tried and cannot loop — it has its own mark. Refusing it
+        // left the player being offered the reload that had just failed them.
         enterProvenMissedState();
         window.sessionStorage.setItem(RELOAD_GUARD_KEY, '1');
 
         dataManager.initialize();
         vi.advanceTimersByTime(EARLY_WINDOW_MS);
 
-        expect(hookMock.closes).toBe(0);
+        expect(hookMock.closes).toBe(1);
+        expect(reloads).toBe(0);
+    });
+
+    test('with the reload spent and the reconnect working, nothing else happens', () => {
+        enterProvenMissedState();
+        window.sessionStorage.setItem(RELOAD_GUARD_KEY, '1');
+
+        dataManager.initialize();
+        vi.advanceTimersByTime(EARLY_WINDOW_MS);
+        expect(hookMock.closes).toBe(1);
+
+        // What the reconnect delivers: a fresh init_character_data
+        dataManager.characterData = { character: { id: 30404 } };
+        vi.advanceTimersByTime(RECONNECT_WINDOW_MS * 2);
+
+        expect(reloads).toBe(0);
+        expect(toastCalls).toHaveLength(0);
+    });
+
+    test('with the reload spent and the reconnect failing, the toast is offered not the reload', () => {
+        enterProvenMissedState();
+        window.sessionStorage.setItem(RELOAD_GUARD_KEY, '1');
+
+        dataManager.initialize();
+        vi.advanceTimersByTime(EARLY_WINDOW_MS);
+        expect(hookMock.closes).toBe(1);
+
+        // No payload arrives. The reload guard is spent, so the fallback cannot
+        // reload either — the player is asked rather than looped.
+        vi.advanceTimersByTime(RECONNECT_WINDOW_MS + 1000);
+
         expect(reloads).toBe(0);
         expect(toastCalls).toHaveLength(1);
+        expect(errorText()).toContain('already reloaded once');
     });
 
     test('an unproven miss neither closes nor reloads', () => {

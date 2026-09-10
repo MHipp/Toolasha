@@ -8,7 +8,7 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ### A load that misses the character data recovers without losing your tab
 
-When the opening character data goes missing, the connection is now dropped rather than the page: the game opens a new one by itself and sends the data again, so nothing you had typed, opened or scrolled to is lost. Reloading is what happens if that has not worked eight seconds later — measured against how long a reconnect actually takes, and still well inside the thirty seconds this used to sit through. Dropping the connection is held to exactly the same conditions the reload was, because it is only the cheaper option while the game reconnects, and that is the part we are least certain of.
+When the opening character data goes missing, the connection is now dropped rather than the page: the game opens a new one by itself and sends the data again, so nothing you had typed, opened or scrolled to is lost. Reloading is what happens if that has not worked eight seconds later — measured against how long a reconnect actually takes, and still well inside the thirty seconds this used to sit through. Dropping the connection is held to the same conditions the reload was — your setting, and whether you have started using the page — with one deliberate exception: a tab that already reloaded once and came back broken still gets to try reconnecting. That tab has shown reloading does not help it, and being offered the reload again was the least useful thing that could happen to it.
 
 ### A load that misses the character data recovers itself instead of sitting dead
 
