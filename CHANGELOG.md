@@ -1525,15 +1525,14 @@ Every real tab edit now stamps the tab (view state like collapsing deliberately 
 
 ### Custom inventory tabs survive a sync pull
 
-A pull used to replace the tab config wholesale with the gist's copy, so a device whose gist was days behind reverted your tabs — newer tabs gone, items back in Unorganized. Pulls now fold the two configs together: tabs are unioned by id, the local copy wins where both have one, and your selection stays. The trade is stated in the code: without per-tab timestamps a tab deleted here can return from a device that still carries it, which is the recoverable direction — losing tabs was not.
+A pull used to replace the tab config wholesale with the gist's copy, so a device whose gist was days behind reverted your tabs — newer tabs gone, items back in Unorganized. Pulls now fold the two configs together: tabs are unioned by id and the local copy wins where both have one. A tab deleted here can return from a device that still carries it, which is the recoverable direction.
 
 ### Audit round five: six reviewers over the corners no round had reached
 
-- **Combat sim engine**: a dungeon wipe right after a wave clear no longer spawns a phantom wave that attacks for the rest of the run (long dungeon sims degraded monotonically per wipe); a pierce that kills cannot count the same player dead twice; a revived monster drops once, not twice; a wipe and a wave credit can no longer both be charged for one pass; ordinary-zone deaths keep boss progress; fractional sim hours run exactly, not rounded up; the zone reads boss cadence from game data without mutating it; multi-target buff triggers count units instead of concatenating objects.
-- **Storage and sync**: a pull whose writes all fail no longer advances the sync stamp (it used to mark the remote as consumed forever); bulk writes wait for a reconnecting database like every other path; a restore quiesces live writers and latches restored stores until the reload, so pre-restore values can't clobber restored ones; the chunked histories merge a synced legacy key instead of deleting the local chunks beside it, load behind one shared read, and retry chunks whose write was refused; the sync busy flag is an ownership token; the remembered hash matches what was applied; the manifest's size and hash are verified before applying; orphaned gist chunks are cleaned using the gist's real file list.
-- **Marketplace**: cancelled listings holding a refund badge and announce again (net worth counts the refund too); the sidebar badge reads the full book, not the last delta, and forgets it on character switch; listing statuses are computed on copies so a later market message can't clobber an active promotion; switching characters no longer merges the old character's listing log into the new one's storage; refreshed price sightings carry their real observation time instead of claiming "just now"; the My Listings table stops rebuilding itself ~21 times per item open; bulk sell taxes the cowbell bag at its real 18%; autofill/auto-max no longer spend their one shot on a half-built modal; two features guard against double initialization; the sell queue's auto-advance waits until no modal or text field is in use.
-- **Panels**: new panels open in front of raised ones; the overlay can no longer be promoted above the game's own UI by the stacking overflow; the consumables panel stops rebuilding while folded and stops eating open dropdowns; the combat-level panel stops rebuilding while folded but keeps sampling; a slow geometry restore no longer snaps back over a drag; the diagnostics section lets go of the error log when React unmounts it; overlay and briefing toggles say they need a reload; remembered panels follow character switches instead of only page loads.
-- **Tasks and alchemy**: the reroll tracker reads the live quest list, so tasks stopped being retired-and-billed while still on the board; Purple's Gift is credited per task, not per token; a task with unpriceable outputs reads "N/A" and the totals say "≥ X (N unpriced)" instead of counting it break-even; alchemy sessions are saved under the right character on disable; batched efficiency procs count successes from item deltas instead of stack counts; unpriceable enhancement protection is never priced as free; a one-sided order book uses its real side instead of vendor prices; the alchemy rate cache notices pricing-mode, house and community-buff changes; the catalyst icon reads both href spellings; recorded alchemy profit is taxed like the forecast; the below-par reroll rule compares like with like, so a nearly-done bad task still flags.
+- **Combat sim**: a dungeon wipe right after a wave clear no longer spawns a phantom wave that attacks for the rest of the run.
+- **Storage and sync**: a pull whose writes all fail no longer marks the remote as consumed forever.
+- **Marketplace**: cancelled listings badge their refund, and bulk sell taxes the cowbell bag at its real 18%.
+- **Tasks**: a task with unpriceable outputs reads "N/A" instead of counting break-even.
 
 ### A combat restock shows at once
 
@@ -1541,16 +1540,16 @@ The combat consumables list read your held counts from battle snapshots, which t
 
 ### Four quality-of-life additions
 
-- **Settings search, finished**: the settings filter box now debounces, clears on Escape, keeps a whole section visible when its heading matches, and no longer leaks keystrokes to the game.
-- **Rotation fight history**: a third History scope on the Rotation tab lists the last 20 measurable fights — length, casts, mana/min, starved seconds, per-ability casts — newest first, and Copy stats copies it.
-- **Dungeon run trends**: the run history shows per-dungeon/tier duration trends (last 10 runs vs the 10 before), implied runs/hr, and a per-run faster/slower marker against the rolling average. Duration only — recorded runs carry no token payouts, so no earnings are invented.
-- **Daily net-worth calendar**: a collapsible 8-week day grid in the gold-sources panel, colored by each local day's net-worth change, with gap days marked rather than misattributed and days without snapshots shown as no-data, never zero.
+- **Settings search**: the filter box debounces, clears on Escape, and no longer leaks keystrokes to the game.
+- **Rotation fight history**: a third History scope listing the last 20 measurable fights, newest first.
+- **Dungeon run trends**: per-dungeon duration trends, implied runs/hr, and a faster/slower marker per run.
+- **Daily net-worth calendar**: an 8-week day grid coloured by each day's change, with gap days marked.
 
 ### Audit round four: three reviewers, twenty-nine fixes
 
-- **Valuations**: an upgrade item with no market price gets its crafting-chain time counted again (actions/hr had been overstated by the whole chain) and its craft-substituted price is marked as the estimate it is; house buffs are read from the rooms' own stated buffs instead of a flat 1.5%/level for any listed room — skilling rooms are unchanged, enhancing loses a phantom efficiency bonus and gains the real house action-speed term the queue-time estimate had always missed; treasure valuations charge every cost of a shop line instead of assuming the token is first; expected values count unpriced drops inside nested containers on every path (tooltips, task valuations, worker fallback, zero-value containers), a cyclic container no longer stops unrelated siblings being cached, and task surfaces say "≥ X (N drops unpriced)"; net-worth task tokens say "no price" instead of contributing nothing silently; a one-sided market quote no longer averages against zero; alchemy history records the bulk multiplier that was billed so a rebalance stops re-pricing old sessions; guild-credit costing skips value-derived prices on both of its roads; a retired profile-export module was deleted outright.
-- **Core**: one unwritable key no longer blocks a whole store's flush forever (per-key isolation, capped retries); the worker pool rejects its queue and rebuilds instead of bricking when the last worker cannot be replaced; a burst of shared combat profiles is serialised so none is dropped; unlinking a gist clears the push stamp too.
-- **Features**: the dungeon readiness card refreshes when keys, party members or burn forecasts move; dungeon-run saves survive the page going away mid-coalesce; the notification digest counts events rather than distinct item names ("3 undercuts (Cheese)"); gold-sources coverage is a magnitude on both sides (a losing window explained by losses reads 80%, not −80%); guild-trial coverage excludes the week still running and says so; the session briefing's expired-listing count — structurally always zero — was removed rather than shipped dead; the rotation audit notices an ability leaving the bar (floor and suggestions stop counting it) and re-seeds the arriving character's kit itself on a switch.
+- **Valuations**: an upgrade item with no market price gets its crafting-chain time counted again, so actions/hr stops being overstated; and house buffs are read from each room's own stated buffs instead of a flat 1.5% per level, which loses enhancing a phantom efficiency bonus.
+- **Core**: one unwritable key no longer blocks a whole store's flush forever.
+- **Features**: the dungeon readiness card refreshes when keys, party members or burn forecasts move.
 
 ### The Rotation tab can copy just the variances
 
@@ -1558,19 +1557,9 @@ A second button beside Copy stats puts only the deviations between the stated ba
 
 ### Audit round three: the flush path tells the truth and character switches stay in order
 
-- An aborted bulk write (quota, tab closing) no longer reports its keys as written — they stay queued for retry instead of being silently dropped, and the flush cleans up its bookkeeping.
-- Character switches are serialised: the switching flag is raised before any await, so a burst of updates arriving mid-teardown can no longer land on the departing character, and two rapid switches can no longer interleave.
-- A chest containing another container with unpriceable drops now reports "≥ X (N drops unpriced)" like a top-level one; a valuation truncated by a drop cycle is never cached.
-- A second game tab no longer wipes the first tab's shared combat profiles, and the externally readable copy updates immediately again.
-- The changed-chunk hint is actually wired into the append-only history writers (loot log, net worth, production income), and a partial prune of an older chunk can no longer be skipped as unchanged.
-- Terminating a worker pool rejects its abandoned tasks instead of leaving callers waiting forever.
-- Sync records when this device last pushed to the gist, separately from when it last applied a pull.
-
-- **Prices and valuations**: an item with no live listings is now valued from the game's official market value and marked as an estimate (≈) rather than passed off as a quote, which revives every "no price data" warning that had silently stopped firing; dungeon-token, task-token and net-worth valuations were rebuilt on the shop data (task tokens after tax like everything else; unvalued rather than an invented 30k when prices have not loaded); community-buff strength and house-room efficiency are read from game data in one shared helper instead of four hand-copied tables, so alchemy counts seal and guild buffs like every other skill; chest expected values handle nested containers consistently and say "≥ X (N drops unpriced)" when part cannot be priced; calibration days follow your calendar; a tea whose buff still runs is kept when the stack empties; short loot-log runs label their daily projection.
-- **No more mathjs**: the enhancement Markov inverse is a small built-in helper (verified to machine precision against math.js), dropping a ~600 KB library from every page load and from every calculation worker; the standalone enhancement library shrinks from ~700 KB to 27 KB. Worker pools time out a dead worker's task instead of waiting forever, release their blob URLs, and shut down after five minutes idle.
-- **Core hot paths**: inventory updates look items up by id instead of scanning; the DOM observer resolves each inserted element once rather than once per watched feature; settings misses use a prepared lookup; history files stop re-serialising every chunk to append one entry and load with batched reads; storage reads can no longer hang when a transaction aborts; pending writes flush when the tab is hidden or closed; a rapid character switch keeps the new character's data; guild data is persisted only when it changed.
-- **Idle timers**: the overlay panel restyles only what changed and refits from a ResizeObserver instead of remeasuring the page every second; shared floating panels stop redrawing while hidden or folded; combat text, the price-history panel and the DPS opener hold the elements they need instead of rescanning the document; trade-history fills coalesce into one capped write; the net-worth enhancement cache no longer answers with another character's costs.
-- **Reporting fixes**: the rotation audit no longer counts idle-gap regen as restored mana, reports starved seconds as unknown before any fight, keeps drawing your kit before a battle, and resets on character switch (as do the notification digest and the production-income recorder's in-flight read); the consumable burn line takes the worst of food and drinks and says when the sim budgeted nothing; gold attribution reports combat and gathering coverage separately, shares against the size of the change, and counts unpriced production actions; the trial ledger stops charging the current week for unrun trials and honours its setting; dungeon-run saves coalesce a backfill into one write; the readiness card stops re-running the party lint every five seconds.
+- An item with no live listings is valued from the game's official market value and marked as an estimate, which revives every "no price data" warning that had silently stopped firing.
+- **No more mathjs**: a ~600 KB library is gone from every page load and every calculation worker, and the standalone enhancement library drops from ~700 KB to 27 KB.
+- An aborted bulk write no longer reports its keys as written; they stay queued for retry.
 
 ### Rotation tab lists the whole equipped kit and opens on the session
 
@@ -1582,11 +1571,11 @@ Every notice is written to a per-character log readable from a new Notices panel
 
 ### Rotation tab: mana and rotation auditor for your own fights
 
-The per-player combat panel gains a Rotation tab: per ability, how much of the fight it spent on cooldown, what it produced per cast, per point of mana and per second of cooldown, and how much of its ready time the mana bar was below its cost — separating an ability that cannot be afforded from one the rotation never reaches. Closes with mana spent against mana restored, seconds per fight spent stalled, and one suggested change derived from those numbers.
+The per-player combat panel gains a Rotation tab: per ability, how much of the fight it spent on cooldown, what it produced per cast, per point of mana and per second of cooldown, and how much of its ready time the mana bar was below its cost — separating an ability that cannot be afforded from one the rotation never reaches. Closes with mana spent against mana restored, and one suggested change.
 
 ### Session briefing
 
-A single card on login and character switch saying what needs you: an empty queue and since when, tasks waiting or slots about to overflow, a community buff about to lapse, the consumable that runs dry first, listings filled or undercut, an unfinished enhancement run, your guild trial signup, banked labyrinth entries, and any other character gone idle. Only lines with something to say appear, each opening the panel that fixes it; close to dismiss until you switch character or reload, reopen from the Briefing overlay row or the command palette. Setting (default on).
+A single card on login and character switch saying what needs you: an empty queue and since when, tasks waiting, a community buff about to lapse, the consumable that runs dry first, listings filled or undercut, an unfinished enhancement run, your guild trial signup, and any other character gone idle. Only lines with something to say appear, each opening the panel that fixes it. On by default.
 
 ### Gold source attribution
 
@@ -1594,23 +1583,23 @@ A 💰 button beside Net Worth splits your net worth change over a day, a week o
 
 ### Guild trials: attendance ledger and roster planner
 
-A Trial Ledger panel keeps a per-member record of every trial recorded on this client — trials joined, share of damage, healing and damage taken, deaths and mana-starved time — far longer than the four cycles the trials panel archives; sortable, windowed (4 / 12 / all cycles), CSV export, and an "observed coverage" line. The same panel lints a roster before sign-up against captured kits: revive and invincible carriers, duplicate auras, tanks for the tier, kits against the written plan, with a "14 of 28 kits known" line and swap suggestions from the bench.
+A Trial Ledger panel keeps a per-member record of every trial recorded on this client — trials joined, share of damage, healing and damage taken, deaths and mana-starved time — far longer than the four cycles the trials panel archives. Sortable, windowed, CSV export. The same panel lints a roster before sign-up against captured kits, with swap suggestions from the bench.
 
 ### Dungeon readiness card and consumable burn vs sim
 
-The Consumables panel gains a dungeon readiness card: entry keys against a run target, your food/drink coverage in runs, level-gap and gear/aura warnings from captured profiles, and who stops first — explicit about what is visible before a run and what is not (a party member's supplies only reach the client once the run has started). Combat Statistics gains a "Consumables vs sim" line comparing what the run actually ate per hour against what the simulator assumed for that zone and tier, coloured past 25%.
+The Consumables panel gains a dungeon readiness card: entry keys against a run target, your food and drink coverage in runs, level-gap and gear warnings, and who stops first. Combat Statistics gains a "Consumables vs sim" line comparing what the run actually ate per hour against what the simulator assumed, coloured past 25%.
 
 ### Audit fixes: storage hang, dungeon runs across tabs, honest "—"s
 
-A bulk storage write could hang for ever when the browser refused it on quota, which stalled every feature starting after the trade ledger; it now settles, and the ledger migration gives up after 15 s and carries on. Dungeon runs are no longer lost with two tabs open — saves merge with what is stored instead of overwriting it, and deleted runs stay deleted. The dungeon ROI board no longer counts unpriced keys or unknown food as free (those rows show "—" and say why); the protect-from sweep labels its p10–p90 as approximate wherever protection is priced in. An All Zones sweep cannot stall waiting on a tier decision that never arrives, and cancelling one frees its worker. Also: DOM handlers fire in registration order again, listing retention no longer re-scans on every batch, old trade-ledger day records are actually deleted when they fall off the cap, and several smaller leaks and stale-count bugs are fixed.
+A bulk storage write could hang forever when the browser refused it on quota, stalling every feature that started after the trade ledger; it settles now. Dungeon runs are no longer lost with two tabs open — saves merge with what is stored instead of overwriting it, and deleted runs stay deleted. The dungeon ROI board also no longer counts unpriced keys or unknown food as free.
 
 ### Bestiary planner: plan to a points target, and optionally through dungeons
 
-Switch the planner to Points, name a target, and it says how long that takes and where the time goes, against the single zone that would reach the same target soonest. An "Include dungeons" toggle (off by default) adds every dungeon at T0–T2 to the All Zones run and lets the plan send you into one — planned at the clear time your own run history measured rather than the simulator's pace (falling back to the sim's when you have no runs), with each stay quoted in clears.
+Switch the bestiary planner to Points, name a target, and it says how long that takes and where the time goes, against the single zone that would reach the same target soonest. An "Include dungeons" toggle, off by default, lets the plan send you into one — planned at the clear time your own run history measured rather than the simulator's pace.
 
 ### All Zones no longer stalls near the end with "skip worse tiers" on
 
-With early exit only the lowest tier of every zone is queued at first; the higher tiers are added later, after the main thread's go/skip answer. Pool slots that found the queue momentarily empty used to retire for good, leaving one slot to grind every remaining tier of every zone one at a time — the "94%, a few seconds left" that sat for minutes. Slots now wait while any chain can still add work. A child sim worker that goes silent (the browser killing it for memory) is given up on after two minutes and its zone recorded as failed instead of holding the sweep open for ever; a tier that fails under early exit ends its zone cleanly so the bar reaches 100; and the main thread always answers a tier result, even if its comparison throws.
+With early exit on, pool slots that found the queue momentarily empty used to retire for good, leaving one slot to grind every remaining tier one at a time — the "94%, a few seconds left" that sat for minutes. Slots now wait while any chain can still add work. A child sim worker the browser kills is given up on after two minutes and its zone recorded as failed, instead of holding the sweep open forever.
 
 ### Bestiary additions can be switched off, and the planner counts fights
 
@@ -1622,7 +1611,7 @@ The chest popup was shown at its default top-right corner while its stored size 
 
 ### Production Arbitrage Board
 
-An "Arbitrage" button on the cheesesmithing, crafting, tailoring, cooking and brewing pages opens one ranked table of every production recipe — your material cost per unit, sale value after tax, margin per unit/action/hour and a per-day margin bounded by what the market absorbs, with level requirement and a data-quality flag. Sort by margin/day, /hr or /unit, filter by skill, text or "only craftable now", click a row to open the action. Figures come from the same profit calculator the action panel uses, computed in the background and memoised until prices, levels, drinks or gear change.
+An "Arbitrage" button on the cheesesmithing, crafting, tailoring, cooking and brewing pages opens one ranked table of every production recipe — your material cost per unit, sale value after tax, margin per unit, action and hour, and a per-day margin bounded by what the market absorbs. Sort, filter, or click a row to open the action. Figures come from the same profit calculator the action panel uses.
 
 ### Enhancing panel: protect-from sweep
 
@@ -1630,7 +1619,7 @@ A collapsible "Protect-from sweep" under the costs table lists no protection and
 
 ### Dungeon ROI board
 
-The dungeon tracker gains an ROI Board: every dungeon and tier side by side with recorded runs, median clear time and waves/min (or the combat sim's figure, marked "sim"), key cost, tokens and chest EV per run, consumables, net gold per run and per hour, XP/hr and a confidence tag; sortable, with tier and party-size filters. Live-tracked runs now remember their tier, and the All Zones snapshot records per-dungeon completions and consumable cost so the board can quote simulated clear times for tiers you have not run.
+The dungeon tracker gains an ROI Board: every dungeon and tier side by side with recorded runs, median clear time and waves per minute (or the sim's figure, marked "sim"), key cost, tokens and chest EV per run, consumables, net gold per run and hour, and XP/hr. Sortable, with tier and party-size filters.
 
 ### Calibration badges on forecasts
 
@@ -1642,21 +1631,18 @@ At the bottom of the Toolasha settings tab: script version/build, server, charac
 
 ### Bestiary route planner
 
-Under the combat sim's All Zones results: enter a time budget, press Plan, and get the ordered list of zones that earns the most Bestiary points in that time — hopping to whichever zone's next point lands soonest — with time per zone, points gained, thresholds crossed, and the total against the best single zone; Copy gives a plain-text version. Uses the run's simulated kill rates and your current defeated counts, waits for the Bestiary if not loaded, remembers the hours.
+Under the combat sim's All Zones results: enter a time budget, press Plan, and get the ordered list of zones that earns the most Bestiary points in that time — hopping to whichever zone's next point lands soonest — with time per zone, points gained, thresholds crossed, and the total against the best single zone. Copy gives a plain-text version.
 
 ### Tooltips and action panels dispatched once
 
-Tooltip features (prices, consumables, token values, sell queue, alt-click, collection navigation) share one tooltip observer that classifies each popper once, instead of seven handlers each re-probing every hovered tooltip; the observer is a single shared instance across bundles. Action detail panels and skill tiles are resolved once and handed to every feature through one subscriber in `action-panel-helper` instead of eleven separate observers each re-deriving the action from the title. The personal market listing log is bounded (90 days from the newest listing, at most 5000, active listings always kept) instead of growing for life.
+Tooltip features — prices, consumables, token values, sell queue, alt-click, collection navigation — share one tooltip observer that classifies each popper once, instead of seven handlers each re-probing every hovered tooltip. Action detail panels are resolved once and handed to every feature through one subscriber instead of eleven observers. The personal market listing log is bounded rather than growing for life.
 
 ### Performance pass: observers, timers, lookups, storage, startup
 
-A sweep over what the script does per message, per mutation and per tick in a long session:
-
-- **Observers and timers** that ran all session now run only while they have something to watch — drag-size memory, the labyrinth preview watchdog, the action countdown loop, the tooltip close-watcher; portrait DPS, the marketplace badge, the price-history tab watcher and the guild exchange advisor watch a far smaller slice of the page. Recurring ticks skip hidden tabs and unchanged work (overlay panel, combat DPS opener; consumable alerts throttled to 10 s from battle ticks); bursty handlers coalesce (task cards, alchemy protection, one shared debounced refresh for Cost Summary / Required Materials / Missing Mats); websocket dedup, mention matching and the combat-level sidebar do less per message.
-- **Market order-book bursts**: opening an item no longer re-notifies every price listener, redraws the age/queue/depth displays or rewrites the cached order-book blob once per enhancement level — prices are patched in one batch, listeners hear once, repaint and cache write run once after the burst. Listing events are recorded as a batch with one debounced save; the persisted order-book cache is bounded (top rows, 200 items, 7 days).
-- **Lookups**: name→hrid and "which action makes this item" are memoised indexes rebuilt only when game data is replaced; enhancement production-cost memos survive price updates via versioning instead of being wiped; the drink timer debounces inventory updates and redraws only its known panels; tradable bands are cached per item/level.
-- **Storage traffic**: the dungeon panel reads the run list from the store's memory, so every run append takes the write debounce (a lone run was still written immediately); trade-ledger fills are stored one record per day (migrated once from the old single array) so a fill writes only its day; the dungeon run list is read once and held in memory with backfill bursts coalesced; the combat-stats readability probe is cached and party trackers saved once per wave; lab-sim results are mirrored once per quiet second or at the end of a search.
-- **Startup**: the market-data load starts as soon as the character arrives and overlaps settings and feature startup instead of every feature waiting behind a forced fetch; seven independent features initialise concurrently; the settings panel no longer re-reads its record at startup; task reroll protection reads its records in one batched `storage.getMany`. Bundles are ~160 KB smaller (only `@license`/`@preserve` comments kept, the entrypoint minified with its header intact, mathjs from the minified CDN build).
+- **Observers and timers** that ran all session now run only while they have something to watch, and recurring ticks skip hidden tabs and unchanged work.
+- **Market order-book bursts**: opening an item patches prices in one batch instead of re-notifying every listener once per enhancement level.
+- **Storage traffic**: trade-ledger fills are stored one record per day, so a fill writes only its day.
+- **Startup**: the market-data load overlaps settings and feature startup, and bundles are smaller.
 
 ### One subtree query per DOM insertion instead of ~150
 
@@ -1680,7 +1666,7 @@ Ported from upstream: a "Next Guild Level Slot (+1)" line under Exp to Next Leve
 
 ### Upstream fixes through 2.94.0
 
-Ported from Celasha/Toolasha: the marketplace Age column skips the "Outside current tradable range" separator row instead of shifting every age after it; `guild_updated` is exempt from the websocket dedup so back-to-back guild changes are not dropped; Missing Mats, Required Materials and Cost Summary redraw when the action queue changes; dragged modals are clamped on-screen (a saved off-screen offset is healed); "Copy settings to other characters" also carries the per-character task protection and auto-reroll lists; typing a quantity into the queue input shows the level it would reach; the Skilling Optimizer labels refined items at the +10 they were scored at; the Combat Summary setting says what it does (rates in Battle Info, not "on return").
+Ported from upstream: the marketplace Age column skips the "Outside current tradable range" separator row instead of shifting every age after it; Missing Mats, Required Materials and Cost Summary redraw when the action queue changes; dragged modals are clamped on-screen; "Copy settings to other characters" also carries the per-character task protection and auto-reroll lists; and the Skilling Optimizer labels refined items at the +10 they were scored at.
 
 ### All Zones: Bestiary ties sort by the first point
 
@@ -1704,11 +1690,11 @@ Moving from a crafting action to the labyrinth (or to any header the queue does 
 
 ### Trial per-player board: low mana and a stalled rotation
 
-Beyond "ran out of mana", each trial caster now gets two more mana readings off the tick stream: **low** (under a fifth of the bar) and **starved** (under the cheapest non-aura ability they have been seen casting — where the rotation actually stalls, long before zero), each counted per spell with the time spent there. The board's footnote lists who, a live ⚡ marker beside a name says dry / can't cast / low right now, the pasted report says "couldn't afford a cast 3×", and the recorder and exports carry the fields.
+Beyond "ran out of mana", each trial caster now gets two more mana readings: low, under a fifth of the bar, and starved, under the cheapest ability they have been seen casting — where the rotation actually stalls, long before zero. A live ⚡ marker beside a name says dry, can't cast, or low right now, and the pasted report says "couldn't afford a cast 3×".
 
 ### All Zones sim: a Bestiary column
 
-The All Zones results table gains **Bestiary pts/day**: the simulated kills per monster in each zone against your Bestiary's defeated counts, scored on the game's own formula (1 point at the first kill, +2 at 10, +3 at 100 …), with when the first point lands and a hover listing each monster's count, rate and next threshold; the best zone is badged and the column sorts and exports. The Bestiary is fetched the way its own tab fetches it when the table is drawn without it, and the column fills in when it lands; the data manager keeps `monsters_updated`.
+The All Zones results table gains **Bestiary pts/day**: the simulated kills per monster in each zone against your Bestiary's defeated counts, scored on the game's own formula, with when the first point lands and a hover listing each monster's count, rate and next threshold. The best zone is badged, and the column sorts and exports.
 
 ### No normal-combat Per-player button on the trial's In Progress tab
 
@@ -1736,21 +1722,21 @@ With Tester-shop pricing on, the House tab's button row gains "Tester: pin all r
 
 ### Tester shop: a "Buy next" press per purchase
 
-The Tester strip gains a **Buy next ▸** control: each press buys the next pinned line the shop sells, for what you are still short of — filters the shop to it, opens its card, types the quantity, presses Buy — one purchase per press; press again for the next. Verified on the test server: the shop's buy dialog is recognised (it is not the marketplace's), the quantity lands in the Quantity box (an equipment dialog puts an Enhancement Level 0–10 box first), and the card and Buy are pressed through React, which a plain click does not reach.
+The Tester strip gains a **Buy next ▸** control: each press buys the next pinned line the shop sells, for what you are still short of — it filters the shop to it, opens its card, types the quantity and presses Buy. One purchase per press; press again for the next. Verified on the test server.
 
 ### Tester shop: missing-materials goes straight to the shop, with the quantity filled in
 
-With Tester-shop pricing on, every missing-materials hand-off — the action panel button, the enhancing panel button, the house panel's button, the simulators' house Market rows — opens Shop → Tester and pins the material tabs into the shop's own tab strip; clicking a tab filters the shop to that item and the shop's buy dialog is auto-filled with what is still missing. A line the shop does not sell keeps the marketplace as its click and says so. Replaces the interim marketplace-then-shop hop.
+With Tester-shop pricing on, every missing-materials hand-off — the action panel, the enhancing panel, the house panel, the simulators' house Market rows — opens Shop → Tester and pins the material tabs into the shop's own tab strip. Clicking a tab filters the shop to that item and auto-fills its buy dialog. A line the shop does not sell keeps the marketplace.
 
 ### Consumables panel, Labyrinth block: observed use, preserve chance, game icons
 
-Per-run torch/shroud/beacon figures now come from what your recorded runs actually spent (start less leftover, averaged) instead of the full capacity, once a run has been recorded; the rush-floor torch table takes the torch tier's preserve chance off (read from the item's description) and notes that it cannot model rooms skipped on a cleared floor, with the observed per-run spend listed beside it; the leftover line draws the game's own supply icons. The house panel's material tabs also open the Tester shop when that pricing is on.
+Per-run torch, shroud and beacon figures now come from what your recorded runs actually spent rather than the full capacity, once a run has been recorded. The rush-floor torch table takes the torch tier's preserve chance off, and notes that it cannot model rooms skipped on a cleared floor. The leftover line draws the game's own supply icons.
 
 ### Labyrinth stopped alert, combat consumable alert, lab summary trim
 
-- "Notify when the labyrinth stops" now keys on your current action leaving the labyrinth (queued rooms ran out, or the run ended) and moving on to the next queued action or nothing — read off the action queue, not the run's active flag — so it fires at the moment to queue more rooms; it names the floor reached and what the character is doing instead.
-- New "Notify when a combat consumable is running low" with an hours threshold: fires when the soonest food or drink in your fight to run out falls under it — the Consumables panel's own "stops in …" reading for your character; re-arms on restock.
-- The lab path/beacon summary no longer says "restock applies to your NEXT run" mid-run.
+- "Notify when the labyrinth stops" now keys on your current action leaving the labyrinth, read off the action queue rather than the run's active flag, so it fires at the moment to queue more rooms.
+- New "Notify when a combat consumable is running low", with an hours threshold; it re-arms on restock.
+- The lab summary no longer says "restock applies to your NEXT run" mid-run.
 
 ### Tester shop: missing-materials tabs open the shop; enhancing panel shows the mirror route
 
@@ -1774,7 +1760,7 @@ A house row's Market button now opens the marketplace with a tab per material th
 
 ### Combat Levels planner: the weapon's own skill comes along
 
-Each combat-level row now also shows where the weapon's primary training skill lands by the time that grind is done (it takes 30% of all combat XP whatever charm is worn — defense for a bulwark, attack for a spear, melee/ranged/magic otherwise) and the Δ columns are simmed for both together, with the skill-alone figures in the tooltip. Replaces the "Main time" toggle. The charm picker gains an enhancement level (e.g. Expert +5); Auto keeps the equipped charm's tier and level.
+Each combat-level row now also shows where the weapon's primary training skill lands by the time that grind is done — it takes 30% of all combat XP whatever charm is worn — and the Δ columns are simmed for both together, with the skill-alone figures in the tooltip. The charm picker gains an enhancement level; Auto keeps the equipped charm's tier and level.
 
 ### A reload mid-fight no longer restarts the per-player tally
 
