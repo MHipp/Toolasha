@@ -114,7 +114,12 @@ function makeWidgetDraggable(element, { positionKey, position, onMove }) {
  * @param {{left: number, top: number}|null} [options.position] - Position read back from that key
  * @param {string} [options.mainClass] - Extra class on the main button, for tests and styling
  * @param {string} [options.closeClass] - Extra class on the ✕
- * @returns {Object} `{ element, row, status, extras, main, gear, close, settings, setSettingsOpen, settingsOpen, remove }`
+ * @param {string[]|null} [options.mainLabels] - Every label the main button will ever show. Given
+ *   these, the button is sized to the widest of them once and stops resizing as the label changes,
+ *   so nothing beside it moves. Opt in: without it the button behaves exactly as before.
+ * @param {string|null} [options.statusWidth] - A fixed width for the status line instead of the
+ *   default `max-width`, so the strip's own width stops following its text. Opt in.
+ * @returns {Object} `{ element, row, status, extras, main, gear, close, settings, setSettingsOpen, setMainLabel, settingsOpen, remove }`
  */
 export function createFloatingWidget({
     id,
@@ -130,6 +135,8 @@ export function createFloatingWidget({
     position = null,
     mainClass = '',
     closeClass = '',
+    mainLabels = null,
+    statusWidth = null,
 } = {}) {
     const element = document.createElement('div');
     element.id = id;
@@ -144,7 +151,12 @@ export function createFloatingWidget({
 
     const status = document.createElement('span');
     status.className = `${id}-status`;
-    status.style.cssText = 'max-width:340px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;';
+    // A fixed width, where one is asked for: the strip is anchored by one edge
+    // and its width follows its content, so a status line that grows and
+    // shrinks with the text drags everything beside it sideways.
+    status.style.cssText = statusWidth
+        ? `flex:0 0 ${statusWidth}; width:${statusWidth}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;`
+        : 'max-width:340px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;';
 
     // Whatever the feature wants between the status and the main button — a
     // category picker, a count, a second button
@@ -158,6 +170,34 @@ export function createFloatingWidget({
         `border:0; border-radius:5px; background:rgba(74,158,255,0.25); color:${accent}; font-weight:700; ` +
         'font-size:12px; padding:3px 10px; cursor:pointer; font-family:inherit; white-space:nowrap;';
     shieldFromDrag(main);
+
+    // Every label the button will ever carry, stacked in one grid cell with all
+    // but the current one hidden. The button is then as wide as the widest of
+    // them and stays that width as the label changes, so the controls beside it
+    // hold their place — and the width is the browser's own measurement of the
+    // real text in the real font, not a number guessed here that a different
+    // font would silently break.
+    const reservedLabels = Array.isArray(mainLabels) && mainLabels.length ? [...mainLabels] : null;
+    /**
+     * Add one stacked label span to the main button.
+     * @param {string} label - The text it carries
+     * @returns {HTMLElement} The span
+     */
+    function addMainLabel(label) {
+        const span = document.createElement('span');
+        span.className = `${id}-main-label`;
+        span.dataset.label = label;
+        span.textContent = label;
+        span.style.cssText = 'grid-area:1 / 1; white-space:nowrap; visibility:hidden;';
+        main.appendChild(span);
+        return span;
+    }
+    if (reservedLabels) {
+        main.style.display = 'grid';
+        main.style.justifyItems = 'center';
+        main.style.alignItems = 'center';
+        for (const label of reservedLabels) addMainLabel(label);
+    }
 
     const gear = document.createElement('button');
     gear.className = `${id}-gear`;
@@ -204,6 +244,29 @@ export function createFloatingWidget({
         setSettingsOpen(open) {
             widget.settingsOpen = Boolean(open);
             settings.style.display = widget.settingsOpen ? 'flex' : 'none';
+        },
+        /**
+         * Say what the main button reads now.
+         *
+         * Without `mainLabels` this is just the text, exactly as writing to
+         * `main.textContent` was. With them the button keeps its reserved width
+         * — and a label that was not declared is added to the reservation
+         * rather than dropped, so a new state cannot make the button blank.
+         *
+         * @param {string} label - What the next press would do
+         */
+        setMainLabel(label) {
+            if (!reservedLabels) {
+                main.textContent = label;
+                return;
+            }
+            if (!reservedLabels.includes(label)) {
+                reservedLabels.push(label);
+                addMainLabel(label);
+            }
+            for (const span of main.children) {
+                span.style.visibility = span.dataset.label === label ? 'visible' : 'hidden';
+            }
         },
         /** Take the widget off the page */
         remove() {

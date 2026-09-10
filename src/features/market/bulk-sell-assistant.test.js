@@ -819,7 +819,7 @@ describe('confirming from the strip', () => {
         bulkSell.chip.querySelector(`.${CHIP}-stop`).click();
         expect(bulkSell.state).toBe('idle');
         expect(bulkSell.queue).toEqual([]);
-        expect(confirmBtn().style.display).toBe('none');
+        expect(confirmBtn().style.visibility).toBe('hidden');
         modal.remove();
     });
 
@@ -920,7 +920,7 @@ describe('confirming from the strip', () => {
             bulkSell.decision = { insta: false, vendor: true, price: 10, reason: 'vendor' };
             bulkSell._render();
 
-            expect(confirmBtn().style.display).toBe('none');
+            expect(confirmBtn().style.visibility).toBe('hidden');
             confirmBtn().click();
 
             expect(gameClicks).toBe(0);
@@ -980,5 +980,250 @@ describe('confirming from the strip', () => {
 
         expect(bulkSell.isInitialized).toBe(false);
         expect(document.querySelector(`.${CHIP}-confirm`)).toBeNull();
+    });
+});
+
+/**
+ * The strip's geometry.
+ *
+ * The complaint was that Confirm and the main button are in different places
+ * from one press to the next: the widget is anchored by one edge and its width
+ * follows its content, so the main button's label changing from `▶ Bulk Sell`
+ * to `⏭ Skip` to `▶ Next`, and Stop and Confirm coming and going, drag
+ * everything beside them sideways.
+ *
+ * happy-dom does no layout, so none of these can measure a pixel. What they can
+ * hold is the mechanism that decides the pixels: every control keeps its slot
+ * in the row in every state (hidden with `visibility`, never `display`), the
+ * row's contents never change, and the main button carries all three of its
+ * labels at once so its width is the widest of them whichever one is showing.
+ */
+describe('the strip does not move its controls', () => {
+    const CHIP = 'mwi-bulk-sell-chip';
+
+    /**
+     * Put the panel into one of the states the walk actually reaches.
+     * @param {string} state - The walk state to draw
+     * @param {Object} [options] - The note, vendor flag and refusal to draw it with
+     */
+    const enter = (state, { note = '', vendor = false, confirmNote = '' } = {}) => {
+        bulkSell.queue = [
+            { itemHrid: '/items/cheese', enhancementLevel: 0, count: 18, name: 'Cheese' },
+            { itemHrid: '/items/milk', enhancementLevel: 0, count: 4, name: 'Milk' },
+        ];
+        bulkSell.index = 0;
+        bulkSell.current = bulkSell.queue[0];
+        bulkSell.decision = { insta: true, vendor, price: 796000, avgPrice: 796000, reason: 'spread 0.6%' };
+        if (state === 'idle' || state === 'done') {
+            bulkSell.queue = [];
+            bulkSell.current = null;
+        }
+        bulkSell.state = state;
+        bulkSell.statusNote = note;
+        bulkSell.confirmNote = confirmNote;
+        bulkSell._render();
+    };
+
+    /**
+     * What the row is made of and how much room each part takes.
+     *
+     * `display` is the part that changes the layout; `visibility` is the part
+     * that does not. So a signature listing the row's children and their
+     * `display` is exactly "would the things beside this have moved".
+     */
+    const layout = () =>
+        [...bulkSell.chip.querySelector(`.${CHIP}-status`).parentElement.children].map(
+            (element) => `${element.className}:${element.style.display}`
+        );
+
+    /** The label spans stacked in the main button */
+    const labels = () => [...bulkSell.chip.querySelector(`.${CHIP}-main`).children];
+
+    /** Every state the strip has, and what has to be true of the row in all of them */
+    const states = [
+        ['idle', 'idle', {}],
+        ['checking', 'preparing', {}],
+        ['awaiting confirm', 'awaiting_confirm', {}],
+        ['awaiting confirm, refused', 'awaiting_confirm', { confirmNote: 'the sell modal is not open' }],
+        ['awaiting confirm, vendor', 'awaiting_confirm', { vendor: true }],
+        ['dealt with', 'awaiting_next', {}],
+        ['done', 'done', { note: 'Sold 12 items' }],
+        ['stopped', 'idle', { note: 'Stopped' }],
+    ];
+
+    beforeEach(() => {
+        document.body.textContent = '';
+        settings['market_bulkSellAssistant'] = true;
+        bulkSell.chip = null;
+        bulkSell.statusExpanded = false;
+        bulkSell._hasTabs = true;
+        bulkSell._buildPanel();
+    });
+
+    afterEach(() => {
+        bulkSell.confirmNote = '';
+        bulkSell.statusNote = '';
+        bulkSell.state = 'idle';
+        bulkSell._removePanel();
+    });
+
+    test('every state lays the row out identically', () => {
+        enter('idle');
+        const baseline = layout();
+
+        for (const [name, state, options] of states) {
+            enter(state, options);
+            expect(layout(), `${name} lays the row out differently`).toEqual(baseline);
+        }
+    });
+
+    test('Confirm and Stop keep their slot when they are not offered', () => {
+        enter('awaiting_confirm');
+        const confirm = bulkSell.chip.querySelector(`.${CHIP}-confirm`);
+        const stop = bulkSell.chip.querySelector(`.${CHIP}-stop`);
+        expect(confirm.style.visibility).toBe('visible');
+        expect(stop.style.visibility).toBe('visible');
+
+        enter('idle');
+
+        // Out of sight, still in the layout — the whole point
+        expect(confirm.style.visibility).toBe('hidden');
+        expect(stop.style.visibility).toBe('hidden');
+        expect(confirm.style.display).toBe('');
+        expect(stop.style.display).toBe('');
+    });
+
+    test('the main button carries every label at once, showing one', () => {
+        for (const [name, state, options] of states) {
+            enter(state, options);
+            const shown = labels().filter((span) => span.style.visibility === 'visible');
+            expect(
+                labels().map((span) => span.dataset.label),
+                `${name} lost a reserved label`
+            ).toEqual(['▶ Bulk Sell', '⏭ Skip', '▶ Next']);
+            expect(shown.length, `${name} shows ${shown.length} labels`).toBe(1);
+        }
+    });
+
+    test('the label showing is still the next thing a press would do', () => {
+        const shown = () => labels().find((span) => span.style.visibility === 'visible')?.dataset.label ?? null;
+
+        enter('idle');
+        expect(shown()).toBe('▶ Bulk Sell');
+        enter('preparing');
+        expect(shown()).toBe('⏭ Skip');
+        enter('awaiting_confirm');
+        expect(shown()).toBe('⏭ Skip');
+        enter('awaiting_next');
+        expect(shown()).toBe('▶ Next');
+    });
+
+    test('the status line is a fixed slot rather than one that follows its text', () => {
+        const status = bulkSell.chip.querySelector(`.${CHIP}-status`);
+        expect(status.style.width).toBe('340px');
+        expect(status.style.flex).toBe('0 0 340px');
+
+        enter('idle');
+        const short = status.style.width;
+        enter('awaiting_confirm');
+
+        expect(status.style.width).toBe(short);
+        // and it is never taken out of the row, however little it has to say
+        expect(status.style.display).toBe('');
+    });
+});
+
+/**
+ * Reading the whole status line without hovering.
+ *
+ * The line saying what is about to be sold and for how much is the longest one
+ * the strip draws and the one it truncates. One line stays the default — the
+ * strip sits over the game — and the ▾ folds the rest out underneath, where it
+ * grows downwards and moves nothing in the row.
+ */
+describe('the folded-out status line', () => {
+    const CHIP = 'mwi-bulk-sell-chip';
+    const detail = () => bulkSell.chip.querySelector(`.${CHIP}-detail`);
+    const more = () => bulkSell.chip.querySelector(`.${CHIP}-more`);
+    const status = () => bulkSell.chip.querySelector(`.${CHIP}-status`);
+
+    /** The step from the report: a status line far longer than the strip is wide */
+    const atLongStep = () => {
+        bulkSell.queue = [{ itemHrid: '/items/cheese', enhancementLevel: 0, count: 1096, name: 'Crimson Cheese' }];
+        bulkSell.index = 0;
+        bulkSell.current = bulkSell.queue[0];
+        bulkSell.decision = { insta: true, price: 3400, avgPrice: 3400, reason: 'spread 0.6% under 2%' };
+        bulkSell.state = 'awaiting_confirm';
+        bulkSell._render();
+    };
+
+    beforeEach(() => {
+        document.body.textContent = '';
+        settings['market_bulkSellAssistant'] = true;
+        bulkSell.chip = null;
+        bulkSell.statusExpanded = false;
+    });
+
+    afterEach(() => {
+        bulkSell.state = 'idle';
+        bulkSell._removePanel();
+    });
+
+    test('collapsed is the default, and the whole line is still there to fold out', () => {
+        bulkSell._buildPanel();
+        atLongStep();
+
+        expect(detail().style.display).toBe('none');
+        expect(more().textContent).toBe('▾');
+        expect(more().title).toBeTruthy();
+        expect(more().getAttribute('aria-expanded')).toBe('false');
+    });
+
+    test('folding it out shows the whole line, untruncated and wrapping', () => {
+        bulkSell._buildPanel();
+        atLongStep();
+
+        more().click();
+
+        expect(detail().style.display).toBe('');
+        expect(detail().textContent).toBe(status().textContent);
+        expect(detail().textContent).toContain('Crimson Cheese');
+        expect(detail().textContent).toContain('spread 0.6% under 2%');
+        // Downwards, never sideways: capped at the status line's own width
+        expect(detail().style.maxWidth).toBe('340px');
+        expect(detail().style.whiteSpace).toBe('normal');
+        expect(more().textContent).toBe('▴');
+        expect(more().getAttribute('aria-expanded')).toBe('true');
+    });
+
+    test('folding it out moves nothing in the row', () => {
+        bulkSell._buildPanel();
+        atLongStep();
+        const row = status().parentElement;
+        const before = [...row.children].map((element) => `${element.className}:${element.style.display}`);
+
+        more().click();
+
+        expect([...row.children].map((element) => `${element.className}:${element.style.display}`)).toEqual(before);
+        // and it is a sibling of the row, not something inside it
+        expect(detail().parentElement).toBe(bulkSell.chip);
+        expect(row.contains(detail())).toBe(false);
+    });
+
+    test('the choice survives a rebuild of the panel', async () => {
+        bulkSell._buildPanel();
+        atLongStep();
+        more().click();
+        expect(store.data['bulkSellStatusExpanded']).toBe(true);
+
+        bulkSell._removePanel();
+        // What a fresh session does: the preference is read back before the
+        // panel is built, the way the remembered position is
+        bulkSell.statusExpanded = Boolean(store.data['bulkSellStatusExpanded']);
+        bulkSell._buildPanel();
+        atLongStep();
+
+        expect(detail().style.display).toBe('');
+        expect(more().textContent).toBe('▴');
     });
 });

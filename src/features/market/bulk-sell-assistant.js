@@ -53,6 +53,17 @@ import { loadoutSnapshot } from '../../utils/bundle-bridge.js';
 const BUTTON_ID = 'mwi-bulk-sell-btn';
 const CHIP_ID = 'mwi-bulk-sell-chip';
 const PANEL_POSITION_KEY = 'bulkSellPanelPosition';
+/** Whether the strip's full status line is folded out under the row */
+const STATUS_EXPANDED_KEY = 'bulkSellStatusExpanded';
+/** How wide the status line is held, whatever it currently says */
+const STATUS_WIDTH = '340px';
+/**
+ * Every label the main button carries, so the shared widget can size it to the
+ * widest of them once. `⏭ Skip` and `▶ Next` are deliberately different
+ * actions and are not going to be shortened into agreeing; the button is made
+ * to stop resizing instead.
+ */
+const MAIN_LABELS = ['▶ Bulk Sell', '⏭ Skip', '▶ Next'];
 /** The source that is not a tab: whatever the Watchlist is currently tracking */
 const WATCHLIST_SOURCE = 'watchlist';
 
@@ -229,6 +240,13 @@ class BulkSellAssistant {
         this.panelVisible = false;
         this.rulesOpen = false;
         /**
+         * Whether the whole status line is folded out under the row. The strip
+         * sits over the game, so one line stays the default; this remembers a
+         * choice to see all of it the way the panel's other preferences are
+         * remembered.
+         */
+        this.statusExpanded = false;
+        /**
          * The queue step the strip's Confirm was pressed for, so a second press
          * of the same step does nothing. The index is part of it, so advancing
          * re-arms the button without anything having to reset this.
@@ -356,6 +374,7 @@ class BulkSellAssistant {
         const ticket = captureOwner(this);
         try {
             this.panelPosition = await storage.get(PANEL_POSITION_KEY, 'settings', null);
+            this.statusExpanded = Boolean(await storage.get(STATUS_EXPANDED_KEY, 'settings', false));
         } catch (error) {
             console.error('[BulkSellAssistant] Loading panel position failed:', error);
         }
@@ -532,6 +551,12 @@ class BulkSellAssistant {
             zIndex: 9000,
             positionKey: PANEL_POSITION_KEY,
             position: this.panelPosition,
+            // The two halves of "the buttons never move": the status line stops
+            // setting the strip's width, and the main button stops setting its
+            // own. Everything else in the row that comes and goes is kept in
+            // the layout below with `visibility` rather than `display`.
+            statusWidth: STATUS_WIDTH,
+            mainLabels: MAIN_LABELS,
         });
         const chip = widget.element;
         this.panelWidget = widget;
@@ -544,7 +569,11 @@ class BulkSellAssistant {
             'A Toolasha inventory tab sells only the items assigned to it (a parent tab includes its child tabs), ' +
             'and items also assigned to a tab above the selected one are kept rather than sold.';
         tabSel.style.cssText =
-            'display:none; border:1px solid rgba(74,158,255,0.35); border-radius:5px; background:rgba(20,26,44,0.95); ' +
+            // `display` says whether this character has tabs at all; once it
+            // does, the picker keeps its slot in the row and only its
+            // `visibility` changes, so hiding it mid-run moves nothing.
+            'display:none; visibility:hidden; border:1px solid rgba(74,158,255,0.35); border-radius:5px; ' +
+            'background:rgba(20,26,44,0.95); ' +
             'color:#cfd8ea; font-size:12px; padding:2px 4px; max-width:150px; cursor:pointer; font-family:inherit;';
         tabSel.addEventListener('change', () => {
             this.selectedTabId = tabSel.value;
@@ -562,8 +591,11 @@ class BulkSellAssistant {
         confirmBtn.type = 'button';
         confirmBtn.className = `${CHIP_ID}-confirm`;
         confirmBtn.textContent = '✔ Confirm';
+        // Hidden with `visibility`, never `display`: a Confirm that vanishes
+        // from the layout takes its width with it and slides the buttons
+        // around it sideways, which is the whole complaint.
         confirmBtn.style.cssText =
-            'display:none; border:0; border-radius:5px; background:rgba(76,175,80,0.25); color:#a5d6a7; ' +
+            'visibility:hidden; border:0; border-radius:5px; background:rgba(76,175,80,0.25); color:#a5d6a7; ' +
             'font-weight:700; font-size:12px; padding:3px 7px; cursor:pointer; font-family:inherit;';
         confirmBtn.addEventListener('click', () => this._onConfirmClick());
 
@@ -575,7 +607,7 @@ class BulkSellAssistant {
         stopBtn.textContent = 'Stop';
         stopBtn.title = 'Stop bulk selling';
         stopBtn.style.cssText =
-            'display:none; border:0; border-radius:5px; background:rgba(244,67,54,0.25); color:#ff8a80; ' +
+            'visibility:hidden; border:0; border-radius:5px; background:rgba(244,67,54,0.25); color:#ff8a80; ' +
             'font-weight:700; font-size:12px; padding:3px 7px; cursor:pointer; font-family:inherit;';
         stopBtn.addEventListener('click', () => this._stop('Stopped'));
 
@@ -600,9 +632,36 @@ class BulkSellAssistant {
             this._renderRules();
         });
 
-        widget.extras.appendChild(tabSel);
+        // The status line is one line by choice — the strip sits over the game
+        // — but the line it truncates is the one saying what is about to be
+        // sold and for how much. This folds the whole of it out underneath,
+        // where it can grow downwards without moving anything in the row.
+        const moreBtn = document.createElement('button');
+        moreBtn.type = 'button';
+        moreBtn.className = `${CHIP_ID}-more`;
+        moreBtn.textContent = '▾';
+        moreBtn.style.cssText =
+            'border:0; border-radius:5px; background:rgba(255,255,255,0.08); color:#cfd8ea; font-size:11px; ' +
+            'line-height:1; padding:3px 5px; cursor:pointer; font-family:inherit;';
+        moreBtn.addEventListener('mousedown', (event) => event.stopPropagation());
+        moreBtn.addEventListener('click', () => {
+            this.statusExpanded = !this.statusExpanded;
+            storage.set(STATUS_EXPANDED_KEY, this.statusExpanded, 'settings');
+            this._render();
+        });
+
+        const detailBox = document.createElement('div');
+        detailBox.className = `${CHIP_ID}-detail`;
+        // Capped at the status line's own width, so folding it out never makes
+        // the strip wider and never moves the buttons sideways
+        detailBox.style.cssText =
+            `display:none; max-width:${STATUS_WIDTH}; white-space:normal; overflow-wrap:anywhere; ` +
+            'font-size:11px; line-height:1.35; color:#cfd8ea; padding-top:2px;';
+
+        widget.extras.append(moreBtn, tabSel);
         widget.row.insertBefore(confirmBtn, widget.main);
         widget.row.insertBefore(stopBtn, widget.gear);
+        chip.insertBefore(detailBox, widget.settings);
         widget.settings.classList.add(`${CHIP_ID}-rules`);
 
         document.body.appendChild(chip);
@@ -752,29 +811,56 @@ class BulkSellAssistant {
         const mainBtn = this.chip.querySelector(`.${CHIP_ID}-main`);
         const stopBtn = this.chip.querySelector(`.${CHIP_ID}-stop`);
         const confirmBtn = this.chip.querySelector(`.${CHIP_ID}-confirm`);
+        const detailBox = this.chip.querySelector(`.${CHIP_ID}-detail`);
+        const moreBtn = this.chip.querySelector(`.${CHIP_ID}-more`);
         const progress = this.queue.length ? `${Math.min(this.index + 1, this.queue.length)}/${this.queue.length}` : '';
+        const setMain = (label) => {
+            if (this.panelWidget?.setMainLabel) this.panelWidget.setMainLabel(label);
+            else mainBtn.textContent = label;
+        };
+        // One line in the row, the whole of it underneath when it is folded
+        // out, and the whole of it on hover either way.
+        const say = (line) => {
+            status.textContent = line;
+            status.title = line;
+            if (detailBox) {
+                detailBox.textContent = line;
+                detailBox.style.display = this.statusExpanded ? '' : 'none';
+            }
+            if (moreBtn) {
+                moreBtn.textContent = this.statusExpanded ? '▴' : '▾';
+                moreBtn.title = this.statusExpanded
+                    ? 'Fold the full status text away and keep just the one line'
+                    : 'Show the whole status line, which the strip cuts off at one line';
+                moreBtn.setAttribute('aria-expanded', String(this.statusExpanded));
+            }
+        };
+        // A control that comes and goes keeps its slot in the row, so nothing
+        // beside it slides sideways when it does
+        const show = (element, visible) => {
+            if (element) element.style.visibility = visible ? 'visible' : 'hidden';
+        };
 
         if (this.state === 'idle' || this.state === 'done') {
-            status.textContent = this.statusNote || 'Sell every tradable inventory item, one confirm per item';
-            status.style.display = this.statusNote || this.state === 'done' ? '' : 'none';
+            say(this.statusNote || 'Sell every tradable inventory item, one confirm per item');
             tabSel.style.display = this._hasTabs ? '' : 'none';
-            if (confirmBtn) confirmBtn.style.display = 'none';
-            mainBtn.textContent = '▶ Bulk Sell';
+            show(tabSel, this._hasTabs);
+            show(confirmBtn, false);
+            setMain('▶ Bulk Sell');
             mainBtn.title =
                 'Queue every tradable inventory item (or only the selected Toolasha tab), most valuable stack first. Each item opens a prefilled sell modal — oversupplied or slow-queue items insta-sell to the best bid, others list at the ask. Confirming the modal \u2014 in the game or with this panel\u2019s Confirm button \u2014 advances to the next item.';
-            stopBtn.style.display = 'none';
+            show(stopBtn, false);
             return;
         }
 
-        status.style.display = '';
-        tabSel.style.display = 'none';
-        stopBtn.style.display = '';
+        show(tabSel, false);
+        show(stopBtn, true);
         // Only offered while a market sell modal of ours is the thing on screen.
         // The vendor path has no modal to check the item and quantity against,
         // so it keeps the game's own "Sell For" button and nothing else.
         if (confirmBtn) {
             const offered = this.state === 'awaiting_confirm' && !this.decision?.vendor;
-            confirmBtn.style.display = offered ? '' : 'none';
+            show(confirmBtn, offered);
             confirmBtn.disabled = offered ? this._confirmSent() : true;
             confirmBtn.style.opacity = confirmBtn.disabled ? '0.5' : '1';
             confirmBtn.style.cursor = confirmBtn.disabled ? 'default' : 'pointer';
@@ -784,8 +870,8 @@ class BulkSellAssistant {
                   'showing exactly the item and quantity this step queued.';
         }
         if (this.state === 'preparing') {
-            status.textContent = `${progress} · checking ${this.current?.name || ''}${this.statusNote ? ` (${this.statusNote})` : ''}…`;
-            mainBtn.textContent = '⏭ Skip';
+            say(`${progress} · checking ${this.current?.name || ''}${this.statusNote ? ` (${this.statusNote})` : ''}…`);
+            setMain('⏭ Skip');
             mainBtn.title = 'Skip this item';
         } else if (this.state === 'awaiting_confirm') {
             const d = this.decision;
@@ -802,13 +888,12 @@ class BulkSellAssistant {
             // A refusal leads. It used to be appended after the price and the
             // reason, which is past where the strip truncates — so a Confirm
             // that had refused for a stated reason looked like a dead button.
-            status.textContent = this.confirmNote ? `${confirmHint} — ${detail}` : `${detail} — ${confirmHint}`;
-            status.title = `${detail} — ${confirmHint}`;
-            mainBtn.textContent = '⏭ Skip';
+            say(this.confirmNote ? `${confirmHint} — ${detail}` : `${detail} — ${confirmHint}`);
+            setMain('⏭ Skip');
             mainBtn.title = 'Close the modal and skip this item';
         } else if (this.state === 'awaiting_next') {
-            status.textContent = `${progress} · ${this.current?.name || ''} dealt with — press Next for the next item`;
-            mainBtn.textContent = '▶ Next';
+            say(`${progress} · ${this.current?.name || ''} dealt with — press Next for the next item`);
+            setMain('▶ Next');
             mainBtn.title = 'Open the next item. Its own click, so one click never does two game actions.';
         }
     }
