@@ -684,6 +684,11 @@ class MarketHistoryPanel {
 
     renderChips() {
         if (!this.chipRow) return;
+        // Redrawn on every price tick, not on anything the player did, and the
+        // row scrolls once a watchlist outgrows its two rows. Emptying it
+        // clamps scrollTop to 0, so it is carried across; a row short enough
+        // not to scroll restores a 0 and nothing happens.
+        const prevScroll = this.chipRow.scrollTop;
         this.chipRow.innerHTML = '';
         if (this.prefs.mode === 'hidden') return;
 
@@ -846,6 +851,8 @@ class MarketHistoryPanel {
 
             this.chipRow.appendChild(chip);
         }
+
+        if (prevScroll > 0) this.chipRow.scrollTop = prevScroll;
     }
 
     /**

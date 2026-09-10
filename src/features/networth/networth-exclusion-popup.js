@@ -286,8 +286,19 @@ class NetworthExclusionPopup {
         const body = this.container?.querySelector('#mwi-nex-body');
         if (!body) return;
         const prevQuery = body.querySelector('input[type="search"]')?.value ?? '';
+        // The body is the scroller, and emptying it collapses its scrollHeight,
+        // so the browser clamps scrollTop to 0 and refilling does not bring it
+        // back. Measured in Chromium: 300 before the wipe, 0 after emptying,
+        // still 0 after refilling. happy-dom does no layout and so does not
+        // clamp, which is why there is no unit test here — one would pass with
+        // or without this line and imply cover it does not have. This refresh is driven by `items_updated` through networth's
+        // recalculate, so it lands every 15-30s while the player is only
+        // playing — reading a long exclusion list meant being thrown to the top
+        // on a timer. Kept for the same reason the search text already is.
+        const prevScroll = body.scrollTop;
         body.innerHTML = '';
         this._renderBody(body, prevQuery);
+        if (prevScroll > 0) body.scrollTop = prevScroll;
     }
 
     /**

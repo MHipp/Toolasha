@@ -8,81 +8,47 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ### Refreshing twice quickly no longer breaks Toolasha in every tab
 
-The cause of the tab that would not start, found and fixed. On the way out the script writes anything it has been holding, and it never told the database it was leaving — so a page torn down mid-write could leave that write outstanding. The browser lets one such write hold its shelf of the database against every tab at once, so one bad refresh stopped every open tab from reading its settings, for as long as they stayed open. Reloading the broken tab could not fix it, because the thing holding the shelf was in a different tab.
-
-The connection is now closed when the page actually ends, which is what lets the browser finish the write and let go. It is deliberately not closed when a tab is merely backgrounded or when a navigation begins that you might still cancel — both of those pages carry on, and a page put to sleep and woken again gets its database back.
-
-Writes have the same protection reads got: one that never comes back is reported with the key it was after rather than waiting forever, and its value is kept to be written again rather than quietly dropped. That also unblocks the things that wait on writes finishing — switching character, and the save on the way out.
+Refreshing twice quickly could leave a half-finished write holding the settings store, which stopped every open tab from reading its settings until they were all reloaded. The database connection is now closed when a page actually ends, so the browser can finish the write and let go.
 
 ### A stored read that never answers no longer takes the whole script down with it
 
-Reported from a live tab: after two quick refreshes, Toolasha simply never appeared — no panels, no tab, and nothing in the error log to say why. The database was open and healthy, and a fresh connection to it read fine; the connection the script already held had quietly stopped answering. Every read went out and never came back, so startup stopped before a single feature began and sat there looking like it was still loading.
-
-Reads now give up after ten seconds, say so in the log with the key and the store they were after, reopen the connection and try once more — which is the case that gets your real settings back rather than defaults. Only if the fresh connection is silent too does it answer "unreadable", which is the behaviour that already existed and deliberately keeps your settings in memory rather than saving defaults over them. Nothing about a healthy read changes.
-
-What made this so hard to see is that nothing failed: no error, no rejection, just a promise that never settled, which is indistinguishable from a slow load. That is now the one thing it cannot do quietly.
-
-A superseded database connection is also closed instead of being left open, which could otherwise block a later upgrade.
+A read that never came back left startup waiting forever with nothing in the log to say why. Reads now give up after ten seconds, name the key and store, and retry on a fresh connection.
 
 ### The house upgrade cost list is reachable on a phone
 
-Reported by a player: on mobile the cumulative cost list for a house upgrade ran off the bottom of the screen with no way to scroll it, so the Missing Mats Marketplace button underneath could not be reached at all. The list was marked scrollable but had no height to scroll within, which means it simply grew instead — on a desktop the page still reached the end, so it only ever showed up on a phone.
-
-The material rows now scroll within whatever room the screen actually has, and the total and the button sit below them rather than at the end of the list, so they are on screen without scrolling to find them. Room is measured against the visible area rather than the screen, so the address bar and the on-screen keyboard are accounted for. A desktop-sized window fits the whole list as before and scrolls nothing.
-
-A long list — asking for the cost all the way to level 8, say — went wrong in a second way that had nothing to do with the screen size. The game lays that panel out as a column of a fixed height, so a section taller than the room left over gets squeezed, and ours was being squeezed well below the size of its own contents: the list, the total and the button ended up drawn outside its own border. The section now refuses to be squeezed and the panel grows to fit it instead, which is what the panel's own scrollbar is for. The game's Build button keeps its size either way, including on older browsers that cannot read the rule that does it. And the list stays where you scrolled it: it is redrawn whenever your inventory changes, which means every time an action completes, and each redraw used to throw you back to the top while you were reading it.
+On mobile the cumulative cost list ran off the screen with no way to scroll, so the Missing Mats Marketplace button below it could not be reached. The rows scroll now, the button sits below them, and a long list no longer spills outside the panel.
 
 ### The bulk sell strip's buttons stay where you left them
 
-Confirm sat to the left of a button whose label changes as the run moves — Bulk Sell, Skip, Next — so every step nudged it sideways, and Stop and the tab picker appearing and disappearing moved it again. During a long run that means aiming at a button that will not be there. Every control now keeps its slot whatever the strip is saying, whether the strip is where it starts or somewhere you dragged it to.
-
-The status line no longer has to fit on one line either. The `▾` beside the tab picker unfolds it, so an item whose description ran past the edge can be read in full without hovering for the tooltip. It stays folded until you open it, opens downward rather than sideways, and remembers which you prefer.
+Confirm sat left of a button whose label changes as the run moves, so every step nudged it sideways. Every control keeps its slot now, and `▾` unfolds the status line when an item's description runs past the edge.
 
 ### Recovering from a missed login by itself is now something you turn on
 
-It shipped on in 3.47.0. Dropping the connection or reloading the page is acting on your session without being asked, and that should be your call even on a page that has already failed to load — so it is off unless you tick it. Left off you are asked instead, which is what it always did for anyone who turned it off.
-
-Nothing having been chosen counts as off rather than as "take the default and go", which matters because the choice has to be read on a page where settings have not loaded.
+Dropping the connection or reloading the page is acting on your session unasked, so it is off unless you tick it. Left off you are asked instead.
 
 ### A load that misses the character data recovers without losing your tab
 
-When the opening character data goes missing, the connection is now dropped rather than the page: the game opens a new one by itself and sends the data again, so nothing you had typed, opened or scrolled to is lost. Reloading is what happens if that has not worked eight seconds later — measured against how long a reconnect actually takes, and still well inside the thirty seconds this used to sit through. Dropping the connection is held to the same conditions the reload was — your setting, and whether you have started using the page — with one deliberate exception: a tab that already reloaded once and came back broken still gets to try reconnecting. That tab has shown reloading does not help it, and being offered the reload again was the least useful thing that could happen to it.
+The connection is dropped rather than the page, so nothing you had typed or opened is lost; reloading is the fallback if that has not worked eight seconds later.
 
 ### A load that misses the character data recovers itself instead of sitting dead
 
-The game sends your character once, right after the connection opens, and never again. If the script is still starting when that arrives — a cold cache, a slow browser, several userscripts sharing the page — it misses the only copy there will be, and every feature that waits for your character waits forever. Until now that meant thirty seconds of a dead script and then an offer to reload.
-
-The script can now tell that case apart from every other reason your character might be missing: it knows whether it was listening before the connection opened. When it can prove it was not, it reloads once, about five seconds in, rather than waiting out the timeout. Only on a page you have not touched yet, only once per tab, and never twice into the same failure — anything else falls back to asking, and the console says which condition stopped it. Turn off "recover a failed start by reloading" to always be asked instead. The offer stays either way; off means ask, not do nothing.
-
-Reading that setting needed care, because it is consulted on the one page where settings have not loaded: they are stored per character, and there is no character. Asked the ordinary way it would have answered "on" to somebody who had turned it off. The choice is now kept somewhere readable before anything else, and a preference that cannot be read at all counts as "ask me", never as consent.
+The game sends your character once, and a script still starting can miss it — every panel then stays empty for the session. That case is now recognised and recovered from in about five seconds instead of thirty.
 
 ### Guild Trials leaves nothing running when you switch it off
 
-Two of its helpers had no way of being stopped. The chat alerts kept announcing that the guild trial had begun for a feature that was no longer on, and the member-skill tracker kept recording without the path that kept its records fresh — so its captures went stale across later character switches. Both are stopped with the rest of it now.
-
-**A test now catches the next one.** Every case of a feature starting a helper is read at test time — fifty-three of them — and one whose owner never stops it fails the build, naming the file, the line and the helper. Anything genuinely shared, or owned by somebody else, is listed with a sentence saying which. Run against the four already fixed, it flags every one, and it found the chat alerts on its first run.
+Its chat alerts kept announcing that the trial had begun, and its member-skill tracker kept recording. Both stop with the rest of it now, and a test catches the next helper that outlives its feature.
 
 ### The trade history's unreachable "clear everything" is gone
 
-No button or menu ever called it, and it would not have worked if one had: the record has no timestamps, so a clear would have been undone by the first sync with a device that had not cleared. The one dangerous write it needed — the one that skips the read-and-merge every other save does — goes with it.
+No button ever called it, and it would not have survived a sync if one had.
 
 ### A buy box no longer opens with the previous character's quantity in it
 
-Pressing "buy books" on the ability panel arms the marketplace autofill with how many that character still needs and sends you to the market. The arming waits for the right book's buy box to open, which is a trip and several clicks away — and it was not dropped when you switched character in between. The arriving character's New Buy Listing then came up with the departed character's count already filled in. A buy box is somewhere you act on a number rather than just read it, so that one is worth knowing about. Switching now clears it, in the same place the panel already forgets its other per-character figures.
-
-The guild loadout capture had the opposite problem: it is shared by Guild Trials and the guild roster and counts its users so the last one out shuts it down, but the roster never gave its turn back. With the roster on, the count only ever climbed, so the capture never shut down and stayed pinned to the first character of the session — filing the arriving character's guild roster into the departed character's record, and showing that character's sightings in loadout previews and ability sheets. With the roster off it tore down correctly, so whether it worked depended on which of the two features you had switched on.
-
-Five more shared helpers were checked in the same pass and deliberately left alone: each already handles a character switch itself, and stopping them when one of their users goes away would break the other.
+“Buy books” arms the autofill with that character's shortfall, and switching character on the way to the market left the number behind for whoever arrived. It is cleared on the switch now.
 
 ### A character switch stops leaving three listeners behind every time
 
-Measured in the running game rather than read out of the source: every character switch left four listeners on the message bus that nothing could ever remove, and they stacked for as long as the tab stayed open. This is not the race the rest of this release fixes — that one is confirmed closed by the same measurement — but a plainer thing sitting underneath it. A feature that starts a helper of its own has to stop it too, and three did not.
-
-The house cost display was started by the house panel and never stopped by it, so its inventory and room-level listeners built up one pair per switch. The party DPS panel and the production arbitrage board each build a panel shell whose frame subscribes to character switches, then dropped the handle on teardown while the subscription stayed — a shell can now be destroyed rather than only hidden, which is what those two wanted all along. The house display also refused a second start, since the panel and the setting toggle could each begin one without knowing about the other.
-
-Measuring again after that fix turned up one more, in a shared helper rather than in any feature. The routine that adds a stylesheet takes a name so it can be removed later, but never looked whether that name was already on the page — so every one of the fourteen features that uses it left a dead copy of its own styles behind on each switch. Ten copies of one sheet were counted after ten switches. The sheet is written once now and rewritten in place after that, so a feature that rebuilds its colours from a setting still takes effect.
-
-A survey of all sixty-four cases of a feature starting a helper found these three were the only ones that accumulated. Around a dozen more leave a helper running after the feature stops without stacking up, which is a smaller problem and left for its own pass.
+A feature that starts a helper has to stop it too, and three did not — so the house cost display, the party DPS panel and the arbitrage board each left work running per switch. A shared stylesheet was also being added once per switch rather than once.
 
 ### Leftovers: things you deleted stay deleted, and four more features stop leaking on a switch
 
