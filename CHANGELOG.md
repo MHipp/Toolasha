@@ -12,6 +12,8 @@ Measured in the running game rather than read out of the source: every character
 
 The house cost display was started by the house panel and never stopped by it, so its inventory and room-level listeners built up one pair per switch. The party DPS panel and the production arbitrage board each build a panel shell whose frame subscribes to character switches, then dropped the handle on teardown while the subscription stayed — a shell can now be destroyed rather than only hidden, which is what those two wanted all along. The house display also refused a second start, since the panel and the setting toggle could each begin one without knowing about the other.
 
+Measuring again after that fix turned up one more, in a shared helper rather than in any feature. The routine that adds a stylesheet takes a name so it can be removed later, but never looked whether that name was already on the page — so every one of the fourteen features that uses it left a dead copy of its own styles behind on each switch. Ten copies of one sheet were counted after ten switches. The sheet is written once now and rewritten in place after that, so a feature that rebuilds its colours from a setting still takes effect.
+
 A survey of all sixty-four cases of a feature starting a helper found these three were the only ones that accumulated. Around a dozen more leave a helper running after the feature stops without stacking up, which is a smaller problem and left for its own pass.
 
 ### Leftovers: things you deleted stay deleted, and four more features stop leaking on a switch
