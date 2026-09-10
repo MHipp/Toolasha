@@ -180,7 +180,11 @@ class ProductionArbitrageBoard {
             this.unregisterTitleObserver?.();
             this.unregisterTitleObserver = null;
             document.querySelectorAll(`.${OPEN_BUTTON_CLASS}`).forEach((button) => button.remove());
-            this.panel?.hide({ remember: false });
+            // Released, not hidden: the handle is dropped below and
+            // `initialize()` builds a fresh shell, so hiding would leave this
+            // one's `character_switched` subscription on the bus with nothing
+            // holding it — one more per character switch, for the life of the tab
+            this.panel?.destroy();
         } catch (error) {
             console.error('[ProductionArbitrage] Disable failed part-way:', error);
         } finally {

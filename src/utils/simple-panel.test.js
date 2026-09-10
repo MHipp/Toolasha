@@ -573,3 +573,66 @@ describe('what a panel can say about itself', () => {
         expect(panel.isFrontmost()).toBe(false);
     });
 });
+
+/**
+ * Letting go of a shell.
+ *
+ * `createPanel` subscribes to `character_switched` for the life of the shell,
+ * so the arriving character gets back the panel they left open. A feature that
+ * builds its shell inside `initialize()` and drops the handle in its teardown
+ * has no way to release that subscription, and a switch is exactly when both
+ * things happen: the old shell's listener stays, a new shell registers another,
+ * and the bus grows by one panel per switch for the life of the tab.
+ */
+describe('releasing a panel shell', () => {
+    const switchHandlers = () => bus.handlers.character_switched?.length ?? 0;
+
+    test('destroy removes the shell’s character-switch subscription', () => {
+        const before = switchHandlers();
+        const panel = createPanel({ id: 'released', title: 'Released', size: SIZE, draw: () => {} });
+        expect(switchHandlers()).toBe(before + 1);
+
+        panel.destroy();
+
+        expect(switchHandlers()).toBe(before);
+    });
+
+    test('destroy closes an open panel without recording it as closed', () => {
+        geometry.saveOpenState.mockClear();
+        const panel = createPanel({ id: 'released-open', title: 'Released', size: SIZE, draw: () => {} });
+        panel.show({ remember: false });
+        expect(panel.isOpen()).toBe(true);
+
+        panel.destroy();
+
+        expect(panel.isOpen()).toBe(false);
+        expect(geometry.saveOpenState).not.toHaveBeenCalledWith('released-open', false);
+    });
+
+    test('a destroyed shell is inert — no redraw, and destroy again is a no-op', () => {
+        const before = switchHandlers();
+        const draw = vi.fn();
+        const panel = createPanel({ id: 'inert', title: 'Inert', size: SIZE, draw });
+        panel.show({ remember: false });
+        panel.destroy();
+        draw.mockClear();
+
+        for (const handler of bus.handlers.character_switched || []) handler();
+        expect(draw).not.toHaveBeenCalled();
+
+        expect(() => panel.destroy()).not.toThrow();
+        expect(switchHandlers()).toBe(before);
+    });
+
+    test('build-and-release cycles leave the bus where they found it', () => {
+        const before = switchHandlers();
+
+        for (let cycle = 0; cycle < 3; cycle++) {
+            const panel = createPanel({ id: 'cycled', title: 'Cycled', size: SIZE, draw: () => {} });
+            panel.show({ remember: false });
+            panel.destroy();
+        }
+
+        expect(switchHandlers()).toBe(before);
+    });
+});

@@ -183,6 +183,18 @@ class HousePanelObserver {
      * Clean up observers
      */
     cleanup() {
+        // The display is this feature's, not the registry's: `initialize()`
+        // starts it, and nothing else ever will, so nothing else will ever stop
+        // it. It has a working `disable()` and had no caller — the registry
+        // tears down this observer and the display's two `dataManager`
+        // listeners stayed, so every character switch registered another pair.
+        // Its own try/catch so a display that fails part-way cannot take this
+        // observer's teardown down with it.
+        try {
+            houseCostDisplay.disable();
+        } catch (error) {
+            console.error('[House Panel Observer] House cost display teardown failed:', error);
+        }
         if (this.modalObserver) {
             this.modalObserver();
             this.modalObserver = null;

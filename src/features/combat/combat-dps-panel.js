@@ -893,9 +893,15 @@ export default {
             const area = button?.parentElement;
             button?.remove();
             if (area?.style?.position === 'relative') area.style.position = '';
-            // Not remembered: switching the feature off is not the same as
-            // closing the panel, and it must not be recorded as one
-            panel?.hide({ remember: false });
+            // Released rather than hidden, because the handle goes with it and
+            // `initialize()` builds a fresh shell. `hide()` leaves the shell's
+            // `character_switched` subscription in place — which is right for a
+            // panel that will be shown again through the same handle, and a leak
+            // here: a character switch runs this teardown and then that init, so
+            // every switch left another shell's listener on the bus with nothing
+            // holding its handle. Not remembered, for the same reason as before:
+            // switching the feature off is not the user closing the panel.
+            panel?.destroy();
             panel = null;
         } catch (error) {
             console.error('[Combat DPS Panel] Disable failed part-way:', error);

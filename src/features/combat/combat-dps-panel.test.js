@@ -102,6 +102,10 @@ const {
 const { newRotationState, noteRotationKit, noteRotationFight, foldRotationTick, summariseRotation } =
     await import('../../utils/rotation-audit.js');
 
+// The real bus, because what the shell's teardown has to release is a real
+// subscription on it — a mocked emitter would only prove the mock
+const dataManager = (await import('../../core/data-manager.js')).default;
+
 /** The players area as the game builds it, hashed class name and all */
 function battlePanel() {
     const area = document.createElement('div');
@@ -703,5 +707,40 @@ describe('the rotation tab’s history scope', () => {
         feature._setTab('rotation', 'history');
 
         expect(panelText('rotation', { audit: () => opts.audit })).toContain('Rotation history');
+    });
+});
+
+/**
+ * The panel shell the feature builds, and gives back.
+ *
+ * `createPanel` subscribes to `character_switched` so a panel left open comes
+ * back for the arriving character. That subscription belongs to the shell, and
+ * `cleanup()` used to drop the handle without releasing it — so every character
+ * switch built a second shell over the first one's live listener, and the count
+ * climbed for the life of the tab.
+ */
+describe('the shell the panel is built from', () => {
+    const switchListeners = () => dataManager.eventListeners.get('character_switched')?.length ?? 0;
+
+    test('teardown releases the shell’s character-switch subscription', () => {
+        const before = switchListeners();
+
+        feature.initialize();
+        expect(switchListeners()).toBe(before + 1);
+
+        feature.cleanup();
+
+        expect(switchListeners()).toBe(before);
+    });
+
+    test('repeated init/teardown cycles leave the count where it started', () => {
+        const before = switchListeners();
+
+        for (let cycle = 0; cycle < 3; cycle++) {
+            feature.initialize();
+            feature.cleanup();
+        }
+
+        expect(switchListeners()).toBe(before);
     });
 });

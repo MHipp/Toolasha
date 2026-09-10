@@ -24,7 +24,7 @@ const navigation = vi.hoisted(() => ({
     toItem: vi.fn(() => true),
 }));
 
-const panelState = vi.hoisted(() => ({ created: null }));
+const panelState = vi.hoisted(() => ({ created: null, built: 0, destroyed: 0 }));
 
 vi.mock('../../core/config.js', () => ({
     default: { getSetting: () => true, COLOR_ACCENT: '#22c55e' },
@@ -57,10 +57,15 @@ vi.mock('../../utils/simple-panel.js', () => ({
                 api.render();
             },
             hide: () => panel.remove(),
+            destroy: () => {
+                panelState.destroyed++;
+                panel.remove();
+            },
             get panel() {
                 return panel;
             },
         };
+        panelState.built++;
         panelState.created = api;
         return api;
     },
@@ -348,5 +353,33 @@ describe('table', () => {
         search.value = 'zzz';
         search.dispatchEvent(new Event('input'));
         expect(text()).toContain('No recipes match');
+    });
+});
+
+/**
+ * The shell the board builds, and gives back.
+ *
+ * The board builds its panel inside `initialize()` and drops the handle in
+ * `disable()`, so a character switch builds a second shell. `createPanel`
+ * subscribes to `character_switched` for the life of a shell, so a shell that
+ * is dropped rather than released leaves that subscription behind — one per
+ * switch, permanently. The teardown has to release what the init built.
+ */
+describe('the shell the board is built from', () => {
+    test('teardown releases the shell it built', () => {
+        const built = panelState.built;
+
+        board.disable();
+
+        expect(panelState.destroyed).toBe(built);
+    });
+
+    test('every shell a re-init builds is released again', () => {
+        for (let cycle = 0; cycle < 3; cycle++) {
+            board.initialize();
+            board.disable();
+        }
+
+        expect(panelState.destroyed).toBe(panelState.built);
     });
 });

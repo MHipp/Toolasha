@@ -65,6 +65,13 @@ class HouseCostDisplay {
         if (!config.getSetting('houseUpgradeCosts')) {
             return;
         }
+        // Two callers — the panel observer's `initialize()` and the setting's
+        // own toggle — and neither knows about the other, so a toggle while the
+        // observer is up used to register a second pair of bus listeners on top
+        // of the first. `disable()` clears the flag, so a real restart still runs.
+        if (this.isInitialized) {
+            return;
+        }
 
         this.isActive = true;
         this.isInitialized = true;

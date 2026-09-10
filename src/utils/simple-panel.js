@@ -58,6 +58,10 @@ export function createPanel({
     let detachResize = null;
     let minimizeCtl = null;
     let escapeReg = null;
+    // Set by `destroy()`. A released shell must not be reopenable: the handle
+    // may still be reachable from a stale closure, and reopening one would put
+    // a panel on screen that nothing is listening for the character switch on.
+    let destroyed = false;
 
     /** Draw, or say which panel could not be drawn */
     function render() {
@@ -226,6 +230,7 @@ export function createPanel({
 
     const api = {
         show({ remember = true } = {}) {
+            if (destroyed) return;
             if (remember) saveOpenState(id, true);
             if (panel && document.body.contains(panel)) {
                 bringPanelToFront(panel);
@@ -278,6 +283,29 @@ export function createPanel({
         toggle() {
             if (isOpen()) api.hide();
             else api.show();
+        },
+        /**
+         * Let the shell go, subscription and all.
+         *
+         * `hide()` closes a panel that is expected to open again, so it leaves
+         * the character-switch subscription in place — that subscription is
+         * what brings a panel back for the arriving character. A caller that
+         * builds its shell inside `initialize()` and drops the handle in its
+         * teardown needs the other thing: a switch tears the feature down and
+         * initialises it again, so a dropped shell's subscription stays on the
+         * bus with nothing left holding the handle, and the next shell adds
+         * another. One panel's worth of listener per character switch, for the
+         * life of the tab.
+         *
+         * Not remembered, for `hide`'s own reason: a teardown is not the user
+         * closing the panel and must not be recorded as one. Idempotent, and
+         * safe on a shell that was never shown.
+         */
+        destroy() {
+            if (destroyed) return;
+            destroyed = true;
+            dataManager.off('character_switched', onCharacterSwitched);
+            api.hide({ remember: false });
         },
         /**
          * Rename the panel, on screen and for the next time it opens.
@@ -350,10 +378,11 @@ export function createPanel({
     // switch is not the user closing the panel, and recording it as one would
     // write the departing character's arrangement into the arriving character's
     // flags.
-    dataManager.on('character_switched', () => {
+    const onCharacterSwitched = () => {
         api.hide({ remember: false });
         reopenIfLeftOpen(id, () => api.show({ remember: false }));
-    });
+    };
+    dataManager.on('character_switched', onCharacterSwitched);
 
     return api;
 }
