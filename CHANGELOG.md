@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The bulk sell strip's buttons stay where you left them
+
+Confirm sat to the left of a button whose label changes as the run moves — Bulk Sell, Skip, Next — so every step nudged it sideways, and Stop and the tab picker appearing and disappearing moved it again. During a long run that means aiming at a button that will not be there. Every control now keeps its slot whatever the strip is saying, whether the strip is where it starts or somewhere you dragged it to.
+
+The status line no longer has to fit on one line either. The `▾` beside the tab picker unfolds it, so an item whose description ran past the edge can be read in full without hovering for the tooltip. It stays folded until you open it, opens downward rather than sideways, and remembers which you prefer.
+
 ### Recovering from a missed login by itself is now something you turn on
 
 It shipped on in 3.47.0. Dropping the connection or reloading the page is acting on your session without being asked, and that should be your call even on a page that has already failed to load — so it is off unless you tick it. Left off you are asked instead, which is what it always did for anyone who turned it off.
