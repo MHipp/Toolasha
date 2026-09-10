@@ -23,6 +23,28 @@ import {
     attachRegularTabClearListener,
 } from '../../utils/marketplace-tabs.js';
 
+/**
+ * Height bound for the cumulative materials list.
+ *
+ * `overflow-y: auto` only ever scrolls a box that something stops from growing,
+ * so the list needs a real bound of its own — it has no height-constraining
+ * ancestor (the game's modal lets its content run as long as it likes).
+ *
+ * The unit is the visual viewport, not `vh`: `vh` on mobile is measured against
+ * the *largest* viewport and ignores the address bar and the on-screen keyboard,
+ * which is exactly the space that is missing when the list runs off a phone
+ * screen. `--toolasha-visual-viewport-height` is published by
+ * `src/utils/visual-viewport.js` and tracks what is actually visible; the `100vh`
+ * fallback covers browsers without `visualViewport`, and a browser that does not
+ * understand `max()` simply drops the declaration and gets today's behaviour.
+ *
+ * The floor keeps a very short viewport from producing a two-row peephole, and
+ * 55% is loose enough that a desktop viewport (~1000px+) fits a full eight-level
+ * material list without scrolling at all — the bound only bites when the content
+ * genuinely does not fit.
+ */
+const MATERIALS_LIST_MAX_HEIGHT = 'max(200px, calc(var(--toolasha-visual-viewport-height, 100vh) * 0.55))';
+
 class HouseCostDisplay {
     constructor() {
         this.isActive = false;
@@ -391,7 +413,6 @@ class HouseCostDisplay {
             border-radius: 8px;
             border: 1px solid ${config.COLOR_BORDER};
             min-height: 0;
-            overflow-y: auto;
         `;
 
         // Compact header with inline dropdown
@@ -490,11 +511,18 @@ class HouseCostDisplay {
         const fragment = document.createDocumentFragment();
 
         // Materials list as vertical stack of single-line rows
+        // Only the rows scroll; the total and the marketplace button below stay
+        // pinned under them so the button is reachable without scrolling to the
+        // end of a fourteen-material list.
         const materialsList = document.createElement('div');
+        materialsList.className = 'mwi-cumulative-materials-list';
         materialsList.style.cssText = `
             display: flex;
             flex-direction: column;
             gap: 8px;
+            max-height: ${MATERIALS_LIST_MAX_HEIGHT};
+            overflow-y: auto;
+            overscroll-behavior: contain;
         `;
 
         // Coins first
