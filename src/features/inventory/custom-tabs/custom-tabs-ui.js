@@ -26,6 +26,7 @@ function getLoadoutSnapshot() {
 }
 import { formatKMB } from '../../../utils/formatters.js';
 import { PANEL_Z_CAP } from '../../../utils/panel-z-index.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../../utils/init-ownership.js';
 import {
     loadConfig,
     saveConfig,
@@ -600,7 +601,26 @@ export default class CustomTabsUI {
 
     async initialize() {
         const charId = dataManager.getCurrentCharacterId();
+        // The ticket has to live here rather than in the feature wrapper, and
+        // this is the one site in the class where a guard in the wrapper could
+        // not stand in for it. `CustomTabsFeature.disable()` runs
+        // `this.ui?.cleanup(); this.ui = null;` — so a teardown landing inside
+        // the read below cleans a half-built instance and then drops the only
+        // reference to it, while this call is still suspended on `this`. The
+        // resumed tail used to inject its stylesheet, both `domObserver.onClass`
+        // watchers, the `onReady` catch-up and its retry interval, two
+        // `config.onSettingChange` subscriptions, the `items_updated` rAF loop,
+        // the sort-mode subscription, the `character_initialized` reload and the
+        // loadout-snapshot subscription — all onto an instance no future
+        // `cleanup()` can ever reach, because nothing holds it any more. Every
+        // other site in this class self-heals on the next switch; this one is
+        // the only leak that is permanent for the life of the tab, and it keeps
+        // rewriting inventory DOM off a departed character's config.
+        const ticket = captureOwner(this);
         this._config = await loadConfig(charId);
+        // Gates the whole tail — there is only one await in this body, and the
+        // registrations below run in sequence off it.
+        if (!stillOurs(ticket)) return;
         this._configCharId = charId;
 
         // Inject CSS
@@ -707,6 +727,7 @@ export default class CustomTabsUI {
     }
 
     cleanup() {
+        noteTeardown(this);
         if (this._inventoryTabEl) {
             this._inventoryTabEl.style.display = '';
             this._inventoryTabEl = null;

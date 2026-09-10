@@ -39,6 +39,7 @@ import { registerSyncMerge } from '../../utils/sync-merge-registry.js';
 import { readScoped } from '../../utils/character-key.js';
 import { timeChunkId, recordKeysFor, registerCharacterScopedPrefix } from '../../utils/chunked-history.js';
 import { detectFills, trimLedger, LEDGER_RECORD_CAP } from '../../utils/trade-ledger.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 
 /** Same store the other market trackers live in. */
 const LEDGER_STORE = 'marketListings';
@@ -305,7 +306,26 @@ class TradeLedgerStore {
 
         this.isInitialized = true;
 
+        // `isInitialized` is set *before* the read, deliberately: moving it after
+        // would make a switch's re-initialise early-return and leave the ledger
+        // dead until a reload. What it does not do is protect the resumed tail,
+        // which is what the ticket is for.
+        //
+        // `disable()` — the feature toggled off, or `onSettingsLoaded` finding
+        // the arriving character had it off — nulls both handler fields and does
+        // *not* bump `_generation`, so `load()`'s own character/generation guard
+        // sees nothing wrong and runs to completion. The tail then resumed on a
+        // torn-down store: it ran a snapshot `processListings` (which sweeps
+        // baselines and persists them through `saveStates`) and re-registered
+        // both handlers into the fields `disable()` had just cleared, so a
+        // feature the user had switched off went on recording with no handle
+        // left to stop it by. On a character switch the same tail orphaned the
+        // departing character's handler pair under the arriving character's.
+        const ticket = captureOwner(this);
         await this.load();
+        // Ahead of the snapshot pass, not merely ahead of the registrations:
+        // the snapshot writes, and a torn-down store must not write.
+        if (!stillOurs(ticket)) return;
 
         // Diff the listings we already have against the stored baselines: fills
         // that landed while the script was not running surface here. Snapshot
@@ -769,6 +789,7 @@ class TradeLedgerStore {
      * Stop recording (keeps stored data)
      */
     disable() {
+        noteTeardown(this);
         try {
             if (this.initHandler) {
                 dataManager.off('character_initialized', this.initHandler);
