@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### What's new shows what's new
+
+The panel was showing 20,000 characters of a changelog that had grown to 400,000 — an arbitrary slice, cut off mid-sentence, spanning releases long past. It now shows the twelve newest entries whole and says how many earlier ones it left out. Older entries have also been cut back to a couple of sentences each.
+
 ### Refreshing twice quickly no longer breaks Toolasha in every tab
 
 Refreshing twice quickly could leave a half-finished write holding the settings store, which stopped every open tab from reading its settings until they were all reloaded. The database connection is now closed when a page actually ends, so the browser can finish the write and let go.
