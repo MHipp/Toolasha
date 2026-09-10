@@ -8,6 +8,7 @@ import dataManager from '../../core/data-manager.js';
 import storage from '../../core/storage.js';
 import { sessionKey, archiveSession } from './combat-session-history.js';
 import { characterKey, readScoped, writeScoped } from '../../utils/character-key.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 
 /**
  * How long a finished run stays on the overlay.
@@ -141,8 +142,21 @@ class CombatStatsDataCollector {
 
         this.isInitialized = true;
 
+        // `isInitialized` is set *before* the two reads below, so a
+        // `character_switching` teardown landing inside either never made the
+        // switch's re-initialise early-return. The resumed tail instead ran on
+        // top of a `cleanup()` that had already unhooked both socket handlers
+        // and nulled the fields holding them, and re-stored its own into those
+        // same fields — leaving the previous `new_battle` and
+        // `battle_consumable_ability_updated` handlers live with no handle left
+        // to remove them by. One leaked pair per switch, each one counting the
+        // same tick again: doubled damage and doubled consumable counts in the
+        // Combat Statistics panel.
+        const ticket = captureOwner(this);
+
         // Load persisted tracking state from storage (MCS-style)
         await this.loadConsumableTracking();
+        if (!stillOurs(ticket)) return;
 
         // And the last run itself. Without this the overlay showed "No loot
         // tracked yet" after every refresh until the next battle started — in a
@@ -154,6 +168,9 @@ class CombatStatsDataCollector {
         // Safe to restore unconditionally: the rows date it from
         // `combatStartTime`, and the next `new_battle` overwrites it outright.
         await this.loadLatestData();
+        // Guards the whole resumed tail — both handlers below, and the switch
+        // pair after them.
+        if (!stillOurs(ticket)) return;
 
         // Store handler references for cleanup
         this.newBattleHandler = (data) => this.onNewBattle(data);
@@ -165,10 +182,24 @@ class CombatStatsDataCollector {
         // Listen for battle_consumable_ability_updated (fires on each consumable use)
         webSocketHook.on('battle_consumable_ability_updated', this.consumableEventHandler);
 
-        // Everything above is one character's live run. Registered once and
-        // never removed, because the collector is not always disabled on a
-        // switch — and if it is not, whatever is in memory would be written
-        // straight back out under the arriving character's key.
+        // Everything above is one character's live run. This pair is registered
+        // once and never removed — but not, as this comment used to claim,
+        // because the collector is "not always disabled on a switch". It always
+        // is: `entrypoint.js` normalises a module's `cleanup()` into the
+        // registry entry's `.disable`, `feature-registry.js`'s
+        // `disableAllFeatures()` calls every registered feature's `.disable()`
+        // unconditionally on `character_switching`, and Combat Statistics is
+        // registered exactly that way (`module: Combat.combatStats`, whose
+        // `cleanup()` calls this one's).
+        //
+        // The real reason is what `cleanup()` deliberately does *not* do: it
+        // leaves the consumable trackers in memory, because they are persisted.
+        // Forgetting them is `onCharacterSwitching`'s job, and it has to happen
+        // while the collector is down — the teardown and the switch are the
+        // same event — or the departing character's in-memory run is written
+        // straight back out under the arriving character's key. So the pair
+        // outlives the feature lifecycle on purpose, and this guard is what
+        // keeps each re-initialise from stacking a second pair on top of it.
         if (!this.switchingHandler) {
             this.switchingHandler = () => this.onCharacterSwitching();
             this.switchedHandler = () => this.onCharacterSwitched();
@@ -929,6 +960,9 @@ class CombatStatsDataCollector {
      * Cleanup
      */
     cleanup() {
+        // First of all, so an `initialize()` parked on either storage read
+        // cannot resume into the handler fields this teardown is about to null.
+        noteTeardown(this);
         if (this.newBattleHandler) {
             webSocketHook.off('new_battle', this.newBattleHandler);
             this.newBattleHandler = null;

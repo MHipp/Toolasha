@@ -32,6 +32,7 @@ import domObserver from '../../core/dom-observer.js';
 import storage from '../../core/storage.js';
 import { MARKET_TAX, COWBELL_BAG_HRID, COWBELL_BAG_TAX } from '../../utils/profit-constants.js';
 import { clampToBand } from '../../utils/market-values.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 import marketAPI from '../../api/marketplace.js';
 import {
     loadConfig as loadTabConfig,
@@ -341,11 +342,26 @@ class BulkSellAssistant {
         if (!config.getSetting('market_bulkSellAssistant')) return;
         this.isInitialized = true;
 
+        // `isInitialized` is set *before* this read, so a `character_switching`
+        // teardown landing inside it never made the switch's re-initialise
+        // early-return. The resumed tail instead ran on top of a `cleanup()`
+        // that had already dropped the order-book listener, the modal watcher
+        // and the body mutation watcher and nulled the fields holding them, and
+        // re-stored its own into those same fields — leaving the previous
+        // `market_item_order_books_updated` handler and the previous mutation
+        // watcher live with no handle left to remove them by. One leaked set
+        // per switch: every order book the game pushes is processed N times
+        // into the insta-sell / list decision, and a whole-body mutation
+        // watcher keeps running the tab-bar scan for a feature that is gone.
+        const ticket = captureOwner(this);
         try {
             this.panelPosition = await storage.get(PANEL_POSITION_KEY, 'settings', null);
         } catch (error) {
             console.error('[BulkSellAssistant] Loading panel position failed:', error);
         }
+        // Guards the whole resumed tail — the handler, the modal subscription
+        // and the mutation watcher below.
+        if (!stillOurs(ticket)) return;
 
         this.bookHandler = (data) => this._onOrderBook(data);
         dataManager.on('market_item_order_books_updated', this.bookHandler);
@@ -1549,6 +1565,10 @@ class BulkSellAssistant {
     }
 
     cleanup() {
+        // First of all, so an `initialize()` parked on the panel-position read
+        // cannot resume into the fields this teardown is about to null.
+        // `disable()` funnels through here, so both teardown paths are covered.
+        noteTeardown(this);
         this._stop('');
         if (this.watcher) {
             this.watcher();

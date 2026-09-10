@@ -38,6 +38,7 @@ import { formatKMB, timeReadable } from '../../utils/formatters.js';
 import { ROOM_TRAVEL_SECONDS } from './labyrinth-formulas.js';
 import { createPersistedRecord, mergeById } from '../../utils/persisted-record.js';
 import { registerSyncMerge } from '../../utils/sync-merge-registry.js';
+import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
 
 /** Re-exported from labyrinth-formulas.js, where it now lives */
 export { ROOM_TRAVEL_SECONDS };
@@ -353,8 +354,27 @@ class LabyrinthRoomLogs {
 
         // Rooms finished before the read lands are folded in rather than lost;
         // an unreadable store keeps what memory has rather than blanking it
+        //
+        // `isInitialized` is set *before* this read, so a `character_switching`
+        // teardown landing inside it never made the switch's re-initialise
+        // early-return. The resumed tail instead ran on top of a `disable()`
+        // that had already unhooked every socket handler and nulled the fields
+        // holding them, and re-stored its own into those same fields — leaving
+        // the previous `labyrinth_room_progress`, `labyrinth_updated`,
+        // `battle_updated`, `new_battle` and three experience handlers, both
+        // DOM-observer subscriptions and the 1 Hz capture timer live with no
+        // handle left to remove them by. One whole set leaked per switch, and
+        // each leaked set files a *second* `labFightRecorder.noteAttempt()` and
+        // a second helping of room experience for the same room — so the
+        // calibration pool the clear-rate accuracy math reads is corrupted with
+        // duplicate attempts and the XP/hr figures read double.
+        const ticket = captureOwner(this);
         this.record.set({ sessions: this.sessions });
         await this.record.load();
+        // Guards the whole resumed tail, `adoptMerged()` included: adopting the
+        // departing character's stored sessions into memory after the teardown
+        // would hand them to whoever has arrived.
+        if (!stillOurs(ticket)) return;
         this.adoptMerged();
 
         // Bring the accumulated calibration fights back into memory, so the pool
@@ -419,6 +439,9 @@ class LabyrinthRoomLogs {
     }
 
     async disable() {
+        // First of all, so an `initialize()` parked on the record read cannot
+        // resume into the fields this teardown is about to null.
+        noteTeardown(this);
         // Down first, and before anything below can schedule work. The feature
         // is going away, and the one path that arms a timer during a teardown
         // — `finalizeActiveSession`'s experience-grace timeout — checks this
