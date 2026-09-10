@@ -53,6 +53,33 @@ const MAX_STATIC_DATA_ATTEMPTS = 60;
 /** Switches closer together than this skip the expensive feature teardown. */
 const RAPID_SWITCH_WINDOW_MS = 1000;
 
+/**
+ * Ticks of the 500 ms fallback poll before an *evidenced* missed payload is
+ * acted on (10 x 500 ms = 5 s).
+ *
+ * Not a guess at how slow a login can be: this path only runs once the hook has
+ * reported that it attached to an already-open socket, which means the opening
+ * payload was delivered before we were listening and no amount of further
+ * waiting will produce it. The five seconds are only there so a socket that
+ * opened during our own startup gets a fair chance to deliver a late
+ * `init_character_data` through the getter before we call it lost.
+ */
+const EARLY_RECOVERY_ATTEMPTS = 10;
+
+/**
+ * Marks that this tab has already spent its one automatic recovery reload.
+ *
+ * `sessionStorage` and not the storage module on purpose: this has to be
+ * readable synchronously, before a reload is decided on, and it has to survive
+ * that reload while being scoped to the one tab. IndexedDB is async and shared
+ * across tabs, so it can answer neither question. A tab that reloads and lands
+ * in the same state again therefore stops and asks, instead of looping.
+ */
+const RELOAD_GUARD_KEY = 'toolasha.missedCharacterData.autoReloaded';
+
+/** Events that count as the player having started using this page. */
+const INTERACTION_EVENTS = ['pointerdown', 'keydown', 'touchstart', 'wheel'];
+
 class DataManager {
     constructor() {
         this.webSocketHook = webSocketHook;
@@ -138,6 +165,18 @@ class DataManager {
         // Null means no offer is standing; it is only ever set once per page.
         this.missedCharacterDataPrompt = null;
 
+        // True once the missed-payload diagnostic has been said. The early
+        // recovery path and the 30-second backstop can both reach it, and the
+        // second one to arrive must not repeat the console block.
+        this._missedCharacterDataReported = false;
+
+        // True once the player has done anything to this page. The automatic
+        // recovery reload is only ever taken on a page nobody has touched yet,
+        // because that is the only page where a reload provably discards
+        // nothing the player did.
+        this._pageInteracted = false;
+        this._interactionWatchInstalled = false;
+
         // Retry interval for loading static game data
         this.loadRetryInterval = null;
         this.fallbackInterval = null;
@@ -196,6 +235,8 @@ class DataManager {
             }
         };
 
+        this._watchForUserInteraction();
+
         this.fallbackInterval = setInterval(() => {
             fallbackAttempts++;
 
@@ -205,12 +246,199 @@ class DataManager {
                 return;
             }
 
+            // The hook can prove the payload was missed rather than merely late.
+            // When it has, there is nothing to wait for: recover now instead of
+            // leaving the script visibly dead for another twenty-five seconds.
+            if (fallbackAttempts >= EARLY_RECOVERY_ATTEMPTS && this._canRecoverEarly()) {
+                stopFallbackInterval();
+                this._recoverMissedCharacterData();
+                return;
+            }
+
             // Give up after max attempts
             if (fallbackAttempts >= maxAttempts) {
                 this._reportMissingCharacterData();
                 stopFallbackInterval();
             }
         }, 500); // Check every 500ms
+    }
+
+    /**
+     * Whether the missed one-shot payload has been *demonstrated*, rather than
+     * merely suspected from a timeout.
+     *
+     * All three have to hold together:
+     * - no character data, obviously;
+     * - frames are arriving, so the hook is installed and delivering — this is
+     *   what separates a missed message from a hook that never installed;
+     * - the hook attached to a socket that was already past its handshake, so
+     *   the opening payload for this connection went to the game before we were
+     *   listening. Without this last one the state is indistinguishable from a
+     *   slow login, and the thirty-second backstop stays in charge.
+     *
+     * The flag on its own is not enough. A page where another userscript has
+     * replaced `window.WebSocket` with a non-native wrapper always attaches
+     * through the `MessageEvent.data` path and so always sets it — but on such
+     * a page `init_character_data` still arrives through that same getter, and
+     * the first condition rules the recovery out.
+     *
+     * @returns {boolean}
+     * @private
+     */
+    _canRecoverEarly() {
+        if (this.characterData) return false;
+        if (this.webSocketHook?.attachedAfterSocketOpen !== true) return false;
+        return (Number(this.webSocketHook?.messagesSeen) || 0) > 0;
+    }
+
+    /**
+     * Recover from a demonstrably missed `init_character_data`.
+     *
+     * There is no way to fetch the payload back. It is server state pushed once
+     * per connection: the game persists none of it (`localStorageUtil` exposes
+     * `getInitClientData` and `getMarketItemValues`, both static), and asking
+     * the server for it would mean sending a message the client itself does not
+     * send at this point, which this script does not do. Reopening the socket is
+     * the only thing that makes the server send it again, and the cheapest,
+     * safest way to reopen the socket is the one the player already knows: a
+     * reload.
+     *
+     * So the recovery *is* the reload — but taken automatically, once, and only
+     * on a page where it provably costs nothing. See
+     * {@link _reloadRecoveryBlockedReason} for what "provably" means here. When
+     * it does not hold, the reload is offered instead and the console says which
+     * condition stopped it.
+     * @private
+     */
+    _recoverMissedCharacterData() {
+        const messagesSeen = Number(this.webSocketHook?.messagesSeen) || 0;
+
+        if (!this._missedCharacterDataReported) {
+            this._missedCharacterDataReported = true;
+            console.error(
+                `[DataManager] Character data never arrived, and the hook attached to a game socket that was already open — ${messagesSeen} later messages have come through it fine. init_character_data is sent once, just after the socket opens, so this connection's copy went to the game before Toolasha was listening, and nothing replays it.`
+            );
+        }
+
+        const blockedReason = this._reloadRecoveryBlockedReason();
+        if (blockedReason) {
+            console.error(
+                `[DataManager] Recovery attempted; the automatic reload was not taken because ${blockedReason}. Offering it instead.`
+            );
+            this._offerReloadForMissedCharacterData();
+            return;
+        }
+
+        if (!this._markReloadRecoveryAttempted()) {
+            this._offerReloadForMissedCharacterData();
+            return;
+        }
+
+        console.error('[DataManager] Recovering: reloading the page once to make the server resend the payload.');
+        this._performReload();
+    }
+
+    /**
+     * Why the automatic reload must not be taken, or null when it may be.
+     *
+     * A reload is only free on a page the session has not started on. Each of
+     * these is a way that stops being true:
+     * - already used: this tab reloaded once for this same failure and came back
+     *   into it. Reloading again is a loop, and a loop is worse than a dead
+     *   script — so the second time it asks instead.
+     * - the player has touched the page: a click, a keypress, a scroll. Anything
+     *   they have typed or opened since the load would be thrown away, and the
+     *   five-second window exists precisely so this is almost never the case.
+     * - there is nothing to reload (no window, no location), which is every
+     *   non-browser host this module is loaded in.
+     *
+     * @returns {string|null} A reason phrase for the log, or null to proceed
+     * @private
+     */
+    _reloadRecoveryBlockedReason() {
+        if (typeof window === 'undefined' || typeof window.location?.reload !== 'function') {
+            return 'this page has no window to reload';
+        }
+        if (this._reloadRecoveryAlreadyAttempted()) {
+            return 'this tab has already reloaded once for the same failure and came back into it';
+        }
+        if (this._pageInteracted) {
+            return 'the player has already started using this page and a reload would discard it';
+        }
+        return null;
+    }
+
+    /**
+     * Whether this tab has already spent its one automatic reload.
+     *
+     * A `sessionStorage` read that throws (a browser with site data blocked,
+     * a hardened profile) is read as "yes, already used": failing towards not
+     * reloading can only cost a toast, while failing the other way is the
+     * reload loop this guard exists to prevent.
+     * @returns {boolean}
+     * @private
+     */
+    _reloadRecoveryAlreadyAttempted() {
+        try {
+            return window.sessionStorage?.getItem(RELOAD_GUARD_KEY) === '1';
+        } catch {
+            return true;
+        }
+    }
+
+    /**
+     * Record the automatic reload before performing it, so the page that comes
+     * back cannot take a second one.
+     *
+     * @returns {boolean} True when the mark is in place and the reload may go
+     *   ahead. False means storage refused the write, and an unrecorded reload
+     *   is an unguarded one — exactly the loop this must never cause — so the
+     *   caller falls back to offering it.
+     * @private
+     */
+    _markReloadRecoveryAttempted() {
+        try {
+            window.sessionStorage.setItem(RELOAD_GUARD_KEY, '1');
+            return true;
+        } catch (error) {
+            console.error('[DataManager] Could not record the recovery reload; not reloading:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Note that the player has begun using this page.
+     *
+     * Capture-phase and `once` per event type, so the listeners remove
+     * themselves after the first interaction and cost nothing for the rest of
+     * the session. Installed from `initialize()` rather than the constructor:
+     * the constructor runs at module evaluation, which on a userscript at
+     * `document-start` can be before there is a document to listen on.
+     * @private
+     */
+    _watchForUserInteraction() {
+        if (this._interactionWatchInstalled) return;
+        if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
+
+        this._interactionWatchInstalled = true;
+        const mark = () => {
+            this._pageInteracted = true;
+        };
+        for (const type of INTERACTION_EVENTS) {
+            window.addEventListener(type, mark, { capture: true, once: true, passive: true });
+        }
+    }
+
+    /**
+     * Perform the recovery reload.
+     *
+     * Its own method so both callers — the automatic path and the toast's
+     * button — go through one place, and so a test can watch for it without
+     * navigating the test environment.
+     * @private
+     */
+    _performReload() {
+        window.location.reload();
     }
 
     /**
@@ -238,6 +466,12 @@ class DataManager {
         // and keeps the conservative original message.
         const messagesSeen = Number(this.webSocketHook?.messagesSeen) || 0;
 
+        if (this._missedCharacterDataReported) {
+            // The early recovery path already said all of this and acted on it.
+            return;
+        }
+        this._missedCharacterDataReported = true;
+
         if (messagesSeen === 0) {
             console.error(
                 '[DataManager] Character data not received after 30 seconds. WebSocket hook may have failed.'
@@ -249,17 +483,31 @@ class DataManager {
             `[DataManager] Character data not received after 30 seconds, but ${messagesSeen} other WebSocket messages have arrived — the hook is working. init_character_data is sent once, just after the socket opens, and this page started listening too late to catch it; nothing replays it. Reload the page to recover.`
         );
 
+        // Why the automatic reload did not fire here: this path is the backstop
+        // for the case the hook could *not* prove. It attached to the game's
+        // socket during the handshake, so the opening payload should have
+        // reached us and something else has gone wrong — a cause a reload may
+        // not fix. Reloading a page on a guess is not recovery, so it is offered
+        // rather than taken. See `_canRecoverEarly` for the evidenced case.
+        console.error(
+            '[DataManager] Automatic recovery was not attempted: the hook was in place before this socket opened, so the payload should not have been missed and the cause is something else. Offering a reload.'
+        );
+
         this._offerReloadForMissedCharacterData();
     }
 
     /**
-     * Offer — never perform — the reload that recovers a missed character payload.
+     * Offer the reload that recovers a missed character payload, for every case
+     * where taking it automatically would not be safe.
      *
-     * Reloading is the only recovery we have (see the commit body for the routes
-     * that were ruled out), but it is the player's call: an automatic
-     * `location.reload()` could land mid-dungeon. One persistent toast, shown at
-     * most once per page, dismissed the moment a real `init_character_data`
-     * turns up late.
+     * Reloading is the only recovery there is (see the commit body for the
+     * routes that were ruled out). {@link _recoverMissedCharacterData} takes it
+     * without asking on a page that has proven the payload was missed and that
+     * nobody has touched yet; everything else — an unproven cause, a tab that
+     * has already tried it, a page the player has started using — arrives here,
+     * because an unconditional `location.reload()` could land mid-dungeon. One
+     * persistent toast, shown at most once per page, dismissed the moment a real
+     * `init_character_data` turns up late.
      * @private
      */
     _offerReloadForMissedCharacterData() {
@@ -282,7 +530,7 @@ class DataManager {
                         duration: 0,
                         action: {
                             label: 'Reload the page',
-                            onClick: () => window.location.reload(),
+                            onClick: () => this._performReload(),
                         },
                     }
                 ) || null;

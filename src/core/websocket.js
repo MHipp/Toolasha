@@ -187,6 +187,25 @@ class WebSocketHook {
          * whether frames are being observed, not whether they were acted on.
          */
         this.messagesSeen = 0;
+        /**
+         * True once this hook has attached to a game socket that was *already
+         * past the handshake* when it found it.
+         *
+         * This is the whole difference between "we might have missed the
+         * one-shot payload" and "we cannot have". {@link wrapWebSocketConstructor}
+         * attaches from inside the constructor, at readyState CONNECTING, so
+         * every frame that connection will ever deliver — `init_character_data`
+         * first among them — passes through us. The `MessageEvent.data` path
+         * attaches on the first frame it is asked to read, by which time the
+         * socket is OPEN and the opening payload has already been handed to the
+         * game; nothing replays it.
+         *
+         * So a page in the dead-script state can be told apart from a page that
+         * is merely still loading within milliseconds of the first frame,
+         * instead of by waiting out a thirty-second timeout. DataManager's
+         * startup recovery reads it — see `_canRecoverEarly`.
+         */
+        this.attachedAfterSocketOpen = false;
         this.messageCleanupInterval = null;
         this.isSocketWrapped = false;
         this.originalWebSocket = null;
@@ -425,6 +444,16 @@ class WebSocketHook {
         }
 
         this.attachedSockets.add(socket);
+
+        // Record whether the handshake had already finished when we got here.
+        // 0 is CONNECTING — the constructor-wrapper path, where nothing has been
+        // delivered yet. Anything else means the socket was live before this
+        // hook saw it, so its one-shot opening payload is gone. Read defensively:
+        // `isGameSocket` is duck-typed on purpose, and a foreign wrapper standing
+        // in for a real socket need not expose a numeric readyState.
+        if (typeof socket.readyState === 'number' && socket.readyState !== 0) {
+            this.attachedAfterSocketOpen = true;
+        }
 
         const events = ['open', 'close', 'error'];
         for (const eventName of events) {

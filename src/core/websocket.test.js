@@ -751,3 +751,66 @@ describe('reading past a broken foreign MessageEvent hook', () => {
         warn.mockRestore();
     });
 });
+
+/**
+ * Whether the hook was in place before the handshake finished.
+ *
+ * This is the only evidence there is that the one-shot `init_character_data`
+ * was missed rather than merely late: the payload arrives once, immediately
+ * after the socket opens, and nothing replays it. DataManager's startup
+ * recovery will only reload a page for which this says yes, so a false positive
+ * here is a reload nobody asked for and a false negative is a script that stays
+ * dead for the session.
+ */
+describe('attachedAfterSocketOpen', () => {
+    /** A socket-shaped object with a readyState, the way attach sees one. */
+    function socketAt(readyState) {
+        return { url: 'wss://api.milkywayidle.com/ws', send() {}, readyState, addEventListener() {} };
+    }
+
+    beforeEach(() => {
+        webSocketHook.attachedAfterSocketOpen = false;
+    });
+
+    test('starts false: nothing has been attached to yet', () => {
+        expect(webSocketHook.attachedAfterSocketOpen).toBe(false);
+    });
+
+    test('attaching during the handshake leaves it false', () => {
+        // The constructor-wrapper path: readyState CONNECTING, so every frame
+        // this connection will ever deliver still passes through us
+        webSocketHook.attachSocketListeners(socketAt(0));
+        expect(webSocketHook.attachedAfterSocketOpen).toBe(false);
+    });
+
+    test('attaching to an already-open socket sets it', () => {
+        // The MessageEvent.data path: the first frame we are asked to read is
+        // already not the first frame the game received
+        webSocketHook.attachSocketListeners(socketAt(1));
+        expect(webSocketHook.attachedAfterSocketOpen).toBe(true);
+    });
+
+    test('a later clean attach does not clear a miss that already happened', () => {
+        webSocketHook.attachSocketListeners(socketAt(1));
+        webSocketHook.attachSocketListeners(socketAt(0));
+        expect(webSocketHook.attachedAfterSocketOpen).toBe(true);
+    });
+
+    test('a socket that does not belong to the game never sets it', () => {
+        webSocketHook.attachSocketListeners({
+            url: 'wss://example.com/ws',
+            send() {},
+            readyState: 1,
+            addEventListener() {},
+        });
+        expect(webSocketHook.attachedAfterSocketOpen).toBe(false);
+    });
+
+    test('a socket-shaped object with no readyState is not read as a miss', () => {
+        // isGameSocket is duck-typed on purpose, so a foreign wrapper standing
+        // in for a socket need not expose one. Guessing here would reload a
+        // page that was never broken.
+        webSocketHook.attachSocketListeners({ url: 'wss://api.milkywayidle.com/ws', send() {}, addEventListener() {} });
+        expect(webSocketHook.attachedAfterSocketOpen).toBe(false);
+    });
+});
