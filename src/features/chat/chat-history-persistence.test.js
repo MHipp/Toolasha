@@ -593,3 +593,46 @@ describe('tab identity is a name, never a position', () => {
         expect(document.body.textContent).not.toContain('meet me at the tower');
     });
 });
+
+describe('a restored message keeps its clickable player name', () => {
+    // The bug: `data-mwi-profile-name` was stripped on save while the
+    // `mwi-chat-profile-name` class that styles it was kept. A restored message
+    // looked exactly like a link — blue, pointer cursor, hover underline — and
+    // its click handler read an empty name and returned. The decorator could not
+    // repair it either, because it skips any node already carrying the class.
+    const messageWithName = () => {
+        const el = document.createElement('div');
+        el.className = 'ChatMessage_chatMessage__2wc4V';
+        const name = document.createElement('span');
+        name.className = 'mwi-chat-profile-name';
+        name.dataset.mwiProfileName = 'Millennium';
+        name.textContent = 'Millennium';
+        el.appendChild(name);
+        return el;
+    };
+
+    test('the name and the class that styles it both survive serialization', () => {
+        const html = serializeMessage(messageWithName());
+        expect(html).toBeTruthy();
+
+        const restored = document.createElement('div');
+        restored.innerHTML = html;
+        const link = restored.querySelector('.mwi-chat-profile-name');
+
+        expect(link, 'the styled span survives').toBeTruthy();
+        expect(link.dataset.mwiProfileName, 'and so does the name it needs').toBe('Millennium');
+    });
+
+    test('session-scoped handles are still stripped', () => {
+        const el = messageWithName();
+        el.dataset.mwiUid = 'abc123';
+        el.dataset.mwiHydrated = 'true';
+
+        const restored = document.createElement('div');
+        restored.innerHTML = serializeMessage(el);
+        const message = restored.firstElementChild;
+
+        expect(message.dataset.mwiUid).toBeUndefined();
+        expect(message.dataset.mwiHydrated).toBeUndefined();
+    });
+});

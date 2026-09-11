@@ -18,10 +18,12 @@
  * `.mwi-interactive` too, because a pointer cursor over a dead link is worse
  * than a plain one.
  *
- * Player names need no work here — `chat-profile-link.js` watches
- * `ChatMessage_chatMessage` nodes wherever they appear (its own header names
- * the history-buffer clones) and re-links them through the delegated listener
- * it already owns.
+ * Player names travel with the message instead: the name attribute and the
+ * class that styles it are both kept, so the delegated listener in
+ * `chat-profile-link.js` works on a restored message without waiting for
+ * anything to re-decorate it. This used to claim that decorator would re-link
+ * them wherever they appeared; it does not, because it skips any node that
+ * already carries its class — which a restored one does.
  *
  * ## Why it never leaves the device
  *
@@ -95,13 +97,18 @@ export const MAX_TOTAL_CHARS = 256 * 1024;
 const WRITE_DEBOUNCE_MS = 5000;
 
 /** Attributes stripped on the way in — stale handles into a dead session. */
-const STALE_ATTRIBUTES = [
-    'data-mwi-uid',
-    'data-mwi-hydrated',
-    'data-mwi-profile-link',
-    'data-mwi-profile-name',
-    'data-mwi-key-names-linked',
-];
+/**
+ * Handles that mean nothing in the next session and have to come off.
+ *
+ * `data-mwi-profile-name` is deliberately NOT among them, though it used to be.
+ * It is a player's name — stable text, not a handle into this session's caches —
+ * and `chat-profile-link.js` writes it beside the `mwi-chat-profile-name` class
+ * that carries the styling. Stripping one and keeping the other left restored
+ * messages looking exactly like links, cursor and all, whose click handler read
+ * an empty name and returned; and the decorator skips any node already carrying
+ * the class, so nothing ever put it back. The pair has to travel together.
+ */
+const STALE_ATTRIBUTES = ['data-mwi-uid', 'data-mwi-hydrated', 'data-mwi-profile-link', 'data-mwi-key-names-linked'];
 
 /**
  * Serialize one live/cloned chat message node for storage.

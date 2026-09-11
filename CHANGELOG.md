@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Player names in restored chat messages are clickable again
+
+Reported: clicking a name in a saved or extended chat message did nothing. Saving stripped the name the click needs while keeping the styling that makes it look like a link, so it stayed blue and gave a pointer cursor and then ignored you. Both now travel together.
+
 ### The Loot & XP Analytics panel opens again
 
 Reported: clicking the chart button in the Loot & XP Log gave "calculateTotalValue is not a function" instead of the pivot table. The panel was reaching for the wrong half of a module. Its own tests missed it because the stand-in they used had been written to match the panel rather than the module.
