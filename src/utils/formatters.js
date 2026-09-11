@@ -181,19 +181,22 @@ export function formatKMB(num, decimals = 1) {
     const absNum = Math.abs(num);
     const sign = num < 0 ? '-' : '';
 
-    if (absNum >= 1e15) {
-        return sign + (absNum / 1e15).toFixed(decimals) + 'Q';
-    } else if (absNum >= 1e12) {
-        return sign + (absNum / 1e12).toFixed(decimals) + 'T';
-    } else if (absNum >= 1e9) {
-        return sign + (absNum / 1e9).toFixed(decimals) + 'B';
-    } else if (absNum >= 1e6) {
-        return sign + (absNum / 1e6).toFixed(decimals) + 'M';
-    } else if (absNum >= 1e3) {
-        return sign + (absNum / 1e3).toFixed(decimals) + 'K';
-    } else {
-        return signedMagnitude(sign, absNum.toFixed(0));
+    let tierIndex = NETWORTH_TIERS.findIndex((tier) => absNum >= tier.divisor);
+    if (tierIndex === -1) {
+        const whole = absNum.toFixed(0);
+        // 999.6 rounds to "1000", which is 1.0K
+        if (whole !== '1000') return signedMagnitude(sign, whole);
+        tierIndex = NETWORTH_TIERS.length - 1;
     }
+
+    // Promote on the printed text: 999,950 is K by magnitude but "1000.0" at one decimal
+    let text = (absNum / NETWORTH_TIERS[tierIndex].divisor).toFixed(decimals);
+    while (Number(text) >= 1000 && tierIndex > 0) {
+        tierIndex -= 1;
+        text = (absNum / NETWORTH_TIERS[tierIndex].divisor).toFixed(decimals);
+    }
+
+    return sign + text + NETWORTH_TIERS[tierIndex].suffix;
 }
 
 /**
@@ -370,8 +373,8 @@ export function formatRelativeTime(ageMs) {
 }
 
 /**
- * Magnitude tiers for {@link networthFormatter}, largest first. `absNum` is
- * matched against the first tier whose `divisor` it clears.
+ * Magnitude tiers for {@link networthFormatter} and {@link formatKMB}, largest
+ * first. `absNum` is matched against the first tier whose `divisor` it clears.
  */
 const NETWORTH_TIERS = Object.freeze([
     { divisor: 1e15, suffix: 'Q' },

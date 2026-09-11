@@ -181,6 +181,18 @@ describe('formatKMB', () => {
         // sign onto a "0" that is not actually negative.
         expect(formatKMB(-0.4)).toBe('0');
     });
+
+    test('promotes a value that rounds up to 1000 into the next tier', () => {
+        expect(formatKMB(999.6)).toBe('1.0K');
+        expect(formatKMB(999950)).toBe('1.0M');
+        expect(formatKMB(-999999.999)).toBe('-1.0M');
+        expect(formatKMB(999950000)).toBe('1.0B');
+        expect(formatKMB(999995000, 2)).toBe('1.00B');
+        expect(formatKMB(999500000000, 0)).toBe('1T');
+        expect(formatKMB(999950000000000)).toBe('1.0Q');
+        // Q has nowhere higher to go
+        expect(formatKMB(1e18)).toBe('1000.0Q');
+    });
 });
 
 describe('formatKMB3Digits', () => {
