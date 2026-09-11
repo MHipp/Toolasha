@@ -18,6 +18,21 @@ vi.mock('./gold-sources-collect.js', () => ({
     createPricer: () => () => null,
 }));
 
+// The shared panel shell's own storage backend — never what a panel's own
+// test is about (see `build-score-panel.test.js`). Left as no-ops rather than
+// hitting real IndexedDB so `restoreGeometry` is a plain spy to assert on, and
+// `reopenIfLeftOpen` never fires the reopen callback at import time.
+vi.mock('../../utils/panel-geometry.js', () => ({
+    restoreGeometry: vi.fn(),
+    saveGeometry: vi.fn(),
+    saveOpenState: vi.fn(async () => {}),
+    wasOpen: async () => false,
+    reopenIfLeftOpen: async () => {},
+    saveCollapsed: async () => {},
+    wasCollapsed: async () => false,
+    savedSize: async () => null,
+}));
+
 const {
     default: goldSourcesPanel,
     buildPanelBody,
@@ -34,6 +49,8 @@ const {
     formatAttributionAsText,
     MODAL_ID,
 } = await import('./gold-sources-panel.js');
+const { restoreGeometry } = await import('../../utils/panel-geometry.js');
+const { registeredCommands } = await import('../../utils/command-registry.js');
 
 const D19 = Date.parse('2026-08-19T12:00:00Z');
 const D20 = Date.parse('2026-08-20T12:00:00Z');
@@ -468,6 +485,60 @@ describe('the modal', () => {
         const modal = document.getElementById(MODAL_ID);
         expect(modal).toBeTruthy();
         expect(modal.textContent).toContain('could not be drawn');
+        goldSourcesPanel.closeModal();
+    });
+});
+
+describe('the panel chrome', () => {
+    const escape = () =>
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+
+    test('toggling opens and closes it, the way the 💰 button does', async () => {
+        await goldSourcesPanel.toggleModal();
+        expect(document.getElementById(MODAL_ID)).toBeTruthy();
+
+        await goldSourcesPanel.toggleModal();
+        expect(document.getElementById(MODAL_ID)).toBeNull();
+    });
+
+    test('registers a command that opens it from the palette', async () => {
+        const command = registeredCommands().find((entry) => entry.name === 'Where the Gold Came From');
+        expect(command).toBeTruthy();
+
+        await command.run();
+        expect(document.getElementById(MODAL_ID)).toBeTruthy();
+    });
+
+    test('Escape closes it', async () => {
+        await goldSourcesPanel.openModal();
+        expect(document.getElementById(MODAL_ID)).toBeTruthy();
+
+        escape();
+        expect(document.getElementById(MODAL_ID)).toBeNull();
+    });
+
+    test('geometry is restored on reopen', async () => {
+        restoreGeometry.mockClear();
+
+        await goldSourcesPanel.openModal();
+
+        expect(restoreGeometry).toHaveBeenCalledWith(expect.anything(), 'goldSources', expect.any(Object));
+    });
+
+    test('reopening after a close reads fresh data rather than carrying over the last character’s', async () => {
+        collectGoldSourceInputs.mockResolvedValueOnce({ series: [{ t: D19, total: 1_000 }] });
+        await goldSourcesPanel.openModal();
+        expect(collectGoldSourceInputs).toHaveBeenCalledTimes(1);
+
+        // What a character switch does to it too: `networth/index.js` calls
+        // `closeModal()` on every switch, and this is the guard against the
+        // next character seeing the departed one's cached attribution
+        goldSourcesPanel.closeModal();
+
+        collectGoldSourceInputs.mockResolvedValueOnce({ series: [{ t: D20, total: 2_000 }] });
+        await goldSourcesPanel.openModal();
+        expect(collectGoldSourceInputs).toHaveBeenCalledTimes(2);
+
         goldSourcesPanel.closeModal();
     });
 });

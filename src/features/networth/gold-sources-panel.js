@@ -33,11 +33,13 @@
 
 import config from '../../core/config.js';
 import { networthFormatter } from '../../utils/formatters.js';
+import { createPanel, panelNote } from '../../utils/simple-panel.js';
+import { registerCommand } from '../../utils/command-registry.js';
 import { attributeGoldSources, SOURCE_KEYS, SOURCE_META, CATEGORY_KEYS, dayStart, localDayId } from './gold-sources.js';
 import { collectGoldSourceInputs } from './gold-sources-collect.js';
 import { buildNetworthCalendar, CALENDAR_WEEKS } from './networth-calendar.js';
 
-export const MODAL_ID = 'mwi-gold-sources-modal';
+export const MODAL_ID = 'toolasha-goldSources-panel';
 export const BUTTON_ID = 'mwi-gold-sources-btn';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -978,181 +980,310 @@ export function buildCalendarSection(series, options = {}, onSelectDay = null) {
     return section;
 }
 
-class GoldSourcesPanel {
-    constructor() {
-        this.modal = null;
-        this.activeWindow = 'week';
-        // Set when a calendar cell is clicked: the end of that local day, so the
-        // active window is read relative to the day chosen rather than to now.
-        // Null means "now", which is what every window button resets it to.
-        this.anchorTo = null;
-        // The attribution behind the panel currently on screen, so the copy
-        // button can format exactly what is drawn without rebuilding it.
-        this._lastAttribution = null;
-    }
+const PANEL_ID = 'goldSources';
+const ACCENT = '#eab308';
+// The figures here are all read once per load rather than kept live, and a
+// fast redraw would rebuild the calendar section from scratch on its own
+// timer and fold it back up under whoever had just opened it — see
+// `buildCalendarSection`, whose open/closed state lives in the DOM it draws
+// rather than up here. A long interval keeps that from being noticeable
+// without lifting the fold state out, which the bespoke modal this replaced
+// never needed to do because it never redrew itself on a timer at all.
+const REFRESH_MS = 10 * 60_000;
 
-    /**
-     * Open the panel, or close it if it is already open.
-     * @returns {Promise<void>}
-     */
-    async toggleModal() {
-        if (this.modal) {
-            this.closeModal();
-            return;
-        }
-        await this.openModal();
-    }
+/** Which window's data is on screen: `day`, `week` or `month` */
+let activeWindow = 'week';
+/**
+ * Set when a calendar cell is clicked: the end of that local day, so the
+ * active window is read relative to the day chosen rather than to now. Null
+ * means "now", which is what every window button resets it to.
+ */
+let anchorTo = null;
 
-    /**
-     * Build the attribution for the active window.
-     *
-     * The series comes back beside it because the calendar section covers eight
-     * weeks whatever window the rest of the panel is on, and re-reading the
-     * history for it would be a second pass over the same array.
-     *
-     * @returns {Promise<{attribution: Object, series: Array<Object>}>} The attribution and the snapshots behind it
-     */
-    async buildAttribution() {
-        const days = WINDOWS.find((entry) => entry.key === this.activeWindow)?.days || 7;
-        const to = Number.isFinite(this.anchorTo) ? this.anchorTo : Date.now();
-        // localDayId, not toISOString(): the ISO slice is the UTC date, and
-        // feeding a UTC id to a LOCAL dayStart put the window's start in the
-        // future for any evening west of Greenwich — an empty Day view
-        const from = dayStart(localDayId(to - (days - 1) * DAY_MS));
-        const inputs = await collectGoldSourceInputs();
-        return {
-            attribution: attributeGoldSources({ ...inputs, from, to }),
-            series: Array.isArray(inputs?.series) ? inputs.series : [],
-        };
-    }
+/** The attribution currently on screen, so the Copy button can format exactly what is drawn */
+let lastAttribution = null;
+/** The net worth snapshots behind it, for the calendar section */
+let lastSeries = [];
+/** Whether the last load attempt failed */
+let loadFailed = false;
 
-    /**
-     * Draw the modal.
-     * @returns {Promise<void>}
-     */
-    async openModal() {
-        if (this.modal) return;
+/** Bumped by `invalidate()` so a load already in flight for a superseded question is ignored when it lands */
+let fetchToken = 0;
+/** The load in flight, if any — `openModal` awaits this so opening still means "opened and drawn" */
+let loadingPromise = null;
 
-        const modal = document.createElement('div');
-        modal.id = MODAL_ID;
-        modal.style.cssText = `position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            width: min(640px, 94vw); max-height: 82vh; overflow-y: auto; padding: 12px 14px;
-            background: #12141c; border: 1px solid rgba(255,255,255,0.14); border-radius: 6px;
-            color: #e5e7eb; font-size: 12px; z-index: ${config.Z_FLOATING_PANEL || 1100};`;
-
-        const header = document.createElement('div');
-        header.style.cssText = 'display: flex; align-items: center; gap: 8px; margin-bottom: 8px;';
-        const title = document.createElement('h3');
-        title.textContent = Number.isFinite(this.anchorTo)
-            ? `Where the gold came from — ${localDayId(this.anchorTo)}`
-            : 'Where the gold came from';
-        title.style.cssText = 'margin: 0; flex: 1; font-size: 14px;';
-        header.appendChild(title);
-
-        if (Number.isFinite(this.anchorTo)) {
-            const today = document.createElement('button');
-            today.textContent = 'Back to today';
-            today.title =
-                'Drop the day picked from the calendar and go back to what the window buttons mean by default.';
-            today.style.cssText =
-                'background: none; border: 1px solid rgba(255,255,255,0.16); color: #9ca3af; ' +
-                'border-radius: 3px; padding: 3px 8px; cursor: pointer; font-size: 11px;';
-            today.addEventListener('click', async () => {
-                this.anchorTo = null;
-                this.closeModal();
-                await this.openModal();
-            });
-            header.appendChild(today);
-        }
-
-        const copyBtn = document.createElement('button');
-        copyBtn.id = 'mwi-gold-sources-copy';
-        copyBtn.textContent = 'Copy';
-        copyBtn.title = 'Copy this breakdown as text';
-        copyBtn.style.cssText =
-            'background: none; border: 1px solid rgba(255,255,255,0.16); color: #9ca3af; ' +
-            'border-radius: 3px; padding: 3px 8px; cursor: pointer; font-size: 11px;';
-        copyBtn.addEventListener('click', async () => {
-            const text = formatAttributionAsText(this._lastAttribution);
-            const original = copyBtn.textContent;
-            try {
-                await navigator.clipboard.writeText(text);
-                copyBtn.textContent = 'Copied!';
-            } catch (error) {
-                console.error('[GoldSources] Copy to clipboard failed:', error);
-                copyBtn.textContent = 'Copy failed';
-            }
-            setTimeout(() => {
-                copyBtn.textContent = original;
-            }, 1500);
-        });
-        header.appendChild(copyBtn);
-
-        const close = document.createElement('button');
-        close.textContent = '✕';
-        close.style.cssText = 'background: none; border: none; color: #9ca3af; cursor: pointer; font-size: 14px;';
-        close.addEventListener('click', () => this.closeModal());
-        header.appendChild(close);
-        modal.appendChild(header);
-
-        const rangeRow = document.createElement('div');
-        rangeRow.className = 'mwi-gold-sources-ranges';
-        rangeRow.style.cssText = 'display: flex; gap: 4px; margin-bottom: 8px;';
-        for (const window of WINDOWS) {
-            const button = document.createElement('button');
-            button.textContent = window.label;
-            button.dataset.window = window.key;
-            button.style.cssText = `padding: 3px 10px; font-size: 11px; cursor: pointer; border-radius: 3px;
-                border: 1px solid rgba(255,255,255,0.16); background: ${
-                    window.key === this.activeWindow ? 'rgba(34,197,94,0.18)' : 'transparent'
-                }; color: ${window.key === this.activeWindow ? '#22c55e' : '#9ca3af'};`;
-            button.addEventListener('click', async () => {
-                this.activeWindow = window.key;
-                // A window button is an explicit choice of "the current N days";
-                // it always overrides a day picked from the calendar
-                this.anchorTo = null;
-                this.closeModal();
-                await this.openModal();
-            });
-            rangeRow.appendChild(button);
-        }
-        modal.appendChild(rangeRow);
-
-        const bodyHolder = document.createElement('div');
-        bodyHolder.className = 'mwi-gold-sources-holder';
-        bodyHolder.textContent = 'Reading the recordings…';
-        modal.appendChild(bodyHolder);
-
-        document.body.appendChild(modal);
-        this.modal = modal;
-
-        try {
-            const { attribution, series } = await this.buildAttribution();
-            if (!this.modal) return;
-            this._lastAttribution = attribution;
-            bodyHolder.textContent = '';
-            const onSelectDay = async (dayId) => {
-                this.activeWindow = 'day';
-                // The end of that local day, so the "Day" window's own
-                // now-minus-(days-1) arithmetic lands on exactly that day
-                this.anchorTo = dayStart(dayId) + DAY_MS - 1;
-                this.closeModal();
-                await this.openModal();
-            };
-            bodyHolder.appendChild(buildPanelBody(attribution, { series, onSelectDay }));
-        } catch (error) {
-            console.error('[GoldSources] The panel could not be drawn:', error);
-            bodyHolder.textContent = 'The attribution could not be drawn.';
-        }
-    }
-
-    /** Take the modal down. */
-    closeModal() {
-        this.modal?.remove();
-        this.modal = null;
-        this._lastAttribution = null;
-    }
+/**
+ * Drop whatever is on screen and cancel any load in flight for it.
+ *
+ * Called whenever the question changes — a different window, a different
+ * anchored day, the panel closing, or a character switch — so the next draw
+ * asks it again rather than showing an answer to a question nobody is asking
+ * anymore.
+ */
+function invalidate() {
+    lastAttribution = null;
+    lastSeries = [];
+    loadFailed = false;
+    fetchToken += 1;
+    loadingPromise = null;
 }
 
-const goldSourcesPanel = new GoldSourcesPanel();
+/**
+ * Read the attribution for the active window, unless a load for it is already
+ * in flight.
+ *
+ * Fire-and-forget from `draw()`'s point of view — it calls this and moves on,
+ * and the panel redraws itself once the promise settles. `openModal` also
+ * awaits `loadingPromise` directly, so the historical "opened once drawn"
+ * contract still holds for callers — and tests — that want to wait for it.
+ *
+ * @returns {Promise<void>}
+ */
+function ensureLoaded() {
+    if (loadingPromise) return loadingPromise;
+    // Already answered (or already given up on) the question currently on
+    // screen — called again from `show()` on a panel `draw()` has already
+    // loaded, this must not start a second read for nothing
+    if (lastAttribution || loadFailed) return Promise.resolve();
+
+    const token = fetchToken;
+    loadingPromise = (async () => {
+        try {
+            const days = WINDOWS.find((entry) => entry.key === activeWindow)?.days || 7;
+            const to = Number.isFinite(anchorTo) ? anchorTo : Date.now();
+            // localDayId, not toISOString(): the ISO slice is the UTC date, and
+            // feeding a UTC id to a LOCAL dayStart put the window's start in the
+            // future for any evening west of Greenwich — an empty Day view
+            const from = dayStart(localDayId(to - (days - 1) * DAY_MS));
+            const inputs = await collectGoldSourceInputs();
+            // Superseded by a newer window/day/character while this was in
+            // flight — its answer is about a question nobody is asking anymore
+            if (token !== fetchToken) return;
+            lastAttribution = attributeGoldSources({ ...inputs, from, to });
+            lastSeries = Array.isArray(inputs?.series) ? inputs.series : [];
+        } catch (error) {
+            if (token !== fetchToken) return;
+            console.error('[GoldSources] The panel could not be drawn:', error);
+            loadFailed = true;
+        } finally {
+            if (token === fetchToken) loadingPromise = null;
+            goldSourcesPanel.render();
+        }
+    })();
+    return loadingPromise;
+}
+
+/**
+ * Switch to one of the window buttons. A named function rather than a closure
+ * built inside the buttons' loop, which `activeWindow`/`anchorTo` being
+ * reassigned elsewhere makes eslint's `no-loop-func` flag as unsafe even
+ * though each button's own `window.key` is captured correctly by `const`.
+ * @param {string} key - `WINDOWS[].key`
+ */
+function selectWindow(key) {
+    activeWindow = key;
+    // A window button is an explicit choice of "the current N days"; it
+    // always overrides a day picked from the calendar
+    anchorTo = null;
+    invalidate();
+    goldSourcesPanel.render();
+}
+
+/**
+ * Jump the whole panel to one day picked from the calendar.
+ * @param {string} dayId - `YYYY-MM-DD`
+ */
+function onSelectDay(dayId) {
+    activeWindow = 'day';
+    // The end of that local day, so the "Day" window's own now-minus-(days-1)
+    // arithmetic lands on exactly that day
+    anchorTo = dayStart(dayId) + DAY_MS - 1;
+    invalidate();
+    goldSourcesPanel.render();
+}
+
+/**
+ * The window buttons, the "back to today" escape hatch and the Copy button.
+ *
+ * Rebuilt on every draw, the same as every other control row drawn inside a
+ * `createPanel` body (see `combat-replay-check.js`'s Run/Forget row) — the
+ * panel's own header has no room to grow beyond a title and a close button.
+ *
+ * @param {HTMLElement} body - Where it goes
+ */
+function drawControls(body) {
+    const controls = document.createElement('div');
+    controls.className = 'mwi-gold-sources-controls';
+    Object.assign(controls.style, { display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' });
+
+    for (const window of WINDOWS) {
+        const button = document.createElement('button');
+        button.textContent = window.label;
+        button.dataset.window = window.key;
+        Object.assign(button.style, {
+            padding: '3px 10px',
+            fontSize: '11px',
+            cursor: 'pointer',
+            borderRadius: '3px',
+            border: '1px solid rgba(255,255,255,0.16)',
+            background: window.key === activeWindow ? 'rgba(234,179,8,0.18)' : 'transparent',
+            color: window.key === activeWindow ? ACCENT : '#9ca3af',
+        });
+        button.addEventListener('click', () => selectWindow(window.key));
+        controls.appendChild(button);
+    }
+
+    if (Number.isFinite(anchorTo)) {
+        const today = document.createElement('button');
+        today.textContent = 'Back to today';
+        today.title = 'Drop the day picked from the calendar and go back to what the window buttons mean by default.';
+        Object.assign(today.style, {
+            background: 'none',
+            border: '1px solid rgba(255,255,255,0.16)',
+            color: '#9ca3af',
+            borderRadius: '3px',
+            padding: '3px 8px',
+            cursor: 'pointer',
+            fontSize: '11px',
+        });
+        today.addEventListener('click', () => {
+            anchorTo = null;
+            invalidate();
+            goldSourcesPanel.render();
+        });
+        controls.appendChild(today);
+    }
+
+    const spacer = document.createElement('div');
+    spacer.style.flex = '1';
+    controls.appendChild(spacer);
+
+    const copyBtn = document.createElement('button');
+    copyBtn.id = 'mwi-gold-sources-copy';
+    copyBtn.textContent = 'Copy';
+    copyBtn.title = 'Copy this breakdown as text';
+    Object.assign(copyBtn.style, {
+        background: 'none',
+        border: '1px solid rgba(255,255,255,0.16)',
+        color: '#9ca3af',
+        borderRadius: '3px',
+        padding: '3px 8px',
+        cursor: 'pointer',
+        fontSize: '11px',
+    });
+    copyBtn.addEventListener('click', async () => {
+        const text = formatAttributionAsText(lastAttribution);
+        const original = copyBtn.textContent;
+        try {
+            await navigator.clipboard.writeText(text);
+            copyBtn.textContent = 'Copied!';
+        } catch (error) {
+            console.error('[GoldSources] Copy to clipboard failed:', error);
+            copyBtn.textContent = 'Copy failed';
+        }
+        setTimeout(() => {
+            copyBtn.textContent = original;
+        }, 1500);
+    });
+    controls.appendChild(copyBtn);
+
+    body.appendChild(controls);
+}
+
+/**
+ * Draw the panel body: the controls row, then whatever is on screen for the
+ * active window — the reading note, the failure note, or the attribution.
+ * @param {HTMLElement} body - The panel's body element
+ */
+function draw(body) {
+    goldSourcesPanel.setTitle(
+        Number.isFinite(anchorTo) ? `Where the gold came from — ${localDayId(anchorTo)}` : 'Where the gold came from'
+    );
+
+    drawControls(body);
+
+    if (loadFailed) {
+        body.appendChild(panelNote('The attribution could not be drawn.'));
+        return;
+    }
+    if (!lastAttribution) {
+        body.appendChild(panelNote('Reading the recordings…'));
+        ensureLoaded();
+        return;
+    }
+
+    body.appendChild(buildPanelBody(lastAttribution, { series: lastSeries, onSelectDay }));
+}
+
+/**
+ * The gold source attribution panel, on the same floating-panel shell every
+ * other panel in this script uses — dragging, resizing, remembered geometry,
+ * Escape-to-close and teardown on character switch, all for free.
+ */
+export const goldSourcesPanel = createPanel({
+    id: PANEL_ID,
+    title: 'Where the gold came from',
+    size: { width: 640, height: 560 },
+    accent: ACCENT,
+    refreshMs: REFRESH_MS,
+    draw,
+});
+
+const rawShow = goldSourcesPanel.show;
+const rawHide = goldSourcesPanel.hide;
+
+// `show`/`hide` are called from more places than the wrappers below: Escape
+// closes through its own registration, and a character switch hides and
+// reopens the panel through `reopenIfLeftOpen` — both straight through the
+// shell's own `api.hide`/`api.show`, never through `openModal`/`closeModal`.
+// Patching the shell's own methods, rather than only wrapping them here, is
+// what keeps every one of those paths loading fresh data for whoever the
+// panel is open for instead of carrying a stale or another character's
+// attribution across them.
+goldSourcesPanel.show = function show(...args) {
+    rawShow(...args);
+    ensureLoaded();
+};
+goldSourcesPanel.hide = function hide(...args) {
+    invalidate();
+    rawHide(...args);
+};
+
+/**
+ * Open the panel, or bring it to front — and wait for the first real draw,
+ * the way the bespoke modal this replaced always made its callers do.
+ * @returns {Promise<void>}
+ */
+goldSourcesPanel.openModal = async function openModal() {
+    goldSourcesPanel.show();
+    if (loadingPromise) await loadingPromise;
+};
+
+/** Close the panel, forgetting whatever was on screen. */
+goldSourcesPanel.closeModal = function closeModal() {
+    goldSourcesPanel.hide();
+};
+
+/**
+ * Open the panel, or close it if it is already open.
+ * @returns {Promise<void>}
+ */
+goldSourcesPanel.toggleModal = async function toggleModal() {
+    if (goldSourcesPanel.isOpen()) goldSourcesPanel.closeModal();
+    else await goldSourcesPanel.openModal();
+};
+
+// Module scope, like the 💰 button that has always been its only signpost:
+// the panel has no feature-registry lifecycle of its own — `networth`'s owns
+// the recorders behind the figures, not the panel — so there is no state in
+// which it is imported but the button unavailable. `when` mirrors the same
+// setting the button itself is drawn behind, so a switched-off feature does
+// not get a command that opens a panel with no gold sources feeding it.
+registerCommand({
+    name: 'Where the Gold Came From',
+    hint: 'Net worth change, split by source, day by day',
+    run: () => goldSourcesPanel.toggleModal(),
+    when: () => config.getSetting('networth_goldSources'),
+});
+
 export default goldSourcesPanel;
