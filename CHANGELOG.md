@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The Loot & XP Analytics panel opens again
+
+Reported: clicking the chart button in the Loot & XP Log gave "calculateTotalValue is not a function" instead of the pivot table. The panel was reaching for the wrong half of a module. Its own tests missed it because the stand-in they used had been written to match the panel rather than the module.
+
 ### The changelog now starts where you left off
 
 The What's New panel showed the same twelve entries to everyone, however long ago you last updated — so a busy release could have more changes than the panel could show. Releases now stamp an invisible marker into the changelog, the build ships everything back through the last two of them, and the panel shows only the entries newer than the build you were running. Nothing changes until the first marked release goes out.

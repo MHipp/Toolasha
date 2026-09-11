@@ -97,22 +97,30 @@ vi.mock('./loot-log-history.js', () => ({
 
 // The real one drags in the enhancement calculators and the market; what the
 // panel actually needs from it is four small methods
+// Shaped like the real module: the helpers live on the CLASS, and the default
+// export is the feature descriptor. This mock used to put them on `default`,
+// which is what the panel wrongly imported — so the mock agreed with the bug
+// and the suite stayed green while the panel threw
+// "calculateTotalValue is not a function" the moment it was opened. The
+// export-shape test at the bottom of this file is what stops that recurring.
 vi.mock('./loot-log-stats.js', () => ({
-    default: {
+    LootLogStats: class {
         // Two coins per item at ask, one at bid, so a row's Value is predictable
-        calculateTotalValue: (drops) => {
+        calculateTotalValue = (drops) => {
             const count = Object.values(drops || {}).reduce((sum, n) => sum + n, 0);
             return { askTotal: count * world.askPerDrop, bidTotal: count };
-        },
-        getActionName: (hrid) => hrid.split('/').pop().replace(/_/g, ' '),
-        getActionCategory: (hrid) => hrid.split('/')[2] || null,
-        buildItemBreakdown: (drops) => {
+        };
+        getActionName = (hrid) => hrid.split('/').pop().replace(/_/g, ' ');
+        getActionCategory = (hrid) => hrid.split('/')[2] || null;
+        buildItemBreakdown = (drops) => {
             const div = document.createElement('div');
             div.className = 'breakdown';
             div.textContent = Object.keys(drops || {}).join(',');
             return div;
-        },
+        };
     },
+    // The real default export: the feature descriptor, with none of the above.
+    default: { name: 'Loot Log Statistics', initialize: async () => ({}), cleanup: () => {} },
 }));
 
 const { default: dataManager } = await import('../../core/data-manager.js');

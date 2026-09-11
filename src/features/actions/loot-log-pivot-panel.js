@@ -41,7 +41,16 @@ import { formatKMB, numberFormatter, formatDateTime } from '../../utils/formatte
 import { createPanel, panelNote } from '../../utils/simple-panel.js';
 import { spriteIcon, skillIcon, ROW_COLORS, shortDuration } from '../../utils/overlay-format.js';
 import lootLogHistory from './loot-log-history.js';
-import lootLogStats from './loot-log-stats.js';
+// The class, not the default export: `loot-log-stats.js` default-exports the
+// feature descriptor the registry wants ({name, initialize, cleanup}), which has
+// none of these methods on it — calling one gave "calculateTotalValue is not a
+// function" the moment this panel was opened. The four helpers used here read
+// dataManager and the expected-value calculator and touch no instance state, and
+// the constructor only sets fields, so a formatting-only instance is safe and
+// needs no lifecycle of its own.
+import { LootLogStats } from './loot-log-stats.js';
+
+const lootLogStats = new LootLogStats();
 import { mergeCurrentAndHistoricalEntries, aggregatePivotRows, computeRowRates } from './loot-log-analytics.js';
 
 /** Panel id, which is also its geometry key */
