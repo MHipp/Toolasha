@@ -67,6 +67,7 @@
 import dataManager from '../../core/data-manager.js';
 import storage from '../../core/storage.js';
 import { characterKey } from '../../utils/character-key.js';
+import { captureOwner, noteTeardown, stillOurs } from '../../utils/init-ownership.js';
 import { navigateToMarketplace } from '../../utils/marketplace-tabs.js';
 import { openPlayerProfile, VALID_PLAYER_NAME_RE } from '../../utils/profile-command.js';
 
@@ -615,6 +616,18 @@ class ChatHistoryPersistence {
         if (!this.enabled) return {};
         if (this.loadPromise) return this.loadPromise;
 
+        // Whose read this is, fixed before it starts. `reset()` — the teardown
+        // `chat-history-extender.disable()` runs on a character switch — nulls
+        // `tabs`, `snapshot` and `loadPromise`, but it cannot cancel a read
+        // already in flight with IndexedDB. Resumed afterwards, the tail below
+        // put the DEPARTING character's messages back into `this.tabs`, and
+        // `enable()` on the arriving character's re-initialise does not clear
+        // them: their own load then folded the leftover in as "recorded while
+        // the read was in flight", and the first eviction wrote the pair under
+        // `characterKey()`, which by then names them. One character's chat,
+        // whispers included, rendered in another's tabs and written over their
+        // record for good.
+        const ticket = captureOwner(this);
         this.loadPromise = (async () => {
             let record = null;
             try {
@@ -622,6 +635,11 @@ class ChatHistoryPersistence {
             } catch (error) {
                 console.error('[ChatHistoryPersistence] Could not read stored chat history:', error);
             }
+            // Before the first thing this tail touches. The generation is what
+            // catches the switch: `disable()` runs on `character_switching`,
+            // which fires before `getCurrentCharacterId()` moves, so an id
+            // comparison alone would still read as this character's.
+            if (!stillOurs(ticket)) return {};
             // A record from a version we do not understand is discarded rather
             // than half-read; the cost is one session's history.
             const stored = record && record.v === RECORD_VERSION && record.tabs ? record.tabs : {};
@@ -704,6 +722,9 @@ class ChatHistoryPersistence {
 
     /** Drop the session's state. Storage is left alone — a disable is not a wipe. */
     reset() {
+        // First, and before the clearing itself: a read still in flight has to
+        // be refused even if something below throws part-way.
+        noteTeardown(this);
         if (this.writeTimer) {
             clearTimeout(this.writeTimer);
             this.writeTimer = null;
