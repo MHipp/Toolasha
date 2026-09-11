@@ -1983,8 +1983,19 @@ class SettingsUI {
                 panel.classList.add('TabPanel_hidden__26UM3');
             });
 
-            // Deactivate all buttons
-            const allButtons = document.querySelectorAll('button[role="tab"]');
+            // Deactivate only the buttons in this tab's own tab list. The game
+            // renders several independent MUI tab bars at once (chat channels,
+            // the top-right panel, the actions panel, ...); a document-wide
+            // query here deselects all of them, but only this settings panel's
+            // target gets re-selected below. Those other tab bars are
+            // React-controlled and their React state never changed, so React
+            // never repaints the class back in — the tab stays visibly
+            // unselected until something unrelated remounts it. Deriving the
+            // list from the target button's own tablist (rather than unioning
+            // `existingTabs` with `tabButton`) also covers a tab the game adds
+            // to this settings panel later, after this closure was created.
+            const tabList = targetButton.closest('[role="tablist"]') || targetButton.parentElement;
+            const allButtons = tabList.querySelectorAll('button[role="tab"]');
             allButtons.forEach((btn) => {
                 btn.setAttribute('aria-selected', 'false');
                 btn.setAttribute('tabindex', '-1');

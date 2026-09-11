@@ -918,6 +918,84 @@ describe('injecting the tab into a panel React may take away', () => {
     });
 });
 
+describe("switching tabs only touches this panel's own tab list", () => {
+    /**
+     * The game's settings panel, with one existing (non-Toolasha) tab already
+     * selected, plus a matching panel so the click handler's index lookup
+     * resolves.
+     * @returns {{tabs: HTMLElement, panels: HTMLElement, existingTab: HTMLElement}}
+     */
+    function gameSettingsPanelWithExistingTab() {
+        const host = document.createElement('div');
+        host.className = 'SettingsPanel_tabsComponentContainer__abc';
+        const tabs = document.createElement('div');
+        tabs.className = 'MuiTabs-flexContainer';
+        tabs.setAttribute('role', 'tablist');
+
+        const existingTab = document.createElement('button');
+        existingTab.setAttribute('role', 'tab');
+        existingTab.setAttribute('aria-selected', 'true');
+        existingTab.setAttribute('tabindex', '0');
+        existingTab.classList.add('Mui-selected');
+        existingTab.textContent = 'Inventory';
+        tabs.appendChild(existingTab);
+
+        const panels = document.createElement('div');
+        panels.className = 'TabsComponent_tabPanelsContainer__def';
+        const existingPanel = document.createElement('div');
+        existingPanel.className = 'TabPanel_tabPanel__existing';
+        panels.appendChild(existingPanel);
+
+        host.append(tabs, panels);
+        document.body.appendChild(host);
+        return { tabs, panels, existingTab };
+    }
+
+    /** An unrelated MUI tab bar elsewhere on the page (e.g. a chat channel bar). */
+    function unrelatedTabBar() {
+        const bar = document.createElement('div');
+        bar.className = 'MuiTabs-flexContainer';
+        bar.setAttribute('role', 'tablist');
+
+        const selectedTab = document.createElement('button');
+        selectedTab.setAttribute('role', 'tab');
+        selectedTab.setAttribute('aria-selected', 'true');
+        selectedTab.setAttribute('tabindex', '0');
+        selectedTab.classList.add('Mui-selected');
+        selectedTab.textContent = 'General';
+        bar.appendChild(selectedTab);
+
+        document.body.appendChild(bar);
+        return { bar, selectedTab };
+    }
+
+    test('clicking the Toolasha tab leaves other tab bars alone', async () => {
+        const { tabs, existingTab } = gameSettingsPanelWithExistingTab();
+        const { selectedTab } = unrelatedTabBar();
+
+        await settingsUI.injectSettingsTab();
+
+        const toolashaTab = tabs.querySelector('#toolasha-settings-tab');
+        expect(toolashaTab).not.toBeNull();
+
+        toolashaTab.click();
+
+        // The settings panel's own tabs moved correctly.
+        expect(toolashaTab.getAttribute('aria-selected')).toBe('true');
+        expect(toolashaTab.classList.contains('Mui-selected')).toBe(true);
+        expect(existingTab.getAttribute('aria-selected')).toBe('false');
+        expect(existingTab.getAttribute('tabindex')).toBe('-1');
+        expect(existingTab.classList.contains('Mui-selected')).toBe(false);
+
+        // An unrelated tab bar elsewhere in the document (chat channels, the
+        // top-right panel, ...) is untouched: its React state never changed,
+        // so if this code stripped its class the tab would stay unpainted.
+        expect(selectedTab.getAttribute('aria-selected')).toBe('true');
+        expect(selectedTab.getAttribute('tabindex')).toBe('0');
+        expect(selectedTab.classList.contains('Mui-selected')).toBe(true);
+    });
+});
+
 describe('tearing the panel down leaves the settings alone', () => {
     // `cleanupDOM` runs on `character_initialized`, which a plain reconnect or
     // re-login to the same character fires with no switch events behind it —
