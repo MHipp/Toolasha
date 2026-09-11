@@ -18,12 +18,24 @@
  * `.mwi-interactive` too, because a pointer cursor over a dead link is worse
  * than a plain one.
  *
- * Player names travel with the message instead: the name attribute and the
- * class that styles it are both kept, so the delegated listener in
- * `chat-profile-link.js` works on a restored message without waiting for
- * anything to re-decorate it. This used to claim that decorator would re-link
- * them wherever they appeared; it does not, because it skips any node that
- * already carries its class — which a restored one does.
+ * Player names this script itself decorated travel with the message: the name
+ * attribute and the class that styles it are both kept, so the delegated
+ * listener in `chat-profile-link.js` works on a restored message without
+ * waiting for anything to re-decorate it. This used to claim that decorator
+ * would re-link them wherever they appeared; it does not, because it skips any
+ * node that already carries its class — which a restored one does.
+ *
+ * The *sender* name of an ordinary chat line is the game's own element
+ * (`ChatMessage_name ChatMessage_clickable`), carries no attribute of ours, and
+ * is clickable only through a React handler — so it dies with the session
+ * exactly like an item link does, and is re-wired here the same way. The name
+ * is read back out of the `CharacterName_name` text the markup already carries
+ * rather than from anything saved, which is what lets messages stored long
+ * before this existed come back clickable with no migration. A sender whose
+ * name cannot be read or does not look like a player name loses
+ * `ChatMessage_clickable` as well, for the same reason an unresolvable item
+ * link loses `.mwi-interactive`: on a restored node that class is a promise
+ * nothing can keep.
  *
  * ## Why it never leaves the device
  *
@@ -56,6 +68,7 @@ import dataManager from '../../core/data-manager.js';
 import storage from '../../core/storage.js';
 import { characterKey } from '../../utils/character-key.js';
 import { navigateToMarketplace } from '../../utils/marketplace-tabs.js';
+import { openPlayerProfile, VALID_PLAYER_NAME_RE } from '../../utils/profile-command.js';
 
 /**
  * Unscoped storage key. The `toolasha_local_` prefix is the load-bearing part:
@@ -296,6 +309,77 @@ function itemHridFrom(container) {
     return slug ? `/items/${slug}` : null;
 }
 
+/** The game's sender-name element on a chat line — the one it makes clickable. */
+const SENDER_SELECTOR = '[class*="ChatMessage_name"]';
+
+/** The name itself, inside the sender element; a rank badge or icon sits beside it. */
+const CHARACTER_NAME_SELECTOR = '[class*="CharacterName_name"]';
+
+/**
+ * The class prefix behind the sender's pointer cursor. A CSS module, so the
+ * live class is `ChatMessage_clickable__<hash>` and only the prefix is stable.
+ */
+const CLICKABLE_CLASS_PREFIX = 'ChatMessage_clickable';
+
+/**
+ * The player name a restored sender element shows.
+ *
+ * Read from the markup, never from a stored attribute: `CharacterName_name`'s
+ * text is the name and nothing strips it, so this works on records written
+ * before any of this code existed. `data-name` is preferred where the game
+ * wrote one (it does on some surfaces) because it is the name without whatever
+ * decoration sits around the text.
+ *
+ * @param {Element} sender - A `ChatMessage_name` element
+ * @returns {string} The name, or '' when the markup does not yield one
+ */
+function senderNameFrom(sender) {
+    const inner = sender.querySelector(CHARACTER_NAME_SELECTOR) || sender;
+    const raw = inner.getAttribute?.('data-name') || inner.textContent || '';
+    // The fallback path can pick up the separator the game draws after the name.
+    return raw.trim().replace(/:$/, '').trim();
+}
+
+/**
+ * Re-wire the sender name of a restored message to this script's own profile open.
+ *
+ * The live element's clickability is a React handler, which no serialization can
+ * carry — so a restored sender is a name styled as a link with nothing behind it.
+ * Marking is an attribute rather than a listener, so a node re-processed (or
+ * cloned into another buffer) cannot accumulate handlers.
+ *
+ * @param {Element} el - A restored message element
+ * @returns {number} How many sender names were made clickable
+ */
+function rewireRestoredSender(el) {
+    let senders;
+    try {
+        senders = el.querySelectorAll(SENDER_SELECTOR);
+    } catch {
+        return 0;
+    }
+
+    let wired = 0;
+    for (const sender of senders) {
+        try {
+            const name = senderNameFrom(sender);
+            if (name && VALID_PLAYER_NAME_RE.test(name)) {
+                sender.dataset.mwiRestoredSender = name;
+                wired += 1;
+                continue;
+            }
+            // Nothing can honour the click, so nothing may advertise one.
+            delete sender.dataset.mwiRestoredSender;
+            for (const cls of [...sender.classList]) {
+                if (cls.startsWith(CLICKABLE_CLASS_PREFIX)) sender.classList.remove(cls);
+            }
+        } catch (error) {
+            console.error('[ChatHistoryPersistence] Could not re-wire a sender name:', error);
+        }
+    }
+    return wired;
+}
+
 /**
  * Re-wire the clickable parts of a restored message.
  *
@@ -307,17 +391,17 @@ function itemHridFrom(container) {
  * given a cursor it cannot honour.
  *
  * @param {Element} el - A restored message element, not yet in the document
- * @returns {number} How many links were made clickable
+ * @returns {number} How many links were made clickable, sender name included
  */
 export function rewireRestoredMessage(el) {
     if (!el) return 0;
 
-    let wired = 0;
+    let wired = rewireRestoredSender(el);
     let containers;
     try {
         containers = el.querySelectorAll('[class*="Item_itemContainer"]');
     } catch {
-        return 0;
+        return wired;
     }
 
     for (const container of containers) {
@@ -352,9 +436,26 @@ export function rewireRestoredMessage(el) {
 /**
  * Handle a click inside a restored message. Attached once per buffer by
  * `chat-history-extender.js`; a click on anything not re-wired does nothing.
+ *
+ * The sender name goes through `openPlayerProfile` — the same helper the
+ * delegated listener in `chat-profile-link.js` calls, so the click behaviour is
+ * shared rather than duplicated. What is deliberately *not* reused is that
+ * module's `markAsProfileLink`: it recolours the name to this script's link
+ * blue (restored lines would stop matching live ones) and it is gated on
+ * `chat_profileLink`, which turns off decorating names the game left plain.
+ * Putting back a sender the game itself made clickable is not that feature, so
+ * it is not that feature's setting to switch off; the history buffer's own
+ * setting already gates all of this.
+ *
  * @param {Event} event
  */
 export function handleRestoredClick(event) {
+    const sender = event.target?.closest?.('[data-mwi-restored-sender]');
+    if (sender) {
+        openPlayerProfile(sender.dataset.mwiRestoredSender, { logPrefix: 'ChatHistoryPersistence' });
+        return;
+    }
+
     const target = event.target?.closest?.('[data-mwi-restored-item]');
     if (!target) return;
 

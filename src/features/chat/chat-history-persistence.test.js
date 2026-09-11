@@ -74,11 +74,21 @@ vi.mock('../../core/data-manager.js', () => ({
 const navigateToMarketplace = vi.hoisted(() => vi.fn());
 vi.mock('../../utils/marketplace-tabs.js', () => ({ navigateToMarketplace }));
 
+const openPlayerProfile = vi.hoisted(() => vi.fn());
+vi.mock('../../utils/profile-command.js', () => ({
+    openPlayerProfile,
+    fillProfileCommand: vi.fn(),
+    findChatInput: vi.fn(() => null),
+    getGameCore: vi.fn(() => null),
+    VALID_PLAYER_NAME_RE: /^[A-Za-z0-9_]+$/,
+}));
+
 import chatHistoryExtender, { chatTabKey } from './chat-history-extender.js';
 import chatHistoryPersistence, {
     applyCaps,
     CHAT_HISTORY_KEY_BASE,
     CHAT_HISTORY_STORE,
+    handleRestoredClick,
     MAX_MESSAGES_PER_TAB,
     MAX_TOTAL_CHARS,
     parseStoredMessage,
@@ -634,5 +644,136 @@ describe('a restored message keeps its clickable player name', () => {
 
         expect(message.dataset.mwiUid).toBeUndefined();
         expect(message.dataset.mwiHydrated).toBeUndefined();
+    });
+});
+
+/**
+ * The sender name of a restored line.
+ *
+ * A live chat line's sender is the game's own `ChatMessage_name
+ * ChatMessage_clickable` element, made clickable by a React handler and
+ * carrying no attribute of ours. Handlers do not serialize, so a restored line
+ * showed a name styled exactly like a link with nothing at all behind it —
+ * item links were re-wired, these were not, and `chat-profile-link.js` skips
+ * them by design (it decorates announcement names, not the game's own sender).
+ */
+describe('a restored message’s sender name opens the profile', () => {
+    beforeEach(() => {
+        settingValues.chatHistoryExtender = true;
+        settingValues.chatHistoryExtender_maxHistory = null;
+        observerReady.handlers = [];
+        observerReady.domReady = true;
+        db.settings = {};
+        db.quota = false;
+        db.writes = 0;
+        openPlayerProfile.mockClear();
+    });
+
+    afterEach(() => {
+        chatHistoryExtender.disable();
+        chatHistoryPersistence.reset();
+        document.body.innerHTML = '';
+    });
+
+    /**
+     * The game's own markup for a player chat line — no Toolasha attributes
+     * anywhere, which is also exactly what a record written before this change
+     * holds.
+     * @param {string} name - Sender name, as the markup shows it
+     * @returns {string} HTML
+     */
+    const senderHTML = (name) =>
+        '<div class="ChatMessage_chatMessage__2wc4V">' +
+        '<span>[1/2 10:00:00] </span>' +
+        '<span class="ChatMessage_name__1UZ8t ChatMessage_clickable__3Nt2s">' +
+        '<div class="CharacterName_characterName__2FqyZ">' +
+        `<div class="CharacterName_name__1amXp"><span>${name}</span></div></div></span>` +
+        '<span>: hello</span></div>';
+
+    /** The same thing as a live element, for the save side of the round trip. */
+    const senderMessage = (name) => {
+        const host = document.createElement('div');
+        host.innerHTML = senderHTML(name);
+        return host.firstElementChild;
+    };
+
+    const senderOf = (root) => root.querySelector('[class*="ChatMessage_name"]');
+
+    test('a name saved this session comes back clickable', async () => {
+        const [container] = buildChat(['General']);
+        const message = senderMessage('Spice');
+        container.appendChild(message);
+
+        chatHistoryExtender.initialize();
+        await settle();
+        await evict(container, message);
+        await chatHistoryPersistence.flush();
+
+        chatHistoryExtender.disable();
+        chatHistoryPersistence.reset();
+        const [reloaded] = buildChat(['General']);
+        chatHistoryExtender.initialize();
+        await settle();
+
+        const sender = senderOf(reloaded.querySelector('.mwi-history-buffer'));
+        expect(sender, 'the sender element survives the round trip').not.toBeNull();
+
+        sender.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        expect(openPlayerProfile).toHaveBeenCalledWith('Spice', expect.anything());
+    });
+
+    test('a message stored before this change works too — the name is re-read from the markup', async () => {
+        // Written by hand rather than by the serializer: this is a record from
+        // an older version, carrying no attribute this code could have put
+        // there. It still restores clickable, which is what makes the backfill
+        // free — no migration, no record-version bump.
+        db.settings[STORAGE_KEY] = { v: 1, savedAt: 1, tabs: { 'tab:General': [senderHTML('Millennium')] } };
+        expect(db.settings[STORAGE_KEY].tabs['tab:General'][0]).not.toContain('data-mwi');
+
+        const [container] = buildChat(['General']);
+        chatHistoryExtender.initialize();
+        await settle();
+
+        const sender = senderOf(container.querySelector('.mwi-history-buffer'));
+        expect(sender.dataset.mwiRestoredSender).toBe('Millennium');
+
+        sender.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        expect(openPlayerProfile).toHaveBeenCalledWith('Millennium', expect.anything());
+    });
+
+    test('a name that cannot be resolved is left inert, not falsely styled', () => {
+        // A game update that stops writing the inner name element, and a name
+        // that is not a name. Either way the pointer cursor has to go: on a
+        // restored node `ChatMessage_clickable` is a promise nothing can keep.
+        const empty = parseStoredMessage(
+            '<div class="ChatMessage_chatMessage__2wc4V">' +
+                '<span class="ChatMessage_name__1UZ8t ChatMessage_clickable__3Nt2s"></span></div>'
+        );
+        const bogus = parseStoredMessage(senderHTML('not a name'));
+
+        for (const el of [empty, bogus]) {
+            expect(() => rewireRestoredMessage(el)).not.toThrow();
+            expect(rewireRestoredMessage(el)).toBe(0);
+            const sender = senderOf(el);
+            expect(sender.dataset.mwiRestoredSender).toBeUndefined();
+            expect(sender.className).not.toContain('ChatMessage_clickable');
+            // The line still reads as text, which is the whole requirement
+            expect(el.textContent).toBeDefined();
+        }
+    });
+
+    test('re-processing a restored node does not wire it twice', () => {
+        const el = parseStoredMessage(senderHTML('Spice'));
+        expect(rewireRestoredMessage(el)).toBe(1);
+        expect(rewireRestoredMessage(el)).toBe(1);
+
+        // An attribute, not a listener — so there is exactly one of it and a
+        // click cannot open two profiles.
+        expect(el.querySelectorAll('[data-mwi-restored-sender]')).toHaveLength(1);
+        document.body.appendChild(el);
+        document.body.addEventListener('click', handleRestoredClick, true);
+        senderOf(el).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        document.body.removeEventListener('click', handleRestoredClick, true);
+        expect(openPlayerProfile).toHaveBeenCalledTimes(1);
     });
 });

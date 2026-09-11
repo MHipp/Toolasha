@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Clicking a sender's name in restored chat opens their profile
+
+The name at the start of a chat line is the game's own link, and the game's click handler cannot be saved — so restored and extended history showed it looking clickable and did nothing. It now opens the profile through Toolasha instead, and because the name is re-read from the message itself, chat already saved before this works too. A name that cannot be read stops pretending to be a link.
+
 ### Player names in restored chat messages are clickable again
 
 Reported: clicking a name in a saved or extended chat message did nothing. Saving stripped the name the click needs while keeping the styling that makes it look like a link, so it stayed blue and gave a pointer cursor and then ignored you. Both now travel together.
