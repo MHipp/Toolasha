@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { stampChangelog, hasMarker, markerFor } from './stamp-changelog-version.js';
-import { sliceForkChangelog } from './changelog-slice.js';
+import { markerVersions } from '../src/features/settings/changelog-markers.js';
 
 const CHANGELOG = `# Changelog
 
@@ -101,12 +101,30 @@ describe('the real CHANGELOG.md', () => {
         expect(marker).toBeLessThan(text.indexOf('###'));
     });
 
-    it('a stamped changelog still slices to the same number of entries', () => {
-        const before = sliceForkChangelog(real);
-        const after = sliceForkChangelog(stampChangelog(real, '9.9.9').text);
-        expect(after.shownEntries).toBe(before.shownEntries);
-        expect(after.totalEntries).toBe(before.totalEntries);
-        expect(after.omittedEntries).toBe(before.omittedEntries);
-        expect(after.markerVersions).toEqual(['9.9.9']);
+    it('puts the new marker first and keeps every marker that was already there, in order', () => {
+        // A pin to today's single real marker (['9.9.9']) breaks on the next
+        // release, once a second marker exists — see the note below. Reading
+        // the raw markers with `markerVersions` (not through the slice, which
+        // only reports markers that happen to fall inside its shown entries)
+        // is what `stampChangelog`'s own contract promises: it only ever
+        // inserts one line, directly under the heading, and never touches any
+        // other marker already in the file.
+        const before = markerVersions(real);
+        const after = markerVersions(stampChangelog(real, '9.9.9').text);
+        expect(after).toEqual(['9.9.9', ...before]);
+
+        // Deliberately not asserted here: that `sliceForkChangelog`'s entry
+        // counts are unchanged by the stamp. That held for today's real
+        // changelog (a single marker, nothing between it and the previous
+        // release) but is not a general invariant of stamping, so pinning it
+        // would only fail again a couple of releases from now for the same
+        // reason the four tests this change fixes did. Once
+        // `DEFAULT_RELEASES_BACK` (2) or more prior releases already have
+        // entries between their markers, adding one more marker — even with
+        // no new entries of its own — shifts which stamped marker
+        // `entriesToCover` in changelog-slice.js measures against, and the
+        // counts change. Confirmed directly: a changelog with 3 markers
+        // holding [6, 7, 8] entries, stamped with a 4th that adds nothing new
+        // above it, moves shownEntries from 13 to 12 (the floor).
     });
 });

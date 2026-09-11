@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'vitest';
+import { describe, test, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -9,6 +9,8 @@ import {
     DEFAULT_MAX_ENTRIES,
     DEFAULT_MAX_CHARS,
 } from './changelog-slice.js';
+import { stampChangelog, markerFor } from './stamp-changelog-version.js';
+import { compareVersions } from '../src/utils/compare-versions.js';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -137,12 +139,61 @@ describe('sliceForkChangelog', () => {
         expect(/[.!?)`”]\s*$/.test(result.text.trim())).toBe(true);
         if (result.omittedEntries > 0) expect(result.text).toContain('not shown here');
     });
+});
 
-    test('the real CHANGELOG.md has no markers yet, so it ships exactly the floor', () => {
-        const changelog = readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf-8');
+/**
+ * The real changelog is not a fixed fixture: a release stamps a new marker
+ * into it every day, so a test pinned to today's exact marker count goes red
+ * on the next release (as happened when 3.48.0 became the first marked one).
+ * These instead check invariants the code documents, at three points in the
+ * changelog's life: before any release ever stamped a marker, today (one
+ * marker), and one release from now (a second, newer marker with a new entry
+ * shipped under it). The last two are built with the modules' own helpers
+ * rather than hand-typed markdown, so they track the real marker format
+ * instead of a guess at it.
+ */
+describe('the real CHANGELOG.md across release states', () => {
+    const real = readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf-8');
+
+    const states = {
+        'no markers': real.replace(/^<!--\s*shipped in\s+[\d.]+\s*-->\n\n/m, ''),
+        'one marker (today)': real,
+        'two markers (one release from now)': (() => {
+            const stamped = stampChangelog(real, '9.9.9').text;
+            return stamped.replace(
+                markerFor('9.9.9'),
+                `${markerFor('9.9.9')}\n\n### Something new for 9.9.9\n\nBody text.`
+            );
+        })(),
+    };
+
+    test.each(Object.entries(states))('%s: markers are well-formed semver, newest first', (_label, changelog) => {
         const result = sliceForkChangelog(changelog);
-        expect(result.markerVersions).toEqual([]);
-        expect(result.shownEntries).toBe(DEFAULT_MIN_ENTRIES);
+        for (const version of result.markerVersions) expect(version).toMatch(/^\d+\.\d+\.\d+$/);
+        const descending = [...result.markerVersions].sort(compareVersions).reverse();
+        expect(result.markerVersions).toEqual(descending);
+    });
+
+    test.each(Object.entries(states))('%s: ships within the documented bounds', (_label, changelog) => {
+        const result = sliceForkChangelog(changelog);
+        // Fewer than two markers: no release boundary to slice on, so the floor
+        // answers exactly (`entriesToCover` returns 0, per changelog-slice.js).
+        if (result.markerVersions.length < 2) {
+            expect(result.shownEntries).toBe(DEFAULT_MIN_ENTRIES);
+        } else {
+            expect(result.shownEntries).toBeGreaterThanOrEqual(DEFAULT_MIN_ENTRIES);
+            expect(result.shownEntries).toBeLessThanOrEqual(DEFAULT_MAX_ENTRIES);
+        }
+        expect(result.text.length).toBeLessThanOrEqual(DEFAULT_MAX_CHARS);
+    });
+
+    it('never marks the real changelog with a version newer than package.json ships', () => {
+        // Only the untouched real file — the synthetic "one release from now"
+        // state above deliberately stamps a version ahead of package.json.
+        const pkgVersion = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf-8')).version;
+        for (const version of sliceForkChangelog(real).markerVersions) {
+            expect(compareVersions(version, pkgVersion)).toBeLessThanOrEqual(0);
+        }
     });
 });
 

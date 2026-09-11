@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { filterChangelogSince, markerVersions, stripMarkers, markerFor, omissionLine } from './changelog-markers.js';
 import { sliceForkChangelog, DEFAULT_MIN_ENTRIES } from '../../../scripts/changelog-slice.js';
+import { stampChangelog } from '../../../scripts/stamp-changelog-version.js';
 
 const NOTE = '4 more changes are not shown here — the full list is in CHANGELOG.md on GitHub.';
 
@@ -232,24 +233,75 @@ describe('build and run together', () => {
     });
 });
 
-describe('against the real CHANGELOG.md, which has no markers yet', () => {
+describe('against the real CHANGELOG.md, across release states', () => {
     const real = readFileSync(new URL('../../../CHANGELOG.md', import.meta.url), 'utf8');
-    const slice = sliceForkChangelog(real);
 
-    it('ships no markers today, and so ships the same entries it always did', () => {
-        expect(slice.markerVersions).toEqual([]);
-        expect(slice.shownEntries).toBe(DEFAULT_MIN_ENTRIES);
-    });
+    /**
+     * Three points in the changelog's life: before any release ever stamped a
+     * marker, today (one marker), and one release from now (a second, newer
+     * marker with a new entry shipped under it). A test pinned to today's exact
+     * marker count goes red on the next release — this is what happened when
+     * 3.48.0 became the first marked one — so these check the documented
+     * contract instead, at all three points. Built with the modules' own
+     * helpers, not hand-typed markdown, so they track the real marker format.
+     */
+    const states = {
+        'no markers': sliceForkChangelog(stripMarkers(real)),
+        'one marker (today)': sliceForkChangelog(real),
+        'two markers (one release from now)': sliceForkChangelog(
+            stampChangelog(real, '9.9.9').text.replace(
+                markerFor('9.9.9'),
+                `${markerFor('9.9.9')}\n\n### Something new for 9.9.9\n\nBody text.`
+            )
+        ),
+    };
 
-    it('draws exactly what it draws today, whatever version the player stored', () => {
-        for (const since of [null, '0.0.1', '3.46.0', '3.47.0', '99.0.0']) {
-            const result = filterChangelogSince(slice.text, since);
-            expect(result.filtered).toBe(false);
-            expect(result.text).toBe(slice.text);
+    it('ships exactly the floor while there are fewer than two markers', () => {
+        for (const [label, slice] of Object.entries(states)) {
+            if (slice.markerVersions.length >= 2) continue;
+            expect(slice.shownEntries, label).toBe(DEFAULT_MIN_ENTRIES);
         }
     });
 
-    it('and once a release stamps one, the older entries drop out', () => {
+    it.each(Object.entries(states))(
+        'falls back to the whole marker-stripped slice for a first run (%s)',
+        (_label, slice) => {
+            for (const since of [null, undefined, '']) {
+                const result = filterChangelogSince(slice.text, since);
+                expect(result.filtered).toBe(false);
+                expect(result.text).toBe(stripMarkers(slice.text));
+            }
+        }
+    );
+
+    it.each(Object.entries(states).filter(([, slice]) => slice.markerVersions.length > 0))(
+        'falls back to the whole marker-stripped slice when nothing is newer than the newest marker (%s)',
+        (_label, slice) => {
+            const result = filterChangelogSince(slice.text, slice.markerVersions[0]);
+            expect(result.filtered).toBe(false);
+            expect(result.text).toBe(stripMarkers(slice.text));
+        }
+    );
+
+    it.each(Object.entries(states).filter(([, slice]) => slice.markerVersions.length > 0))(
+        'still falls back for a build older than every marker, but rewords the omission line (%s)',
+        (_label, slice) => {
+            const result = filterChangelogSince(slice.text, '0.0.1');
+            expect(result.filtered).toBe(false);
+            // Documented as a different case from the plain fallbacks above: all
+            // of the slice is new to this reader, and so is some of what it left
+            // out, so the omission line says that rather than staying silent
+            // about it — the text is NOT simply the marker-stripped slice.
+            if (slice.omittedEntries > 0) {
+                expect(result.text).toContain(omissionLine(slice.omittedEntries, { sinceUpdate: true }));
+            } else {
+                expect(result.text).toBe(stripMarkers(slice.text));
+            }
+        }
+    );
+
+    it("once a newer release stamps a marker above today's, the older entries drop out", () => {
+        const slice = states['one marker (today)'];
         // Simulate the state one release from now: today's slice marked, with a
         // newer entry written above it.
         const marked = slice.text.replace(/^(## Unreleased.*)$/m, `$1\n\n${markerFor('3.47.0')}`);
