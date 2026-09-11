@@ -10,29 +10,27 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ### Leftovers: one button walks the sell queue, and the gold panel owns up to what it could not value
 
-Bulk Sell's Confirm and Next now share one slot, so the whole queue can be worked by clicking the same spot: Confirm sells the open item, Next opens the following one. Skip has its own button beside them and appears only while an item is open, so it can no longer be hit by accident, and Stop stays where it is.
-
-"Where the gold came from" now says when marketplace fills could not be valued and were left out of the Marketplace row, the way the alchemy, enhancement, production and chest rows already do. Their tax is still counted.
-
-The alchemy Decompose confirmation worked out its gold figure from the first action in the queue, which can be one queued behind the action actually running, so the same item queued twice could show the wrong amount. The performance panel also names a repeating timer for the feature that owns it: the overlay's once-a-second redraw was being reported as the docking check it happens to call first.
+- Bulk Sell's Confirm and Next share one slot, so the whole queue is worked by clicking one spot. Skip sits beside them and appears only while an item is open.
+- The gold panel now says when marketplace fills could not be valued, as its other rows already do.
+- The alchemy Decompose confirmation took its gold figure from the first action in the queue, which can be one queued behind the running one.
+- The performance panel names a repeating timer for the feature that owns it, not the first function its tick happens to call.
 
 ### Leftovers: gathering, dungeon keys and skilling drinks join the gold panel
 
-"Where the gold came from" now records gathering drops live whenever the game is open, not only when the loot log is. Dungeon keys your runs use up and drinks you drink while skilling get rows of their own. The Marketplace row counts every buy and sell at today's value, so buying above what an item is worth shows as a loss rather than disappearing into the residual. All three recordings start from this version.
-
-Essence and rare-drop income now follows your profit pricing mode instead of always the bid. A party run recorded before the game flagged your own player no longer credits another member's loot to you, in the gold panel, the dungeon ROI board or the luck tile.
+- Gathering drops are recorded live whenever the game is open, and dungeon keys and skilling drinks get rows of their own. All three start from this version.
+- The Marketplace row values every buy and sell at today's price, so buying above what an item is worth shows as a loss instead of vanishing into the residual.
+- Essence and rare drops follow your profit pricing mode, and a party run with no flagged player no longer credits another member's loot to you.
 
 ### Combat drops count whenever the game is open, not only when the loot log is
 
-"Where the gold came from" read combat loot mainly from the loot log, which the game only sends while its panel is open. Opening it for an hour of a ten-hour grind counted that hour and left the rest in the residual. Combat loot is now recorded live whenever the tab is open. Each run counts once, at the most any recording saw, and offline time is left to the offline row, which already counts it. A run that ended before a reload now counts, and loot the market can't price is valued as net worth values it. Gathering loot is spread over the time it was gathered. Task rerolls get their own row.
-
-The live recording starts from this version, so older days are unchanged.
+Combat loot came mainly from the loot log, which the game sends only while its panel is open, so an hour's glance at a ten-hour grind left the rest in the residual. It is now recorded live whenever the tab is open, counted once per run, with offline time left to the offline row — and recording starts from this version, so older days are unchanged.
 
 ### Audit round: "1,500m" meant 1.5 million, and numbers that printed "1000.0K"
 
-Typed amounts ignored a thousands separator before a suffix, so "1,500m" read as 1.5M and "1,500,000k" as 1.5K, a thousand or more times too small. This hit the forecast target and the market quantity boxes. Malformed input like "1.2.3" is now refused, and the budget and goal boxes accept `t` and `q`. Compact numbers just under a boundary now read "1.0M" rather than "1000.0K" or "1000K", and the threshold format reaches T and Q.
-
-The forecast no longer projects from a zero or negative latest total, and near-flat growth reads `>10y` instead of a doubling time of billions of days. An item with no order book is now costed at your pricing mode's side rather than always at the ask. The cost summary counts coin a recipe charges directly.
+- Typed amounts ignored a thousands separator before a suffix, so "1,500m" read as 1.5M in the forecast target and the market quantity boxes. Malformed input like "1.2.3" is now refused, and the budget and goal boxes accept `t` and `q`.
+- Compact numbers just under a boundary read "1.0M" rather than "1000.0K", and the threshold format reaches T and Q.
+- The forecast no longer projects from a zero or negative total, and near-flat growth reads `>10y`.
+- An item with no order book is costed at your pricing mode's side, and the cost summary counts coin a recipe charges directly.
 
 <!-- shipped in 3.49.0 -->
 
