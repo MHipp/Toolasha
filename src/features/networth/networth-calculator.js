@@ -235,6 +235,23 @@ function getMarketPrice(itemHrid, enhancementLevel, priceCache = null) {
 }
 
 /**
+ * What net worth carries one of an item at — the valuation the total itself is
+ * built from: currencies at theirs, then the market at the pricing mode, then
+ * (base items only) an openable's expected value, a material cost or a shop
+ * price.
+ *
+ * Exported for the gold attribution, which has to value a gain the way net
+ * worth valued it or the difference lands in its residual.
+ *
+ * @param {string} itemHrid - Item HRID
+ * @param {number} [enhancementLevel] - Enhancement level
+ * @returns {number} Coins per item, 0 when nothing can say
+ */
+export function networthUnitValue(itemHrid, enhancementLevel = 0) {
+    return getMarketPrice(itemHrid, enhancementLevel) || 0;
+}
+
+/**
  * Calculate value for currency items
  * @param {string} itemHrid - Item HRID
  * @returns {number|null} Currency value per unit, or null if not a currency

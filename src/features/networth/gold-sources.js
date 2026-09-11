@@ -1192,6 +1192,9 @@ export function combatLootByDay({ liveDays = [], sessions = [], entries = [], of
  * @param {Array<Object>} [input.detailSnapshots] - Item-level snapshots `{t, items}`
  * @param {number} [input.sessionCap] - How many runs the history keeps
  * @param {Function} input.price - `(itemHrid, enhancementLevel) => number|null`
+ * @param {Function} [input.basisPrice] - Cost-basis fallback for what was consumed
+ * @param {Function} [input.holdingPrice] - What net worth carries an item at, for
+ *   gains (drops, rewards, chest contents) the market cannot price
  * @param {number} [input.marketTax] - Sell tax rate
  * @returns {{
  *   from: number, to: number,
@@ -1232,8 +1235,25 @@ export function attributeGoldSources(input) {
         // cost or an expected value, and "what did this consume" is exactly
         // the question those answer. Defaults to the plain pricer.
         basisPrice = price,
+        // What net worth carries an item at, for gains the market cannot price
+        // — see `createHoldingPricer`. Defaults to the plain pricer.
+        holdingPrice = price,
         marketTax = 0.05,
     } = input || {};
+
+    /**
+     * A gain's unit worth: the market, and failing that the valuation net
+     * worth itself carries the item at. A drop or reward nothing quotes still
+     * raised net worth by that much, and valuing it at nothing sent exactly
+     * that much to the residual.
+     * @param {string} itemHrid
+     * @param {number} [enhancementLevel]
+     * @returns {number|null}
+     */
+    const dropPrice = (itemHrid, enhancementLevel = 0) => {
+        const market = price(itemHrid, enhancementLevel);
+        return Number.isFinite(market) ? market : holdingPrice(itemHrid, enhancementLevel);
+    };
 
     const days = daysBetween(from, to);
     const inWindow = new Set(days);
@@ -1279,7 +1299,7 @@ export function attributeGoldSources(input) {
             combatEntries.push({
                 start: t,
                 end: Number.isFinite(end) && end > t ? end : t,
-                value: lootEntryValue(entry, price),
+                value: lootEntryValue(entry, dropPrice),
             });
             continue;
         }
@@ -1290,7 +1310,7 @@ export function attributeGoldSources(input) {
         // row's — the Welcome Back delta already holds what was gathered there
         const end = Date.parse(entry.endTime);
         spreadOnline(
-            lootEntryValue(entry, price),
+            lootEntryValue(entry, dropPrice),
             t,
             Number.isFinite(end) && end > t ? end : t,
             offlineWindows,
@@ -1315,7 +1335,7 @@ export function attributeGoldSources(input) {
     for (const entry of taskCompletions || []) {
         const t = num(entry?.completedAt);
         if (!t) continue;
-        add(localDayId(t), 'tasks', taskCompletionValue(entry, price));
+        add(localDayId(t), 'tasks', taskCompletionValue(entry, dropPrice));
     }
 
     // Chest openings: already per day, and netted against what the chests were
@@ -1324,7 +1344,7 @@ export function attributeGoldSources(input) {
     let unpricedChests = 0;
     for (const row of chestDays || []) {
         if (!row?.d) continue;
-        const day = chestOpeningDayValue(row, price, basisPrice);
+        const day = chestOpeningDayValue(row, dropPrice, basisPrice);
         add(row.d, 'chests', day.value);
         if (!inWindow.has(row.d)) continue;
         unpricedChestItems += day.unpricedItems;
@@ -1410,7 +1430,7 @@ export function attributeGoldSources(input) {
         sessions: combatSessions,
         entries: combatEntries,
         offline: offlineWindows,
-        price,
+        price: dropPrice,
     });
 
     // What fed each day, so the panel can say so rather than calling a fallback

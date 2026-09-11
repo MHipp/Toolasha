@@ -42,7 +42,7 @@ import productionIncomeRecorder from './production-income-recorder.js';
 import chestOpeningRecorder from './chest-opening-recorder.js';
 import combatLootRecorder from './combat-loot-recorder.js';
 import { getItemPrice } from '../../utils/market-data.js';
-import { calculateCraftingCost } from './networth-calculator.js';
+import { calculateCraftingCost, networthUnitValue } from './networth-calculator.js';
 import expectedValueCalculator from '../market/expected-value-calculator.js';
 import { MARKET_TAX } from '../../utils/profit-constants.js';
 
@@ -125,6 +125,41 @@ export function createBasisPricer(price = createPricer()) {
         }
         cache.set(key, fallback);
         return fallback;
+    };
+}
+
+/**
+ * What net worth carries an item at, for gains the market cannot price.
+ *
+ * A drop, a task reward or a chest's contents raise net worth by exactly the
+ * valuation net worth gives them — the market first, then an openable's
+ * expected value, a material cost or a shop price, and the currencies at theirs
+ * (coin at face, task tokens at the shop, cowbells at a tenth of a bag). Priced
+ * at the market alone, a gain the market had no order for was worth nothing to
+ * the attribution while net worth rose by it, and the difference sat in the
+ * residual. Memoised like `createPricer`.
+ *
+ * @param {Function} price - The plain pricer to try first
+ * @returns {Function} `(itemHrid, enhancementLevel) => number|null`
+ */
+export function createHoldingPricer(price = createPricer()) {
+    const cache = new Map();
+    return (itemHrid, enhancementLevel = 0) => {
+        const direct = price(itemHrid, enhancementLevel);
+        if (Number.isFinite(direct)) return direct;
+        if (!itemHrid) return null;
+
+        const key = `${itemHrid}:${enhancementLevel || 0}`;
+        if (cache.has(key)) return cache.get(key);
+        let value = null;
+        try {
+            const held = networthUnitValue(itemHrid, enhancementLevel || 0);
+            value = held > 0 ? held : null;
+        } catch {
+            value = null;
+        }
+        cache.set(key, value);
+        return value;
     };
 }
 
@@ -260,6 +295,7 @@ export async function collectGoldSourceInputs({ price = createPricer() } = {}) {
         sessionCap: MAX_SESSIONS,
         price,
         basisPrice: createBasisPricer(price),
+        holdingPrice: createHoldingPricer(price),
         marketTax: MARKET_TAX,
     };
 }

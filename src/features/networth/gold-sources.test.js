@@ -1069,6 +1069,68 @@ describe('attributeGoldSources', () => {
     });
 });
 
+describe('gains the market cannot price are worth what net worth carries them at', () => {
+    const window = {
+        from: D19,
+        to: D20 + 3600_000,
+        price,
+        actionType: (hrid) => (hrid === '/actions/combat/cow' ? '/action_types/combat' : null),
+        // Net worth's own fallback: a chest at its expected value, a task token
+        // at the task shop
+        holdingPrice: (itemHrid) => ({ '/items/rare_chest': 5000, '/items/task_token': 30000 })[itemHrid] ?? null,
+    };
+
+    test('a combat drop with no order book counts at its net worth valuation, not at nothing', () => {
+        const result = attributeGoldSources({
+            ...window,
+            combatSessions: [
+                {
+                    combatStartTime: new Date(D20).toISOString(),
+                    players: [{ isCurrentPlayer: true, loot: { a: { itemHrid: '/items/rare_chest', count: 2 } } }],
+                },
+            ],
+        });
+        expect(result.totals.sources.combat).toBe(10000);
+    });
+
+    test('task tokens count at the value net worth gives them', () => {
+        const result = attributeGoldSources({
+            ...window,
+            taskCompletions: [{ completedAt: D20, coins: 100, tokens: 2, items: [] }],
+        });
+        expect(result.totals.sources.tasks).toBe(100 + 60000);
+    });
+
+    test('a chest’s unquoted contents are no longer an unpriced gap', () => {
+        const result = attributeGoldSources({
+            ...window,
+            basisPrice: (itemHrid) => (itemHrid === '/items/purple_chest' ? 1000 : null),
+            chestDays: [
+                {
+                    d: '2026-08-20',
+                    openings: { '/items/purple_chest': { count: 1, gained: { '/items/rare_chest': 1 } } },
+                },
+            ],
+        });
+        expect(result.totals.sources.chests).toBe(5000 - 1000);
+        expect(result.unpricedChestItems).toBe(0);
+    });
+
+    test('the market still wins wherever it has a price', () => {
+        const result = attributeGoldSources({
+            ...window,
+            holdingPrice: () => 999_999,
+            combatSessions: [
+                {
+                    combatStartTime: new Date(D20).toISOString(),
+                    players: [{ isCurrentPlayer: true, loot: { a: { itemHrid: '/items/cheese', count: 1 } } }],
+                },
+            ],
+        });
+        expect(result.totals.sources.combat).toBe(100);
+    });
+});
+
 describe('residual decomposition by asset category', () => {
     const open = { t: D19, total: 1000, gold: 100, inventory: 400, equipment: 300, listings: 0, house: 200 };
     const close = { t: D20, total: 1600, gold: 150, inventory: 800, equipment: 300, listings: 50, house: 300 };

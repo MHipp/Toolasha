@@ -11,6 +11,7 @@ import { describe, test, expect, vi, beforeEach } from 'vitest';
 
 const calculatorMock = vi.hoisted(() => ({
     calculateNetworth: vi.fn(),
+    networthUnitValue: vi.fn(() => 0),
 }));
 
 const displayMock = vi.hoisted(() => ({

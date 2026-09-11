@@ -53,6 +53,7 @@ vi.mock('./combat-loot-recorder.js', () => ({ default: { load: async () => game.
 vi.mock('../../utils/market-data.js', () => ({ getItemPrice: () => 0 }));
 vi.mock('./networth-calculator.js', () => ({
     calculateCraftingCost: (itemHrid) => (itemHrid === '/items/culinary_cape' ? 300_000 : 0),
+    networthUnitValue: (itemHrid) => (itemHrid === '/items/task_token' ? 40_000 : 0),
 }));
 vi.mock('../market/expected-value-calculator.js', () => ({
     default: { isInitialized: false, calculateExpectedValue: () => null },
