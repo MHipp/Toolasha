@@ -6,6 +6,14 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Leftovers: one button walks the sell queue, and the gold panel owns up to what it could not value
+
+Bulk Sell's Confirm and Next now share one slot, so the whole queue can be worked by clicking the same spot: Confirm sells the open item, Next opens the following one. Skip has its own button beside them and appears only while an item is open, so it can no longer be hit by accident, and Stop stays where it is.
+
+"Where the gold came from" now says when marketplace fills could not be valued and were left out of the Marketplace row, the way the alchemy, enhancement, production and chest rows already do. Their tax is still counted.
+
+The alchemy Decompose confirmation worked out its gold figure from the first action in the queue, which can be one queued behind the action actually running, so the same item queued twice could show the wrong amount. The performance panel also names a repeating timer for the feature that owns it: the overlay's once-a-second redraw was being reported as the docking check it happens to call first.
+
 ### Leftovers: gathering, dungeon keys and skilling drinks join the gold panel
 
 "Where the gold came from" now records gathering drops live whenever the game is open, not only when the loot log is. Dungeon keys your runs use up and drinks you drink while skilling get rows of their own. The Marketplace row counts every buy and sell at today's value, so buying above what an item is worth shows as a loss rather than disappearing into the residual. All three recordings start from this version.
