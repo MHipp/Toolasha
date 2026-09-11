@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The house upgrade footer stays put at the end of the list
+
+The pinned total and Missing Mats button rode up a few pixels as you reached the end of the list, because padding and a border sat beneath them. Nothing sits below them now, so they stay exactly where they are.
+
 ### Three more game windows reach their bottom in Firefox
 
 The same Firefox problem as the house panel hit the offline progress summary, long Item Dictionary entries on phones, and the player profile on small screens: the window grew past its frame and the end could not be scrolled to. Each is now capped at the visible screen.
