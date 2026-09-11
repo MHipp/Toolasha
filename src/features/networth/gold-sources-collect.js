@@ -42,6 +42,7 @@ import networthHistory from './networth-history.js';
 import productionIncomeRecorder from './production-income-recorder.js';
 import chestOpeningRecorder from './chest-opening-recorder.js';
 import combatLootRecorder from './combat-loot-recorder.js';
+import itemFlowRecorder from './item-flow-recorder.js';
 import { getItemPrice } from '../../utils/market-data.js';
 import { calculateCraftingCost, networthUnitValue } from './networth-calculator.js';
 import expectedValueCalculator from '../market/expected-value-calculator.js';
@@ -230,6 +231,7 @@ export async function collectGoldSourceInputs({ price = createPricer() } = {}) {
         chestDays,
         combatLootDays,
         taskRerolls,
+        itemFlowDays,
     ] = await Promise.all([
         attempt(
             'the loot log',
@@ -265,6 +267,8 @@ export async function collectGoldSourceInputs({ price = createPricer() } = {}) {
             },
             []
         ),
+        // Same bundle as the recorder, so this is the copy it writes to
+        attempt('the item flow recorder', () => itemFlowRecorder.load(), []),
     ]);
 
     const tradeFills = await attempt(
@@ -315,6 +319,7 @@ export async function collectGoldSourceInputs({ price = createPricer() } = {}) {
         tradeFills,
         combatSessions,
         combatLootDays,
+        itemFlowDays,
         // The bound the archived runs are kept under, carried through so the
         // panel can say how far the combat fallback actually reaches back
         sessionCap: MAX_SESSIONS,

@@ -50,6 +50,7 @@ vi.mock('./networth-history.js', () => ({ default: { getHistory: () => [] } }));
 vi.mock('./production-income-recorder.js', () => ({ default: { load: async () => [] } }));
 vi.mock('./chest-opening-recorder.js', () => ({ default: { load: async () => [] } }));
 vi.mock('./combat-loot-recorder.js', () => ({ default: { load: async () => game.liveDays } }));
+vi.mock('./item-flow-recorder.js', () => ({ default: { load: async () => [] } }));
 vi.mock('../../utils/market-data.js', () => ({ getItemPrice: () => 0 }));
 vi.mock('./networth-calculator.js', () => ({
     calculateCraftingCost: (itemHrid) => (itemHrid === '/items/culinary_cape' ? 300_000 : 0),

@@ -1120,6 +1120,95 @@ describe('attributeGoldSources', () => {
     });
 });
 
+describe('gathering recorded live beside the loot log', () => {
+    const HOUR = 3600_000;
+    const MIDNIGHT = dayStart('2026-08-20');
+    const MILKING = '/actions/milking/cow';
+    const base = {
+        from: D19,
+        to: D20 + HOUR,
+        price,
+        actionType: (hrid) => (hrid === MILKING ? '/action_types/milking' : null),
+    };
+    /** A live stretch of the recorder, on the day it was watched */
+    const live = (d, from, to, gained, id = '7') => ({
+        d,
+        gathering: { [id]: { a: MILKING, stretches: [{ from, to, gained }] } },
+    });
+    /** A milking loot log entry */
+    const entry = (start, end, drops) => ({
+        startTime: new Date(start).toISOString(),
+        endTime: new Date(end).toISOString(),
+        actionHrid: MILKING,
+        drops,
+    });
+    const perDay = (result) => Object.fromEntries(result.days.map((row) => [row.day, row.sources.gathering]));
+
+    test('a completion recorded live counts on the day it was watched, with no loot log at all', () => {
+        const result = attributeGoldSources({
+            ...base,
+            itemFlowDays: [live('2026-08-20', MIDNIGHT + HOUR, MIDNIGHT + 2 * HOUR, { '/items/milk': 10 })],
+        });
+        expect(perDay(result)['2026-08-20']).toBe(400);
+        expect(result.coverage.gathering).toBe(MIDNIGHT + HOUR);
+    });
+
+    test('drops both recordings saw count once, never added together', () => {
+        const result = attributeGoldSources({
+            ...base,
+            lootEntries: [entry(MIDNIGHT, MIDNIGHT + 2 * HOUR, { '/items/milk': 10 })],
+            itemFlowDays: [live('2026-08-20', MIDNIGHT + HOUR / 2, MIDNIGHT + HOUR, { '/items/milk': 10 })],
+        });
+        expect(result.totals.sources.gathering).toBeCloseTo(400, 6);
+    });
+
+    test('the loot log adds only what the live record missed, over the time nobody watched', () => {
+        // An entry from 23:00 on the 19th to 01:00 on the 20th; the tab watched
+        // only the hour after midnight. The 800 the log saw beyond it belongs to
+        // the unwatched hour, which is the 19th
+        const result = attributeGoldSources({
+            ...base,
+            lootEntries: [entry(MIDNIGHT - HOUR, MIDNIGHT + HOUR, { '/items/milk': 30 })],
+            itemFlowDays: [live('2026-08-20', MIDNIGHT, MIDNIGHT + HOUR, { '/items/milk': 10 })],
+        });
+        expect(perDay(result)['2026-08-19']).toBeCloseTo(800, 6);
+        expect(perDay(result)['2026-08-20']).toBeCloseTo(400, 6);
+    });
+
+    test('a stale loot log entry adds nothing to what the live record already holds', () => {
+        const result = attributeGoldSources({
+            ...base,
+            lootEntries: [entry(MIDNIGHT, MIDNIGHT + HOUR, { '/items/milk': 5 })],
+            itemFlowDays: [live('2026-08-20', MIDNIGHT + HOUR / 4, MIDNIGHT + 3 * HOUR, { '/items/milk': 40 })],
+        });
+        expect(result.totals.sources.gathering).toBeCloseTo(1600, 6);
+    });
+
+    test('another action’s loot log entry is not taken for the live record’s', () => {
+        const result = attributeGoldSources({
+            ...base,
+            actionType: () => '/action_types/milking',
+            lootEntries: [
+                { ...entry(MIDNIGHT, MIDNIGHT + HOUR, { '/items/milk': 5 }), actionHrid: '/actions/milking/goat' },
+            ],
+            itemFlowDays: [live('2026-08-20', MIDNIGHT, MIDNIGHT + HOUR, { '/items/milk': 10 })],
+        });
+        expect(result.totals.sources.gathering).toBeCloseTo(600, 6);
+    });
+
+    test('what the loot log saw in offline time is left to the offline row', () => {
+        const offline = [MIDNIGHT - HOUR, MIDNIGHT];
+        const result = attributeGoldSources({
+            ...base,
+            lootEntries: [entry(MIDNIGHT - HOUR, MIDNIGHT + HOUR, { '/items/milk': 30 })],
+            itemFlowDays: [live('2026-08-20', MIDNIGHT, MIDNIGHT + HOUR, { '/items/milk': 10 })],
+            combatLootDays: [{ d: '2026-08-20', runs: {}, offline: [offline] }],
+        });
+        expect(perDay(result)['2026-08-19']).toBe(0);
+        expect(result.totals.sources.gathering).toBeCloseTo(400, 6);
+    });
+});
+
 describe('gains the market cannot price are worth what net worth carries them at', () => {
     const window = {
         from: D19,

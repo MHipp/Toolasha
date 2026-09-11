@@ -23,6 +23,7 @@ import networthHistoryChart from './networth-history-chart.js';
 import productionIncomeRecorder from './production-income-recorder.js';
 import chestOpeningRecorder from './chest-opening-recorder.js';
 import combatLootRecorder from './combat-loot-recorder.js';
+import itemFlowRecorder from './item-flow-recorder.js';
 import goldSourcesPanel from './gold-sources-panel.js';
 import { initExclusions } from './networth-exclusions.js';
 import networthExclusionPopup from './networth-exclusion-popup.js';
@@ -111,6 +112,7 @@ class NetworthFeature {
                     await productionIncomeRecorder.initialize();
                     await chestOpeningRecorder.initialize();
                     await combatLootRecorder.initialize();
+                    await itemFlowRecorder.initialize();
                 });
             }
         });
@@ -316,6 +318,7 @@ class NetworthFeature {
             productionIncomeRecorder.cleanup();
             chestOpeningRecorder.cleanup();
             combatLootRecorder.cleanup();
+            itemFlowRecorder.cleanup();
             goldSourcesPanel.closeModal();
 
             // Clear the enhancement cost cache (character-specific)

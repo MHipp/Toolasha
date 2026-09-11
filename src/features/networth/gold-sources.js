@@ -137,8 +137,12 @@ export const SOURCE_META = {
     gathering: {
         label: 'Gathering',
         measured: true,
-        source: 'Loot log history',
-        note: 'Milking, foraging and woodcutting drops from the loot log, priced at today’s market.',
+        source: 'Gathering completions recorded live, with the loot log for what they missed',
+        note:
+            'Milking, foraging and woodcutting drops, priced at today’s market. Every completion is recorded ' +
+            'while the game is open; the loot log (only sent while its panel is open) fills in the time the tab ' +
+            'was closed. Over any stretch the larger of the two counts, never both, and time spent offline is ' +
+            'left to the offline row. The live record is forward-only — it starts the day it was installed.',
     },
     production: {
         label: 'Production',
@@ -1184,6 +1188,101 @@ export function combatLootByDay({ liveDays = [], sessions = [], entries = [], of
 }
 
 /**
+ * What gathering gained on each day, from the loot log and the live record,
+ * each drop once.
+ *
+ * The two record different things. A loot log entry is the action's running
+ * total since it started (`L` over `[start, end]`); the live record is what each
+ * stretch the tab watched gained, from the inventory deltas. So they are not
+ * points on one curve the way combat's are, and are combined span by span:
+ *
+ * - every live stretch counts whole on its own day — it is a measurement;
+ * - an entry adds only what it saw beyond the live stretches inside its span,
+ *   spread over the part of its span nobody watched, with offline time left to
+ *   the offline row as everywhere else.
+ *
+ * Over an entry's span that is the most either recording saw, never both added.
+ * A live gain up to `SAME_RUN_SLACK_MS` past the entry's end is taken as inside
+ * it, because the two are stamped by different clocks: a misjudged edge can
+ * only shrink what the entry adds, so a clock skew costs an undercount, never a
+ * double count.
+ *
+ * Live and log are matched by action hrid and time, not by id: one character
+ * runs one action at a time, so a gain of the same action inside the entry's
+ * span is the same drop.
+ *
+ * @param {Object} input
+ * @param {Array<Object>} [input.liveDays] - Item flow recorder rows
+ * @param {Array<{actionHrid: string, start: number, end: number, value: number}>} [input.entries] -
+ *   Gathering loot log entries, valued
+ * @param {Array<Array<number>>} [input.offline] - Offline windows
+ * @param {Function} input.price - `(itemHrid, enhancementLevel) => number|null`
+ * @returns {{byDay: Map<string, number>, liveSince: number|null}} Per-day value, and where the
+ *   live record starts
+ */
+export function gatheringByDay({ liveDays = [], entries = [], offline = [], price = () => null } = {}) {
+    const byDay = new Map();
+    const add = (day, value) => {
+        if (Number.isFinite(value) && value !== 0) byDay.set(day, (byDay.get(day) || 0) + value);
+    };
+
+    const live = [];
+    let liveSince = null;
+    for (const row of liveDays || []) {
+        for (const held of Object.values(row?.gathering || {})) {
+            for (const stretch of held?.stretches || []) {
+                if (!Number.isFinite(stretch?.from)) continue;
+                const to = Number.isFinite(stretch.to) && stretch.to > stretch.from ? stretch.to : stretch.from;
+                const { value } = lootCountsValue(stretch.gained, price);
+                live.push({ actionHrid: held.a, from: stretch.from, to, value });
+                add(row.d, value);
+                if (liveSince === null || stretch.from < liveSince) liveSince = stretch.from;
+            }
+        }
+    }
+
+    for (const entry of entries || []) {
+        if (!Number.isFinite(entry?.start)) continue;
+        const start = entry.start;
+        const end = Number.isFinite(entry.end) && entry.end > start ? entry.end : start;
+        const reach = end + SAME_RUN_SLACK_MS;
+
+        // What the live record saw of this action inside the entry's span. A
+        // stretch is credited to the span by the share of its time inside it;
+        // one with no length is its instant
+        const mine = live.filter((stretch) => stretch.actionHrid === entry.actionHrid);
+        let watched = 0;
+        for (const stretch of mine) {
+            if (stretch.to === stretch.from) {
+                if (stretch.from >= start && stretch.from <= reach) watched += stretch.value;
+                continue;
+            }
+            const overlap = Math.min(stretch.to, reach) - Math.max(stretch.from, start);
+            if (overlap > 0) watched += stretch.value * (overlap / (stretch.to - stretch.from));
+        }
+
+        const extra = num(entry.value) - watched;
+        if (!(extra > 1e-9 * Math.max(1, watched))) continue;
+
+        // The rest belongs to the time nobody watched, and to the whole span
+        // when the watched stretches cover all of it
+        const unwatched = onlinePieces(
+            start,
+            end,
+            mine.map((stretch) => [stretch.from, stretch.to])
+        );
+        const length = unwatched.reduce((sum, [a, b]) => sum + (b - a), 0);
+        if (!(length > 0)) {
+            spreadOnline(extra, start, end, offline, add);
+            continue;
+        }
+        for (const [a, b] of unwatched) spreadOnline(extra * ((b - a) / length), a, b, offline, add);
+    }
+
+    return { byDay, liveSince };
+}
+
+/**
  * Split a window's net worth delta across the activity that is recorded for it.
  *
  * @param {Object} input - Everything the attribution reads
@@ -1199,6 +1298,7 @@ export function combatLootByDay({ liveDays = [], sessions = [], entries = [], of
  * @param {Array<Object>} [input.tradeFills] - Trade ledger fill records
  * @param {Array<Object>} [input.combatSessions] - Archived combat runs
  * @param {Array<Object>} [input.combatLootDays] - Combat loot recorder rows `{d, runs, offline}`
+ * @param {Array<Object>} [input.itemFlowDays] - Item flow recorder rows `{d, gathering}`
  * @param {Array<Object>} [input.taskCompletions] - Claimed task records `{completedAt, coins, tokens, items}`
  * @param {Array<Object>} [input.taskRerolls] - Retired-task reroll records `{retiredAt, goldSpent, cowbellsSpent}`
  * @param {Array<Object>} [input.chestDays] - Chest opening recorder rows `{d, openings}`
@@ -1238,6 +1338,7 @@ export function attributeGoldSources(input) {
         tradeFills = [],
         combatSessions = [],
         combatLootDays = [],
+        itemFlowDays = [],
         taskCompletions = [],
         taskRerolls = [],
         chestDays = [],
@@ -1297,11 +1398,12 @@ export function attributeGoldSources(input) {
     // read from here — the log records what an action produced but not what it
     // consumed, and the production recorder below has both halves.
     //
-    // Gathering is added straight away; combat is held aside, because the same
-    // run is usually in the battle feed as well, and the two are reconciled run
-    // by run below rather than added. An entry's end is when its drops were
-    // current, which is what makes it a reading of the run at that instant
+    // Both are held aside, because the same action is usually recorded live as
+    // well, and the recordings are reconciled rather than added. An entry's end
+    // is when its drops were current, which is what makes it a reading of the
+    // run at that instant
     const combatEntries = [];
+    const gatheringEntries = [];
     let lastCombatLootLog = null;
     for (const entry of lootEntries || []) {
         const t = Date.parse(entry?.startTime);
@@ -1318,19 +1420,27 @@ export function attributeGoldSources(input) {
             continue;
         }
         if (!GATHERING_ACTION_TYPES.includes(type)) continue;
-        // Spread over the span the action ran, like every session here: a
-        // week-long foraging queue booked to the day it began sat outside
-        // every window that asked about it. Offline stretches are the offline
-        // row's — the Welcome Back delta already holds what was gathered there
+        // Held aside like combat, to be reconciled with the live record. Spread
+        // over the span the action ran: a week-long foraging queue booked to
+        // the day it began sat outside every window that asked about it
         const end = Date.parse(entry.endTime);
-        spreadOnline(
-            lootEntryValue(entry, dropPrice),
-            t,
-            Number.isFinite(end) && end > t ? end : t,
-            offlineWindows,
-            (day, value) => add(day, 'gathering', value)
-        );
+        gatheringEntries.push({
+            actionHrid: entry.actionHrid,
+            start: t,
+            end: Number.isFinite(end) && end > t ? end : t,
+            value: lootEntryValue(entry, dropPrice),
+        });
     }
+
+    // Offline stretches are the offline row's — the Welcome Back delta already
+    // holds what was gathered there
+    const gathering = gatheringByDay({
+        liveDays: itemFlowDays,
+        entries: gatheringEntries,
+        offline: offlineWindows,
+        price: dropPrice,
+    });
+    for (const [day, value] of gathering.byDay) add(day, 'gathering', value);
 
     // Production recorder: already per day, already valued
     let unpricedProductionActions = 0;
@@ -1590,8 +1700,11 @@ export function attributeGoldSources(input) {
                 ),
                 combatLoot.liveSince
             ),
-            gathering: earliest(lootEntries, (entry) =>
-                GATHERING_ACTION_TYPES.includes(actionType(entry?.actionHrid)) ? Date.parse(entry?.startTime) : NaN
+            gathering: earlierOf(
+                earliest(lootEntries, (entry) =>
+                    GATHERING_ACTION_TYPES.includes(actionType(entry?.actionHrid)) ? Date.parse(entry?.startTime) : NaN
+                ),
+                gathering.liveSince
             ),
             production: earliest(productionDays, (row) => dayStart(row?.d)),
             tasks: earliest(taskCompletions, (entry) => num(entry?.completedAt) || NaN),
