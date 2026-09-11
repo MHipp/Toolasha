@@ -23,6 +23,7 @@ import { calculateDungeonTokenValue } from '../../utils/token-valuation.js';
 import { entryKeyFor } from '../../utils/key-ledger.js';
 import { DUNGEON_CHEST_ENTRY_KEYS, DUNGEON_CHEST_CHEST_KEYS } from '../../utils/dungeon-keys.js';
 import { formatKMB } from '../../utils/formatters.js';
+import { captureOwner, stillOurs } from '../../utils/init-ownership.js';
 
 /** The tokens the dungeon shops take, which the expected-value calculator also special-cases */
 const DUNGEON_TOKENS = new Set([
@@ -274,13 +275,31 @@ class DungeonRoiBoardUI {
         if (!host) return;
         this.container = container;
 
-        // Two refreshes in flight would draw twice; the later one wins by waiting
-        if (this._rendering) await this._rendering;
-        this._rendering = this._renderInto(host);
+        // Renders queue in arrival order, so the last one asked for is the last
+        // one drawn. Awaiting `this._rendering` and *then* claiming the slot let
+        // two callers that were both parked on the same in-flight render resume
+        // together: each overwrote the other's claim and both loads ran at once,
+        // so whichever storage read happened to finish last drew — the older
+        // filter as often as the newer one. Claiming the slot before suspending
+        // makes each render wait for the one ahead of it instead of racing it.
+        const previous = this._rendering;
+        const run = (async () => {
+            if (previous) {
+                try {
+                    await previous;
+                } catch {
+                    // A render that failed must not stop the one queued behind it
+                }
+            }
+            await this._renderInto(host);
+        })();
+        this._rendering = run;
         try {
-            await this._rendering;
+            await run;
         } finally {
-            this._rendering = null;
+            // Only if nothing has queued behind us: clearing unconditionally
+            // would let the next render skip the wait for one still in flight
+            if (this._rendering === run) this._rendering = null;
         }
     }
 
@@ -289,31 +308,56 @@ class DungeonRoiBoardUI {
      * @private
      */
     async _renderInto(host) {
+        let rows;
         try {
-            this.rows = await this.buildRows();
+            rows = await this.buildRows();
         } catch (error) {
             console.error('[DungeonRoiBoard] Building the board failed:', error);
             host.innerHTML =
                 '<div style="color: #ff6b6b; font-style: italic; text-align: center; padding: 8px;">The ROI board could not be drawn</div>';
             return;
         }
+        // Null is `buildRows` saying the character changed while it was loading,
+        // not "no dungeons". Leaving the previous board on screen is the honest
+        // outcome: the switch builds a fresh panel, and drawing an empty table
+        // here would read as "you have run nothing" for the character arriving.
+        if (rows === null) return;
+        this.rows = rows;
         this.draw(host);
     }
 
     /**
      * The rows, from the live modules.
-     * @returns {Promise<Array<Object>>}
+     * @returns {Promise<Array<Object>|null>} Null when the character changed
+     *   while the history was loading, so nothing should be drawn
      */
     async buildRows() {
         const dungeons = listDungeons();
         if (!dungeons.length) return [];
+
+        // Who the board is answering for, taken before the loads suspend.
+        //
+        // The three reads below take seconds of wall clock between them — the
+        // run store indexes a few hundred records and both of the others are
+        // character-scoped storage reads that resolve their key *now* — and a
+        // character switch lands inside that window. Reading `currentCharacter()`
+        // after the await narrowed this character's run list to whoever had
+        // arrived, and then drew those runs against the sessions and the sim
+        // snapshot belonging to the character who left: one board, two
+        // characters, every gold-per-hour figure on it built across the seam.
+        const ticket = captureOwner(this);
+        const character = currentCharacter();
+        const filterCharacter = this.state?.filterCharacter || 'mine';
 
         const [allRuns, sessions, snapshot] = await Promise.all([
             dungeonTrackerStorage.getAllRuns(),
             loadSessions(),
             loadAllZonesSnapshot(),
         ]);
-        const runs = filterRunsForCharacter(allRuns, this.state?.filterCharacter || 'mine', currentCharacter());
+        // Before the first thing that reads live character state — the filter
+        // below, the drop quantity and the prices further down all do
+        if (!stillOurs(ticket)) return null;
+        const runs = filterRunsForCharacter(allRuns, filterCharacter, character);
 
         // Every key the board could ask about, costed in one pass so the shared
         // recipe materials are priced once
