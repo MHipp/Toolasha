@@ -110,6 +110,7 @@ export const SOURCE_KEYS = [
     'gathering',
     'production',
     'tasks',
+    'taskRerolls',
     'chests',
     'alchemy',
     'enhancement',
@@ -154,6 +155,16 @@ export const SOURCE_META = {
             'What the task board actually paid: the coins, task tokens and items itemised in the reward payload of ' +
             'every task you claimed while the tracker was listening. Tokens and items are priced at today’s market; ' +
             'the coins are face value. Only the last eight weeks of claims are kept.',
+    },
+    taskRerolls: {
+        label: 'Task rerolls',
+        measured: true,
+        source: 'Task reroll tracker',
+        note:
+            'Coins and cowbells spent rerolling tasks, booked on the day each task left the board — the tracker ' +
+            'learns a task’s final reroll count only then, so a reroll paid late one night can land on the next ' +
+            'day. Cowbells count at the value net worth gives them, and not at all when net worth leaves them ' +
+            'out. Only tasks that left the board while the tracker was listening; the last five hundred are kept.',
     },
     chests: {
         label: 'Chests opened',
@@ -1188,6 +1199,7 @@ export function combatLootByDay({ liveDays = [], sessions = [], entries = [], of
  * @param {Array<Object>} [input.combatSessions] - Archived combat runs
  * @param {Array<Object>} [input.combatLootDays] - Combat loot recorder rows `{d, runs, offline}`
  * @param {Array<Object>} [input.taskCompletions] - Claimed task records `{completedAt, coins, tokens, items}`
+ * @param {Array<Object>} [input.taskRerolls] - Retired-task reroll records `{retiredAt, goldSpent, cowbellsSpent}`
  * @param {Array<Object>} [input.chestDays] - Chest opening recorder rows `{d, openings}`
  * @param {Array<Object>} [input.detailSnapshots] - Item-level snapshots `{t, items}`
  * @param {number} [input.sessionCap] - How many runs the history keeps
@@ -1226,6 +1238,7 @@ export function attributeGoldSources(input) {
         combatSessions = [],
         combatLootDays = [],
         taskCompletions = [],
+        taskRerolls = [],
         chestDays = [],
         detailSnapshots = [],
         sessionCap = DEFAULT_SESSION_CAP,
@@ -1336,6 +1349,16 @@ export function attributeGoldSources(input) {
         const t = num(entry?.completedAt);
         if (!t) continue;
         add(localDayId(t), 'tasks', taskCompletionValue(entry, dropPrice));
+    }
+
+    // Task rerolls: what the board cost to reshuffle, the other half of what it
+    // paid. Cowbells at net worth's own valuation, which is null exactly when
+    // net worth leaves cowbells out — and then spending one moved nothing
+    const cowbellValue = num(holdingPrice('/items/cowbell', 0));
+    for (const entry of taskRerolls || []) {
+        const t = num(entry?.retiredAt);
+        if (!t) continue;
+        add(localDayId(t), 'taskRerolls', -(num(entry.goldSpent) + num(entry.cowbellsSpent) * cowbellValue));
     }
 
     // Chest openings: already per day, and netted against what the chests were
@@ -1571,6 +1594,7 @@ export function attributeGoldSources(input) {
             ),
             production: earliest(productionDays, (row) => dayStart(row?.d)),
             tasks: earliest(taskCompletions, (entry) => num(entry?.completedAt) || NaN),
+            taskRerolls: earliest(taskRerolls, (entry) => num(entry?.retiredAt) || NaN),
             chests: earliest(chestDays, (row) => dayStart(row?.d)),
             offline: earliest(productionDays, (row) => (row?.offlineProfit ? dayStart(row?.d) : NaN)),
             alchemy: earliest(alchemySessions, (session) => num(session?.startTime) || NaN),

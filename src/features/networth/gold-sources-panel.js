@@ -55,6 +55,7 @@ const SOURCE_COLORS = {
     gathering: '#22c55e',
     production: '#3b82f6',
     tasks: '#f472b6',
+    taskRerolls: '#9d174d',
     chests: '#c084fc',
     alchemy: '#a855f7',
     enhancement: '#f97316',

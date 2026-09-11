@@ -1131,6 +1131,37 @@ describe('gains the market cannot price are worth what net worth carries them at
     });
 });
 
+describe('task rerolls', () => {
+    const window = { from: D19, to: D20 + 3600_000, price };
+
+    test('what rerolling cost is booked, negative, on the day the task left the board', () => {
+        const result = attributeGoldSources({
+            ...window,
+            holdingPrice: (itemHrid) => (itemHrid === '/items/cowbell' ? 25_000 : null),
+            taskRerolls: [
+                { taskId: 'a', retiredAt: D20, goldSpent: 70_000, cowbellsSpent: 3 },
+                // Retired before the window: not this window's spending
+                { taskId: 'b', retiredAt: D18 - DAY, goldSpent: 10_000, cowbellsSpent: 0 },
+            ],
+        });
+
+        const perDay = Object.fromEntries(result.days.map((row) => [row.day, row.sources.taskRerolls]));
+        expect(perDay['2026-08-20']).toBe(-(70_000 + 3 * 25_000));
+        expect(result.totals.sources.taskRerolls).toBe(-(70_000 + 3 * 25_000));
+        expect(result.coverage.taskRerolls).toBe(D18 - DAY);
+    });
+
+    test('cowbells count for nothing when net worth leaves them out', () => {
+        // Spending a cowbell net worth does not count moves net worth by nothing
+        const result = attributeGoldSources({
+            ...window,
+            holdingPrice: () => null,
+            taskRerolls: [{ taskId: 'a', retiredAt: D20, goldSpent: 10_000, cowbellsSpent: 4 }],
+        });
+        expect(result.totals.sources.taskRerolls).toBe(-10_000);
+    });
+});
+
 describe('residual decomposition by asset category', () => {
     const open = { t: D19, total: 1000, gold: 100, inventory: 400, equipment: 300, listings: 0, house: 200 };
     const close = { t: D20, total: 1600, gold: 150, inventory: 800, equipment: 300, listings: 50, house: 300 };

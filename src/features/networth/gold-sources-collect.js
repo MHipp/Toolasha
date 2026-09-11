@@ -12,6 +12,7 @@
  */
 
 import dataManager from '../../core/data-manager.js';
+import storage from '../../core/storage.js';
 import tradeLedgerStore from '../market/trade-ledger-store.js';
 import {
     loadSessions as loadCombatSessions,
@@ -45,6 +46,20 @@ import { getItemPrice } from '../../utils/market-data.js';
 import { calculateCraftingCost, networthUnitValue } from './networth-calculator.js';
 import expectedValueCalculator from '../market/expected-value-calculator.js';
 import { MARKET_TAX } from '../../utils/profit-constants.js';
+import { characterKey } from '../../utils/character-key.js';
+
+/**
+ * Where the task reroll tracker keeps the tasks that have left the board, and
+ * what rerolling each one cost: `HISTORY_KEY` and `STORE_NAME` in
+ * `task-reroll-tracker.js`, which `scoped-data-repair.js` names too.
+ *
+ * Read straight from storage because the tracker lives in the ui bundle with no
+ * bridge accessor, and a bundle-local copy never hears a character switch — its
+ * record would fold the last character's history into this one's. A plain
+ * scoped read, not `readScoped`: that migrates a legacy key when it finds one,
+ * and a reader has no business writing.
+ */
+const REROLL_HISTORY = { base: 'taskRerollHistory', store: 'rerollSpending' };
 
 /** The three alchemy trackers, and the tag the attribution reads them under */
 const ALCHEMY_STORES = [
@@ -214,6 +229,7 @@ export async function collectGoldSourceInputs({ price = createPricer() } = {}) {
         taskCompletions,
         chestDays,
         combatLootDays,
+        taskRerolls,
     ] = await Promise.all([
         attempt(
             'the loot log',
@@ -241,6 +257,14 @@ export async function collectGoldSourceInputs({ price = createPricer() } = {}) {
         // The battle feed as it was recorded live — same bundle, so this is the
         // copy the recorder writes to
         attempt('the combat loot recorder', () => combatLootRecorder.load(), []),
+        attempt(
+            'the task reroll history',
+            async () => {
+                const history = await storage.get(characterKey(REROLL_HISTORY.base), REROLL_HISTORY.store, []);
+                return Array.isArray(history) ? history : [];
+            },
+            []
+        ),
     ]);
 
     const tradeFills = await attempt(
@@ -281,6 +305,7 @@ export async function collectGoldSourceInputs({ price = createPricer() } = {}) {
         // price change from a quantity change
         detailSnapshots: networthHistory.detailWindow?.() || [],
         taskCompletions,
+        taskRerolls,
         chestDays,
         lootEntries,
         actionType: (actionHrid) => dataManager.getActionDetails?.(actionHrid)?.type || null,

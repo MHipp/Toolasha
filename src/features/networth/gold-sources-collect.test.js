@@ -19,7 +19,7 @@ const game = vi.hoisted(() => ({
 }));
 
 vi.mock('../../core/data-manager.js', () => ({
-    default: { getActionDetails: () => null },
+    default: { getActionDetails: () => null, getCurrentCharacterId: () => 'me' },
 }));
 vi.mock('../market/trade-ledger-store.js', () => ({
     default: { isReady: () => false, getRecords: () => [] },
@@ -79,6 +79,31 @@ describe('the live combat record', () => {
         game.liveDays = [{ d: '2026-08-28', runs: {}, offline: [[1, 2]] }];
         const inputs = await collectGoldSourceInputs({ price: () => 0 });
         expect(inputs.combatLootDays).toEqual(game.liveDays);
+    });
+});
+
+describe('the task reroll history', () => {
+    test('is read from this character’s own key, and only read', async () => {
+        const { default: storage } = await import('../../core/storage.js');
+        const history = [{ taskId: 't1', retiredAt: 1, goldSpent: 30_000, cowbellsSpent: 0 }];
+        const get = vi
+            .spyOn(storage, 'get')
+            .mockImplementation(async (key, store, fallback) =>
+                key === 'taskRerollHistory_me' && store === 'rerollSpending' ? history : fallback
+            );
+        const set = vi.spyOn(storage, 'set');
+
+        const inputs = await collectGoldSourceInputs({ price: () => 0 });
+        expect(inputs.taskRerolls).toEqual(history);
+        // A reader never migrates or rewrites the tracker's record
+        expect(set).not.toHaveBeenCalledWith(
+            expect.stringContaining('taskReroll'),
+            expect.anything(),
+            'rerollSpending'
+        );
+
+        get.mockRestore();
+        set.mockRestore();
     });
 });
 
