@@ -687,7 +687,13 @@ describe('confirming from the strip', () => {
         bulkSell._render();
     };
 
-    const confirmBtn = () => bulkSell.chip.querySelector(`.${CHIP}-confirm`);
+    // Confirm now lives in the primary slot, alongside Next and Bulk Sell —
+    // the maintainer's ask was that Confirm and Next share one button so a
+    // run is a repeated click in one place. `.${CHIP}-main` dispatches to
+    // Confirm only while `awaiting_confirm`, which is the state every test
+    // below drives it in.
+    const confirmBtn = () => bulkSell.chip.querySelector(`.${CHIP}-main`);
+    const skipBtn = () => bulkSell.chip.querySelector(`.${CHIP}-skip`);
     const statusText = () => bulkSell.chip.querySelector(`.${CHIP}-status`).textContent;
     /** Only the walk's own state, which both confirm routes must leave identical */
     const walkState = () => ({ state: bulkSell.state, index: bulkSell.index, current: bulkSell.current?.itemHrid });
@@ -811,7 +817,7 @@ describe('confirming from the strip', () => {
         const modal = openModal();
         runAtStep0();
 
-        bulkSell.chip.querySelector(`.${CHIP}-main`).click();
+        skipBtn().click();
         expect(bulkSell.state).toBe('preparing');
         expect(bulkSell.index).toBe(1);
         expect(gameClicks).toBe(0);
@@ -819,7 +825,7 @@ describe('confirming from the strip', () => {
         bulkSell.chip.querySelector(`.${CHIP}-stop`).click();
         expect(bulkSell.state).toBe('idle');
         expect(bulkSell.queue).toEqual([]);
-        expect(confirmBtn().style.visibility).toBe('hidden');
+        expect(skipBtn().style.visibility).toBe('hidden');
         modal.remove();
     });
 
@@ -915,12 +921,14 @@ describe('confirming from the strip', () => {
             // The vendor sale is the game's own "Sell For" button in the item
             // menu — there is no modal naming an item, a level or a quantity,
             // so there is nothing for the guard to check and nothing to press.
+            // The primary slot still reads Confirm (it never loses its label
+            // reservation) but sits disabled, since there is nothing to press.
             openModal();
             runAtStep0();
             bulkSell.decision = { insta: false, vendor: true, price: 10, reason: 'vendor' };
             bulkSell._render();
 
-            expect(confirmBtn().style.visibility).toBe('hidden');
+            expect(confirmBtn().disabled).toBe(true);
             confirmBtn().click();
 
             expect(gameClicks).toBe(0);
@@ -931,7 +939,7 @@ describe('confirming from the strip', () => {
             const modal = openModal();
             runAtStep0();
 
-            bulkSell.chip.querySelector(`.${CHIP}-main`).click();
+            skipBtn().click();
             confirmBtn().click();
 
             expect(gameClicks).toBe(0);
@@ -979,7 +987,8 @@ describe('confirming from the strip', () => {
         await bulkSell.initialize();
 
         expect(bulkSell.isInitialized).toBe(false);
-        expect(document.querySelector(`.${CHIP}-confirm`)).toBeNull();
+        expect(document.querySelector(`.${CHIP}-main`)).toBeNull();
+        expect(document.querySelector(`.${CHIP}-skip`)).toBeNull();
     });
 });
 
@@ -1077,19 +1086,21 @@ describe('the strip does not move its controls', () => {
         }
     });
 
-    test('Confirm and Stop keep their slot when they are not offered', () => {
+    test('Skip and Stop keep their slot when they are not offered', () => {
+        // Skip has moved to its own button beside the primary slot, which now
+        // carries Confirm/Next/Bulk Sell — it never disappears from the row.
         enter('awaiting_confirm');
-        const confirm = bulkSell.chip.querySelector(`.${CHIP}-confirm`);
+        const skip = bulkSell.chip.querySelector(`.${CHIP}-skip`);
         const stop = bulkSell.chip.querySelector(`.${CHIP}-stop`);
-        expect(confirm.style.visibility).toBe('visible');
+        expect(skip.style.visibility).toBe('visible');
         expect(stop.style.visibility).toBe('visible');
 
         enter('idle');
 
         // Out of sight, still in the layout — the whole point
-        expect(confirm.style.visibility).toBe('hidden');
+        expect(skip.style.visibility).toBe('hidden');
         expect(stop.style.visibility).toBe('hidden');
-        expect(confirm.style.display).toBe('');
+        expect(skip.style.display).toBe('');
         expect(stop.style.display).toBe('');
     });
 
@@ -1100,22 +1111,43 @@ describe('the strip does not move its controls', () => {
             expect(
                 labels().map((span) => span.dataset.label),
                 `${name} lost a reserved label`
-            ).toEqual(['▶ Bulk Sell', '⏭ Skip', '▶ Next']);
+            ).toEqual(['▶ Bulk Sell', '✔ Confirm', '▶ Next']);
             expect(shown.length, `${name} shows ${shown.length} labels`).toBe(1);
         }
     });
 
     test('the label showing is still the next thing a press would do', () => {
+        // Confirm and Next now share the primary slot — this is the whole
+        // point of the change: the maintainer wants one button to click
+        // repeatedly to walk the queue.
         const shown = () => labels().find((span) => span.style.visibility === 'visible')?.dataset.label ?? null;
 
         enter('idle');
         expect(shown()).toBe('▶ Bulk Sell');
         enter('preparing');
-        expect(shown()).toBe('⏭ Skip');
+        expect(shown()).toBe('✔ Confirm');
         enter('awaiting_confirm');
-        expect(shown()).toBe('⏭ Skip');
+        expect(shown()).toBe('✔ Confirm');
         enter('awaiting_next');
         expect(shown()).toBe('▶ Next');
+    });
+
+    test('Confirm and Next occupy the same slot — the primary button never changes identity', () => {
+        // Assert on element identity, not on pixel geometry: happy-dom does no
+        // layout, so the property under test is that the *same element* reads
+        // Confirm in one state and Next in the next, not that two elements
+        // happen to sit at the same coordinates.
+        enter('awaiting_confirm');
+        const primaryDuringConfirm = bulkSell.chip.querySelector(`.${CHIP}-main`);
+        const rowChildren = () => [...bulkSell.chip.querySelector(`.${CHIP}-status`).parentElement.children];
+        const indexDuringConfirm = rowChildren().indexOf(primaryDuringConfirm);
+
+        enter('awaiting_next');
+        const primaryDuringNext = bulkSell.chip.querySelector(`.${CHIP}-main`);
+        const indexDuringNext = rowChildren().indexOf(primaryDuringNext);
+
+        expect(primaryDuringNext).toBe(primaryDuringConfirm);
+        expect(indexDuringNext).toBe(indexDuringConfirm);
     });
 
     test('the status line is a fixed slot rather than one that follows its text', () => {

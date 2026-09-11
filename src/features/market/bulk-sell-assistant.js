@@ -24,6 +24,12 @@
  * level and quantity this step queued, and only once per step. One click of
  * yours is still one sale; it is no longer the game's button that has to
  * receive it.
+ *
+ * Confirm and Next occupy the strip's one primary slot — the button that would
+ * otherwise sit idle between the two halves of every step — so a run is a
+ * repeated click in one place rather than a press here, a press there. Skip
+ * keeps its own slot beside it: sharing the primary slot would make an
+ * impatient extra click skip an item that was one press from selling.
  */
 
 import config from '../../core/config.js';
@@ -59,11 +65,11 @@ const STATUS_EXPANDED_KEY = 'bulkSellStatusExpanded';
 const STATUS_WIDTH = '340px';
 /**
  * Every label the main button carries, so the shared widget can size it to the
- * widest of them once. `⏭ Skip` and `▶ Next` are deliberately different
- * actions and are not going to be shortened into agreeing; the button is made
- * to stop resizing instead.
+ * widest of them once. This is the primary slot — Confirm and Next land here
+ * so a run is one button, clicked repeatedly in one spot; Skip has its own
+ * slot beside it precisely so it is never the thing an extra click lands on.
  */
-const MAIN_LABELS = ['▶ Bulk Sell', '⏭ Skip', '▶ Next'];
+const MAIN_LABELS = ['▶ Bulk Sell', '✔ Confirm', '▶ Next'];
 /** The source that is not a tab: whatever the Watchlist is currently tracking */
 const WATCHLIST_SOURCE = 'watchlist';
 
@@ -582,22 +588,28 @@ class BulkSellAssistant {
         });
         tabSel.addEventListener('focus', () => this._populateTabSelect());
 
+        // The primary slot: Bulk Sell, then Confirm, then Next, one after the
+        // other in the same place — a run is this one button clicked
+        // repeatedly. What each click does depends on the state, decided in
+        // `_onMainClick`.
         widget.main.addEventListener('click', () => this._onMainClick());
 
-        // Confirms the open sale without the cursor leaving the strip. A plain
-        // click listener and nothing else: no key binding, no pointer-down, no
-        // repeat — the only thing that can sell is a deliberate press of this.
-        const confirmBtn = document.createElement('button');
-        confirmBtn.type = 'button';
-        confirmBtn.className = `${CHIP_ID}-confirm`;
-        confirmBtn.textContent = '✔ Confirm';
-        // Hidden with `visibility`, never `display`: a Confirm that vanishes
-        // from the layout takes its width with it and slides the buttons
-        // around it sideways, which is the whole complaint.
-        confirmBtn.style.cssText =
-            'visibility:hidden; border:0; border-radius:5px; background:rgba(76,175,80,0.25); color:#a5d6a7; ' +
+        // Skip has its own slot beside the primary one, offered only while an
+        // item is open (checking it or awaiting its confirm) — never sharing
+        // the primary slot, where an impatient extra click would land on it
+        // instead of a Confirm or a Next and skip a sale that was one press
+        // away. A plain click listener and nothing else.
+        const skipBtn = document.createElement('button');
+        skipBtn.type = 'button';
+        skipBtn.className = `${CHIP_ID}-skip`;
+        skipBtn.textContent = '⏭ Skip';
+        // Hidden with `visibility`, never `display`: a Skip that vanishes from
+        // the layout takes its width with it and slides the buttons around it
+        // sideways, which is the whole complaint.
+        skipBtn.style.cssText =
+            'visibility:hidden; border:0; border-radius:5px; background:rgba(255,255,255,0.1); color:#cfd8ea; ' +
             'font-weight:700; font-size:12px; padding:3px 7px; cursor:pointer; font-family:inherit;';
-        confirmBtn.addEventListener('click', () => this._onConfirmClick());
+        skipBtn.addEventListener('click', () => this._skip('skipped'));
 
         const stopBtn = document.createElement('button');
         stopBtn.className = `${CHIP_ID}-stop`;
@@ -659,7 +671,7 @@ class BulkSellAssistant {
             'font-size:11px; line-height:1.35; color:#cfd8ea; padding-top:2px;';
 
         widget.extras.append(moreBtn, tabSel);
-        widget.row.insertBefore(confirmBtn, widget.main);
+        widget.row.insertBefore(skipBtn, widget.main);
         widget.row.insertBefore(stopBtn, widget.gear);
         chip.insertBefore(detailBox, widget.settings);
         widget.settings.classList.add(`${CHIP_ID}-rules`);
@@ -810,7 +822,7 @@ class BulkSellAssistant {
         const tabSel = this.chip.querySelector(`.${CHIP_ID}-tab`);
         const mainBtn = this.chip.querySelector(`.${CHIP_ID}-main`);
         const stopBtn = this.chip.querySelector(`.${CHIP_ID}-stop`);
-        const confirmBtn = this.chip.querySelector(`.${CHIP_ID}-confirm`);
+        const skipBtn = this.chip.querySelector(`.${CHIP_ID}-skip`);
         const detailBox = this.chip.querySelector(`.${CHIP_ID}-detail`);
         const moreBtn = this.chip.querySelector(`.${CHIP_ID}-more`);
         const progress = this.queue.length ? `${Math.min(this.index + 1, this.queue.length)}/${this.queue.length}` : '';
@@ -840,39 +852,39 @@ class BulkSellAssistant {
         const show = (element, visible) => {
             if (element) element.style.visibility = visible ? 'visible' : 'hidden';
         };
+        // The primary slot enables or dims itself the same way in every
+        // state, rather than each branch below repeating the three writes.
+        const setMainEnabled = (enabled, title) => {
+            mainBtn.disabled = !enabled;
+            mainBtn.style.opacity = enabled ? '1' : '0.5';
+            mainBtn.style.cursor = enabled ? 'pointer' : 'default';
+            mainBtn.title = title;
+        };
 
         if (this.state === 'idle' || this.state === 'done') {
             say(this.statusNote || 'Sell every tradable inventory item, one confirm per item');
             tabSel.style.display = this._hasTabs ? '' : 'none';
             show(tabSel, this._hasTabs);
-            show(confirmBtn, false);
+            show(skipBtn, false);
             setMain('▶ Bulk Sell');
-            mainBtn.title =
-                'Queue every tradable inventory item (or only the selected Toolasha tab), most valuable stack first. Each item opens a prefilled sell modal — oversupplied or slow-queue items insta-sell to the best bid, others list at the ask. Confirming the modal \u2014 in the game or with this panel\u2019s Confirm button \u2014 advances to the next item.';
+            setMainEnabled(
+                true,
+                'Queue every tradable inventory item (or only the selected Toolasha tab), most valuable stack first. Each item opens a prefilled sell modal — oversupplied or slow-queue items insta-sell to the best bid, others list at the ask. Confirming the modal — in the game or with this panel’s Confirm button — advances to the next item.'
+            );
             show(stopBtn, false);
             return;
         }
 
         show(tabSel, false);
         show(stopBtn, true);
-        // Only offered while a market sell modal of ours is the thing on screen.
-        // The vendor path has no modal to check the item and quantity against,
-        // so it keeps the game's own "Sell For" button and nothing else.
-        if (confirmBtn) {
-            const offered = this.state === 'awaiting_confirm' && !this.decision?.vendor;
-            show(confirmBtn, offered);
-            confirmBtn.disabled = offered ? this._confirmSent() : true;
-            confirmBtn.style.opacity = confirmBtn.disabled ? '0.5' : '1';
-            confirmBtn.style.cursor = confirmBtn.disabled ? 'default' : 'pointer';
-            confirmBtn.title = confirmBtn.disabled
-                ? 'Already confirmed — waiting for the game to close the modal'
-                : 'Press the sell modal’s own confirm button. Refuses unless the modal is open and ' +
-                  'showing exactly the item and quantity this step queued.';
-        }
         if (this.state === 'preparing') {
             say(`${progress} · checking ${this.current?.name || ''}${this.statusNote ? ` (${this.statusNote})` : ''}…`);
-            setMain('⏭ Skip');
-            mainBtn.title = 'Skip this item';
+            // Nothing to confirm yet — the primary slot holds Confirm's place
+            // but stays dim until a decision is offered.
+            setMain('✔ Confirm');
+            setMainEnabled(false, 'Checking this item — nothing to confirm yet');
+            show(skipBtn, true);
+            skipBtn.title = 'Skip this item';
         } else if (this.state === 'awaiting_confirm') {
             const d = this.decision;
             const verb = d?.vendor ? 'Vendor-sell' : d?.insta ? 'Insta-sell' : 'List';
@@ -889,12 +901,30 @@ class BulkSellAssistant {
             // reason, which is past where the strip truncates — so a Confirm
             // that had refused for a stated reason looked like a dead button.
             say(this.confirmNote ? `${confirmHint} — ${detail}` : `${detail} — ${confirmHint}`);
-            setMain('⏭ Skip');
-            mainBtn.title = 'Close the modal and skip this item';
+            setMain('✔ Confirm');
+            // Only offered while a market sell modal of ours is the thing on
+            // screen. The vendor path has no modal to check the item and
+            // quantity against, so it keeps the game's own "Sell For" button
+            // and nothing else — the primary slot stays dim rather than
+            // pressing something that cannot be found.
+            if (d?.vendor) {
+                setMainEnabled(false, 'click Sell For in the item menu');
+            } else if (this._confirmSent()) {
+                setMainEnabled(false, 'Already confirmed — waiting for the game to close the modal');
+            } else {
+                setMainEnabled(
+                    true,
+                    'Press the sell modal’s own confirm button. Refuses unless the modal is open and ' +
+                        'showing exactly the item and quantity this step queued.'
+                );
+            }
+            show(skipBtn, true);
+            skipBtn.title = 'Close the modal and skip this item';
         } else if (this.state === 'awaiting_next') {
             say(`${progress} · ${this.current?.name || ''} dealt with — press Next for the next item`);
             setMain('▶ Next');
-            mainBtn.title = 'Open the next item. Its own click, so one click never does two game actions.';
+            setMainEnabled(true, 'Open the next item. Its own click, so one click never does two game actions.');
+            show(skipBtn, false);
         }
     }
 
@@ -1083,6 +1113,14 @@ class BulkSellAssistant {
         target.button.click();
     }
 
+    /**
+     * The primary slot's one action, which changes with the state so Confirm
+     * and Next can share the same button: Start while idle, Confirm while a
+     * sale is awaiting one, Next once the item is dealt with. Skip lives on
+     * its own button precisely so it is never what a press here does — a
+     * `preparing` click falls through and does nothing, because there is
+     * nothing yet to confirm and skipping is the other button's job.
+     */
     _onMainClick() {
         if (this.state === 'idle' || this.state === 'done') {
             this._start();
@@ -1091,8 +1129,8 @@ class BulkSellAssistant {
             this.state = 'preparing';
             this._render();
             this._prepareCurrent();
-        } else {
-            this._skip('skipped');
+        } else if (this.state === 'awaiting_confirm') {
+            this._onConfirmClick();
         }
     }
 
