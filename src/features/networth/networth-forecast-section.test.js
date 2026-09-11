@@ -1,6 +1,16 @@
 /** @vitest-environment happy-dom */
 import { describe, it, expect } from 'vitest';
-import { createForecastSection, parseForecastTarget } from './networth-forecast-section.js';
+import {
+    createForecastSection,
+    parseForecastTarget,
+    buildFanPlot,
+    dayTicks,
+    fanDomain,
+    placeEndLabels,
+    valueTicks,
+} from './networth-forecast-section.js';
+import { forecastNetworth } from './networth-forecast.js';
+import { networthFormatter } from '../../utils/formatters.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -117,5 +127,157 @@ describe('parseForecastTarget', () => {
 
     it.each(['abc', '', '   ', null, undefined, '-5', '0'])('reads %j as no target', (entry) => {
         expect(parseForecastTarget(entry)).toBeNull();
+    });
+});
+
+/**
+ * A forecast shaped by hand, so the labels are checked against numbers the model did not pick.
+ * @param {Object<string, number>} ends - Each line's day-30 value
+ * @returns {Object} A completed forecast's `days` and `fan`
+ */
+function knownForecast(ends) {
+    const line = (end) => Array.from({ length: 31 }, (_, day) => 11.31e9 + ((end - 11.31e9) * day) / 30);
+    return { days: 30, fan: Object.fromEntries(Object.entries(ends).map(([key, end]) => [key, line(end)])) };
+}
+
+const SPREAD_ENDS = { p10: 13.14e9, p25: 13.7e9, p50: 14.22e9, p75: 14.8e9, p90: 15.36e9 };
+
+/**
+ * @param {HTMLElement} root - Where to look
+ * @param {string} selector - Label class selector
+ * @returns {Array<string>} The labels' text, in DOM order
+ */
+const texts = (root, selector) => [...root.querySelectorAll(selector)].map((node) => node.textContent);
+
+describe('forecast chart labels', () => {
+    it('names every line at its end with its horizon value, highest first', () => {
+        const plot = buildFanPlot(knownForecast(SPREAD_ENDS));
+        expect(texts(plot, '.mwi-nw-forecast-end-label')).toEqual([
+            'p90 15.36B',
+            'p75 14.80B',
+            'p50 14.22B',
+            'p25 13.70B',
+            'p10 13.14B',
+        ]);
+    });
+
+    it('labels the days from 0 to the horizon and the values with the stats row formatter', () => {
+        const plot = buildFanPlot(knownForecast(SPREAD_ENDS));
+        expect(texts(plot, '.mwi-nw-forecast-x-tick')).toEqual(['0d', '5d', '10d', '15d', '20d', '25d', '30d']);
+        const ticks = texts(plot, '.mwi-nw-forecast-y-tick');
+        expect(ticks.length).toBeGreaterThanOrEqual(3);
+        for (const tick of ticks) expect(tick).toMatch(/^\d+\.\d{2}B$/);
+    });
+
+    it('keeps only the outer lines and the median when the lines bunch, apart and inside the plot', () => {
+        const plot = buildFanPlot(knownForecast({ p10: 10e9, p25: 14.2e9, p50: 14.21e9, p75: 14.22e9, p90: 14.23e9 }));
+        const labels = [...plot.querySelectorAll('.mwi-nw-forecast-end-label')];
+        expect(labels.map((label) => label.dataset.level)).toEqual(['p90', 'p50', 'p10']);
+        const tops = labels.map((label) => Number.parseFloat(label.style.top));
+        expect(tops[1] - tops[0]).toBeGreaterThanOrEqual(13);
+        expect(tops[2] - tops[1]).toBeGreaterThanOrEqual(13);
+        for (const top of tops) {
+            expect(top).toBeGreaterThanOrEqual(6.5);
+            expect(top).toBeLessThanOrEqual(160 - 6.5);
+        }
+    });
+
+    it('draws a flat forecast without NaN or repeated value ticks', () => {
+        const fan = Object.fromEntries(
+            ['p10', 'p25', 'p50', 'p75', 'p90'].map((key) => [key, new Array(31).fill(1000)])
+        );
+        const plot = buildFanPlot({ days: 30, fan });
+        expect(plot.innerHTML).not.toContain('NaN');
+        const ticks = texts(plot, '.mwi-nw-forecast-y-tick');
+        expect(ticks.length).toBeGreaterThan(0);
+        expect(new Set(ticks).size).toBe(ticks.length);
+        expect(texts(plot, '.mwi-nw-forecast-end-label')).toEqual(['p90 1.00K', 'p50 1.00K', 'p10 1.00K']);
+    });
+
+    it('draws an empty fan without NaN or line labels', () => {
+        const plot = buildFanPlot({ days: 30, fan: {} });
+        expect(plot.innerHTML).not.toContain('NaN');
+        expect(plot.querySelectorAll('.mwi-nw-forecast-end-label')).toHaveLength(0);
+    });
+
+    it('labels the live section with the values its stats row reports', () => {
+        const section = createForecastSection({ getHistory: billionsHistory, seed: 11 });
+        section.element.querySelector('.mwi-nw-forecast-toggle').click();
+        const forecast = forecastNetworth(billionsHistory(), { days: 30, seed: 11 });
+        const expected = (key) => networthFormatter(Math.round(forecast.fan[key].at(-1)));
+
+        const labels = texts(section.element, '.mwi-nw-forecast-end-label');
+        expect(labels).toContain(`p50 ${expected('p50')}`);
+        expect(labels).toContain(`p10 ${expected('p10')}`);
+        expect(labels).toContain(`p90 ${expected('p90')}`);
+        const figures = section.element.querySelector('.mwi-nw-forecast-figures').textContent;
+        expect(figures).toContain(`p50 day 30${expected('p50')}`);
+        expect(figures).toContain(`${expected('p10')} – ${expected('p90')}`);
+    });
+
+    it.each([
+        [60, ['0d', '10d', '20d', '30d', '40d', '50d', '60d']],
+        [90, ['0d', '15d', '30d', '45d', '60d', '75d', '90d']],
+    ])('ticks a %i-day horizon', (days, expected) => {
+        const section = createForecastSection({ getHistory: billionsHistory, seed: 11 });
+        section.element.querySelector('.mwi-nw-forecast-toggle').click();
+        const horizon = section.element.querySelector('.mwi-nw-forecast-horizon');
+        horizon.value = String(days);
+        horizon.dispatchEvent(new Event('change'));
+        expect(texts(section.element, '.mwi-nw-forecast-x-tick')).toEqual(expected);
+        expect(section.element.innerHTML).not.toContain('NaN');
+    });
+
+    it('draws nothing labelled, and no NaN, when there is no history', () => {
+        const section = createForecastSection({ getHistory: () => [], seed: 11 });
+        section.element.querySelector('.mwi-nw-forecast-toggle').click();
+        expect(section.element.querySelector('.mwi-nw-forecast-insufficient')).not.toBeNull();
+        expect(section.element.querySelectorAll('.mwi-nw-forecast-end-label')).toHaveLength(0);
+        expect(section.element.innerHTML).not.toContain('NaN');
+    });
+});
+
+describe('chart label helpers', () => {
+    it('ticks values on round steps inside the range', () => {
+        expect(valueTicks(13e9, 15.5e9)).toEqual([13e9, 13.5e9, 14e9, 14.5e9, 15e9, 15.5e9]);
+        expect(valueTicks(13.14e9, 15.36e9)).toEqual([13.5e9, 14e9, 14.5e9, 15e9]);
+    });
+
+    it.each([
+        [0, 0],
+        [5, 5],
+        [Number.NaN, 1],
+        [1, Number.POSITIVE_INFINITY],
+    ])('gives no value ticks for the range %d to %d', (min, max) => {
+        expect(valueTicks(min, max)).toEqual([]);
+    });
+
+    it.each([
+        [30, [0, 5, 10, 15, 20, 25, 30]],
+        [7, [0, 2, 4, 7]],
+        [1, [0, 1]],
+        [0, [0]],
+        [Number.NaN, [0]],
+    ])('ticks a %d-day horizon', (days, expected) => {
+        expect(dayTicks(days)).toEqual(expected);
+    });
+
+    it('gives a flat or empty fan a positive span', () => {
+        expect(fanDomain({ fan: { p50: [1000, 1000] } })).toEqual({ min: 990, max: 1010 });
+        expect(fanDomain({ fan: {} })).toEqual({ min: 0, max: 1 });
+    });
+
+    it('leaves clear labels level with their lines', () => {
+        const entries = [0, 40, 80, 120, 150].map((y, rank) => ({ y, rank, required: rank % 2 === 0 }));
+        const placed = placeEndLabels(entries);
+        expect(placed).toHaveLength(5);
+        expect(placed.map((entry) => entry.top)).toEqual([6.5, 40, 80, 120, 150]);
+    });
+
+    it('stacks coincident labels highest percentile first and keeps them inside the plot', () => {
+        const entries = [0, 1, 2, 3, 4].map((rank) => ({ y: 158, rank, required: rank !== 1 && rank !== 3 }));
+        const placed = placeEndLabels(entries);
+        expect(placed.map((entry) => entry.rank)).toEqual([4, 2, 0]);
+        expect(placed.map((entry) => entry.top)).toEqual([127.5, 140.5, 153.5]);
     });
 });

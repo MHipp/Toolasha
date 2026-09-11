@@ -24,54 +24,276 @@ const FAN_LINES = [
 ];
 
 const PLOT_WIDTH = 640;
+
+/**
+ * The plot's drawn height in CSS px. The SVG's viewBox is this tall too, so a
+ * y in viewBox units is a y in px and the HTML labels beside it can be placed
+ * without measuring anything.
+ */
 const PLOT_HEIGHT = 160;
+
+/** Gutters in CSS px: value ticks left of the plot, line names right of it, days below. */
+const VALUE_GUTTER = 52;
+const LABEL_GUTTER = 88;
+const DAY_GUTTER = 16;
+
+/** One 11px label line; end labels closer together than this overlap. */
+const LABEL_HEIGHT = 13;
+
+/** Headroom above and below the fan so the outer lines do not sit on the frame. */
+const DOMAIN_PADDING = 0.04;
+
+/** Below this relative spread the fan is one line, and float noise must not be drawn as spread. */
+const FLAT_TOLERANCE = 1e-6;
+
+/** At most this many intervals along the day axis. */
+const MAX_DAY_INTERVALS = 6;
+
+/**
+ * The value range the plot maps onto its height.
+ * @param {Object} forecast - A completed forecast
+ * @returns {{min: number, max: number}} Always a positive span
+ */
+export function fanDomain(forecast) {
+    const values = FAN_LINES.flatMap((line) => forecast?.fan?.[line.key] ?? []).filter(Number.isFinite);
+    if (values.length === 0) return { min: 0, max: 1 };
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    if (max - min <= Math.abs(max) * FLAT_TOLERANCE) {
+        const pad = Math.abs(max) * 0.01 || 1;
+        return { min: min - pad, max: max + pad };
+    }
+    const pad = (max - min) * DOMAIN_PADDING;
+    return { min: min - pad, max: max + pad };
+}
+
+/**
+ * Round-numbered value ticks inside a range, 1/2/2.5/5 × a power of ten apart.
+ * @param {number} min - Bottom of the range
+ * @param {number} max - Top of the range
+ * @param {number} [count] - Roughly how many ticks; never more than `count + 2`
+ * @returns {Array<number>} Ascending tick values, empty for an unusable range
+ */
+export function valueTicks(min, max, count = 4) {
+    if (!Number.isFinite(min) || !Number.isFinite(max) || !(max > min)) return [];
+    const span = max - min;
+    const magnitude = 10 ** Math.floor(Math.log10(span / (count + 1)));
+    const step = [1, 2, 2.5, 5, 10].map((multiple) => multiple * magnitude).find((size) => span / size <= count + 1);
+    const ticks = [];
+    for (let index = Math.ceil(min / step); index * step <= max; index += 1) {
+        ticks.push(Number((index * step).toPrecision(12)));
+    }
+    return ticks;
+}
+
+/**
+ * Day ticks from 0 to the horizon, always ending on the horizon itself.
+ * @param {number} horizon - Last projected day
+ * @returns {Array<number>} Ascending days
+ */
+export function dayTicks(horizon) {
+    const days = Math.floor(horizon);
+    if (!(days >= 1)) return [0];
+    const step =
+        [1, 2, 5, 10, 15, 20, 30, 50, 60, 90, 100, 180, 365].find((size) => days / size <= MAX_DAY_INTERVALS) ??
+        Math.ceil(days / MAX_DAY_INTERVALS);
+    const ticks = [];
+    for (let day = 0; day <= days; day += step) ticks.push(day);
+    if (ticks.at(-1) !== days) {
+        // A final tick crowding the horizon's would print on top of it
+        if (days - ticks.at(-1) <= step / 2) ticks.pop();
+        ticks.push(days);
+    }
+    return ticks;
+}
+
+/**
+ * Vertical positions for the line-end labels.
+ *
+ * Every label sits level with its line when all of them clear each other.
+ * When any two would overlap, only the required labels are kept — the
+ * outermost lines and the median, which are the figures the stats row
+ * reports — and those are pushed apart just far enough to read. Spreading all
+ * five instead would leave labels far from the lines they name.
+ *
+ * @param {Array<{y: number, rank: number, required: boolean}>} entries - Line ends in px from the
+ *   top; `rank` orders ties, higher percentile above
+ * @param {number} [height] - Plot height in px
+ * @param {number} [gap] - Minimum centre-to-centre distance in px
+ * @returns {Array<Object>} The kept entries, top first, each with a `top` in px
+ */
+export function placeEndLabels(entries, height = PLOT_HEIGHT, gap = LABEL_HEIGHT) {
+    const clamp = (y) => Math.min(height - gap / 2, Math.max(gap / 2, y));
+    const placed = [...entries]
+        .sort((a, b) => a.y - b.y || b.rank - a.rank)
+        .map((entry) => ({ ...entry, top: clamp(entry.y) }));
+    const clear = placed.every((entry, index) => index === 0 || entry.top - placed[index - 1].top >= gap);
+    if (clear) return placed;
+
+    const kept = placed.filter((entry) => entry.required);
+    for (let index = 1; index < kept.length; index += 1) {
+        kept[index].top = Math.max(kept[index].top, kept[index - 1].top + gap);
+    }
+    const last = kept.length - 1;
+    if (last >= 0) kept[last].top = Math.min(kept[last].top, height - gap / 2);
+    for (let index = last - 1; index >= 0; index -= 1) {
+        kept[index].top = Math.min(kept[index].top, kept[index + 1].top - gap);
+    }
+    return kept;
+}
+
+/**
+ * A value's y in the plot, in px from the top.
+ * @param {number} value - Net worth
+ * @param {{min: number, max: number}} domain - From {@link fanDomain}
+ * @returns {number} y
+ */
+function valueToY(value, domain) {
+    return PLOT_HEIGHT - ((value - domain.min) / (domain.max - domain.min)) * PLOT_HEIGHT;
+}
 
 /**
  * Map a fan series to an SVG polyline `points` string.
  * @param {Array<number>} values - One value per day, day 0 first
- * @param {number} min - Lowest value across the whole fan
- * @param {number} max - Highest value across the whole fan
+ * @param {{min: number, max: number}} domain - From {@link fanDomain}
  * @returns {string} Points attribute
  */
-function polylinePoints(values, min, max) {
-    const span = max - min || 1;
+function polylinePoints(values, domain) {
     const lastIndex = Math.max(1, values.length - 1);
     return values
         .map((value, index) => {
             const x = (index / lastIndex) * PLOT_WIDTH;
-            const y = PLOT_HEIGHT - ((value - min) / span) * PLOT_HEIGHT;
-            return `${x.toFixed(2)},${y.toFixed(2)}`;
+            return `${x.toFixed(2)},${valueToY(value, domain).toFixed(2)}`;
         })
         .join(' ');
 }
 
 /**
- * The fan as five SVG polylines.
- * @param {Object} forecast - A completed forecast
- * @returns {SVGElement} The plot
+ * An absolutely placed axis or line label.
+ * @param {string} className - Label class
+ * @param {string} text - Label text
+ * @param {string} position - Extra CSS placing it
+ * @returns {HTMLElement} The label
  */
-function buildFanSvg(forecast) {
+function buildLabel(className, text, position) {
+    const label = document.createElement('span');
+    label.className = className;
+    label.textContent = text;
+    label.style.cssText = `position: absolute; white-space: nowrap; line-height: 1; ${position}`;
+    return label;
+}
+
+/**
+ * The fan with value ticks, day ticks and each line named at its right-hand end.
+ *
+ * Hand-drawn rather than a second Chart.js instance: the lines stretch with the
+ * panel (`preserveAspectRatio="none"`), so text drawn inside the SVG would
+ * stretch with them. Labels are HTML in fixed-width gutters around it, placed by
+ * px vertically (the plot height is fixed) and by percent horizontally, so they
+ * stay readable and inside the panel at any width. Styled after the main
+ * chart's axes: `#999` ticks, `#333` grid, `networthFormatter` values.
+ *
+ * @param {Object} forecast - A completed forecast
+ * @returns {HTMLElement} The plot and its labels
+ */
+export function buildFanPlot(forecast) {
+    const domain = fanDomain(forecast);
+    const horizon = Math.max(1, forecast.days ?? (forecast.fan?.[FAN_LINES[0].key]?.length ?? 2) - 1);
+
+    const frame = document.createElement('div');
+    frame.className = 'mwi-nw-forecast-plot-frame';
+    frame.style.cssText = `
+        display: grid;
+        grid-template-columns: ${VALUE_GUTTER}px minmax(0, 1fr) ${LABEL_GUTTER}px;
+        grid-template-rows: ${PLOT_HEIGHT}px ${DAY_GUTTER}px;
+        font-size: 11px;
+        color: #999;
+    `;
+    const cells = Array.from({ length: 6 }, () => {
+        const cell = document.createElement('div');
+        cell.style.cssText = 'position: relative; min-width: 0;';
+        frame.appendChild(cell);
+        return cell;
+    });
+    const [valueAxis, plotCell, labelCell, , dayAxis] = cells;
+
     const svg = document.createElementNS(SVG_NS, 'svg');
     svg.setAttribute('viewBox', `0 0 ${PLOT_WIDTH} ${PLOT_HEIGHT}`);
     svg.setAttribute('preserveAspectRatio', 'none');
     svg.setAttribute('class', 'mwi-nw-forecast-fan');
-    svg.style.cssText = 'width: 100%; height: 160px; display: block;';
+    svg.style.cssText = `width: 100%; height: ${PLOT_HEIGHT}px; display: block;`;
 
-    const all = FAN_LINES.flatMap((line) => forecast.fan[line.key]);
-    const min = Math.min(...all);
-    const max = Math.max(...all);
+    const gridLine = (x1, y1, x2, y2) => {
+        const line = document.createElementNS(SVG_NS, 'line');
+        for (const [name, value] of Object.entries({ x1, y1, x2, y2 })) line.setAttribute(name, value.toFixed(2));
+        line.setAttribute('stroke', '#333');
+        line.setAttribute('stroke-width', '1');
+        line.setAttribute('vector-effect', 'non-scaling-stroke');
+        svg.appendChild(line);
+    };
 
-    for (const line of FAN_LINES) {
+    // Two ticks the formatter prints alike (a narrow fan in the thousands) would read as a mislabel
+    let previousText = null;
+    for (const value of valueTicks(domain.min, domain.max)) {
+        const text = networthFormatter(Math.round(value));
+        if (text === previousText) continue;
+        previousText = text;
+        const y = valueToY(value, domain);
+        gridLine(0, y, PLOT_WIDTH, y);
+        valueAxis.appendChild(
+            buildLabel('mwi-nw-forecast-y-tick', text, `right: 6px; top: ${y}px; transform: translateY(-50%);`)
+        );
+    }
+
+    for (const day of dayTicks(horizon)) {
+        const x = (day / horizon) * PLOT_WIDTH;
+        gridLine(x, 0, x, PLOT_HEIGHT);
+        dayAxis.appendChild(
+            buildLabel(
+                'mwi-nw-forecast-x-tick',
+                `${day}d`,
+                `left: ${(day / horizon) * 100}%; top: 3px; transform: translateX(-50%);`
+            )
+        );
+    }
+
+    const widest = Math.max(...FAN_LINES.map((line) => line.width));
+    const ends = [];
+    FAN_LINES.forEach((line, index) => {
+        const values = forecast.fan?.[line.key] ?? [];
         const polyline = document.createElementNS(SVG_NS, 'polyline');
-        polyline.setAttribute('points', polylinePoints(forecast.fan[line.key], min, max));
+        polyline.setAttribute('points', polylinePoints(values, domain));
         polyline.setAttribute('fill', 'none');
         polyline.setAttribute('stroke', line.color);
         polyline.setAttribute('stroke-width', String(line.width));
+        polyline.setAttribute('vector-effect', 'non-scaling-stroke');
         polyline.dataset.level = line.key;
         svg.appendChild(polyline);
+
+        const end = values.at(-1);
+        if (!Number.isFinite(end)) return;
+        ends.push({
+            line,
+            value: end,
+            y: valueToY(end, domain),
+            rank: index,
+            required: index === 0 || index === FAN_LINES.length - 1 || line.width === widest,
+        });
+    });
+
+    for (const entry of placeEndLabels(ends)) {
+        const label = buildLabel(
+            'mwi-nw-forecast-end-label',
+            `${entry.line.label} ${networthFormatter(Math.round(entry.value))}`,
+            `left: 6px; right: 0; top: ${entry.top}px; transform: translateY(-50%); overflow: hidden; ` +
+                `text-overflow: ellipsis; color: ${entry.line.color};`
+        );
+        label.dataset.level = entry.line.key;
+        labelCell.appendChild(label);
     }
 
-    return svg;
+    plotCell.appendChild(svg);
+    return frame;
 }
 
 /**
@@ -217,7 +439,7 @@ export function createForecastSection({ getHistory, seed = randomSeed() }) {
             return;
         }
 
-        plot.appendChild(buildFanSvg(forecast));
+        plot.appendChild(buildFanPlot(forecast));
 
         figures.appendChild(
             buildFigure(`p50 day ${forecast.days}`, networthFormatter(Math.round(forecast.fan.p50.at(-1))))
