@@ -15,6 +15,7 @@ import {
     DUNGEON_KEY_COUNTS,
     DUNGEON_PARTY_FAILED_RE,
 } from '../../utils/game-text.js';
+import { RECOVERY_FALLBACK_MAX_MS } from './dungeon-pace.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { createMutationWatcher } from '../../utils/dom-observer-helpers.js';
 import { gameDigitsSource } from '../../utils/number-parser.js';
@@ -369,6 +370,20 @@ class DungeonTrackerChatAnnotations {
         }
 
         if (this.currentCharacterId() !== passCharacterId) return;
+
+        // Whenever the tracker can name a dungeon, remember it — even on a pass
+        // with no new run to label. A pass fires on any new chat message, not
+        // only a key-count line, and on this account party chat carries nothing
+        // but key-count lines: those land exactly in the gap between runs, where
+        // the tracker has just cleared the finished run and has not yet armed
+        // the next one. Without this, the only call trackedDungeonName() ever
+        // got was from inside that same gap, and lastSeenDungeonName could never
+        // pick up a name from anywhere. A tab switch or an unrelated message
+        // arriving mid-run has no such gap, so this is the catch — and if the
+        // cache had gone stale since the last successful pass, it also makes
+        // hasDungeonNameSource() true right below, which is what fires the redo.
+        const trackedNow = this.trackedDungeonName();
+        if (trackedNow) this.lastSeenDungeonName = trackedNow;
 
         // A pass can run before anything is able to name the dungeon: on a reload
         // mid-run the "Battle started:" line scrolled out of chat long ago, and the
@@ -1002,9 +1017,57 @@ class DungeonTrackerChatAnnotations {
             return this.lastSeenDungeonName;
         }
 
+        // 4th priority: the newest run storage already has for this exact team,
+        // bounded so it cannot mislabel a run neither chat nor the tracker can
+        // place. Backstop for whatever gap the caching above still leaves — a
+        // first-ever pass on a fresh session, for instance, has nothing cached
+        // yet either.
+        const storedName = this.storedDungeonNameFallback(events[currentIndex]);
+        if (storedName) {
+            return storedName;
+        }
+
         // Final fallback
         console.warn('[Dungeon Tracker Debug] ALL PRIORITIES FAILED for index', currentIndex, '-> Unknown');
         return 'Unknown';
+    }
+
+    /**
+     * The dungeon storage's newest run for this event's team names, bounded so
+     * it cannot mislabel a run chat and the tracker both fail to place.
+     *
+     * Two bounds, both required:
+     *
+     * - the stored run's team must be this exact team (`getTeamKey` sorts and
+     *   joins the same way both sides), so a teammate's other party never
+     *   answers for this one;
+     * - its timestamp must be within {@link RECOVERY_FALLBACK_MAX_MS} (45
+     *   minutes — the same "longest a run may plausibly have taken" bound
+     *   `dungeon-pace.js` already reasons with) of this event's own timestamp.
+     *
+     * The between-runs gap this exists for is seconds wide, so 45 minutes is
+     * generous next to it — but it still refuses a team's last-known dungeon
+     * from an unrelated session hours or days earlier, which is exactly the
+     * kind of stale answer a plain "most recent run" lookup would otherwise
+     * hand back.
+     *
+     * @param {{type: string, team?: Array<string>, timestamp: Date}} [event] -
+     *   The chat event a name is being looked up for
+     * @returns {string|null} The bounded stored dungeon name, or null
+     */
+    storedDungeonNameFallback(event) {
+        if (event?.type !== 'key' || !Array.isArray(event.team) || !event.team.length) return null;
+
+        const teamKey = dungeonTrackerStorage.getTeamKey(event.team);
+        const stored = dungeonTrackerStorage.getNewestLoadedRunForTeam?.(teamKey);
+        if (!stored?.dungeonName || stored.dungeonName === 'Unknown') return null;
+
+        const storedTime = new Date(stored.timestamp).getTime();
+        const eventTime = event.timestamp?.getTime?.();
+        if (!Number.isFinite(storedTime) || !Number.isFinite(eventTime)) return null;
+        if (Math.abs(eventTime - storedTime) > RECOVERY_FALLBACK_MAX_MS) return null;
+
+        return stored.dungeonName;
     }
 
     /**
@@ -1015,16 +1078,25 @@ class DungeonTrackerChatAnnotations {
      * there is no `currentRun` even though the character is demonstrably in a
      * dungeon.
      *
+     * A successful answer is cached into `lastSeenDungeonName` before it is
+     * returned — this is the *only* place the tracker is asked to name a
+     * dungeon, so it is also the only place that can catch it mid-run and bank
+     * the name for the between-runs gap, where this same method comes back
+     * empty every time (the tracker has cleared the finished run and not yet
+     * armed the next one).
+     *
      * @returns {string|null} Dungeon name, or null when the tracker cannot say
      */
     trackedDungeonName() {
         const currentRun = dungeonTracker.getCurrentRun();
         if (currentRun?.dungeonName && currentRun.dungeonName !== 'Unknown') {
+            this.lastSeenDungeonName = currentRun.dungeonName;
             return currentRun.dungeonName;
         }
 
         const pending = dungeonTracker.getPendingDungeon?.();
         if (pending?.dungeonName && pending.dungeonName !== 'Unknown') {
+            this.lastSeenDungeonName = pending.dungeonName;
             return pending.dungeonName;
         }
 
@@ -1039,6 +1111,11 @@ class DungeonTrackerChatAnnotations {
      * that comes back `Unknown` while this is false is one no pass could have
      * placed, and a run that comes back `Unknown` while it is true is one chat
      * genuinely cannot place.
+     *
+     * Deliberately silent about the stored-run fallback (priority 4): that one
+     * only ever answers for a specific event's own team and timestamp, and this
+     * is asked with no event in hand — once per pass, to decide whether bare
+     * rows from an earlier pass are worth redoing at all.
      *
      * @returns {boolean} True when a dungeon name is available
      */

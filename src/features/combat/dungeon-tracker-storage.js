@@ -1033,6 +1033,36 @@ class DungeonTrackerStorage {
     }
 
     /**
+     * The newest run already loaded into memory for one team, read
+     * synchronously.
+     *
+     * For chat annotation's stored-run fallback: that pass runs synchronously,
+     * inside a per-message loop, and cannot await an IndexedDB read partway
+     * through it. `_runs` is kept newest-first — the initial load sorts it so,
+     * and a save unshifts each new run onto the front — so the first match in a
+     * linear scan is the newest. Answers null before the initial load has
+     * completed, or when this team has nothing stored yet; neither is treated
+     * as an error, since the caller has further fallbacks and bounds of its own.
+     *
+     * Read-only: unlike every other accessor below it does not go through
+     * {@link DungeonTrackerStorage#_loadRuns}, on purpose — it must not trigger
+     * a load or block on one, only report what a load already put in memory.
+     *
+     * @param {string} teamKey - The team to look up
+     * @returns {{dungeonName: string, timestamp: string}|null} The newest
+     *   stored run this team has, or null
+     */
+    getNewestLoadedRunForTeam(teamKey) {
+        if (!teamKey || !Array.isArray(this._runs)) return null;
+        for (const run of this._runs) {
+            if (run?.teamKey === teamKey && run?.dungeonName) {
+                return { dungeonName: run.dungeonName, timestamp: run.timestamp };
+            }
+        }
+        return null;
+    }
+
+    /**
      * Save a team-based run (from backfill)
      * @param {string} teamKey - Team key (sorted player names)
      * @param {Object} run - Run data

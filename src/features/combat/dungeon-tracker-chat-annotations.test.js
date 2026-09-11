@@ -38,6 +38,12 @@ const game = vi.hoisted(() => ({
     averageBaselines: {},
     clearedAt: 0,
     characterId: 'char-a',
+    // teamKey -> {dungeonName, timestamp}, what getNewestLoadedRunForTeam answers.
+    // A separate fixture from `allRuns`: the real accessor reads storage's own
+    // in-memory `_runs` synchronously rather than going through `getAllRuns()`,
+    // and the tests for it want to set up exactly one team's newest run without
+    // also wiring up the whole seed-from-storage machinery.
+    newestRunForTeam: {},
 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -82,6 +88,7 @@ vi.mock('./dungeon-tracker-storage.js', () => ({
         saveTeamRun: vi.fn(async () => true),
         getAverageBaselines: async () => game.averageBaselines,
         clearedAt: () => game.clearedAt,
+        getNewestLoadedRunForTeam: (teamKey) => game.newestRunForTeam[teamKey] ?? null,
     },
 }));
 
@@ -154,6 +161,7 @@ beforeEach(() => {
     game.averageBaselines = {};
     game.clearedAt = 0;
     game.characterId = 'char-a';
+    game.newestRunForTeam = {};
 
     annotations.cumulativeStatsByDungeon = {};
     annotations.storedRunDurations = {};
@@ -1561,5 +1569,134 @@ describe('a run seen from both sides is still one run', () => {
         ];
 
         expect(annotations.buildWindowedAverages(merged, 2, 0).get(2000)).toEqual({ average: 0, covered: 0 });
+    });
+});
+
+/**
+ * The bug reported live: on an account whose party chat carries only
+ * key-count lines (no "Battle started:" line ever), a run landing exactly in
+ * the gap between two runs got a bare `[8m 19s]` with no run number and no
+ * average — every fallback came back empty at that instant, and the run was
+ * never counted toward the trailing average either.
+ *
+ * The fix has two parts: cache the tracker's answer whenever it has one, not
+ * only when a chat line asks for it (closing the gap for good on this
+ * account, since something outside the gap — a tab switch, an unrelated
+ * message — usually catches the tracker mid-run first); and a fourth,
+ * bounded fallback to the newest run storage already has for the same team,
+ * for whatever the caching still misses.
+ */
+describe('the gap between runs, and the fallbacks that close it', () => {
+    test('the tracker caches its name on a pass with nothing new to label, and a later pass in the gap still numbers the run from that cache', async () => {
+        // A pass fires on any new chat message, or a tab switch — not only a
+        // key-count line. This one has nothing to annotate yet, but the
+        // tracker can name the dungeon, and that answer must be banked.
+        game.currentRun = { dungeonName: 'Pirate Cove' };
+        await annotations.annotateAllMessages();
+        expect(annotations.lastSeenDungeonName).toBe('Pirate Cove');
+
+        // The gap: the tracker has cleared the finished run and not yet armed
+        // the next, and this account's chat has no "Battle started:" line at
+        // all, so priorities 1 and 2 are both empty right here — exactly the
+        // reported failure. Only the cache from the pass above is left.
+        game.currentRun = null;
+        const key = message('[08/04 10:00:00 AM]', 'Key counts: [Alice - 12]');
+        message('[08/04 10:08:19 AM]', 'Key counts: [Alice - 11]');
+
+        await annotations.annotateAllMessages();
+
+        expect(labelOn(key)).toBe('[Run #1: 8m 19s]');
+        expect(labels()).toEqual(['[Run #1: 8m 19s]', '[Average: 8m 19s]']);
+    });
+
+    test('with the cache and storage both empty, a run neither can place is unchanged: bare timer, neutral colour, flagged for redo', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const key = message('[08/04 10:00:00 AM]', 'Key counts: [Alice - 12]');
+        message('[08/04 10:04:32 AM]', 'Key counts: [Alice - 11]');
+
+        await annotations.annotateAllMessages();
+
+        expect(labelOn(key)).toBe('[4m 32s]');
+        expect(labels()).toEqual(['[4m 32s]']);
+        expect(key.querySelector('.dungeon-timer-annotation').style.color).toBe(asCss('#90ee90'));
+        expect(annotations._annotatedWithoutDungeonName).toBe(true);
+        warn.mockRestore();
+    });
+
+    test('the stored-run fallback names a run neither chat nor the tracker can place, when it is the same team and close enough', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        // Five minutes before the run in question — well inside the bound.
+        game.newestRunForTeam = {
+            Alice: { dungeonName: 'Sinister Circus', timestamp: aug4(9, 55, 0).toISOString() },
+        };
+        const key = message('[08/04 10:00:00 AM]', 'Key counts: [Alice - 12]');
+        message('[08/04 10:04:32 AM]', 'Key counts: [Alice - 11]');
+
+        await annotations.annotateAllMessages();
+
+        expect(labelOn(key)).toBe('[Run #1: 4m 32s]');
+        expect(averageOn(key)).toBe('[Average: 4m 32s]');
+        warn.mockRestore();
+    });
+
+    test('a stored run for a different team is refused, however recent', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        game.newestRunForTeam = {
+            'Alice,Bob': { dungeonName: 'Sinister Circus', timestamp: aug4(9, 58, 0).toISOString() },
+        };
+        const key = message('[08/04 10:00:00 AM]', 'Key counts: [Alice - 12]');
+        message('[08/04 10:04:32 AM]', 'Key counts: [Alice - 11]');
+
+        await annotations.annotateAllMessages();
+
+        expect(labelOn(key)).toBe('[4m 32s]');
+        warn.mockRestore();
+    });
+
+    test('a stored run more than 45 minutes old is refused, however exact the team match', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        game.newestRunForTeam = {
+            Alice: { dungeonName: 'Sinister Circus', timestamp: aug4(9, 0, 0).toISOString() }, // 60 minutes before
+        };
+        const key = message('[08/04 10:00:00 AM]', 'Key counts: [Alice - 12]');
+        message('[08/04 10:04:32 AM]', 'Key counts: [Alice - 11]');
+
+        await annotations.annotateAllMessages();
+
+        expect(labelOn(key)).toBe('[4m 32s]');
+        warn.mockRestore();
+    });
+
+    test('a redo after the gap is filled in produces exactly what a clean pass would have — no double counting', async () => {
+        // Baseline: the same log, nameable from the very first pass.
+        game.currentRun = { dungeonName: 'Chimerical Den' };
+        message('[08/04 10:00:00 AM]', 'Key counts: [Alice - 12]');
+        message('[08/04 10:04:00 AM]', 'Key counts: [Alice - 11]');
+        message('[08/04 10:10:00 AM]', 'Key counts: [Alice - 10]');
+        await annotations.annotateAllMessages();
+        const cleanStats = { ...annotations.cumulativeStatsByDungeon['Alice::Chimerical Den'] };
+        const cleanLabels = labels();
+        expect(cleanStats.runCount).toBe(2);
+
+        // Start over: same log, but nothing can name it on the first pass.
+        annotations.cleanup();
+        document.body.innerHTML = '';
+        annotations.initComplete = true;
+        game.currentRun = null;
+
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const first = message('[08/04 10:00:00 AM]', 'Key counts: [Alice - 12]');
+        message('[08/04 10:04:00 AM]', 'Key counts: [Alice - 11]');
+        message('[08/04 10:10:00 AM]', 'Key counts: [Alice - 10]');
+        await annotations.annotateAllMessages();
+        warn.mockRestore();
+        expect(labelOn(first)).toBe('[4m 0s]'); // confirms this pass really was bare
+
+        // Now something can name it, and the redo gate fires on the next pass.
+        game.currentRun = { dungeonName: 'Chimerical Den' };
+        await annotations.annotateAllMessages();
+
+        expect(annotations.cumulativeStatsByDungeon['Alice::Chimerical Den']).toEqual(cleanStats);
+        expect(labels()).toEqual(cleanLabels);
     });
 });
