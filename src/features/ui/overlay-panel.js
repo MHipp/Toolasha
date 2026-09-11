@@ -3556,7 +3556,11 @@ class OverlayPanel {
             // `_watchDock` observes the two boxes it depends on instead.
             this._followActivity();
         }, REFRESH_MS);
-        this.timerRegistry.registerInterval(this.refreshId);
+        // Named explicitly: the tick calls `_ensureDocked()` first and does the
+        // actual drawing afterwards, so the guessed-name fallback reported this
+        // row as `_ensureDocked` — a cheap isConnected check — when the cost is
+        // the redraw. The label names the whole tick, not its first callee.
+        this.timerRegistry.registerInterval(this.refreshId, 'overlayPanel.refresh');
     }
 
     /**

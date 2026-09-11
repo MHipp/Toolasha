@@ -342,7 +342,8 @@ class PortraitDps {
                 // combat the breakdowns stop changing, and this tick was the
                 // one caller still rebuilding every meter once a second anyway
                 this._drawIfChanged();
-            }, REFRESH_MS)
+            }, REFRESH_MS),
+            'portraitDps.tick'
         );
         // @run-at document-start: a battle panel rendered before the shared observer attaches to
         // document.body is invisible to the class watcher, so the catch-up waits for the

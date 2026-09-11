@@ -2541,7 +2541,7 @@ class GuildTrials {
     _armSampler() {
         if (this.samplerId) clearInterval(this.samplerId);
         this.samplerId = setInterval(() => this._tick(), SAMPLE_MS);
-        this.timers.registerInterval(this.samplerId);
+        this.timers.registerInterval(this.samplerId, 'guildTrials.sample');
     }
 
     /** One sampler tick: read the tab if it is open, and note that the sampler is alive */

@@ -592,7 +592,8 @@ class CombatUnitBuffBars {
             setInterval(() => {
                 if (document.hidden) return;
                 this._guard('countdown tick', () => this.draw());
-            }, REFRESH_MS)
+            }, REFRESH_MS),
+            'combatUnitBuffBars.tick'
         );
     }
 

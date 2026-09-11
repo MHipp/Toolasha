@@ -7,6 +7,7 @@
 import config from '../../core/config.js';
 import domObserver from '../../core/dom-observer.js';
 import dataManager from '../../core/data-manager.js';
+import performanceMonitor from '../../utils/performance-monitor.js';
 
 /** How often the countdown redraws. The readout only shows tenths. */
 const TICK_MS = 100;
@@ -211,6 +212,7 @@ class ActionCountdown {
         // interval asks for exactly the ten it uses, and a background tab gets
         // the browser's own interval throttling for free.
         this.timerId = setInterval(() => this._tick(), TICK_MS);
+        performanceMonitor.labelTimer(this.timerId, 'actionCountdown.tick');
         this._tick();
     }
 

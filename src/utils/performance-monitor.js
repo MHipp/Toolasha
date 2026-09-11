@@ -1006,6 +1006,12 @@ performanceMonitor.heapMemorySupported = heapMemorySupported;
 performanceMonitor.registerCountSource = registerCountSource;
 performanceMonitor.readCountSources = readCountSources;
 
+// Same reason: `timer-registry.js` and `cleanup-registry.js` are each their
+// own externalised global (`Toolasha.Utils.timerRegistry` /
+// `.cleanupRegistry`) and reach this module's live copy only through the
+// instance, never through a named import of `labelTimer` itself.
+performanceMonitor.labelTimer = labelTimer;
+
 // Identifiers a call in a handler body shares with every other handler body,
 // so finding one first says nothing about which timer this is. Keywords are
 // here because `function (` and `if (` parse as calls to the scan below.
@@ -1102,6 +1108,37 @@ function anonSourceHint(handler) {
 const anonTimerLabels = new WeakMap();
 let anonTimerOrdinal = 0;
 
+// Explicit labels, keyed by timer id rather than by handler: the caller that
+// knows what a timer is for (`registerInterval(id, 'overlayPanel.refresh')`)
+// usually only has the id the traced `setInterval` returned, not the handler
+// closure. A plain Map, not a WeakMap, because numbers cannot be weak keys —
+// see `labelTimer` for why that makes clearing the entry the caller's job
+// instead of the garbage collector's.
+const timerLabels = new Map();
+
+/**
+ * Attach an explicit label to a timer id an owner already created, so its
+ * rolling-stats row reads `interval:<label>` / `timeout:<label>` instead of
+ * the guessed call site or the late `anon#n` name.
+ *
+ * Looked up at tick time (see `installIntervalTracing`), so calling this right
+ * after `setInterval`/`setTimeout` — before the first tick — is enough; there
+ * is no need to race the timer's own creation. The label lives here rather
+ * than being folded into `anonTimerLabels` because it is keyed by the
+ * numeric id the caller actually holds, not by the handler closure.
+ *
+ * The traced `clearInterval`/`clearTimeout` below delete the entry when the
+ * timer is cleared. That matters because browsers reuse timer ids: without
+ * it, a label meant for one timer would silently attach itself to the next,
+ * unrelated timer that happens to get the same id.
+ * @param {number} id - The id returned by `setInterval`/`setTimeout`
+ * @param {string} label - e.g. `overlayPanel.refresh`
+ */
+export function labelTimer(id, label) {
+    if (!id || !label) return;
+    timerLabels.set(id, label);
+}
+
 /**
  * The best name a timer can be given at tick time, when its creation stack is
  * long gone.
@@ -1147,6 +1184,11 @@ function lateTimerName(handler) {
  * meant a stack capture and a regex parse on every `setTimeout` on the page
  * for every user at boot; see `timerCounters` above for what that cost and
  * what is given up by deferring it.
+ *
+ * `clearInterval`/`clearTimeout` are wrapped too, but only to drop an explicit
+ * label (`labelTimer`) — they are not where any name is decided, and clearing
+ * an id this script never labelled costs one `Map.delete` of a key that was
+ * never there.
  */
 export function installIntervalTracing(target = globalThis) {
     // Each timer is wrapped on its own merits: if the page (or a library)
@@ -1167,18 +1209,33 @@ export function installIntervalTracing(target = globalThis) {
                 timerCounters.named += 1;
                 name = `interval:${timerCallSite()}`;
             }
+            // The id is not known until `original.call` below returns it, but
+            // `wrapped` needs it on every tick to look up a label — held in a
+            // one-property box so the box itself can stay `const` and only
+            // `box.id` is ever assigned (once).
+            const box = { id: undefined };
             const wrapped = function (...tickArgs) {
                 if (!performanceMonitor.enabled) return handler.apply(this, tickArgs);
-                if (name === null) name = `interval:${lateTimerName(handler)}`;
+                // An explicit label always wins: it is what the owning feature
+                // said this timer is, not a guess from a stack or a source scan.
+                const label = timerLabels.get(box.id);
+                let recordName;
+                if (label !== undefined) {
+                    recordName = `interval:${label}`;
+                } else {
+                    if (name === null) name = `interval:${lateTimerName(handler)}`;
+                    recordName = name;
+                }
                 const startedAt = performance.now();
                 try {
                     return handler.apply(this, tickArgs);
                 } finally {
                     const duration = performance.now() - startedAt;
-                    if (duration >= 1) performanceMonitor.record(name, duration);
+                    if (duration >= 1) performanceMonitor.record(recordName, duration);
                 }
             };
-            return original.call(this, wrapped, delay, ...args);
+            box.id = original.call(this, wrapped, delay, ...args);
+            return box.id;
         };
         traced.__toolashaTraced = true;
         target.setInterval = traced;
@@ -1198,21 +1255,53 @@ export function installIntervalTracing(target = globalThis) {
                 timerCounters.named += 1;
                 name = `timeout:${timerCallSite()}`;
             }
+            const box = { id: undefined };
             const wrapped = function (...tickArgs) {
                 if (!performanceMonitor.enabled) return handler.apply(this, tickArgs);
-                if (name === null) name = `timeout:${lateTimerName(handler)}`;
+                const label = timerLabels.get(box.id);
+                let recordName;
+                if (label !== undefined) {
+                    recordName = `timeout:${label}`;
+                } else {
+                    if (name === null) name = `timeout:${lateTimerName(handler)}`;
+                    recordName = name;
+                }
                 const startedAt = performance.now();
                 try {
                     return handler.apply(this, tickArgs);
                 } finally {
                     const duration = performance.now() - startedAt;
-                    if (duration >= 1) performanceMonitor.record(name, duration);
+                    if (duration >= 1) performanceMonitor.record(recordName, duration);
                 }
             };
-            return originalTimeout.call(this, wrapped, delay, ...args);
+            box.id = originalTimeout.call(this, wrapped, delay, ...args);
+            return box.id;
         };
         tracedTimeout.__toolashaTraced = true;
         target.setTimeout = tracedTimeout;
+    }
+
+    // Drop a label the moment its timer is cleared. Ids are a small counter
+    // the browser recycles, so leaving a stale entry in `timerLabels` would
+    // eventually hand a label to whatever unrelated timer gets that id next.
+    const originalClearInterval = target.clearInterval;
+    if (typeof originalClearInterval === 'function' && !originalClearInterval.__toolashaTraced) {
+        const tracedClearInterval = function tracedClearInterval(id) {
+            timerLabels.delete(id);
+            return originalClearInterval.call(this, id);
+        };
+        tracedClearInterval.__toolashaTraced = true;
+        target.clearInterval = tracedClearInterval;
+    }
+
+    const originalClearTimeout = target.clearTimeout;
+    if (typeof originalClearTimeout === 'function' && !originalClearTimeout.__toolashaTraced) {
+        const tracedClearTimeout = function tracedClearTimeout(id) {
+            timerLabels.delete(id);
+            return originalClearTimeout.call(this, id);
+        };
+        tracedClearTimeout.__toolashaTraced = true;
+        target.clearTimeout = tracedClearTimeout;
     }
 }
 

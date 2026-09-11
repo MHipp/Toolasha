@@ -322,7 +322,7 @@ class MarketHistoryPanel {
         });
 
         const poll = setInterval(() => this.followMarketplace(), POLL_MS);
-        this.cleanupRegistry.registerInterval(poll);
+        this.cleanupRegistry.registerInterval(poll, 'mooket.followMarketplace');
     }
 
     disable() {

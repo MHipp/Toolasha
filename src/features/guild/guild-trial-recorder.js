@@ -178,7 +178,7 @@ class GuildTrialRecorder {
         this.initialized = true;
 
         this.watcherId = setInterval(() => this._tick(), SNAPSHOT_MS);
-        this.timers.registerInterval(this.watcherId);
+        this.timers.registerInterval(this.watcherId, 'guildTrialRecorder.tick');
     }
 
     cleanup() {

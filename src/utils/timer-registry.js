@@ -2,6 +2,7 @@
  * Timer Registry Utility
  * Centralized registration for intervals and timeouts.
  */
+import performanceMonitor from './performance-monitor.js';
 
 /**
  * How many timers every live timer registry in this bundle is holding.
@@ -23,8 +24,8 @@ export function getTimerRegistryCensus() {
 /**
  * Create a timer registry for deterministic teardown.
  * @returns {{
- *   registerInterval: (intervalId: number) => void,
- *   registerTimeout: (timeoutId: number) => void,
+ *   registerInterval: (intervalId: number, label?: string) => void,
+ *   registerTimeout: (timeoutId: number, label?: string) => void,
  *   clearAll: () => void
  * }} Timer registry API
  */
@@ -32,7 +33,10 @@ export function createTimerRegistry() {
     const intervals = [];
     const timeouts = [];
 
-    const registerInterval = (intervalId) => {
+    // Optional: names the pformance-panel row this timer's ticks report under
+    // (`interval:<label>`) instead of leaving it to the guessed call site or
+    // late `anon#n` name — see `labelTimer` in performance-monitor.js.
+    const registerInterval = (intervalId, label) => {
         if (!intervalId) {
             console.warn('[TimerRegistry] registerInterval called with invalid interval id');
             return;
@@ -40,9 +44,10 @@ export function createTimerRegistry() {
 
         intervals.push(intervalId);
         census.intervals += 1;
+        if (label) performanceMonitor.labelTimer(intervalId, label);
     };
 
-    const registerTimeout = (timeoutId) => {
+    const registerTimeout = (timeoutId, label) => {
         if (!timeoutId) {
             console.warn('[TimerRegistry] registerTimeout called with invalid timeout id');
             return;
@@ -50,6 +55,7 @@ export function createTimerRegistry() {
 
         timeouts.push(timeoutId);
         census.timeouts += 1;
+        if (label) performanceMonitor.labelTimer(timeoutId, label);
     };
 
     const clearAll = () => {

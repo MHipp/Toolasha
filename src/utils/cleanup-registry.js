@@ -2,6 +2,7 @@
  * Cleanup Registry Utility
  * Centralized registration for listeners, observers, timers, and custom cleanup.
  */
+import performanceMonitor from './performance-monitor.js';
 
 /**
  * How many things every live cleanup registry in this bundle is holding right
@@ -36,8 +37,8 @@ export function getCleanupRegistryCensus() {
  * @returns {{
  *   registerListener: (target: EventTarget, event: string, handler: Function, options?: Object) => void,
  *   registerObserver: (observer: MutationObserver|{ disconnect: Function }) => void,
- *   registerInterval: (intervalId: number) => void,
- *   registerTimeout: (timeoutId: number) => void,
+ *   registerInterval: (intervalId: number, label?: string) => void,
+ *   registerTimeout: (timeoutId: number, label?: string) => void,
  *   registerCleanup: (cleanupFn: Function) => void,
  *   cleanupAll: () => void
  * }} Cleanup registry API
@@ -70,7 +71,10 @@ export function createCleanupRegistry() {
         census.observers += 1;
     };
 
-    const registerInterval = (intervalId) => {
+    // Optional: names the pformance-panel row this timer's ticks report under
+    // (`interval:<label>`) instead of leaving it to the guessed call site or
+    // late `anon#n` name — see `labelTimer` in performance-monitor.js.
+    const registerInterval = (intervalId, label) => {
         if (!intervalId) {
             console.warn('[CleanupRegistry] registerInterval called with invalid interval id');
             return;
@@ -78,9 +82,10 @@ export function createCleanupRegistry() {
 
         intervals.push(intervalId);
         census.intervals += 1;
+        if (label) performanceMonitor.labelTimer(intervalId, label);
     };
 
-    const registerTimeout = (timeoutId) => {
+    const registerTimeout = (timeoutId, label) => {
         if (!timeoutId) {
             console.warn('[CleanupRegistry] registerTimeout called with invalid timeout id');
             return;
@@ -88,6 +93,7 @@ export function createCleanupRegistry() {
 
         timeouts.push(timeoutId);
         census.timeouts += 1;
+        if (label) performanceMonitor.labelTimer(timeoutId, label);
     };
 
     const registerCleanup = (cleanupFn) => {

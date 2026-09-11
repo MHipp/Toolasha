@@ -35,6 +35,7 @@
 
 import config from '../../core/config.js';
 import dataManager from '../../core/data-manager.js';
+import performanceMonitor from '../../utils/performance-monitor.js';
 import { formatLargeNumber, formatWithSeparator } from '../../utils/formatters.js';
 import { registerFloatingPanel, unregisterFloatingPanel, bringPanelToFront } from '../../utils/panel-z-index.js';
 import { makeDraggable, makeResizable, panelHeightCap } from '../../utils/floating-panel.js';
@@ -1926,6 +1927,7 @@ class ConsumablesPanel {
         this._render();
         // Stock and rates both move as you play, and prices move under them
         this.refreshId = setInterval(() => this._tick(), REFRESH_MS);
+        performanceMonitor.labelTimer(this.refreshId, 'consumablesPanel.tick');
 
         this._escapeReg = registerEscapeClose(() => this.hide());
     }

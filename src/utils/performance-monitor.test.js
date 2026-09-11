@@ -1432,6 +1432,161 @@ describe('late naming of timers created before measuring started', () => {
     });
 });
 
+describe('explicit timer labels', () => {
+    // Shared across every test in this block, never reset: `timerLabels` in
+    // performance-monitor.js is module-scoped state, not something
+    // `performanceMonitor.reset()` touches, so two tests' fake hosts handing
+    // out the same id (e.g. both starting a fresh counter at 1) would leak a
+    // label from one test into the next. A monotonically increasing id across
+    // the whole file rules that out; the "reused id" tests below force a
+    // repeat deliberately instead.
+    let nextId = 1;
+
+    /** A fake timer host with incrementing ids and a working clearInterval/clearTimeout. */
+    function makeTarget() {
+        const registered = { interval: [], timeout: [] };
+        return {
+            registered,
+            setInterval: vi.fn((handler, delay, ...args) => {
+                const id = nextId++;
+                registered.interval.push({ id, handler, delay, args });
+                return id;
+            }),
+            setTimeout: vi.fn((handler, delay, ...args) => {
+                const id = nextId++;
+                registered.timeout.push({ id, handler, delay, args });
+                return id;
+            }),
+            clearInterval: vi.fn(),
+            clearTimeout: vi.fn(),
+        };
+    }
+
+    /** A body slow enough to clear the 1ms recording floor. */
+    function burn() {
+        const t0 = performance.now();
+        while (performance.now() - t0 < 2) {
+            // spin
+        }
+    }
+
+    beforeEach(() => {
+        performanceMonitor.reset();
+        performanceMonitor.enabled = true;
+        performanceMonitor._tabVisible = true;
+    });
+
+    test('a labelled interval records under its label instead of the guessed call site', () => {
+        const target = makeTarget();
+        installIntervalTracing(target);
+
+        const id = target.setInterval(() => burn(), 10);
+        performanceMonitor.labelTimer(id, 'overlayPanel.refresh');
+        target.registered.interval.at(-1).handler();
+
+        expect([...performanceMonitor.measurements.keys()]).toEqual(['interval:overlayPanel.refresh']);
+    });
+
+    test("an unlabelled interval still falls back to today's guessed name", () => {
+        const target = makeTarget();
+        installIntervalTracing(target);
+
+        target.setInterval(() => burn(), 10);
+        target.registered.interval.at(-1).handler();
+
+        const [name] = [...performanceMonitor.measurements.keys()];
+        // Created with measuring on, so it is the timerCallSite name (a real
+        // line number), not the label and not the late `anon#` fallback.
+        expect(name).toMatch(/^interval:\S+@\d+/);
+        expect(name).not.toBe('interval:overlayPanel.refresh');
+    });
+
+    test('a label attached after creation still applies at the first tick', () => {
+        const target = makeTarget();
+        installIntervalTracing(target);
+
+        // Measuring off at registration, like a timer created before the panel
+        // opened — the label still has to win once one is attached.
+        performanceMonitor.enabled = false;
+        const id = target.setInterval(() => burn(), 10);
+        performanceMonitor.enabled = true;
+        performanceMonitor.labelTimer(id, 'overlayPanel.refresh');
+        target.registered.interval.at(-1).handler();
+
+        expect([...performanceMonitor.measurements.keys()]).toEqual(['interval:overlayPanel.refresh']);
+    });
+
+    test('clearing a labelled timer drops the label, so a reused id starts unlabelled', () => {
+        const target = makeTarget();
+        // installIntervalTracing replaces target.setInterval with its traced
+        // wrapper, so mocking a later call has to go through the original
+        // vi.fn the wrapper still closes over, not the outer property.
+        const originalSetInterval = target.setInterval;
+        installIntervalTracing(target);
+
+        const id = target.setInterval(() => burn(), 10);
+        performanceMonitor.labelTimer(id, 'overlayPanel.refresh');
+        target.clearInterval(id);
+
+        // Browsers can hand the same numeric id to the very next timer created;
+        // force that here to prove the label doesn't leak onto whatever gets it.
+        originalSetInterval.mockImplementationOnce((handler, delay, ...args) => {
+            target.registered.interval.push({ id, handler, delay, args });
+            return id;
+        });
+        target.setInterval(() => burn(), 10);
+        target.registered.interval.at(-1).handler();
+
+        const [name] = [...performanceMonitor.measurements.keys()];
+        expect(name).not.toBe('interval:overlayPanel.refresh');
+    });
+
+    test('timeouts can be labelled the same way', () => {
+        const target = makeTarget();
+        installIntervalTracing(target);
+
+        const id = target.setTimeout(() => burn(), 10);
+        performanceMonitor.labelTimer(id, 'combatSim.poll');
+        target.registered.timeout.at(-1).handler();
+
+        expect([...performanceMonitor.measurements.keys()]).toEqual(['timeout:combatSim.poll']);
+    });
+
+    test('clearing a labelled timeout drops the label', () => {
+        const target = makeTarget();
+        const originalSetTimeout = target.setTimeout;
+        installIntervalTracing(target);
+
+        const id = target.setTimeout(() => burn(), 10);
+        performanceMonitor.labelTimer(id, 'combatSim.poll');
+        target.clearTimeout(id);
+
+        originalSetTimeout.mockImplementationOnce((handler, delay, ...args) => {
+            target.registered.timeout.push({ id, handler, delay, args });
+            return id;
+        });
+        target.setTimeout(() => burn(), 10);
+        target.registered.timeout.at(-1).handler();
+
+        const [name] = [...performanceMonitor.measurements.keys()];
+        expect(name).not.toBe('timeout:combatSim.poll');
+    });
+
+    test('labelTimer ignores a falsy id or label rather than poisoning the map', () => {
+        const target = makeTarget();
+        installIntervalTracing(target);
+
+        performanceMonitor.labelTimer(0, 'overlayPanel.refresh');
+        performanceMonitor.labelTimer(undefined, 'overlayPanel.refresh');
+        const id = target.setInterval(() => burn(), 10);
+        performanceMonitor.labelTimer(id, '');
+        target.registered.interval.at(-1).handler();
+
+        const [name] = [...performanceMonitor.measurements.keys()];
+        expect(name).not.toBe('interval:overlayPanel.refresh');
+    });
+});
+
 describe('elapsed versus blocking measurements', () => {
     beforeEach(() => {
         performanceMonitor.reset();

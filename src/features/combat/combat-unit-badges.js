@@ -410,7 +410,8 @@ class CombatUnitBadges {
             setInterval(() => {
                 if (typeof document !== 'undefined' && document.hidden) return;
                 this._draw();
-            }, REFRESH_MS)
+            }, REFRESH_MS),
+            'combatUnitBadges.tick'
         );
         // @run-at document-start: a battle panel rendered before the shared observer attaches to
         // document.body is invisible to the class watcher, so the catch-up draw waits for the

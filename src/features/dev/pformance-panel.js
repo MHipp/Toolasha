@@ -357,7 +357,11 @@ class PFormancePanel {
     _startUpdating() {
         if (this.updateIntervalId) return;
         this.updateIntervalId = setInterval(() => this._updateContent(), 1000);
-        this.timerRegistry.registerInterval(this.updateIntervalId);
+        // Without this, the row named itself after `_startUpdating` — the
+        // creator, captured by `timerCallSite` because measuring is already on
+        // when the panel opens — not `_updateContent`, which is what the tick
+        // actually costs.
+        this.timerRegistry.registerInterval(this.updateIntervalId, 'pformancePanel.updateContent');
     }
 
     _stopUpdating() {
