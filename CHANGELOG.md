@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The lab sim's typed-over token levels stay with their character
+
+A slow storage read could land after a character switch and hand the departing character's labyrinth token levels to the arriving one's simulations, then save them under that character. The read is now refused once the character has moved, and closing the panel forgets the levels until they are read back.
+
 ### Switching character no longer bleeds into the next one
 
 More places that kept working with the character you left: saved chat could be folded into the arriving character's history and written out under their name, panels reopened to the other character's arrangement and overwrote the stored one, and the lab's skilling upgrade analysis kept running — driving the new character's progress bar and quietly breaking the results table's sorting. The dungeon chart also left a dead pop-out and a leaked chart behind on every switch.
