@@ -8,7 +8,7 @@
  * interpolation didn't produce broken JavaScript.
  */
 
-import { describe, test, expect, vi, afterEach } from 'vitest';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../core/config.js', () => ({
     default: { getSetting: () => true, getSettingValue: (_key, def) => def },
@@ -19,6 +19,15 @@ vi.mock('../../core/dom-observer.js', () => ({ default: { onClass: () => () => {
 const blockState = vi.hoisted(() => ({ blockedNames: new Set() }));
 vi.mock('./chat-block-list.js', () => ({
     chatBlockList: { isBlocked: (name) => blockState.blockedNames.has(name) },
+}));
+
+const viewportState = vi.hoisted(() => ({ stop: null, calls: [] }));
+vi.mock('../../utils/visual-viewport.js', () => ({
+    initVisualViewportTracking: (options) => {
+        viewportState.calls.push(options);
+        viewportState.stop = vi.fn();
+        return viewportState.stop;
+    },
 }));
 
 const { PopOutChat, buildPopoutWindowFeatures, POPOUT_GEOMETRY_KEY } = await import('./pop-out-chat.js');
@@ -377,5 +386,85 @@ describe('pop-out chat window: blocked-message count', () => {
         expect(html).toContain('id="blocked-count"');
         expect(html).toContain("data.type === 'blocked_count'");
         expect(html).toContain('function setBlockedCount(count)');
+    });
+});
+
+/**
+ * The pop-out is a separate document, so `--toolasha-visual-viewport-height` has to be
+ * published into it by this side. What is worth asserting is the lifecycle, not the layout:
+ * happy-dom does no layout at all, so any test reading a height would pass with and without
+ * the fix. So: the tracking starts when the window opens, and — the repo's recurring bug
+ * class — it is torn down when the window goes away, both on the user closing it and on the
+ * feature being disabled.
+ */
+describe('pop-out chat window: visual-viewport tracking lifecycle', () => {
+    let openSpy;
+    let fakePopout;
+    let listeners;
+
+    beforeEach(() => {
+        viewportState.stop = null;
+        viewportState.calls = [];
+        listeners = new Map();
+        fakePopout = {
+            closed: false,
+            focus: () => {},
+            close: () => {
+                fakePopout.closed = true;
+            },
+            document: { readyState: 'complete' },
+            addEventListener: (type, fn) => listeners.set(type, fn),
+            removeEventListener: (type) => listeners.delete(type),
+        };
+        openSpy = vi.spyOn(window, 'open').mockReturnValue(fakePopout);
+        vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock');
+        vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    test('starts tracking against the pop-out window and document once it has loaded', () => {
+        const chat = new PopOutChat();
+        chat._openPopout();
+
+        expect(openSpy).toHaveBeenCalled();
+        expect(viewportState.calls).toHaveLength(1);
+        expect(viewportState.calls[0].windowRef).toBe(fakePopout);
+        expect(viewportState.calls[0].documentRef).toBe(fakePopout.document);
+    });
+
+    test('stops tracking when the user closes the pop-out window', () => {
+        const chat = new PopOutChat();
+        chat._openPopout();
+        const stop = viewportState.stop;
+        expect(stop).toBeTypeOf('function');
+        expect(stop).not.toHaveBeenCalled();
+
+        // The pop-out document being torn down
+        listeners.get('pagehide')();
+
+        expect(stop).toHaveBeenCalledTimes(1);
+    });
+
+    test('stops tracking when the feature is disabled with a pop-out still open', () => {
+        const chat = new PopOutChat();
+        chat._openPopout();
+        const stop = viewportState.stop;
+
+        chat.disable();
+
+        expect(stop).toHaveBeenCalledTimes(1);
+        expect(chat.popoutViewportCleanup).toBeNull();
+    });
+
+    test('does not start tracking when the browser blocks the pop-out', () => {
+        openSpy.mockReturnValue(null);
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        const chat = new PopOutChat();
+        chat._openPopout();
+
+        expect(viewportState.calls).toHaveLength(0);
     });
 });

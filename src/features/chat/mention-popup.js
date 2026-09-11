@@ -109,6 +109,20 @@ class MentionPopup {
             z-index: ${config.Z_FLOATING_PANEL};
             min-width: min(420px, 92vw);
             max-width: min(600px, 92vw);
+            /* Centred with translate(-50%, -50%), so the shell's top edge sits
+               half its own height above the middle of the screen: anything
+               taller than the viewport pushes the header — and the close button
+               in it — off the top. The shared clamp cannot rescue it, because
+               clampPanelToViewport bails on transformed elements
+               (panel-geometry.js). Bound the shell against the *visible*
+               viewport instead: 100vh does not shrink for the mobile on-screen
+               keyboard, so a popup opened while it is up would size as if it
+               were not there. --toolasha-visual-viewport-height is published on
+               <html> by src/utils/visual-viewport.js. Flex column so the body
+               below gives up the space rather than overflowing the shell. */
+            display: flex;
+            flex-direction: column;
+            max-height: calc(var(--toolasha-visual-viewport-height, 100vh) * 0.9);
             background: rgba(0, 0, 0, 0.92);
             border: 2px solid ${config.COLOR_ACCENT};
             border-radius: 8px;
@@ -130,6 +144,9 @@ class MentionPopup {
             cursor: grab;
             border-radius: 6px 6px 0 0;
             background: rgba(255,255,255,0.05);
+            /* The whole point of the bound above is that the header stays on
+               screen and at full size; the list below it is what gives. */
+            flex-shrink: 0;
         `;
 
         const title = document.createElement('span');
@@ -188,6 +205,11 @@ class MentionPopup {
         const body = document.createElement('div');
         body.id = 'mwi-mention-popup-body';
         body.style.cssText = `
+            /* min-height:0 is what lets this shrink below its content inside
+               the flex shell above — without it the list keeps its natural
+               height and pushes the header back off the top of the screen. */
+            flex: 1 1 auto;
+            min-height: 0;
             max-height: 400px;
             overflow-y: auto;
             padding: 8px 0;

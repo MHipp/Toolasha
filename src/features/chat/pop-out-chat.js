@@ -10,6 +10,7 @@ import webSocketHook from '../../core/websocket.js';
 import domObserver from '../../core/dom-observer.js';
 import { formatKMB } from '../../utils/formatters.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
+import { initVisualViewportTracking } from '../../utils/visual-viewport.js';
 import { chatBlockList } from './chat-block-list.js';
 import { ANNOUNCE_RE, KICK_RE, PARTY_RE, UPGRADE_RE, VALID_NAME_RE, getProfileLinkNames } from './chat-profile-link.js';
 
@@ -224,6 +225,9 @@ class PopOutChat {
         this.relayChannel = null;
         this.sendChannel = null;
         this.popoutWindow = null;
+        // Teardown for the visual-viewport tracking running inside the pop-out
+        // document; null whenever no pop-out is open.
+        this.popoutViewportCleanup = null;
         // Identifies *this tab's* currently open pop-out window so a second
         // game tab (a second character logged in in another browser tab, common
         // in this genre) doesn't answer this tab's handshake or execute sends
@@ -522,6 +526,84 @@ class PopOutChat {
 
         if (!this.popoutWindow) {
             console.error('[PopOutChat] Popup blocked by browser');
+            return;
+        }
+
+        this._startPopoutViewportTracking();
+    }
+
+    /**
+     * Publish `--toolasha-visual-viewport-height` inside the pop-out document.
+     *
+     * entrypoint.js stamps that property onto the *game* document's <html>. A
+     * `window.open`ed window is a separate document with its own
+     * documentElement and its own `visualViewport`, so nothing defines it there
+     * and the pane grid would silently fall back to its `100vh` default — the
+     * exact value that does not shrink for the mobile on-screen keyboard, which
+     * is what the fallback exists to avoid.
+     *
+     * initVisualViewportTracking already takes the window and document it
+     * should work on (they were injectable for tests), so the game tab can
+     * drive the pop-out's tracking directly — the blob: URL document is
+     * same-origin — rather than duplicating the module into the pop-out's
+     * inline script.
+     */
+    _startPopoutViewportTracking() {
+        const popout = this.popoutWindow;
+        if (!popout) return;
+
+        this._stopPopoutViewportTracking();
+
+        let stopTracking = null;
+        const attach = () => {
+            if (popout.closed) return;
+            stopTracking?.();
+            try {
+                stopTracking = initVisualViewportTracking({ windowRef: popout, documentRef: popout.document });
+            } catch (error) {
+                console.error('[PopOutChat] Failed to track the pop-out viewport:', error);
+                stopTracking = null;
+            }
+        };
+        const detach = () => {
+            stopTracking?.();
+            stopTracking = null;
+        };
+
+        // `window.open` hands back a window still showing about:blank; the
+        // documentElement a property written now would land on is discarded when
+        // the blob document commits, so wait for the load.
+        popout.addEventListener('load', attach);
+        // ...and stop the moment the window goes away. A sub-module started by a
+        // registered feature and never stopped is a known bug class in this repo;
+        // `disable()` alone would not cover the user simply closing the window.
+        popout.addEventListener('pagehide', detach);
+        // A reopened window can already be loaded, in which case 'load' has been
+        // and gone and will not fire again.
+        if (popout.document?.readyState === 'complete') attach();
+
+        this.popoutViewportCleanup = () => {
+            try {
+                popout.removeEventListener('load', attach);
+                popout.removeEventListener('pagehide', detach);
+            } catch {
+                // A closed window can refuse listener removal; the listeners died with it
+            }
+            detach();
+        };
+    }
+
+    /**
+     * Tear down the pop-out's visual-viewport tracking, if any is running.
+     */
+    _stopPopoutViewportTracking() {
+        if (!this.popoutViewportCleanup) return;
+        const cleanup = this.popoutViewportCleanup;
+        this.popoutViewportCleanup = null;
+        try {
+            cleanup();
+        } catch (error) {
+            console.error('[PopOutChat] Failed to stop pop-out viewport tracking:', error);
         }
     }
 
@@ -674,7 +756,13 @@ class PopOutChat {
   #panes {
     display: grid;
     grid-template-rows: 1fr;
-    height: calc(100vh - 46px);
+    /* Against the *visible* viewport, not the layout one: each pane has a chat
+       input at its bottom, and 100vh does not shrink when the mobile on-screen
+       keyboard covers the lower part of the screen — so a 100vh-tall grid puts
+       the input the user is typing into underneath the keyboard. This is a
+       separate document, so the property is published here by the game tab's
+       _startPopoutViewportTracking(), not by entrypoint.js. */
+    height: calc(var(--toolasha-visual-viewport-height, 100vh) - 46px);
     gap: 0;
     overflow: hidden;
   }
@@ -1422,6 +1510,8 @@ class PopOutChat {
             this.sendChannel.close();
             this.sendChannel = null;
         }
+
+        this._stopPopoutViewportTracking();
 
         if (this.popoutWindow && !this.popoutWindow.closed) {
             this.popoutWindow.close();
