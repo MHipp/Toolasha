@@ -301,6 +301,42 @@ describe('chart label helpers', () => {
         expect(valueTicks(13.14e9, 15.36e9)).toEqual([13.5e9, 14e9, 14.5e9, 15e9]);
     });
 
+    // A fixed toPrecision() digit count used to round every tick, regardless of the
+    // tick's own magnitude. Below ~1e15 that has more digits of headroom than any
+    // step needs, so it never showed; past ~1e17 it rounded ticks that should have
+    // stayed one `step` apart down to the same value instead — the "float noise"
+    // reported live as barely-round numbers on the axis.
+    it.each([
+        ['thousands', 1234, 5678],
+        ['billions', 13.14e9, 15.36e9],
+        ['~1e17', 1.5e17, 2.3e17],
+    ])('ticks the %s range on exact multiples of its step', (_label, min, max) => {
+        const ticks = valueTicks(min, max);
+        expect(ticks.length).toBeGreaterThan(0);
+        const span = max - min;
+        const magnitude = 10 ** Math.floor(Math.log10(span / 5));
+        const step = [1, 2, 2.5, 5, 10].map((multiple) => multiple * magnitude).find((size) => span / size <= 5);
+        for (const tick of ticks) {
+            expect(tick / step).toBeCloseTo(Math.round(tick / step), 9);
+        }
+    });
+
+    it('keeps ticks distinct at magnitudes where a fixed rounding precision would collapse them', () => {
+        // Anchored at ~2e17 with a span far narrower than the anchor itself — the
+        // corner a fixed toPrecision(12) could not resolve, rounding every one of
+        // these down to the same 200000000000000000.
+        const anchor = 199999999999999968;
+        const ticks = valueTicks(anchor, anchor + 1024);
+        expect(new Set(ticks).size).toBe(ticks.length);
+    });
+
+    it('gives no NaN ticks for a flat or empty forecast', () => {
+        const flat = fanDomain({ fan: { p50: [1000, 1000] } });
+        expect(valueTicks(flat.min, flat.max).every(Number.isFinite)).toBe(true);
+        const empty = fanDomain({ fan: {} });
+        expect(valueTicks(empty.min, empty.max).every(Number.isFinite)).toBe(true);
+    });
+
     it.each([
         [0, 0],
         [5, 5],

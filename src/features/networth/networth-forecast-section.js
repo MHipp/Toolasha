@@ -79,9 +79,20 @@ export function valueTicks(min, max, count = 4) {
     const span = max - min;
     const magnitude = 10 ** Math.floor(Math.log10(span / (count + 1)));
     const step = [1, 2, 2.5, 5, 10].map((multiple) => multiple * magnitude).find((size) => span / size <= count + 1);
+    const firstIndex = Math.ceil(min / step);
     const ticks = [];
-    for (let index = Math.ceil(min / step); index * step <= max; index += 1) {
-        ticks.push(Number((index * step).toPrecision(12)));
+    // Bounded by how many ticks the range can hold, not by walking `index` up by one
+    // from `min / step` — at magnitudes beyond Number.MAX_SAFE_INTEGER that index
+    // can no longer be incremented (`index += 1` is a silent no-op once its ULP
+    // exceeds 1), which would stall an index-driven loop forever instead of
+    // reaching `max`. A fixed toPrecision() digit count used to round each tick,
+    // but it cannot scale with the tick's own magnitude: past ~1e17 it rounded
+    // ticks that should differ by one `step` down to the same value instead of
+    // leaving them distinct round numbers.
+    for (let offset = 0; offset <= count + 2; offset += 1) {
+        const tick = (firstIndex + offset) * step;
+        if (tick > max) break;
+        ticks.push(tick);
     }
     return ticks;
 }
