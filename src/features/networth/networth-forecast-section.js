@@ -7,7 +7,7 @@
  * measured.
  */
 
-import { forecastNetworth, MIN_RETURNS } from './networth-forecast.js';
+import { forecastNetworth, reachProbabilities, MIN_RETURNS } from './networth-forecast.js';
 import { randomSeed } from '../combat-sim/engine/rng.js';
 import { formatDateTime, networthFormatter } from '../../utils/formatters.js';
 import { isAmountText, parseItemCount } from '../../utils/number-parser.js';
@@ -317,12 +317,15 @@ function buildFigure(label, value) {
 }
 
 /**
- * Percentage with one decimal, or an em dash when there is nothing to say.
+ * Percentage with two decimals, or an em dash when there is nothing to say.
  * @param {number|null} value - Percentage
+ * @param {boolean} [signed] - Mark non-negative values with "+"; off for a
+ *   magnitude such as volatility, which has no direction to mark
  * @returns {string} Rendered figure
  */
-function formatPercent(value) {
-    return Number.isFinite(value) ? `${value >= 0 ? '+' : ''}${value.toFixed(2)}%` : '—';
+function formatPercent(value, signed = true) {
+    if (!Number.isFinite(value)) return '—';
+    return `${signed && value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
 }
 
 /**
@@ -360,8 +363,9 @@ export function parseForecastTarget(text) {
 /**
  * Build the collapsed Forecast section.
  *
- * The projection is computed on first expand and on every control change, not
- * on open: it is thousands of paths, and the section is closed by default.
+ * The projection is computed on first expand and on every horizon change, not
+ * on open: it is thousands of paths, and the section is closed by default. The
+ * target never re-simulates; it reads its chances off the fan already drawn.
  *
  * @param {Object} options - Section options
  * @param {Function} options.getHistory - Returns the snapshot series to project
@@ -431,22 +435,37 @@ export function createForecastSection({ getHistory, seed = randomSeed() }) {
     body.appendChild(figures);
 
     let expanded = false;
+    /** The forecast on screen, kept so a new target reads off its paths instead of simulating again. */
+    let shown = null;
+    /** The target figures on screen, replaced whenever the target changes. */
+    let targetFigures = [];
     const updateToggle = () => {
         toggle.textContent = `${expanded ? '▾' : '▸'} Forecast`;
     };
     updateToggle();
+
+    /** Redraw only the "Reach target by" figures for the target as typed. */
+    function showTarget() {
+        for (const node of targetFigures) node.remove();
+        targetFigures = [];
+        if (!expanded || shown?.status !== 'complete') return;
+        const chances = reachProbabilities(shown, parseForecastTarget(targetInput.value));
+        for (const [checkpoint, chance] of Object.entries(chances)) {
+            const node = buildFigure(`Reach target by ${checkpoint}d`, `${chance.toFixed(1)}%`);
+            figures.appendChild(node);
+            targetFigures.push(node);
+        }
+    }
 
     /** Recompute and redraw. No-op while collapsed. */
     function refresh() {
         if (!expanded) return;
         plot.textContent = '';
         figures.textContent = '';
+        targetFigures = [];
+        shown = null;
 
-        const forecast = forecastNetworth(getHistory() || [], {
-            days: Number(horizonSelect.value),
-            target: parseForecastTarget(targetInput.value),
-            seed,
-        });
+        const forecast = forecastNetworth(getHistory() || [], { days: Number(horizonSelect.value), seed });
 
         if (forecast.status !== 'complete') {
             const message = document.createElement('div');
@@ -469,13 +488,12 @@ export function createForecastSection({ getHistory, seed = randomSeed() }) {
             )
         );
         figures.appendChild(buildFigure('Daily drift', formatPercent(forecast.dailyDriftPercent)));
-        figures.appendChild(buildFigure('Volatility (EWMA)', formatPercent(forecast.dailyVolatilityPercent)));
+        figures.appendChild(buildFigure('Volatility (EWMA)', formatPercent(forecast.dailyVolatilityPercent, false)));
         figures.appendChild(buildFigure('Doubling', forecast.doublingDays ? `${forecast.doublingDays}d` : '—'));
         figures.appendChild(buildFigure('Method', methodLabel(forecast)));
 
-        for (const [checkpoint, chance] of Object.entries(forecast.probabilities)) {
-            figures.appendChild(buildFigure(`Reach target by ${checkpoint}d`, `${chance.toFixed(1)}%`));
-        }
+        shown = forecast;
+        showTarget();
     }
 
     toggle.addEventListener('click', () => {
@@ -485,7 +503,9 @@ export function createForecastSection({ getHistory, seed = randomSeed() }) {
         refresh();
     });
     horizonSelect.addEventListener('change', refresh);
-    targetInput.addEventListener('change', refresh);
+    // Every keystroke, not only blur or Enter: a new target costs a binary search, not a simulation
+    targetInput.addEventListener('input', showTarget);
+    targetInput.addEventListener('change', showTarget);
 
     element.appendChild(toggle);
     element.appendChild(body);

@@ -67,6 +67,63 @@ describe('createForecastSection', () => {
 
         expect(section.element.textContent).toContain('Reach target by 30d');
     });
+
+    it('shows volatility as a magnitude, without a sign, and keeps the drift signed', () => {
+        const section = createForecastSection({ getHistory: billionsHistory, seed: 11 });
+        section.element.querySelector('.mwi-nw-forecast-toggle').click();
+        const figure = (name) =>
+            [...section.element.querySelectorAll('.mwi-nw-forecast-figures > div')].find(
+                (node) => node.firstChild.textContent === name
+            ).lastChild.textContent;
+
+        expect(figure('Volatility (EWMA)')).toMatch(/^\d+\.\d{2}%$/);
+        expect(figure('Daily drift')).toMatch(/^[+-]\d+\.\d{2}%$/);
+    });
+
+    it('updates the target figure on each keystroke without re-running the simulation', () => {
+        let reads = 0;
+        const section = createForecastSection({
+            getHistory: () => {
+                reads += 1;
+                return billionsHistory();
+            },
+            seed: 11,
+        });
+        section.element.querySelector('.mwi-nw-forecast-toggle').click();
+        const fan = section.element.querySelector('.mwi-nw-forecast-fan');
+        const target = section.element.querySelector('.mwi-nw-forecast-target');
+        const figures = () => section.element.querySelector('.mwi-nw-forecast-figures').textContent;
+
+        for (const typed of ['1', '12', '12b']) {
+            target.value = typed;
+            target.dispatchEvent(new Event('input'));
+        }
+
+        expect(figures()).toContain('Reach target by 30d');
+        expect(figures()).toBe(figuresFor('12b'));
+        expect(reads).toBe(1);
+        expect(section.element.querySelector('.mwi-nw-forecast-fan')).toBe(fan);
+
+        target.value = '';
+        target.dispatchEvent(new Event('input'));
+        expect(figures()).not.toContain('Reach target');
+        expect(reads).toBe(1);
+    });
+
+    it('recomputes the fan when the horizon changes, keeping the typed target', () => {
+        const section = createForecastSection({ getHistory: billionsHistory, seed: 11 });
+        section.element.querySelector('.mwi-nw-forecast-toggle').click();
+        const target = section.element.querySelector('.mwi-nw-forecast-target');
+        target.value = '12b';
+        target.dispatchEvent(new Event('input'));
+        const horizon = section.element.querySelector('.mwi-nw-forecast-horizon');
+        horizon.value = '60';
+        horizon.dispatchEvent(new Event('change'));
+
+        const text = section.element.querySelector('.mwi-nw-forecast-figures').textContent;
+        expect(text).toContain('Reach target by 30d');
+        expect(text).toContain('Reach target by 60d');
+    });
 });
 
 /**
