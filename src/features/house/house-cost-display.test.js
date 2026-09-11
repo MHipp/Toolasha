@@ -253,6 +253,114 @@ describe('the panel min-height fallback on browsers without :has()', () => {
     });
 });
 
+describe('the scroller max-height fallback on browsers without :has()', () => {
+    // What this can and cannot show: happy-dom does no layout, so nothing here
+    // proves Firefox's scroller actually stays inside the frame — only that the
+    // declarations a browser would need are set on exactly the ancestor whose
+    // stylesheet rule was dropped, and taken off again on teardown. That the
+    // values are the right ones was settled in a real browser (Firefox,
+    // Chromium, WebKit) against a reproduction of the game's box structure,
+    // with `:has()` simulated away.
+
+    const realCSS = globalThis.CSS;
+
+    /** Make `CSS.supports('selector(:has(*))')` answer `answer` */
+    function withHasSupport(answer) {
+        globalThis.CSS = { supports: () => answer };
+    }
+
+    /**
+     * The game's full box structure between the section and the scroller:
+     * Modal_modalContent (the game's scroller) wrapping HousePanel_modalContent
+     * wrapping HousePanel_costs. `buildPanel()` above omits the outer scroller
+     * entirely, which is fine for the min-height fallback (scoped to
+     * HousePanel_modalContent itself) but leaves nothing for this fallback's
+     * `closest('[class*="Modal_modalContent"]')` to find.
+     */
+    function buildNestedPanel() {
+        const scroller = document.createElement('div');
+        scroller.className = 'Modal_modalContent__xyz789';
+        const modalContent = document.createElement('div');
+        modalContent.className = 'HousePanel_modalContent__abc123';
+        const costsSection = document.createElement('div');
+        costsSection.className = 'HousePanel_costs__def456';
+        modalContent.appendChild(costsSection);
+        scroller.appendChild(modalContent);
+        document.body.appendChild(scroller);
+        return { scroller, modalContent, costsSection };
+    }
+
+    beforeEach(() => {
+        houseCostDisplay.disable();
+    });
+
+    afterEach(() => {
+        globalThis.CSS = realCSS;
+    });
+
+    test('caps the game scroller when :has() is unsupported', async () => {
+        withHasSupport(false);
+        const { scroller, modalContent, costsSection } = buildNestedPanel();
+
+        await houseCostDisplay.addCostColumn(costsSection, '/house_rooms/mystical_study', modalContent);
+
+        // The stylesheet rule was dropped whole, so without this the scroller
+        // has nothing capping it to the frame in Firefox.
+        expect(scroller.style.maxHeight).toContain('--toolasha-visual-viewport-height');
+        expect(scroller.style.maxHeight).toContain('100vh'); // fallback for no visualViewport
+        expect(scroller.style.boxSizing).toBe('border-box');
+    });
+
+    test('leaves the scroller alone when :has() is supported', async () => {
+        withHasSupport(true);
+        const { scroller, modalContent, costsSection } = buildNestedPanel();
+
+        await houseCostDisplay.addCostColumn(costsSection, '/house_rooms/mystical_study', modalContent);
+
+        // The sheet is doing the job. An inline style here would be a second
+        // opinion on the same properties with no way to be overruled.
+        expect(scroller.style.maxHeight).toBe('');
+        expect(scroller.style.boxSizing).toBe('');
+    });
+
+    test('tearing the section down clears it', async () => {
+        withHasSupport(false);
+        const { scroller, modalContent, costsSection } = buildNestedPanel();
+        await houseCostDisplay.addCostColumn(costsSection, '/house_rooms/mystical_study', modalContent);
+        expect(scroller.style.maxHeight).not.toBe('');
+
+        // A room switch: the same panel redrawn for another room removes the
+        // old section first. An inline style has no `:has()` to stop matching.
+        houseCostDisplay.removeExistingColumn(modalContent);
+
+        expect(scroller.style.maxHeight).toBe('');
+        expect(scroller.style.boxSizing).toBe('');
+    });
+
+    test('disabling the feature clears it', async () => {
+        withHasSupport(false);
+        const { scroller, modalContent, costsSection } = buildNestedPanel();
+        await houseCostDisplay.addCostColumn(costsSection, '/house_rooms/mystical_study', modalContent);
+        expect(scroller.style.maxHeight).not.toBe('');
+
+        houseCostDisplay.disable();
+
+        expect(scroller.style.maxHeight).toBe('');
+        expect(scroller.style.boxSizing).toBe('');
+    });
+
+    test('does not clear a max-height or box-sizing the game set itself', () => {
+        const { scroller, modalContent } = buildNestedPanel();
+        scroller.style.maxHeight = '640px';
+        scroller.style.boxSizing = 'content-box';
+
+        houseCostDisplay.removeExistingColumn(modalContent);
+
+        expect(scroller.style.maxHeight).toBe('640px');
+        expect(scroller.style.boxSizing).toBe('content-box');
+    });
+});
+
 describe('Missing Mats Marketplace button placement', () => {
     test('the button lives below the scrolling list, not inside it', async () => {
         const section = await render();

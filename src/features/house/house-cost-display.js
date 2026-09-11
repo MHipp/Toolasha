@@ -73,9 +73,13 @@ const PANEL_LAYOUT_STYLE_ID = 'toolasha-house-panel-layout';
  * to stop the height being fixed. `min-height` beats both `height` and
  * `max-height` at used-value time, so `fit-content` makes the panel grow to
  * hold its items however it was being clamped — a shrunken flex item, a
- * percentage height, a max-height. Nothing has to give, and the modal's own
- * scroller (`Modal_modalContent`, which is what the game provides for content
- * that runs long) sees the true height and can reach the bottom of it.
+ * percentage height, a max-height. Nothing has to give, and in Chromium and
+ * WebKit the modal's own scroller (`Modal_modalContent`, which is what the
+ * game provides for content that runs long) sees the true height and can
+ * reach the bottom of it.
+ *
+ * Firefox is the exception, and it needs a rule of its own — see
+ * `SCROLLER_MAX_HEIGHT` below.
  *
  * `:has(.mwi-house-to-level)` is the restore path. The rule only ever matches a
  * house panel that is currently carrying this file's section, so removing the
@@ -104,9 +108,54 @@ const PANEL_MIN_HEIGHT = 'fit-content';
  */
 const PANEL_MIN_HEIGHT_VALUES = [PANEL_MIN_HEIGHT, '-webkit-fit-content', '-moz-fit-content'];
 
+/**
+ * The cap this file puts on the game's own scroller (`Modal_modalContent`),
+ * Firefox-only in effect but harmless everywhere else.
+ *
+ * `Modal_modal` (the frame) is `display: grid; grid-template-rows: 100%;
+ * max-height: 96%`, no `height`. Chromium and WebKit re-resolve that `100%`
+ * row against the max-height-clamped frame, so `Modal_modalContent` — the
+ * game's scroller, `overflow: auto` — is stuck inside it. Firefox does not:
+ * it sizes the row to the scroller's content instead, so once `fit-content`
+ * above lets the panel grow past the frame, the scroller grows with it and
+ * hangs 267–338px past the frame at phone widths (314px at 1280×700) — still
+ * scrollable, but its bottom, and the Missing Mats button on it, is off
+ * screen. Undoing `fit-content` does not help (measured): the deficit just
+ * goes back to squeezing the section or the Build button, see above.
+ *
+ * So the frame's own limit is restated directly on the scroller instead of
+ * trusted to flow down through the grid row: 96% mirrors `Modal_modal`'s own
+ * `max-height`, and `- 2px` is the frame's 1px top + bottom border. `box-sizing:
+ * border-box` puts the scroller's own padding (`Modal_modalContent`'s
+ * `padding: var(--spacing-sm)`) inside that cap rather than added on top of
+ * it — without it Firefox still overshoots, by the padding (measured 11px).
+ * The unit is the visible viewport, same as `MATERIALS_LIST_MAX_HEIGHT` above
+ * and `--toolasha-visual-viewport-height`'s other use in
+ * `action-panel-layout.js`: it tracks the address bar and the on-screen
+ * keyboard, which `vh` does not.
+ *
+ * It is a `max-height`, so a short panel — most of them — never reaches it and
+ * renders exactly as before. Measured with this rule: Firefox now keeps the
+ * scroller inside the frame and the Missing Mats button on screen at
+ * 375×812, 375×640 and 1280×700; Chromium and WebKit are unchanged apart from
+ * the frame being 2px shorter, which nothing else here measures against.
+ *
+ * `:has(.mwi-house-to-level)` self-scopes the same way `PANEL_MIN_HEIGHT`'s
+ * rule does, and for the same reason a browser without `:has()` needs a
+ * fallback: `applyScrollerMaxHeightFallback()` sets this inline on exactly
+ * those browsers (Firefox before 121 is exactly the population this rule
+ * exists for), and `clearScrollerMaxHeightFallback()` is its undo.
+ */
+const SCROLLER_MAX_HEIGHT = 'calc(var(--toolasha-visual-viewport-height, 100vh) * 0.96 - 2px)';
+
 const PANEL_LAYOUT_CSS = `
     [class*="HousePanel_modalContent"]:has(.mwi-house-to-level) {
         min-height: ${PANEL_MIN_HEIGHT};
+    }
+
+    [class*="Modal_modalContent"]:has(.mwi-house-to-level) {
+        box-sizing: border-box;
+        max-height: ${SCROLLER_MAX_HEIGHT};
     }
 `;
 
@@ -327,6 +376,12 @@ class HouseCostDisplay {
             // rule was dropped — see applyPanelMinHeightFallback().
             this.applyPanelMinHeightFallback(modalContent);
 
+            // Firefox does not clamp the game's own scroller to the frame the
+            // way Chromium/WebKit do. Only needed where PANEL_LAYOUT_CSS's
+            // second `:has()` rule was dropped — see
+            // applyScrollerMaxHeightFallback().
+            this.applyScrollerMaxHeightFallback(modalContent);
+
             // Mark this modal as processed
             this.currentModalContent = modalContent;
         } catch {
@@ -377,6 +432,59 @@ class HouseCostDisplay {
     }
 
     /**
+     * Cap the game's own scroller (`Modal_modalContent`) inline, on browsers
+     * without `:has()`.
+     *
+     * The stylesheet rule is the primary, same as `applyPanelMinHeightFallback`:
+     * where `:has()` is understood this does nothing, so the two never disagree
+     * about the scroller. Where it is not, PANEL_LAYOUT_CSS's second rule was
+     * dropped whole and this sets the same values on the ancestor the rule
+     * would have matched — found from `modalContent` rather than the section,
+     * since `modalContent` (`HousePanel_modalContent`) sits inside the game's
+     * scroller and `closest()` walks up from there past a class name that does
+     * not itself contain `Modal_modalContent`. See `SCROLLER_MAX_HEIGHT`.
+     *
+     * @param {Element} modalContent - The HousePanel_modalContent element
+     */
+    applyScrollerMaxHeightFallback(modalContent) {
+        if (!modalContent || supportsHasSelector()) {
+            return;
+        }
+        const scroller = modalContent.closest('[class*="Modal_modalContent"]');
+        if (!scroller) {
+            return;
+        }
+        scroller.style.boxSizing = 'border-box';
+        scroller.style.maxHeight = SCROLLER_MAX_HEIGHT;
+    }
+
+    /**
+     * Take the inline scroller cap back off.
+     *
+     * Only clears the exact values this file put there, so a game update that
+     * starts setting its own `max-height` or `box-sizing` inline on the
+     * scroller is left alone — the same guard `clearPanelMinHeightFallback`
+     * uses for `min-height`.
+     *
+     * @param {Element} modalContent - The HousePanel_modalContent element
+     */
+    clearScrollerMaxHeightFallback(modalContent) {
+        if (!modalContent) {
+            return;
+        }
+        const scroller = modalContent.closest('[class*="Modal_modalContent"]');
+        if (!scroller) {
+            return;
+        }
+        if (scroller.style.maxHeight === SCROLLER_MAX_HEIGHT) {
+            scroller.style.maxHeight = '';
+        }
+        if (scroller.style.boxSizing === 'border-box') {
+            scroller.style.boxSizing = '';
+        }
+    }
+
+    /**
      * Remove existing augmentations
      * @param {Element} modalContent - The modal content element
      */
@@ -401,6 +509,7 @@ class HouseCostDisplay {
         // the undo on the same flag as the do is one more way to leave it
         // behind.
         this.clearPanelMinHeightFallback(modalContent);
+        this.clearScrollerMaxHeightFallback(modalContent);
     }
 
     /**
@@ -1216,10 +1325,11 @@ class HouseCostDisplay {
             grid.style.gridTemplateColumns = '';
         });
 
-        // Removing the stylesheet above is enough for the `:has()` rule; the
-        // `:has()`-less fallback's inline style has to come off every panel.
+        // Removing the stylesheet above is enough for the `:has()` rules; the
+        // `:has()`-less fallbacks' inline styles have to come off every panel.
         document.querySelectorAll('[class*="HousePanel_modalContent"]').forEach((panel) => {
             this.clearPanelMinHeightFallback(panel);
+            this.clearScrollerMaxHeightFallback(panel);
         });
 
         // Clean up marketplace tabs and observer
