@@ -39,6 +39,8 @@ import domObserver from '../../core/dom-observer.js';
 import webSocketHook from '../../core/websocket.js';
 import { formatKMB, numberFormatter, formatDateTime } from '../../utils/formatters.js';
 import { createPanel, panelNote } from '../../utils/simple-panel.js';
+import { toCsv, csvFilename, downloadCsv } from '../../utils/csv-export.js';
+import { registerCommand, unregisterCommand } from '../../utils/command-registry.js';
 import { spriteIcon, skillIcon, ROW_COLORS, shortDuration } from '../../utils/overlay-format.js';
 import lootLogHistory from './loot-log-history.js';
 // The class, not the default export: `loot-log-stats.js` default-exports the
@@ -191,6 +193,48 @@ export function buildRowView(row) {
         bidTotal,
         ...rates,
     };
+}
+
+/** The pivot table export, one row per action (and per difficulty tier) */
+export const PIVOT_CSV_COLUMNS = [
+    { key: 'action', label: 'Action' },
+    { key: 'actionHrid', label: 'Action Hrid' },
+    { key: 'difficultyTier', label: 'Difficulty Tier' },
+    { key: 'actionCount', label: 'Actions' },
+    { key: 'sessionCount', label: 'Sessions' },
+    { key: 'timeSeconds', label: 'Time (s)' },
+    { key: 'xpPerHour', label: 'XP/hr (total)' },
+    { key: 'xpTotal', label: 'XP (total)' },
+    { key: 'askValue', label: 'Value (ask)' },
+    { key: 'bidValue', label: 'Value (bid)' },
+    { key: 'goldPerHourAsk', label: 'Gold/hr (ask)' },
+    { key: 'goldPerHourBid', label: 'Gold/hr (bid)' },
+];
+
+/**
+ * The pivot table as CSV rows, one per action (and per difficulty tier) —
+ * every aggregated row, unfiltered: the search box narrows what is on screen,
+ * not what the export is for. Raw numbers, the way the panel's own figures are
+ * before `formatKMB` gets to them, so a spreadsheet can sum a column.
+ *
+ * @param {Array<Object>} views - From {@link buildRowView}
+ * @returns {Array<Object>} Rows for {@link PIVOT_CSV_COLUMNS}
+ */
+export function buildPivotCsvRows(views) {
+    return (views || []).map((view) => ({
+        action: lootLogStats.getActionName(view.row.actionHrid),
+        actionHrid: view.row.actionHrid,
+        difficultyTier: view.row.difficultyTier ?? '',
+        actionCount: view.row.actionCount,
+        sessionCount: view.row.entryCount,
+        timeSeconds: Math.round(view.row.totalTimeMs / 1000),
+        xpPerHour: Math.round(view.totalXpPerHour),
+        xpTotal: view.totalXp,
+        askValue: Math.round(view.askTotal),
+        bidValue: Math.round(view.bidTotal),
+        goldPerHourAsk: Math.round(view.goldPerHourAsk),
+        goldPerHourBid: Math.round(view.goldPerHourBid),
+    }));
 }
 
 /**
@@ -462,6 +506,36 @@ function drawToolbar(body, rowCount) {
     count.style.whiteSpace = 'nowrap';
     bar.appendChild(count);
 
+    // Gated on the full aggregation rather than on `rowCount`, which is what
+    // the search box left showing — a filter that matches nothing should not
+    // take away the means to export everything else
+    const allViews = aggregatedViews();
+    if (allViews.length) {
+        const exportBtn = document.createElement('button');
+        exportBtn.textContent = 'Export CSV';
+        exportBtn.title = 'Save the whole pivot table as a spreadsheet — one row per action, raw numbers.';
+        Object.assign(exportBtn.style, {
+            background: 'rgba(255, 255, 255, 0.06)',
+            color: ROW_COLORS.dim,
+            border: '1px solid rgba(255, 255, 255, 0.15)',
+            borderRadius: '4px',
+            padding: '2px 6px',
+            fontSize: '11px',
+            cursor: 'pointer',
+            whiteSpace: 'nowrap',
+        });
+        exportBtn.addEventListener('click', () => {
+            try {
+                const rows = buildPivotCsvRows(aggregatedViews());
+                if (!rows.length) return;
+                downloadCsv(csvFilename('loot-log-pivot'), toCsv(rows, PIVOT_CSV_COLUMNS));
+            } catch (error) {
+                console.error('[LootLogPivot] CSV export failed:', error);
+            }
+        });
+        bar.appendChild(exportBtn);
+    }
+
     body.appendChild(bar);
 }
 
@@ -651,12 +725,22 @@ export default {
         const onSwitch = () => resetPivotState();
         dataManager.on?.('character_switched', onSwitch);
         unregisterHandlers.push(() => dataManager.off?.('character_switched', onSwitch));
+
+        // The panel was reachable only through a 📊 button injected into the
+        // game's own Loot Log — nothing to click if that panel was never open.
+        // A palette entry gives it a keyboard route the way its siblings have.
+        registerCommand({
+            name: 'Loot & XP Analytics',
+            hint: 'What every recorded action actually paid, per hour',
+            run: () => lootLogPivotPanel.toggle(),
+        });
     },
     cleanup: () => {
         lootLogPivotPanel.hide?.({ remember: false });
         document.querySelectorAll('.mwi-loot-log-pivot-btn').forEach((btn) => btn.remove());
         unregisterHandlers.forEach((fn) => fn?.());
         unregisterHandlers.length = 0;
+        unregisterCommand('Loot & XP Analytics');
         resetPivotState();
     },
 };

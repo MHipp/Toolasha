@@ -129,9 +129,13 @@ const {
     lootLogPivotPanel,
     injectPivotButton,
     resetPivotState,
+    buildRowView,
+    buildPivotCsvRows,
+    PIVOT_CSV_COLUMNS,
     PAGE_SIZE,
     COLUMNS,
 } = await import('./loot-log-pivot-panel.js');
+const { registeredCommands, resetCommands } = await import('../../utils/command-registry.js');
 
 const HOUR = 3_600_000;
 
@@ -497,5 +501,114 @@ describe('the button and the feature lifecycle', () => {
 
         expect(text()).toContain('Nothing recorded yet');
         expect(text()).not.toContain('could not be drawn');
+    });
+});
+
+describe('the palette entry', () => {
+    afterEach(() => {
+        resetCommands();
+    });
+
+    const command = () => registeredCommands().find((entry) => entry.name === 'Loot & XP Analytics');
+
+    test('initialising offers it, and running it opens the panel', async () => {
+        resetCommands();
+        await lootLogPivot.initialize();
+
+        expect(command()).toBeDefined();
+
+        command().run();
+        expect(lootLogPivotPanel.panel).toBeTruthy();
+    });
+
+    test('the feature staying off leaves it out of the palette', async () => {
+        resetCommands();
+        world.settingOn = false;
+        await lootLogPivot.initialize();
+
+        expect(command()).toBeUndefined();
+    });
+
+    test('cleanup takes it back out', async () => {
+        resetCommands();
+        await lootLogPivot.initialize();
+        lootLogPivot.cleanup();
+
+        expect(command()).toBeUndefined();
+    });
+});
+
+describe('buildPivotCsvRows, the CSV export', () => {
+    /** A pivot row shaped like `aggregatePivotRows` produces */
+    function pivotRow(fields = {}) {
+        return {
+            actionHrid: '/actions/milking/cow',
+            difficultyTier: 0,
+            actionCount: 100,
+            entryCount: 2,
+            totalTimeMs: HOUR * 2,
+            xpGains: { '/skills/milking': 6000 },
+            drops: { '/items/milk': 200 },
+            ...fields,
+        };
+    }
+
+    test('no views is no rows', () => {
+        expect(buildPivotCsvRows([])).toEqual([]);
+        expect(buildPivotCsvRows(null)).toEqual([]);
+    });
+
+    test('every column names a field the rows carry', () => {
+        const [row] = buildPivotCsvRows([buildRowView(pivotRow())]);
+        for (const column of PIVOT_CSV_COLUMNS) {
+            expect(row).toHaveProperty(column.key);
+        }
+    });
+
+    test('the figures are the same ones the panel shows, as raw numbers', () => {
+        const [row] = buildPivotCsvRows([buildRowView(pivotRow({ difficultyTier: 3 }))]);
+
+        expect(row.action).toBe('cow');
+        expect(row.difficultyTier).toBe(3);
+        expect(row.actionCount).toBe(100);
+        expect(row.sessionCount).toBe(2);
+        expect(row.timeSeconds).toBe(7200);
+        // 200 drops at 2 ask / 1 bid (the mocked calculateTotalValue), over two hours
+        expect(row.askValue).toBe(400);
+        expect(row.bidValue).toBe(200);
+        expect(row.goldPerHourAsk).toBe(200);
+        expect(row.goldPerHourBid).toBe(100);
+        expect(row.xpTotal).toBe(6000);
+        expect(row.xpPerHour).toBe(3000);
+    });
+});
+
+describe('the CSV export button', () => {
+    const button = () =>
+        [...lootLogPivotPanel.panel.querySelectorAll('button')].find((el) => el.textContent === 'Export CSV');
+
+    test('is absent with no history', async () => {
+        await open();
+        expect(button()).toBeUndefined();
+    });
+
+    test('appears once there is a pivot table, even when the filter matches nothing', async () => {
+        world.history = [entry()];
+        await open();
+        expect(button()).toBeTruthy();
+
+        const search = lootLogPivotPanel.panel.querySelector('input[type="text"]');
+        search.value = 'nothing matches this';
+        search.dispatchEvent(new Event('input'));
+
+        expect(button()).toBeTruthy();
+        expect(text()).not.toContain('could not be drawn');
+    });
+
+    test('clicking it does not throw', async () => {
+        world.history = [entry()];
+        await open();
+
+        expect(() => button().click()).not.toThrow();
     });
 });
