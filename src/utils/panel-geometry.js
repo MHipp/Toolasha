@@ -440,12 +440,31 @@ async function openFlags() {
     if (!openLoading.has(key)) {
         const load = (async () => {
             let flags = {};
+            let ours = true;
             try {
                 await liftLegacyOpenFlags();
-                const saved = await readScoped(OPEN_KEY, 'settings', null, { migrate: 'adopt' });
-                if (saved && typeof saved === 'object') flags = saved;
+                // `readScoped` resolves `characterKey(OPEN_KEY)` again when it
+                // runs, and the lift above is four storage round trips wide. A
+                // switch landing in it read the ARRIVING character's flags and
+                // cached them under `key`, which is the DEPARTING character's —
+                // where they stayed for the life of the tab, reopening somebody
+                // else's panels for them and, on the next `saveOpenState`, being
+                // written over their own stored record.
+                if (characterKey(OPEN_KEY) !== key) ours = false;
+                else {
+                    const saved = await readScoped(OPEN_KEY, 'settings', null, { migrate: 'adopt' });
+                    if (characterKey(OPEN_KEY) !== key) ours = false;
+                    else if (saved && typeof saved === 'object') flags = saved;
+                }
             } catch (error) {
                 console.error('[PanelGeometry] Loading which panels were open failed:', error);
+            }
+            // Not cached, and the in-flight entry is dropped: nothing was read
+            // for this character, so the next caller must be able to try again
+            // rather than inherit an empty answer forever.
+            if (!ours) {
+                if (openLoading.get(key) === load) openLoading.delete(key);
+                return {};
             }
             openCache.set(key, flags);
             return flags;
