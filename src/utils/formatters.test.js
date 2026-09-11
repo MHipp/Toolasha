@@ -18,9 +18,11 @@ import {
     formatCompactNumber,
     formatLargeNumber,
     formatThreshold,
+    parseKMB,
     isSameLocalDay,
     formatActivityStatusTime,
 } from './formatters.js';
+import { MAGNITUDE_SUFFIXES } from './number-parser.js';
 
 // Mock config module for formatLargeNumber tests
 vi.mock('../core/config.js', () => ({
@@ -431,6 +433,26 @@ describe('networthFormatter', () => {
     test('does not throw for NaN (e.g. Math.round of a missing value upstream)', () => {
         expect(() => networthFormatter(NaN)).not.toThrow();
         expect(networthFormatter(NaN)).toBe('NaNB');
+    });
+});
+
+describe('parseKMB', () => {
+    test.each([
+        ['1.5t', 1.5e12],
+        ['2q', 2e15],
+        ['2Q', 2e15],
+        ['500m', 5e8],
+        ['1.5b', 1.5e9],
+        ['100k', 1e5],
+        ['500,000,000', 5e8],
+    ])('%j → %d', (text, expected) => expect(parseKMB(text)).toBe(expected));
+
+    test.each(['12xyz', '1.5x', ''])('%j is not an amount', (text) => expect(parseKMB(text)).toBeNaN());
+
+    test('reads every suffix number-parser reads', () => {
+        for (const [letter, scale] of Object.entries(MAGNITUDE_SUFFIXES)) {
+            expect(parseKMB(`3${letter}`)).toBe(3 * scale);
+        }
     });
 });
 

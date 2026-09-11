@@ -33,6 +33,19 @@ function gameNumberLocale() {
     }
 }
 
+/**
+ * What each magnitude suffix letter multiplies by. The one table every amount
+ * parser reads (this module's and `parseKMB` in formatters.js), so a suffix the
+ * formatters print — Q included — is one every typed box accepts.
+ */
+export const MAGNITUDE_SUFFIXES = Object.freeze({ k: 1e3, m: 1e6, b: 1e9, t: 1e12, q: 1e15 });
+
+/** The suffix letters as a regex character-class body, e.g. `kmbtq`. */
+const SUFFIX_LETTERS = Object.keys(MAGNITUDE_SUFFIXES).join('');
+
+/** A number ending in one suffix letter, the letter captured; input is lowercased first. */
+const SUFFIX_AT_END = new RegExp(`\\d([${SUFFIX_LETTERS}])$`);
+
 /** The letter suffix each spelled-out or abbreviated magnitude word stands for. */
 const SUFFIX_WORD_LETTERS = Object.freeze({
     thousand: 'k',
@@ -51,7 +64,10 @@ const SUFFIX_WORD = /(\d)\s*(thousand|million|mil|billion|bn|trillion|tn)s?$/;
  * A whole string that is nothing but an amount: digits with any grouping or
  * decimal separators, and at most one recognised magnitude suffix.
  */
-const AMOUNT_TEXT = /^\d[\d.,\s]*(?:[kmbt]|(?:thousand|million|mil|billion|bn|trillion|tn)s?)?$/i;
+const AMOUNT_TEXT = new RegExp(
+    `^\\d[\\d.,\\s]*(?:[${SUFFIX_LETTERS}]|(?:thousand|million|mil|billion|bn|trillion|tn)s?)?$`,
+    'i'
+);
 
 /**
  * Whether text a player typed is an amount and nothing else.
@@ -87,7 +103,9 @@ function separatorIsGrouping(text, separator) {
     if (text.split(separator).length > 2) return true;
     const escaped = escapeRegExpChar(separator);
     if (new RegExp(`${escaped}\\d{3}$`).test(text)) return true;
-    return new RegExp(`${escaped}\\d{3}\\s*[kmbt]$`).test(text) && gameNumberSeparators().group === separator;
+    return (
+        new RegExp(`${escaped}\\d{3}\\s*[${SUFFIX_LETTERS}]$`).test(text) && gameNumberSeparators().group === separator
+    );
 }
 
 /**
@@ -117,7 +135,7 @@ function isWellGrouped(text, group, decimal) {
  * Parse item count from text
  * Handles various formats including:
  * - Plain numbers: "100", "1000"
- * - K/M/B/T suffixes: "1.5K", "2M"
+ * - K/M/B/T/Q suffixes: "1.5K", "2M", "2Q"
  * - Suffix words, any case, optional space and plural: "12 billion", "12bn",
  *   "5 mil", "3 trillion", "750 thousand" — read exactly as their letter
  * - International formats with separators: "1,000", "1 000", "1.000"
@@ -196,19 +214,10 @@ export function parseItemCount(text, defaultValue = 1) {
     // Remove remaining whitespace separators
     text = text.replace(/\s/g, '');
 
-    // Handle K/M/B/T suffixes (must end with the suffix letter). T support is
-    // for the post-rework max listing price of 1T (was 100B).
-    if (/\d[kmbt]$/.test(text)) {
-        if (text.endsWith('k')) {
-            return parseFloat(text) * 1000;
-        } else if (text.endsWith('m')) {
-            return parseFloat(text) * 1000000;
-        } else if (text.endsWith('b')) {
-            return parseFloat(text) * 1000000000;
-        } else if (text.endsWith('t')) {
-            return parseFloat(text) * 1000000000000;
-        }
-    }
+    // A trailing suffix letter scales the number (T covers the post-rework 1T max
+    // listing price; Q is what the formatters print past a thousand trillion)
+    const suffix = text.match(SUFFIX_AT_END)?.[1];
+    if (suffix) return parseFloat(text) * MAGNITUDE_SUFFIXES[suffix];
 
     // Parse plain number
     const parsed = parseFloat(text);

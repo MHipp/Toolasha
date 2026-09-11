@@ -32,7 +32,10 @@ vi.mock('../../utils/enhancement-config.js', () => ({ getEnhancingParams: () => 
 vi.mock('../networth/networth-cache.js', () => ({ default: { get: () => null, set: () => {} } }));
 vi.mock('../market/expected-value-calculator.js', () => ({ default: { isInitialized: false } }));
 vi.mock('../../utils/market-data.js', () => ({ getItemPrice: (hrid) => mocks.prices[hrid] ?? null }));
-vi.mock('../../utils/number-parser.js', () => ({ parseItemCount: (text) => parseInt(text, 10) || 0 }));
+vi.mock('../../utils/number-parser.js', () => ({
+    parseItemCount: (text) => parseInt(text, 10) || 0,
+    MAGNITUDE_SUFFIXES: { k: 1e3, m: 1e6, b: 1e9, t: 1e12, q: 1e15 },
+}));
 vi.mock('../../utils/dungeon-keys.js', () => ({ DUNGEON_CHEST_CHEST_KEYS: {} }));
 vi.mock('../../utils/dom-observer-helpers.js', () => ({ createMutationWatcher: () => () => {} }));
 vi.mock('../../utils/background-work.js', () => ({

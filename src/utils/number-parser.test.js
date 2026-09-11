@@ -21,6 +21,7 @@ describe('parseItemCount', () => {
         test('parses B suffix', () => expect(parseItemCount('1.2B')).toBe(1200000000));
         test('parses T suffix', () => expect(parseItemCount('1.2T')).toBe(1200000000000));
         test('parses lowercase k', () => expect(parseItemCount('1.5k')).toBe(1500));
+        test('parses Q suffix, which the formatters print', () => expect(parseItemCount('2Q')).toBe(2e15));
     });
 
     describe('comma as thousands separator', () => {
@@ -195,6 +196,8 @@ describe('isAmountText', () => {
         '12 billion',
         '3 trillions',
         '1.234,5 mil',
+        '2q',
+        '1.5 Q',
     ])('%j is an amount', (text) => expect(isAmountText(text)).toBe(true));
 
     test.each([

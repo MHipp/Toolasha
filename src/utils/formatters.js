@@ -4,6 +4,7 @@
  */
 
 import config from '../core/config.js';
+import { MAGNITUDE_SUFFIXES } from './number-parser.js';
 
 /**
  * Check if number abbreviation (K/M/B) is enabled based on user settings.
@@ -144,10 +145,10 @@ export function parseKMB(text) {
         .trim()
         .toLowerCase()
         .replace(/[,_\s]/g, '');
-    const match = cleaned.match(/^(\d+\.?\d*)([kmb]?)$/);
-    if (!match) return NaN;
-    const multipliers = { k: 1e3, m: 1e6, b: 1e9 };
-    return parseFloat(match[1]) * (multipliers[match[2]] || 1);
+    const match = cleaned.match(/^(\d+\.?\d*)([a-z]?)$/);
+    // The suffixes are number-parser's, so every letter the formatters print reads back
+    if (!match || (match[2] && !(match[2] in MAGNITUDE_SUFFIXES))) return NaN;
+    return parseFloat(match[1]) * (MAGNITUDE_SUFFIXES[match[2]] ?? 1);
 }
 
 /**
