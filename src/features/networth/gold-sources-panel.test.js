@@ -229,6 +229,25 @@ describe('the combat row’s basis', () => {
         expect(text).toContain('3 days in this window have neither recording');
     });
 
+    test('the coverage line says what was live, what went to the offline row and what was set aside', () => {
+        const text = combatCoverageText(
+            basis({
+                sessionDays: 3,
+                liveDays: 2,
+                offlineCombat: 500,
+                ambiguousEntries: 1,
+                sessionsHeld: 20,
+                capReached: false,
+                combatRan: true,
+            })
+        );
+        expect(text).toContain('battle feed filled 3 days, 2 days of it recorded live');
+        expect(text).toContain('left to the offline row');
+        expect(text).toContain('1 loot log record lay across a different run and was set aside');
+        // The live record reaches back past the window, so the run cap binds nothing
+        expect(text).not.toContain('most recent runs');
+    });
+
     test('the coverage line says plainly when the loot log has never recorded combat', () => {
         expect(combatCoverageText(basis({ sessionDays: 1, combatRan: true }))).toContain('never recorded combat');
     });
@@ -385,7 +404,7 @@ describe('the new source rows', () => {
 describe('tooltips', () => {
     test('name the recording and when it started', () => {
         const tip = sourceTooltip('combat', { combat: D19 });
-        expect(tip).toContain('Loot log history');
+        expect(tip).toContain('Battle feed recorded live');
         expect(tip).toContain('since 2026-08-19');
         expect(tip).toContain('Measured');
     });

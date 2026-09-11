@@ -14,6 +14,8 @@ const game = vi.hoisted(() => ({
     live: null,
     /** What the collector holds but withholds from the overlay: a restored run that has ended */
     lastRun: undefined,
+    /** The combat loot recorder's rows */
+    liveDays: [],
 }));
 
 vi.mock('../../core/data-manager.js', () => ({
@@ -46,6 +48,8 @@ vi.mock('../actions/loot-log-history.js', () => ({
 }));
 vi.mock('./networth-history.js', () => ({ default: { getHistory: () => [] } }));
 vi.mock('./production-income-recorder.js', () => ({ default: { load: async () => [] } }));
+vi.mock('./chest-opening-recorder.js', () => ({ default: { load: async () => [] } }));
+vi.mock('./combat-loot-recorder.js', () => ({ default: { load: async () => game.liveDays } }));
 vi.mock('../../utils/market-data.js', () => ({ getItemPrice: () => 0 }));
 vi.mock('./networth-calculator.js', () => ({
     calculateCraftingCost: (itemHrid) => (itemHrid === '/items/culinary_cape' ? 300_000 : 0),
@@ -66,6 +70,15 @@ beforeEach(() => {
     game.archived = [];
     game.live = null;
     game.lastRun = undefined;
+    game.liveDays = [];
+});
+
+describe('the live combat record', () => {
+    test('reaches the attribution alongside the archive', async () => {
+        game.liveDays = [{ d: '2026-08-28', runs: {}, offline: [[1, 2]] }];
+        const inputs = await collectGoldSourceInputs({ price: () => 0 });
+        expect(inputs.combatLootDays).toEqual(game.liveDays);
+    });
 });
 
 describe('the live combat session', () => {

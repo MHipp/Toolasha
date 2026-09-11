@@ -295,14 +295,32 @@ export function combatCoverageText(basis) {
     );
 
     if (basis.sessionDays > 0) {
-        parts.push(`The battle feed filled ${plural(basis.sessionDays, 'day')} the loot log did not.`);
+        const live = basis.liveDays > 0 ? `, ${plural(basis.liveDays, 'day')} of it recorded live as it happened` : '';
+        parts.push(`The battle feed filled ${plural(basis.sessionDays, 'day')}${live}.`);
     }
     if (basis.emptySessions > 0) {
         parts.push(`${plural(basis.emptySessions, 'recorded run')} carried no loot of your own.`);
     }
-    if (basis.sessionsHeld >= basis.sessionCap) {
+    // An attribution from before the live record existed has no `capReached`
+    if (basis.capReached ?? basis.sessionsHeld >= basis.sessionCap) {
         parts.push(
-            `Only the ${basis.sessionCap} most recent runs are kept, so days before them are not covered by the feed.`
+            Number.isFinite(basis.liveSince)
+                ? `Only the ${basis.sessionCap} most recent runs are archived and the live record starts on ` +
+                      `${localDayId(basis.liveSince)}, so days before both are not covered by the feed.`
+                : `Only the ${basis.sessionCap} most recent runs are kept, so days before them are not covered by ` +
+                      'the feed.'
+        );
+    }
+    if (basis.offlineCombat > 0) {
+        parts.push(
+            'Combat loot that fell while you were offline is left to the offline row, which already counts it ' +
+                'from the Welcome Back summary.'
+        );
+    }
+    if (basis.ambiguousEntries > 0) {
+        parts.push(
+            `${plural(basis.ambiguousEntries, 'loot log record')} lay across a different run and ` +
+                `${basis.ambiguousEntries === 1 ? 'was' : 'were'} set aside rather than counted twice.`
         );
     }
     if (basis.uncoveredDays > 0) {
@@ -669,7 +687,8 @@ export function buildPanelBody(attribution, { series = null, now = undefined, on
         if (combatBasis.uncoveredDays > 0) {
             pieces.push(
                 `${plural(combatBasis.uncoveredDays, 'day')} in this window have no combat record at all — the ` +
-                    'loot log was closed and the archived runs do not reach back that far'
+                    'live record was not running, the loot log was closed and the archived runs do not reach ' +
+                    'back that far'
             );
         }
         if (combatBasis.emptySessions > 0) {

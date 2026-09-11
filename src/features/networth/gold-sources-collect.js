@@ -40,6 +40,7 @@ import bundledTaskCompletionTracker from '../tasks/task-completion-tracker.js';
 import networthHistory from './networth-history.js';
 import productionIncomeRecorder from './production-income-recorder.js';
 import chestOpeningRecorder from './chest-opening-recorder.js';
+import combatLootRecorder from './combat-loot-recorder.js';
 import { getItemPrice } from '../../utils/market-data.js';
 import { calculateCraftingCost } from './networth-calculator.js';
 import expectedValueCalculator from '../market/expected-value-calculator.js';
@@ -177,6 +178,7 @@ export async function collectGoldSourceInputs({ price = createPricer() } = {}) {
         combatSessions,
         taskCompletions,
         chestDays,
+        combatLootDays,
     ] = await Promise.all([
         attempt(
             'the loot log',
@@ -201,6 +203,9 @@ export async function collectGoldSourceInputs({ price = createPricer() } = {}) {
             []
         ),
         attempt('the chest openings', () => chestOpeningRecorder.load(), []),
+        // The battle feed as it was recorded live — same bundle, so this is the
+        // copy the recorder writes to
+        attempt('the combat loot recorder', () => combatLootRecorder.load(), []),
     ]);
 
     const tradeFills = await attempt(
@@ -249,6 +254,7 @@ export async function collectGoldSourceInputs({ price = createPricer() } = {}) {
         enhancementSessions: Object.values(enhancementSessions || {}),
         tradeFills,
         combatSessions,
+        combatLootDays,
         // The bound the archived runs are kept under, carried through so the
         // panel can say how far the combat fallback actually reaches back
         sessionCap: MAX_SESSIONS,

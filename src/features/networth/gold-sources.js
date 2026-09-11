@@ -48,24 +48,31 @@
  * Neither is subtracted from anything. The residual stays exactly as large as
  * it falls out.
  *
- * ## Combat has two recordings, and they must not be added together
+ * ## Combat has three recordings, and no drop is counted twice
  *
- * The loot log is the game's own record of what an action produced, but the
- * game only *sends* it while the Loot & XP Log panel is open. A character that
- * fights all week and never opens that panel records nothing at all, and the
- * combat row reported a confident measured zero while the consumables row —
- * fed from the archived combat runs — proved the fighting happened.
+ * - the **battle feed, recorded live** (`combat-loot-recorder.js`): every
+ *   `new_battle` carries the run's running loot total, and it is read whenever
+ *   the game is open, whatever panel is showing;
+ * - the **loot log**, the game's own record, but only sent while its Loot & XP
+ *   Log panel is open — so often a stale early snapshot of a run, or nothing;
+ * - the **archived runs**, the twenty most recent, plus the one in progress.
  *
- * So the row reads both. Per local day: if the loot log has any combat entry that
- * day, that day is the loot log's, because it includes runs this client never
- * watched. Otherwise the day falls back to the archived runs' own loot maps.
- * Never both for one day — the same drop is in both recordings, and summing
- * them would double it.
+ * All three are readings of the same running total — the game counts a run's
+ * loot from its `combatStartTime`, and the loot log counts an action's drops
+ * from the same start — so they are gathered under the run they recorded and
+ * each run is costed as the most any of them had seen by each instant (see
+ * {@link combatLootByDay}). Whichever saw furthest into a stretch of time
+ * answers for it and the others add only what it missed: the live feed for
+ * the hours the tab was open, the loot log or archive for the tail after it
+ * closed. A run's total is the most one recording saw, never a sum of two.
  *
- * The fallback is bounded in a way the loot log is not: only the twenty most
- * recent runs are kept, so a busy week reaches back further than they do. Days
- * that neither recording covers are counted and reported rather than left to
- * look like days of no combat, and what they were worth stays in the residual.
+ * The offline period belongs to the offline row: the Welcome Back summary is
+ * the server's own item delta for it, drops and food included, and a combat
+ * recording that ran through it carries the same drops. Every combat recording
+ * leaves its share of an offline window to that row.
+ *
+ * Days no recording covers are counted and reported rather than left to look
+ * like days of no combat, and what they were worth stays in the residual.
  *
  * ## Days are local
  *
@@ -117,11 +124,13 @@ export const SOURCE_META = {
     combat: {
         label: 'Combat drops',
         measured: true,
-        source: 'Loot log history, and the battle feed where it is silent',
+        source: 'Battle feed recorded live, with the loot log and archived runs for what it missed',
         note:
-            'Every drop the loot log recorded for a combat action, priced at today’s market. The game only sends ' +
-            'the loot log while its panel is open, so on a day it recorded nothing the archived combat runs are ' +
-            'read instead — your own share of their loot, from the twenty most recent runs. Never both for one day.',
+            'Your own share of every combat drop, priced at today’s market. The battle feed is recorded whenever ' +
+            'the game is open; the loot log (only sent while its panel is open) and the twenty most recent ' +
+            'archived runs fill in what the feed did not see. Each run counts the most any one of them saw, never ' +
+            'two added together, and time spent offline is left to the offline row. The live record is ' +
+            'forward-only — it starts the day it was installed.',
     },
     gathering: {
         label: 'Gathering',
@@ -864,6 +873,305 @@ function earlierOf(a, b) {
 }
 
 /**
+ * How far apart a loot log entry's start and a run's `combatStartTime` may be
+ * and still be the same run. Both are the server's timestamp of the combat
+ * action starting and normally agree exactly; the nearest start within this
+ * wins, so two runs started close together cannot trade entries.
+ */
+export const SAME_RUN_SLACK_MS = 2 * 60 * 1000;
+
+/** Which recording a tie is credited to, most direct first */
+const RECORDING_RANK = { live: 0, log: 1, archive: 2 };
+
+/**
+ * A span with the offline windows taken out of it.
+ * @param {number} from - Span start, epoch ms
+ * @param {number} to - Span end, epoch ms
+ * @param {Array<Array<number>>} offline - `[from, to]` windows
+ * @returns {Array<Array<number>>} The online pieces, in order
+ */
+export function onlinePieces(from, to, offline) {
+    let pieces = to > from ? [[from, to]] : [];
+    for (const window of offline || []) {
+        const [a, b] = Array.isArray(window) ? window : [];
+        if (!(b > a)) continue;
+        const next = [];
+        for (const [start, end] of pieces) {
+            if (b <= start || a >= end) {
+                next.push([start, end]);
+                continue;
+            }
+            if (a > start) next.push([start, a]);
+            if (b < end) next.push([b, end]);
+        }
+        pieces = next;
+    }
+    return pieces;
+}
+
+/**
+ * Spread a value across the days of a span by time, handing the part that fell
+ * in an offline window to the offline row instead.
+ *
+ * The Welcome Back summary is the server's own item delta for the offline
+ * period and the offline row counts it whole. A combat recording spanning that
+ * period carries the same drops (and the same food) in its running total, so
+ * its share inside the window goes to `onCeded` rather than `onDay`: counted
+ * once, by the row that measured it.
+ *
+ * A zero-length span is its instant, whole.
+ *
+ * @param {number} value - What to spread
+ * @param {number} from - Span start, epoch ms
+ * @param {number} to - Span end, epoch ms
+ * @param {Array<Array<number>>} offline - `[from, to]` offline windows
+ * @param {Function} onDay - `(dayId, value)`, for the online share
+ * @param {Function} [onCeded] - `(dayId, value)`, for the offline share
+ */
+export function spreadOnline(value, from, to, offline, onDay, onCeded = () => {}) {
+    if (!Number.isFinite(value) || value === 0 || !Number.isFinite(from)) return;
+    if (!(to > from)) {
+        const offlineThen = (offline || []).some((window) => from >= window?.[0] && from < window?.[1]);
+        (offlineThen ? onCeded : onDay)(localDayId(from), value);
+        return;
+    }
+
+    const total = to - from;
+    const pay = (start, end, sink) => {
+        if (!(end > start)) return;
+        const part = value * ((end - start) / total);
+        for (const { day, share } of daySharesOfSpan(start, end)) sink(day, part * share);
+    };
+    let cursor = from;
+    for (const [start, end] of onlinePieces(from, to, offline)) {
+        pay(cursor, start, onCeded);
+        pay(start, end, onDay);
+        cursor = end;
+    }
+    pay(cursor, to, onCeded);
+}
+
+/**
+ * What one combat run was worth on each day, from every recording of it.
+ *
+ * Each recording of a run — a battle feed reading, the archived snapshot, a
+ * loot log entry — reads the SAME running total, counted from the same start.
+ * So they are points on one rising curve, and the honest curve through them is
+ * the most any of them had seen by each instant: a drop two recordings both saw
+ * raises it once.
+ *
+ * Between two points the rise is spread by time — exact across a midnight the
+ * feed watched, and the uniform estimate every session here uses across a
+ * stretch nobody watched. A reading lower than the high point so far (a stale
+ * loot log entry) raises nothing. One that ties it later moves the start of the
+ * next rise up to it, because the total is then known not to have moved until
+ * that instant.
+ *
+ * The run's total is therefore the most any one recording saw — never a sum of
+ * two, and never more than the most complete of them.
+ *
+ * @param {number} start - The run's start, epoch ms
+ * @param {Array<{t: number, value: number, kind: string}>} readings - The
+ *   running total's worth at each instant, and which recording (`live`, `log`
+ *   or `archive`) read it
+ * @param {Array<Array<number>>} [offline] - Offline windows, left to the offline row
+ * @returns {{days: Map<string, {value: number, live: number, log: number, archive: number}>,
+ *   ceded: Map<string, number>, total: number}} What the run added each day and
+ *   which recording raised it there; what fell in offline time; the run's total
+ */
+export function combatRunDayValues(start, readings, offline = []) {
+    const points = (readings || [])
+        .filter((reading) => reading && Number.isFinite(reading.t) && Number.isFinite(reading.value))
+        .map((reading) => ({ ...reading, t: Math.max(reading.t, start) }))
+        .sort(
+            (a, b) => a.t - b.t || a.value - b.value || (RECORDING_RANK[a.kind] ?? 9) - (RECORDING_RANK[b.kind] ?? 9)
+        );
+
+    const days = new Map();
+    const ceded = new Map();
+    let high = 0;
+    let since = start;
+    for (const point of points) {
+        // Two recordings of the same drops can add them in a different order
+        const tolerance = 1e-9 * Math.max(1, high);
+        if (point.value > high + tolerance) {
+            const { kind } = point;
+            spreadOnline(
+                point.value - high,
+                since,
+                point.t,
+                offline,
+                (day, value) => {
+                    const held = days.get(day) || { value: 0, live: 0, log: 0, archive: 0 };
+                    held.value += value;
+                    if (kind in RECORDING_RANK) held[kind] += value;
+                    days.set(day, held);
+                },
+                (day, value) => ceded.set(day, (ceded.get(day) || 0) + value)
+            );
+            high = point.value;
+            since = point.t;
+        } else if (point.value >= high - tolerance) {
+            since = point.t;
+        }
+    }
+    return { days, ceded, total: high };
+}
+
+/**
+ * What a battle feed reading's running total is worth.
+ * @param {Object<string, number>} loot - Drop key → count
+ * @param {Function} price - `(itemHrid, enhancementLevel) => number|null`
+ * @returns {{value: number, items: number}} Coins, and how many kinds of drop
+ */
+function lootCountsValue(loot, price) {
+    let value = 0;
+    let items = 0;
+    for (const [key, count] of Object.entries(loot || {})) {
+        const { itemHrid, enhancementLevel } = splitDropKey(key);
+        if (!itemHrid) continue;
+        items += 1;
+        value += dropUnitValue(price, itemHrid, enhancementLevel) * num(count);
+    }
+    return { value, items };
+}
+
+/**
+ * Whether two spans are the same stretch of time rather than neighbours: they
+ * overlap by more than the slack, or one is an instant well inside the other.
+ * @returns {boolean}
+ */
+function sharesTime(aFrom, aTo, bFrom, bTo) {
+    if (Math.min(aTo, bTo) - Math.max(aFrom, bFrom) > SAME_RUN_SLACK_MS) return true;
+    const inside = (t, from, to) => t > from + SAME_RUN_SLACK_MS && t < to - SAME_RUN_SLACK_MS;
+    return (aTo === aFrom && inside(aFrom, bFrom, bTo)) || (bTo === bFrom && inside(bFrom, aFrom, aTo));
+}
+
+/**
+ * What combat dropped on each day, from all three recordings, each drop once.
+ *
+ * ## Which recording answers for a stretch of time
+ *
+ * None of them for a whole day. Every recording is gathered under the run it
+ * recorded — the battle feed's readings and the archived snapshot by the run's
+ * `combatStartTime`, a loot log entry by the run whose start it shares — and
+ * each run is costed by {@link combatRunDayValues}: the most any recording of it
+ * had seen by each instant. For any stretch of time the answer is whichever saw
+ * furthest into it, and the others add only what it missed — in practice the
+ * live feed for every hour the tab was open, the loot log or archive for the
+ * tail after it closed, and the offline row for time spent offline.
+ *
+ * A loot log entry sharing no run's start is a run nobody else recorded, and
+ * counts whole over its own span. One that lies across a DIFFERENT run's time
+ * is set aside and counted: one action cannot be two runs, and adding it would
+ * count the other run's drops a second time.
+ *
+ * @param {Object} input
+ * @param {Array<Object>} [input.liveDays] - Combat loot recorder rows
+ * @param {Array<Object>} [input.sessions] - Archived combat runs, and the live one
+ * @param {Array<{start: number, end: number, value: number}>} [input.entries] - Combat loot log entries
+ * @param {Array<Array<number>>} [input.offline] - Offline windows
+ * @param {Function} input.price - `(itemHrid, enhancementLevel) => number|null`
+ * @returns {{byDay: Map<string, {value: number, live: number, log: number, archive: number}>,
+ *   cededByDay: Map<string, number>, coveredDays: Set<string>, watchedDays: Set<string>,
+ *   liveSince: number|null, ambiguousEntries: number}} Per-day value and what raised it,
+ *   the offline share handed on, the days some recording covered, the days the live feed
+ *   watched, where the live record starts, and the entries set aside
+ */
+export function combatLootByDay({ liveDays = [], sessions = [], entries = [], offline = [], price = () => null } = {}) {
+    const runs = new Map();
+    const runAt = (start) => {
+        let run = runs.get(start);
+        if (!run) {
+            run = { start, readings: [], end: start, items: 0, watched: false, logged: false };
+            runs.set(start, run);
+        }
+        return run;
+    };
+
+    let liveSince = null;
+    for (const row of liveDays || []) {
+        for (const [key, held] of Object.entries(row?.runs || {})) {
+            const start = Date.parse(key);
+            if (!Number.isFinite(start)) continue;
+            const run = runAt(start);
+            const readings = (held?.stretches || []).flatMap((stretch) => [stretch?.first, stretch?.last]);
+            for (const reading of readings) {
+                if (!Number.isFinite(reading?.t)) continue;
+                const { value, items } = lootCountsValue(reading.loot, price);
+                run.readings.push({ t: reading.t, value, kind: 'live' });
+                run.items = Math.max(run.items, items);
+                run.end = Math.max(run.end, reading.t);
+                run.watched = true;
+                if (liveSince === null || reading.t < liveSince) liveSince = reading.t;
+            }
+        }
+    }
+
+    for (const session of sessions || []) {
+        const start = Date.parse(session?.combatStartTime);
+        if (!Number.isFinite(start)) continue;
+        const loot = combatSessionLootValue(session, price);
+        const end = start + Math.max(0, num(session?.durationSeconds)) * 1000;
+        const run = runAt(start);
+        run.readings.push({ t: end, value: loot.value, kind: 'archive' });
+        run.items = Math.max(run.items, loot.items);
+        run.end = Math.max(run.end, end);
+    }
+
+    // Each run's own feed-and-archive span, before any entry joins it: what an
+    // entry is checked against for belonging to a different run
+    const spans = [...runs.values()].map((run) => ({ run, from: run.start, to: run.end }));
+
+    const logRuns = [];
+    let ambiguousEntries = 0;
+    for (const entry of entries || []) {
+        if (!Number.isFinite(entry?.start)) continue;
+        const end = Number.isFinite(entry.end) && entry.end > entry.start ? entry.end : entry.start;
+        let home = null;
+        for (const run of runs.values()) {
+            const gap = Math.abs(run.start - entry.start);
+            if (gap <= SAME_RUN_SLACK_MS && (!home || gap < Math.abs(home.start - entry.start))) home = run;
+        }
+        if (spans.some(({ run, from, to }) => run !== home && sharesTime(entry.start, end, from, to))) {
+            ambiguousEntries += 1;
+            continue;
+        }
+        const reading = { t: end, value: num(entry.value), kind: 'log' };
+        if (home) {
+            home.readings.push(reading);
+            home.end = Math.max(home.end, end);
+            home.logged = true;
+        } else {
+            logRuns.push({ start: entry.start, readings: [reading], end, items: 0, watched: false, logged: true });
+        }
+    }
+
+    const byDay = new Map();
+    const cededByDay = new Map();
+    const coveredDays = new Set();
+    const watchedDays = new Set();
+    for (const run of [...runs.values(), ...logRuns]) {
+        const result = combatRunDayValues(run.start, run.readings, offline);
+        for (const [day, part] of result.days) {
+            const held = byDay.get(day) || { value: 0, live: 0, log: 0, archive: 0 };
+            for (const key of Object.keys(held)) held[key] += part[key];
+            byDay.set(day, held);
+        }
+        for (const [day, value] of result.ceded) cededByDay.set(day, (cededByDay.get(day) || 0) + value);
+
+        // A run that recorded loot, or that the live feed or the loot log was
+        // watching, covers the days it ran. One whose only record is an empty
+        // loot map does not, and stays a counted gap
+        const spanDays = daySharesOfSpan(run.start, run.end).map(({ day }) => day);
+        if (run.watched) for (const day of spanDays) watchedDays.add(day);
+        if (run.watched || run.logged || run.items > 0) for (const day of spanDays) coveredDays.add(day);
+    }
+
+    return { byDay, cededByDay, coveredDays, watchedDays, liveSince, ambiguousEntries };
+}
+
+/**
  * Split a window's net worth delta across the activity that is recorded for it.
  *
  * @param {Object} input - Everything the attribution reads
@@ -878,6 +1186,7 @@ function earlierOf(a, b) {
  * @param {Array<Object>} [input.enhancementSessions] - Stored enhancement sessions
  * @param {Array<Object>} [input.tradeFills] - Trade ledger fill records
  * @param {Array<Object>} [input.combatSessions] - Archived combat runs
+ * @param {Array<Object>} [input.combatLootDays] - Combat loot recorder rows `{d, runs, offline}`
  * @param {Array<Object>} [input.taskCompletions] - Claimed task records `{completedAt, coins, tokens, items}`
  * @param {Array<Object>} [input.chestDays] - Chest opening recorder rows `{d, openings}`
  * @param {Array<Object>} [input.detailSnapshots] - Item-level snapshots `{t, items}`
@@ -894,9 +1203,10 @@ function earlierOf(a, b) {
  *   unpricedAlchemySessions: number,
  *   unpricedEnhancementSessions: number,
  *   unpricedProductionActions: number,
- *   combatBasis: {lootLogDays: number, sessionDays: number, uncoveredDays: number, sessions: number,
- *     emptySessions: number, sessionsHeld: number, sessionCap: number, lastLootLog: number|null,
- *     combatRan: boolean}
+ *   combatBasis: {lootLogDays: number, sessionDays: number, liveDays: number, archiveDays: number,
+ *     uncoveredDays: number, sessions: number, emptySessions: number, sessionsHeld: number,
+ *     sessionCap: number, capReached: boolean, liveSince: number|null, lastLootLog: number|null,
+ *     offlineCombat: number, ambiguousEntries: number, combatRan: boolean}
  * }} The attribution
  */
 export function attributeGoldSources(input) {
@@ -911,6 +1221,7 @@ export function attributeGoldSources(input) {
         enhancementSessions = [],
         tradeFills = [],
         combatSessions = [],
+        combatLootDays = [],
         taskCompletions = [],
         chestDays = [],
         detailSnapshots = [],
@@ -938,16 +1249,25 @@ export function attributeGoldSources(input) {
         tallies.get(day)[key] += value;
     };
 
+    // When the character was offline, from the Welcome Back summaries the
+    // combat recorder kept. The offline row counts those periods' gains whole,
+    // so the combat recordings leave them to it
+    const offlineWindows = [];
+    for (const row of combatLootDays || []) {
+        for (const window of row?.offline || []) {
+            if (Array.isArray(window) && window[1] > window[0]) offlineWindows.push([window[0], window[1]]);
+        }
+    }
+
     // Loot log: combat and gathering. Production actions are deliberately not
     // read from here — the log records what an action produced but not what it
     // consumed, and the production recorder below has both halves.
     //
-    // Gathering is added straight away; combat is held aside, because the day
-    // it lands on may instead be served by the archived runs and the two must
-    // never be summed. A day is *the loot log's* as soon as it has one combat
-    // entry, worth anything or not: the log recorded that day, and what it
-    // recorded is the answer for it
-    const combatLootDays = new Map();
+    // Gathering is added straight away; combat is held aside, because the same
+    // run is usually in the battle feed as well, and the two are reconciled run
+    // by run below rather than added. An entry's end is when its drops were
+    // current, which is what makes it a reading of the run at that instant
+    const combatEntries = [];
     let lastCombatLootLog = null;
     for (const entry of lootEntries || []) {
         const t = Date.parse(entry?.startTime);
@@ -955,8 +1275,12 @@ export function attributeGoldSources(input) {
         const type = actionType(entry.actionHrid);
         if (type === '/action_types/combat') {
             if (lastCombatLootLog === null || t > lastCombatLootLog) lastCombatLootLog = t;
-            const day = localDayId(t);
-            combatLootDays.set(day, (combatLootDays.get(day) || 0) + lootEntryValue(entry, price));
+            const end = Date.parse(entry.endTime);
+            combatEntries.push({
+                start: t,
+                end: Number.isFinite(end) && end > t ? end : t,
+                value: lootEntryValue(entry, price),
+            });
             continue;
         }
         if (!GATHERING_ACTION_TYPES.includes(type)) continue;
@@ -1037,17 +1361,11 @@ export function attributeGoldSources(input) {
         add(day, 'marketTax', -figures.tax);
     }
 
-    // The combat runs, which pay for two rows: the consumables burned in them,
-    // and — where the loot log was closed and so recorded nothing — the drops.
-    //
-    // A session's totals are SPREAD across the days it actually ran, by time.
-    // Booking everything to the start day put a twelve-day AFK grind — the
-    // normal way this game is played — entirely on a day outside every window,
-    // and the combat row read 0 while the loot was accruing right now. Which
-    // day each drop really fell on is unknowable from a session total, so the
-    // uniform-by-time share is the honest estimate, and it is exact for the
-    // common one-day session.
-    const combatSessionDays = new Map();
+    // The archived runs pay for the consumables row: the food and drinks each
+    // burned, SPREAD across the days it ran by time, because booking a
+    // twelve-day AFK grind to its start day put it outside every window. Food
+    // eaten while offline is in the Welcome Back summary's item delta, and so
+    // already in the offline row; that stretch of a run is left to it.
     let sessionsInWindow = 0;
     let emptyLootSessions = 0;
     let consumablesAttributed = false;
@@ -1065,64 +1383,48 @@ export function attributeGoldSources(input) {
             cost += consumed * num(price(consumable.itemHrid, 0));
         }
 
-        const loot = combatSessionLootValue(session, price);
         const spanEnd = t + Math.max(0, num(session?.durationSeconds)) * 1000;
-        const shares = daySharesOfSpan(t, spanEnd);
+        spreadOnline(-cost, t, spanEnd, offlineWindows, (day, value) => add(day, 'consumables', value));
 
-        // `loot.value` is the WHOLE run's total, cumulative from its first
-        // action to its last. A share of it is only safe to hand to a day
-        // when no other day of the same run has already been paid from the
-        // loot log: the log's figure for that other day is real, drawn from
-        // the actual entries, and it is already counted. Spreading this
-        // run's total across its remaining days on top of that would count
-        // whatever the log saw a second time, folded into the fallback days'
-        // share — a multi-day AFK grind that toggles the loot panel off
-        // partway through is exactly this shape, and the two days would sum
-        // to more coin than the run actually dropped. So a run with even one
-        // logged day contributes no fallback value anywhere; its other days
-        // are left uncovered rather than guessed from a total that is no
-        // longer entirely theirs to spread.
-        const mixedCoverage = shares.some(({ day }) => combatLootDays.has(day));
-
-        let touchedWindow = false;
-        for (const { day, share } of shares) {
-            add(day, 'consumables', -cost * share);
-            if (!inWindow.has(day)) continue;
-            touchedWindow = true;
-            if (mixedCoverage) continue;
-            const held = combatSessionDays.get(day) || { value: 0, items: 0 };
-            held.value += loot.value * share;
-            held.items += loot.items;
-            combatSessionDays.set(day, held);
-        }
-
-        if (!touchedWindow) continue;
+        if (!daySharesOfSpan(t, spanEnd).some(({ day }) => inWindow.has(day))) continue;
         sessionsInWindow += 1;
         if (cost > 0) consumablesAttributed = true;
-        if (loot.items === 0) emptyLootSessions += 1;
+        if (combatSessionLootValue(session, price).items === 0) emptyLootSessions += 1;
     }
 
-    // The precedence rule, one day at a time: the loot log where it spoke, the
-    // archived runs where it did not, and a counted gap where neither did
+    // The drops, from all three recordings reconciled run by run — see
+    // `combatLootByDay` for which one answers for which stretch of time
+    const combatLoot = combatLootByDay({
+        liveDays: combatLootDays,
+        sessions: combatSessions,
+        entries: combatEntries,
+        offline: offlineWindows,
+        price,
+    });
+
+    // What fed each day, so the panel can say so rather than calling a fallback
+    // and a gap alike "Measured"
     let lootLogCombatDays = 0;
     let sessionCombatDays = 0;
+    let liveCombatDays = 0;
+    let archiveCombatDays = 0;
     let uncoveredCombatDays = 0;
-    const combatRan = sessionsInWindow > 0 || consumablesAttributed;
+    let offlineCombat = 0;
+    const combatRan =
+        sessionsInWindow > 0 || consumablesAttributed || days.some((day) => combatLoot.watchedDays.has(day));
     for (const day of days) {
-        if (combatLootDays.has(day)) {
-            add(day, 'combat', combatLootDays.get(day));
-            lootLogCombatDays += 1;
-            continue;
+        const part = combatLoot.byDay.get(day);
+        if (part && part.value !== 0) {
+            add(day, 'combat', part.value);
+            if (part.log > 0) lootLogCombatDays += 1;
+            if (part.live > 0 || part.archive > 0) sessionCombatDays += 1;
+            if (part.live > 0) liveCombatDays += 1;
+            if (part.archive > 0) archiveCombatDays += 1;
         }
-        const session = combatSessionDays.get(day);
-        if (session && session.items > 0) {
-            add(day, 'combat', session.value);
-            sessionCombatDays += 1;
-            continue;
-        }
+        offlineCombat += combatLoot.cededByDay.get(day) || 0;
         // Only a gap when something proves combat happened this window at all;
         // a character who does not fight has no gap, it has no combat
-        if (combatRan) uncoveredCombatDays += 1;
+        if (combatRan && !combatLoot.coveredDays.has(day)) uncoveredCombatDays += 1;
     }
 
     // The net worth each day closed at, and what the day before closed at, so a
@@ -1225,10 +1527,13 @@ export function attributeGoldSources(input) {
             // its oldest archived run, and saying "nothing recorded" there
             // would be as wrong as the zero this replaced
             combat: earlierOf(
-                earliest(lootEntries, (entry) =>
-                    actionType(entry?.actionHrid) === '/action_types/combat' ? Date.parse(entry?.startTime) : NaN
+                earlierOf(
+                    earliest(lootEntries, (entry) =>
+                        actionType(entry?.actionHrid) === '/action_types/combat' ? Date.parse(entry?.startTime) : NaN
+                    ),
+                    earliestSession
                 ),
-                earliestSession
+                combatLoot.liveSince
             ),
             gathering: earliest(lootEntries, (entry) =>
                 GATHERING_ACTION_TYPES.includes(actionType(entry?.actionHrid)) ? Date.parse(entry?.startTime) : NaN
@@ -1252,13 +1557,25 @@ export function attributeGoldSources(input) {
         // calling a fallback and a gap alike "Measured"
         combatBasis: {
             lootLogDays: lootLogCombatDays,
+            // The battle feed, live or archived — the panel's one word for both
             sessionDays: sessionCombatDays,
+            liveDays: liveCombatDays,
+            archiveDays: archiveCombatDays,
             uncoveredDays: uncoveredCombatDays,
             sessions: sessionsInWindow,
             emptySessions: emptyLootSessions,
             sessionsHeld: (combatSessions || []).length,
             sessionCap,
+            // The archive's run bound only limits a window the live record
+            // does not reach back to the start of
+            capReached:
+                (combatSessions || []).length >= sessionCap &&
+                !(Number.isFinite(combatLoot.liveSince) && combatLoot.liveSince <= from),
+            liveSince: combatLoot.liveSince,
             lastLootLog: lastCombatLootLog,
+            // Combat loot inside offline windows, handed to the offline row
+            offlineCombat,
+            ambiguousEntries: combatLoot.ambiguousEntries,
             combatRan,
         },
     };

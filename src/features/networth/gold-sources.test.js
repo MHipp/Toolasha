@@ -387,30 +387,33 @@ describe('attributeGoldSources', () => {
         expect(perDay['2026-08-20']).toBeCloseTo(5000, 0);
     });
 
-    test('a session that straddles a logged day does not spread its total into the day the log missed', () => {
+    test('a run the loot log saw part of counts once, and never more than it dropped', () => {
         // One 24h run, noon D19 to noon D20, evenly split by time (50/50) —
-        // but the loot log only saw D19, and it saw MOST of the run's value
-        // there (90 of the 100 cheese), not the 50 a time-split would guess.
-        // If the run's whole total were still spread across D20 by time
-        // share, D20 would add another 5,000 (50 cheese × 100) on top of the
-        // 9,000 the log already recorded for D19 — 14,000 out of a run that
-        // only ever dropped 10,000.
-        const session = run(dayStart('2026-08-19') + 12 * 3600_000, { '/items/cheese': 100 });
+        // but the loot log, opened until 18:00 on D19, saw MOST of the run's
+        // value there (90 of the 100 cheese), not the 50 a time-split would
+        // guess. Spreading the run's whole total over both days on top of the
+        // log would claim 14,000 from a run that dropped 10,000 (9555ba799).
+        //
+        // The log's entry and the archived run read the same running total,
+        // so they are two points on one curve: 9,000 by 18:00 on D19, 10,000
+        // by noon D20. The run is worth what the more complete one saw, and
+        // the log's reading puts its share on the day it was seen.
+        const start = dayStart('2026-08-19') + 12 * 3600_000;
+        const session = run(start, { '/items/cheese': 100 });
         session.durationSeconds = 24 * 3600;
 
         const result = attributeGoldSources({
             ...base,
-            lootEntries: [combatEntry(dayStart('2026-08-19') + 18 * 3600_000, { '/items/cheese': 90 })],
+            lootEntries: [combatEntry(start, { '/items/cheese': 90 }, start + 6 * 3600_000)],
             combatSessions: [session],
         });
 
         const perDay = Object.fromEntries(result.days.map((row) => [row.day, row.sources.combat]));
-        expect(perDay['2026-08-19']).toBe(9000);
-        // D20 is left uncovered rather than credited a guessed slice of a
-        // total the log has already partly spoken for
-        expect(perDay['2026-08-20']).toBe(0);
-        expect(result.totals.sources.combat).toBe(9000);
-        expect(result.combatBasis.uncoveredDays).toBe(1);
+        // 9,000 by 18:00, then the last 1,000 over the 18 hours to noon D20
+        expect(perDay['2026-08-19']).toBeCloseTo(9000 + (1000 * 6) / 18, 6);
+        expect(perDay['2026-08-20']).toBeCloseTo((1000 * 12) / 18, 6);
+        expect(result.totals.sources.combat).toBeCloseTo(10000, 6);
+        expect(result.combatBasis.uncoveredDays).toBe(0);
     });
 
     test('a long-running live session still pays into today even though it started before the window', () => {
@@ -676,14 +679,15 @@ describe('attributeGoldSources', () => {
         ],
     });
 
-    /** A combat loot log entry */
-    const combatEntry = (t, drops) => ({
+    /** A combat loot log entry, and when its drops were last current */
+    const combatEntry = (t, drops, end = null) => ({
         startTime: new Date(t).toISOString(),
+        ...(end === null ? {} : { endTime: new Date(end).toISOString() }),
         actionHrid: '/actions/combat/cow',
         drops,
     });
 
-    test('a day the loot log recorded uses the loot log alone, never both', () => {
+    test('a run the loot log and the archive both hold counts once, never both', () => {
         const result = attributeGoldSources({
             ...base,
             lootEntries: [combatEntry(D20, { '/items/cheese': 10 })],
@@ -718,30 +722,33 @@ describe('attributeGoldSources', () => {
         expect(result.totals.sources.combat).toBe(100);
     });
 
-    test('a mixed window takes each day from whichever recording has it', () => {
+    test('each run counts the most any recording of it saw, whichever that was', () => {
+        // The 20th's run is in the loot log at 10 cheese and in the archive at
+        // 999: one run, read twice, the log's copy stale. It used to be the
+        // loot log's day outright and read 1,000
         const result = attributeGoldSources({
             ...base,
             lootEntries: [combatEntry(D20, { '/items/cheese': 10 })],
             combatSessions: [run(D19, { '/items/log': 5 }), run(D20, { '/items/cheese': 999 })],
         });
 
-        // The 20th is the loot log's, the 19th is the feed's
-        expect(result.totals.sources.combat).toBe(1000 + 50);
+        expect(result.totals.sources.combat).toBe(99900 + 50);
+        // Both raised the 20th's total — the log to its 1,000, the archive the rest
         expect(result.combatBasis.lootLogDays).toBe(1);
-        expect(result.combatBasis.sessionDays).toBe(1);
+        expect(result.combatBasis.sessionDays).toBe(2);
         expect(result.combatBasis.uncoveredDays).toBe(0);
     });
 
-    test('a day with a loot log entry worth nothing is still the loot log’s day', () => {
+    test('a loot log entry worth nothing does not hide what the run’s own record saw', () => {
         const result = attributeGoldSources({
             ...base,
             lootEntries: [combatEntry(D20, {})],
             combatSessions: [run(D20, { '/items/cheese': 10 })],
         });
 
-        expect(result.totals.sources.combat).toBe(0);
-        expect(result.combatBasis.lootLogDays).toBe(1);
-        expect(result.combatBasis.sessionDays).toBe(0);
+        expect(result.totals.sources.combat).toBe(1000);
+        expect(result.combatBasis.lootLogDays).toBe(0);
+        expect(result.combatBasis.sessionDays).toBe(1);
     });
 
     test('runs with an empty loot map leave a counted gap rather than a confident zero', () => {
@@ -827,6 +834,198 @@ describe('attributeGoldSources', () => {
 
         expect(result.totals.sources.consumables).toBe(-200);
         expect(result.totals.sources.combat).toBe(1000);
+    });
+
+    describe('combat drops that used to go missing', () => {
+        const HOUR = 3600_000;
+        const iso = (t) => new Date(t).toISOString();
+        const withDuration = (session, seconds) => ({ ...session, durationSeconds: seconds });
+        /** A live recorder reading of a run's running total */
+        const reading = (t, loot) => ({ t, loot });
+        /** One day's recorder row for one run, as unbroken stretches of readings */
+        const liveRow = (d, start, stretches, offline = null) => ({
+            d,
+            runs: { [iso(start)]: { stretches: stretches.map(([first, last]) => ({ first, last })) } },
+            ...(offline ? { offline } : {}),
+        });
+        const perDay = (result) => Object.fromEntries(result.days.map((row) => [row.day, row.sources.combat]));
+
+        test('a loot log opened for the first hour of a ten-hour run no longer hides the other nine', () => {
+            // The log entry is the game's first-hour snapshot of the run; the
+            // day used to be the loot log's, and read 1,000 of 10,000
+            const start = dayStart('2026-08-20') + 6 * HOUR;
+            const result = attributeGoldSources({
+                ...base,
+                lootEntries: [combatEntry(start, { '/items/cheese': 10 }, start + HOUR)],
+                combatSessions: [withDuration(run(start, { '/items/cheese': 100 }), 10 * 3600)],
+            });
+
+            expect(result.totals.sources.combat).toBeCloseTo(10000, 6);
+        });
+
+        test('a second run the same day counts though the loot log saw only the first', () => {
+            // The day used to be the loot log's the moment it held one combat
+            // entry, and the unlogged evening run was thrown away
+            const morning = dayStart('2026-08-20') + 8 * HOUR;
+            const evening = dayStart('2026-08-20') + 14 * HOUR;
+            const result = attributeGoldSources({
+                ...base,
+                lootEntries: [combatEntry(morning, { '/items/cheese': 10 }, morning + 2 * HOUR)],
+                combatSessions: [
+                    withDuration(run(morning, { '/items/cheese': 10 }), 2 * 3600),
+                    withDuration(run(evening, { '/items/log': 500 }), 6 * 3600),
+                ],
+            });
+
+            expect(result.totals.sources.combat).toBeCloseTo(1000 + 5000, 6);
+        });
+
+        test('a loot log entry is spread over the span it ran, not booked to the day it began', () => {
+            // An AFK grind begun eleven days before the 20th, the loot log
+            // opened at noon on the 20th: the whole run used to land on its
+            // start day, outside the window, and combat read 0
+            const start = dayStart('2026-08-20') - 11 * DAY;
+            const end = dayStart('2026-08-20') + 12 * HOUR;
+            // 11.5 days at 10,000 a day
+            const result = attributeGoldSources({
+                ...base,
+                lootEntries: [combatEntry(start, { '/items/cheese': 1150 }, end)],
+            });
+
+            expect(perDay(result)['2026-08-19']).toBeCloseTo(10000, 6);
+            expect(perDay(result)['2026-08-20']).toBeCloseTo(5000, 6);
+        });
+
+        test('the live feed splits a run across midnight exactly where the tab watched it', () => {
+            // The archived run alone would split this 40/60 by time; the feed
+            // read 30 cheese at midnight and 50 by six in the morning
+            const start = dayStart('2026-08-20') - 4 * HOUR;
+            const midnight = dayStart('2026-08-20');
+            const result = attributeGoldSources({
+                ...base,
+                combatLootDays: [
+                    liveRow('2026-08-19', start, [
+                        [reading(start + 60_000, {}), reading(midnight - 1000, { '/items/cheese': 30 })],
+                    ]),
+                    liveRow('2026-08-20', start, [
+                        [
+                            reading(midnight + 1000, { '/items/cheese': 30 }),
+                            reading(midnight + 6 * HOUR, { '/items/cheese': 50 }),
+                        ],
+                    ]),
+                ],
+                combatSessions: [withDuration(run(start, { '/items/cheese': 50 }), 10 * 3600)],
+            });
+
+            expect(perDay(result)['2026-08-19']).toBeCloseTo(3000, 6);
+            expect(perDay(result)['2026-08-20']).toBeCloseTo(2000, 6);
+            expect(result.totals.sources.combat).toBeCloseTo(5000, 6);
+            expect(result.combatBasis.liveDays).toBe(2);
+        });
+
+        test('the loot log adds only the tail the live feed did not see', () => {
+            // The tab watched 08:00-10:00 (20 cheese); the run went on to 14:00
+            // and the loot log, opened afterwards, saw all 60. Adding the two
+            // would claim 80
+            const start = dayStart('2026-08-20') + 8 * HOUR;
+            const result = attributeGoldSources({
+                ...base,
+                combatLootDays: [
+                    liveRow('2026-08-20', start, [
+                        [reading(start + 60_000, {}), reading(start + 2 * HOUR, { '/items/cheese': 20 })],
+                    ]),
+                ],
+                lootEntries: [combatEntry(start, { '/items/cheese': 60 }, start + 6 * HOUR)],
+            });
+
+            expect(result.totals.sources.combat).toBeCloseTo(6000, 6);
+            expect(result.combatBasis.liveDays).toBe(1);
+            expect(result.combatBasis.lootLogDays).toBe(1);
+        });
+
+        test('combat that ran while offline is left to the offline row, which already counts it', () => {
+            // Watched 01:00-05:00 (40 cheese), offline 05:00-09:00, watched
+            // again 09:00-10:00. The 40 cheese the run gained across the
+            // offline window are in the Welcome Back summary's item delta
+            const start = dayStart('2026-08-20') + HOUR;
+            const logout = start + 4 * HOUR;
+            const login = logout + 4 * HOUR;
+            const result = attributeGoldSources({
+                ...base,
+                combatLootDays: [
+                    liveRow(
+                        '2026-08-20',
+                        start,
+                        [
+                            [reading(start, {}), reading(logout, { '/items/cheese': 40 })],
+                            [reading(login, { '/items/cheese': 80 }), reading(login + HOUR, { '/items/cheese': 90 })],
+                        ],
+                        [[logout, login]]
+                    ),
+                ],
+            });
+
+            expect(result.totals.sources.combat).toBeCloseTo(4000 + 1000, 6);
+            expect(result.combatBasis.offlineCombat).toBeCloseTo(4000, 6);
+        });
+
+        test('food eaten while offline is left to the offline row too', () => {
+            const start = dayStart('2026-08-20') + HOUR;
+            const session = withDuration(
+                run(start, {}, { consumables: [{ itemHrid: '/items/coffee', consumed: 8 }] }),
+                8 * 3600
+            );
+            const result = attributeGoldSources({
+                ...base,
+                combatSessions: [session],
+                combatLootDays: [{ d: '2026-08-20', runs: {}, offline: [[start + 4 * HOUR, start + 8 * HOUR]] }],
+            });
+
+            // Half the run was offline, so half its 200 of coffee is the offline row's
+            expect(result.totals.sources.consumables).toBeCloseTo(-100, 6);
+        });
+
+        test('an entry lying across a different run is set aside, not added on top of it', () => {
+            // A loot log entry whose start matches no run, inside the span of
+            // an archived one: one action cannot be two runs, and adding it
+            // would count that run's drops again
+            const start = dayStart('2026-08-20') + 2 * HOUR;
+            const result = attributeGoldSources({
+                ...base,
+                lootEntries: [combatEntry(start + 3 * HOUR, { '/items/cheese': 40 }, start + 5 * HOUR)],
+                combatSessions: [withDuration(run(start, { '/items/cheese': 100 }), 8 * 3600)],
+            });
+
+            expect(result.totals.sources.combat).toBeCloseTo(10000, 6);
+            expect(result.combatBasis.ambiguousEntries).toBe(1);
+        });
+
+        test('a loot log entry nothing else recorded counts whole over its own span', () => {
+            const start = dayStart('2026-08-20') + 2 * HOUR;
+            const result = attributeGoldSources({
+                ...base,
+                lootEntries: [combatEntry(start, { '/items/cheese': 40 }, start + 5 * HOUR)],
+                combatSessions: [withDuration(run(start + 6 * HOUR, { '/items/log': 100 }), 3600)],
+            });
+
+            expect(result.totals.sources.combat).toBeCloseTo(4000 + 1000, 6);
+            expect(result.combatBasis.ambiguousEntries).toBe(0);
+        });
+
+        test('the live record reaching back past the window start lifts the run-cap warning', () => {
+            const sessions = [];
+            for (let i = 0; i < 20; i += 1) sessions.push(run(D20 - i * 60_000, { '/items/log': 1 }));
+            const liveStart = D18;
+            const result = attributeGoldSources({
+                ...base,
+                combatSessions: sessions,
+                sessionCap: 20,
+                combatLootDays: [liveRow('2026-08-18', liveStart, [[reading(liveStart, {}), reading(liveStart, {})]])],
+            });
+
+            expect(result.combatBasis.capReached).toBe(false);
+            expect(result.combatBasis.liveSince).toBe(liveStart);
+        });
     });
 
     test('activity outside the window is left out entirely', () => {
