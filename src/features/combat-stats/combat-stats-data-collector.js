@@ -932,6 +932,21 @@ class CombatStatsDataCollector {
     }
 
     /**
+     * The last run this character fought, however long ago it ended.
+     *
+     * `getLatestData` withholds a restored run once it stops describing what is
+     * happening, which is right for an overlay and wrong for a ledger: a run is
+     * only archived when the NEXT one starts, so a run that finished before a
+     * reload sits here, withheld and unarchived, until the character fights
+     * again. Anything totting up what past combat earned needs it regardless.
+     *
+     * @returns {Object|null} The snapshot, live or restored, or null
+     */
+    getLastRun() {
+        return this.latestCombatData;
+    }
+
+    /**
      * Load latest combat data from storage
      * @returns {Promise<Object|null>} Latest combat data
      */

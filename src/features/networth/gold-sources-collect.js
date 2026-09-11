@@ -214,10 +214,17 @@ export async function collectGoldSourceInputs({ price = createPricer() } = {}) {
     // archived session at all — the combat row read 0 while the residual
     // carried the day. Keyed the same way the archive keys, so the moment this
     // run IS archived it stops being counted twice.
+    //
+    // The last run whatever its age, not `getLatestData`: that withholds a run
+    // restored from storage once it has ended, and a run that ended before a
+    // reload is not archived until the character next fights — so it was in
+    // neither list, and its loot left the combat row for as long as they did
+    // something else.
     const liveSession = await attempt(
         'the live combat session',
         async () => {
-            const live = (liveCombatStatsCollector() || bundledCombatStatsCollector).getLatestData?.();
+            const collector = liveCombatStatsCollector() || bundledCombatStatsCollector;
+            const live = collector.getLastRun ? collector.getLastRun() : collector.getLatestData?.();
             if (!live?.players?.length) return null;
             const key = sessionKey(live);
             if (key && combatSessions.some((session) => session?.key === key)) return null;

@@ -12,6 +12,8 @@ import { describe, test, expect, beforeEach, vi } from 'vitest';
 const game = vi.hoisted(() => ({
     archived: [],
     live: null,
+    /** What the collector holds but withholds from the overlay: a restored run that has ended */
+    lastRun: undefined,
 }));
 
 vi.mock('../../core/data-manager.js', () => ({
@@ -29,7 +31,10 @@ vi.mock('../combat-stats/combat-session-history.js', () => ({
     MAX_SESSIONS: 20,
 }));
 vi.mock('../combat-stats/combat-stats-data-collector.js', () => ({
-    default: { getLatestData: () => game.live },
+    default: {
+        getLatestData: () => game.live,
+        getLastRun: () => (game.lastRun === undefined ? game.live : game.lastRun),
+    },
 }));
 vi.mock('../enhancement/enhancement-storage.js', () => ({ loadSessions: async () => ({}) }));
 vi.mock('../alchemy/alchemy-session-store.js', () => ({
@@ -60,6 +65,7 @@ const session = (start, names = ['Me']) => ({
 beforeEach(() => {
     game.archived = [];
     game.live = null;
+    game.lastRun = undefined;
 });
 
 describe('the live combat session', () => {
@@ -83,6 +89,22 @@ describe('the live combat session', () => {
 
         const inputs = await collectGoldSourceInputs({ price: () => 0 });
         expect(inputs.combatSessions).toHaveLength(1);
+    });
+
+    test('a run that ended before a reload counts though the overlay withholds it', async () => {
+        // Restored from storage, over, and not yet archived — the archive only
+        // takes a run when the next one starts. The overlay is right to hide it;
+        // the ledger is not, or its loot is gone until the character fights again
+        game.live = null;
+        game.lastRun = {
+            combatStartTime: '2026-08-28T01:00:00Z',
+            restored: true,
+            players: [{ name: 'Me', isCurrentPlayer: true, loot: {} }],
+        };
+
+        const inputs = await collectGoldSourceInputs({ price: () => 0 });
+        expect(inputs.combatSessions).toHaveLength(1);
+        expect(inputs.combatSessions[0].combatStartTime).toBe('2026-08-28T01:00:00Z');
     });
 
     test('no live run means the archive alone, and an empty one stays out', async () => {
