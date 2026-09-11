@@ -100,6 +100,20 @@ describe('the section holds its own height inside the panel flex column', () => 
         expect(section.style.minHeight).toBe('');
     });
 
+    test('the section has no bottom padding, border or radius, so the sticky footer sits flush', async () => {
+        const section = await render();
+        // See SCROLLER_PADDING_BOTTOM_FALLBACK: anything below a `position:
+        // sticky; bottom: 0` element inside its scroller makes it travel at
+        // the end of the scroll. Top and side padding/border/radius, which
+        // give the section its own frame, are unchanged.
+        expect(section.style.paddingBottom).toBe('0px');
+        expect(section.style.paddingTop).toBe('8px');
+        expect(section.style.borderBottomStyle).toBe('none');
+        expect(section.style.borderTopStyle).toBe('solid');
+        expect(section.style.borderBottomLeftRadius).toBe('0px');
+        expect(section.style.borderTopLeftRadius).toBe('8px');
+    });
+
     test('the panel is allowed to grow, so nothing else has to shrink', () => {
         houseCostDisplay.initialize();
         const sheet = document.getElementById('toolasha-house-panel-layout');
@@ -355,6 +369,60 @@ describe('the scroller max-height fallback on browsers without :has()', () => {
 
         expect(scroller.style.maxHeight).toBe('640px');
         expect(scroller.style.boxSizing).toBe('content-box');
+    });
+
+    // Same fallback function, one more property: a sticky `bottom: 0` footer
+    // pins to its scroller's padding edge, so the scroller's own end padding
+    // makes it travel at the end of the scroll just as surely as an unbounded
+    // max-height does. See SCROLLER_PADDING_BOTTOM_FALLBACK.
+    test('caps the scroller end padding when :has() is unsupported', async () => {
+        withHasSupport(false);
+        const { scroller, modalContent, costsSection } = buildNestedPanel();
+
+        await houseCostDisplay.addCostColumn(costsSection, '/house_rooms/mystical_study', modalContent);
+
+        expect(scroller.style.paddingBottom).toBe('0px');
+    });
+
+    test('leaves the scroller end padding alone when :has() is supported', async () => {
+        withHasSupport(true);
+        const { scroller, modalContent, costsSection } = buildNestedPanel();
+
+        await houseCostDisplay.addCostColumn(costsSection, '/house_rooms/mystical_study', modalContent);
+
+        // The sheet's own `padding-bottom: 0` is doing the job.
+        expect(scroller.style.paddingBottom).toBe('');
+    });
+
+    test('tearing the section down clears the padding fallback', async () => {
+        withHasSupport(false);
+        const { scroller, modalContent, costsSection } = buildNestedPanel();
+        await houseCostDisplay.addCostColumn(costsSection, '/house_rooms/mystical_study', modalContent);
+        expect(scroller.style.paddingBottom).toBe('0px');
+
+        houseCostDisplay.removeExistingColumn(modalContent);
+
+        expect(scroller.style.paddingBottom).toBe('');
+    });
+
+    test('disabling the feature clears the padding fallback', async () => {
+        withHasSupport(false);
+        const { scroller, modalContent, costsSection } = buildNestedPanel();
+        await houseCostDisplay.addCostColumn(costsSection, '/house_rooms/mystical_study', modalContent);
+        expect(scroller.style.paddingBottom).toBe('0px');
+
+        houseCostDisplay.disable();
+
+        expect(scroller.style.paddingBottom).toBe('');
+    });
+
+    test('does not clear a padding-bottom the game set itself', () => {
+        const { scroller, modalContent } = buildNestedPanel();
+        scroller.style.paddingBottom = '24px';
+
+        houseCostDisplay.removeExistingColumn(modalContent);
+
+        expect(scroller.style.paddingBottom).toBe('24px');
     });
 });
 

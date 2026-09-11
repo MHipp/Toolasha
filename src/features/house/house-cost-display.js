@@ -126,6 +126,23 @@ const PANEL_MIN_HEIGHT_VALUES = [PANEL_MIN_HEIGHT, '-webkit-fit-content', '-moz-
  */
 const SCROLLER_MAX_HEIGHT = 'calc(var(--toolasha-visual-viewport-height, 100vh) * 0.96 - 2px)';
 
+/**
+ * The scroller's inline-fallback `padding-bottom`, and what the stylesheet
+ * rule below sets it to.
+ *
+ * A `position: sticky; bottom: 0` footer (see the footer built in
+ * `updateCompactCumulativeDisplay`) pins to the padding edge of its nearest
+ * scrolling ancestor, not the border edge — so anything below it inside that
+ * scroller (here, the scroller's own bottom padding) makes the footer travel
+ * those last pixels at the very end of the scroll, and the three engines
+ * disagree about how much (measured 2.5px Firefox / 9.6px Chrome / 2.6px
+ * WebKit) because they account for that padding differently. There is no
+ * single offset that fixes all three, so the padding is removed instead: with
+ * nothing below the footer, pinned and resting coincide (measured sub-pixel in
+ * all three). Do not reach for a `bottom:` offset here instead.
+ */
+const SCROLLER_PADDING_BOTTOM_FALLBACK = '0px';
+
 const PANEL_LAYOUT_CSS = `
     [class*="HousePanel_modalContent"]:has(.mwi-house-to-level) {
         min-height: ${PANEL_MIN_HEIGHT};
@@ -134,6 +151,7 @@ const PANEL_LAYOUT_CSS = `
     [class*="Modal_modalContent"]:has(.mwi-house-to-level) {
         box-sizing: border-box;
         max-height: ${SCROLLER_MAX_HEIGHT};
+        padding-bottom: 0;
     }
 `;
 
@@ -420,7 +438,8 @@ class HouseCostDisplay {
      * would have matched — found from `modalContent` rather than the section,
      * since `modalContent` (`HousePanel_modalContent`) sits inside the game's
      * scroller and `closest()` walks up from there past a class name that does
-     * not itself contain `Modal_modalContent`. See `SCROLLER_MAX_HEIGHT`.
+     * not itself contain `Modal_modalContent`. See `SCROLLER_MAX_HEIGHT` and
+     * `SCROLLER_PADDING_BOTTOM_FALLBACK`.
      *
      * @param {Element} modalContent - The HousePanel_modalContent element
      */
@@ -434,15 +453,18 @@ class HouseCostDisplay {
         }
         scroller.style.boxSizing = 'border-box';
         scroller.style.maxHeight = SCROLLER_MAX_HEIGHT;
+        // See SCROLLER_PADDING_BOTTOM_FALLBACK: the sticky footer travels at
+        // the end of the scroll if there is padding below it to travel across.
+        scroller.style.paddingBottom = SCROLLER_PADDING_BOTTOM_FALLBACK;
     }
 
     /**
      * Take the inline scroller cap back off.
      *
      * Only clears the exact values this file put there, so a game update that
-     * starts setting its own `max-height` or `box-sizing` inline on the
-     * scroller is left alone — the same guard `clearPanelMinHeightFallback`
-     * uses for `min-height`.
+     * starts setting its own `max-height`, `box-sizing` or `padding-bottom`
+     * inline on the scroller is left alone — the same guard
+     * `clearPanelMinHeightFallback` uses for `min-height`.
      *
      * @param {Element} modalContent - The HousePanel_modalContent element
      */
@@ -459,6 +481,9 @@ class HouseCostDisplay {
         }
         if (scroller.style.boxSizing === 'border-box') {
             scroller.style.boxSizing = '';
+        }
+        if (scroller.style.paddingBottom === SCROLLER_PADDING_BOTTOM_FALLBACK) {
+            scroller.style.paddingBottom = '';
         }
     }
 
@@ -648,12 +673,20 @@ class HouseCostDisplay {
         // contents out of its own border. It is safe to refuse only because
         // PANEL_LAYOUT_CSS lets the panel grow rather than pushing the deficit
         // onto the game's Build button — the two go together.
+        //
+        // No bottom padding, border or radius: the footer built in
+        // `updateCompactCumulativeDisplay` is `position: sticky; bottom: 0`
+        // against the dialog scroller, and it must be the last thing the
+        // scroller has — see SCROLLER_PADDING_BOTTOM_FALLBACK. Top and side
+        // border/padding are unchanged; the footer's own `padding: 6px 0` and
+        // top border are what give it breathing room.
         section.style.cssText = `
             margin-top: 8px;
-            padding: 8px;
+            padding: 8px 8px 0;
             background: rgba(0, 0, 0, 0.3);
-            border-radius: 8px;
+            border-radius: 8px 8px 0 0;
             border: 1px solid ${config.COLOR_BORDER};
+            border-bottom: none;
             flex-shrink: 0;
         `;
 
@@ -790,6 +823,14 @@ class HouseCostDisplay {
         // background is a translucent `rgba(0, 0, 0, 0.3)`, so rows scrolling
         // underneath a sticky footer with the same background would read as
         // overlap; the footer needs an opaque one of its own.
+        //
+        // A sticky `bottom: 0` element pins to its scroller's padding edge, so
+        // anything below it inside that scroller — the section's own bottom
+        // padding/border, the scroller's own end padding — makes the footer
+        // travel those pixels at the very end of the scroll, and the engines
+        // do not even agree by how much (see SCROLLER_PADDING_BOTTOM_FALLBACK).
+        // The fix is leaving nothing below it, not a `bottom:` offset, which
+        // would fix one engine and miss the other two.
         const footer = document.createElement('div');
         footer.className = 'mwi-cumulative-footer';
         footer.style.cssText = `
