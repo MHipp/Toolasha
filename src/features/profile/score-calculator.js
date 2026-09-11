@@ -123,11 +123,28 @@ export async function calculateCombatScore(profileData) {
         // 2b. Guild shrine levels, when the payload carries them
         const guildShrineResult = calculateGuildShrineScore(profileData);
 
+        // The pricing context, read once before anything suspends.
+        //
+        // `getEnhancingParams()` with auto-detect on walks the *live* character's
+        // loadout and enhancing level, and both of the calls below used to read
+        // it for themselves. The combat pass awaits an enhancement worker batch
+        // that can run for seconds on a long chain, so a character switch landing
+        // in it had the skiller pass re-read the params and price the second half
+        // of the same score object against the arriving character's kit — one
+        // score, two enhancers. (`getEnhancingParams` memoises for a second, which
+        // narrows the window and does not close it.) Reading it once here is also
+        // simply correct: both halves of one score describe one setup.
+        const pricingContext = {
+            useHighEnhancementCost: config.getSetting('networth_highEnhancementUseCost'),
+            minLevel: config.getSetting('networth_highEnhancementMinLevel') || 13,
+            enhancementParams: getEnhancingParams(),
+        };
+
         // 3. Calculate Combat Equipment Score (async - runs first)
-        const combatEquipmentResult = await calculateEquipmentScore(profileData, 'combat');
+        const combatEquipmentResult = await calculateEquipmentScore(profileData, 'combat', pricingContext);
 
         // 4. Calculate Skiller Equipment Score (async - runs after combat completes)
-        const skillerEquipmentResult = await calculateEquipmentScore(profileData, 'skiller');
+        const skillerEquipmentResult = await calculateEquipmentScore(profileData, 'skiller', pricingContext);
 
         // Shrine levels are shared on every profile once the marketplace patch is
         // live, so a shrine's value then belongs in the score the same way
@@ -541,9 +558,12 @@ function calculateTokenBasedItemValue(itemHrid) {
  * Calculate equipment score from equipped items
  * @param {Object} profileData - Profile data
  * @param {string} scoreType - 'combat' or 'skiller'
+ * @param {Object} [context] - The pricing context `calculateCombatScore` took before it
+ *   suspended: `{useHighEnhancementCost, minLevel, enhancementParams}`. Handed in rather
+ *   than read here so both passes of one score price against one character's kit.
  * @returns {Promise<Object>} {score, breakdown, hasEquipmentData}
  */
-async function calculateEquipmentScore(profileData, scoreType = 'combat') {
+async function calculateEquipmentScore(profileData, scoreType = 'combat', context = null) {
     const equippedItems = profileData.profile?.wearableItemMap || {};
     const hideEquipment = profileData.profile?.hideWearableItems || false;
 
@@ -560,9 +580,11 @@ async function calculateEquipmentScore(profileData, scoreType = 'combat') {
     const gameData = dataManager.getInitClientData();
     if (!gameData) return { score: 0, breakdown: [], hasEquipmentData: false, unpricedItems: 0 };
 
-    const useHighEnhancementCost = config.getSetting('networth_highEnhancementUseCost');
-    const minLevel = config.getSetting('networth_highEnhancementMinLevel') || 13;
-    const enhancementParams = getEnhancingParams();
+    const useHighEnhancementCost = context
+        ? context.useHighEnhancementCost
+        : config.getSetting('networth_highEnhancementUseCost');
+    const minLevel = context ? context.minLevel : config.getSetting('networth_highEnhancementMinLevel') || 13;
+    const enhancementParams = context ? context.enhancementParams : getEnhancingParams();
 
     // Phase 1: Collect items and identify which need worker calculations
     const itemsToProcess = [];
