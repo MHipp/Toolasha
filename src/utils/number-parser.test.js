@@ -100,7 +100,6 @@ describe('parseItemCount', () => {
             ['Amount: 1 000', 1000],
             ['12xyz', 12],
             ['12 bananas', 12],
-            ['1,234M', 1234000],
             ['x2k', 2000],
             ['1.5 k', 1500],
             ['12 B', 12e9],
@@ -112,6 +111,50 @@ describe('parseItemCount', () => {
         test.each(['Best Sell: 994,000', 'max', 'abc'])('%j → default', (text) =>
             expect(parseItemCount(text, 'DEFAULT')).toBe('DEFAULT')
         );
+    });
+
+    describe('a separator before a suffix', () => {
+        const asLocale = (value) => {
+            if (value === null) localStorage.removeItem('i18nextLng');
+            else localStorage.setItem('i18nextLng', value);
+            _resetGameNumberSeparators();
+        };
+
+        afterEach(() => asLocale(null));
+
+        describe('en-US', () => {
+            beforeEach(() => asLocale('en-US'));
+
+            // Each of these read 1000x or more too small: a trailing suffix hid the
+            // three digits that mark grouping, so the first separator became a decimal
+            test.each([
+                ['1,500m', 1.5e9],
+                ['1,500 m', 1.5e9],
+                ['1,234M', 1.234e9],
+                ['x1,500k', 1.5e6],
+                ['1,500,000k', 1.5e9],
+                ['1.500.000k', 1.5e9],
+                ['1,500 million', 1.5e9],
+            ])('%j → %d', (text, expected) => expect(parseItemCount(text)).toBe(expected));
+
+            test.each([
+                ['1.250b', 1.25e9],
+                ['1,5m', 1.5e6],
+                ['1.5k', 1500],
+                ['12,50k', 12500],
+            ])('%j keeps its decimal → %d', (text, expected) => expect(parseItemCount(text)).toBe(expected));
+        });
+
+        describe('de-DE (period grouping, comma decimal)', () => {
+            beforeEach(() => asLocale('de-DE'));
+
+            test.each([
+                ['1.500K', 1.5e6],
+                ['1,250b', 1.25e9],
+                ['1,5m', 1.5e6],
+                ['1.500.000k', 1.5e9],
+            ])('%j → %d', (text, expected) => expect(parseItemCount(text)).toBe(expected));
+        });
     });
 });
 

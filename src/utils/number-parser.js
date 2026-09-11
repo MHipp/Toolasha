@@ -69,6 +69,26 @@ export function isAmountText(text) {
 }
 
 /**
+ * Whether the only kind of separator in lowercased number text groups thousands.
+ *
+ * Repeated, it can only be grouping. Once, it is grouping when exactly three
+ * digits end the text. Three digits and then a suffix are ambiguous by
+ * themselves — "1,500m" is 1500m to an English reader and 1.5m to a German one —
+ * so that case follows the game locale's group character. The locale is looked
+ * up only there, since this runs on every count the plugin reads off the page.
+ *
+ * @param {string} text - Lowercased text holding `separator` and no other kind
+ * @param {string} separator - `','` or `'.'`
+ * @returns {boolean} True when the separator groups thousands
+ */
+function separatorIsGrouping(text, separator) {
+    if (text.split(separator).length > 2) return true;
+    const escaped = escapeRegExpChar(separator);
+    if (new RegExp(`${escaped}\\d{3}$`).test(text)) return true;
+    return new RegExp(`${escaped}\\d{3}\\s*[kmbt]$`).test(text) && gameNumberSeparators().group === separator;
+}
+
+/**
  * Parse item count from text
  * Handles various formats including:
  * - Plain numbers: "100", "1000"
@@ -106,10 +126,12 @@ export function parseItemCount(text, defaultValue = 1) {
     // 1. If both exist: the one appearing first (or multiple times) is the thousands separator.
     //    e.g. "1.234,56" → period is thousands, comma is decimal → 1234.56
     //    e.g. "1,234.56" → comma is thousands, period is decimal → 1234.56
-    // 2. If only commas exist and comma is followed by exactly 3 digits at end: thousands separator.
-    //    e.g. "1,234" → 1234
-    // 3. If only periods exist and period is followed by exactly 3 digits at end: thousands separator.
-    //    e.g. "1.234" → 1234
+    // 2. If only one kind exists, it is a thousands separator when it appears more
+    //    than once, or when exactly 3 digits follow it at the end.
+    //    e.g. "1,234" → 1234, "1.234" → 1234, "1,500,000k" → 1500000k
+    // 3. One separator followed by 3 digits and a suffix is grouping only when it is
+    //    the game locale's group character: "1,500m" is 1500m in English, while
+    //    "1.250b" stays 1.25b there and is 1250b in German.
     // 4. Otherwise treat as decimal separator.
     //    e.g. "1.5" → 1.5,  "1,5" → 1.5
 
@@ -128,15 +150,13 @@ export function parseItemCount(text, defaultValue = 1) {
             text = text.replace(/\./g, '').replace(',', '.');
         }
     } else if (hasComma) {
-        // Only commas: thousands separator if followed by exactly 3 digits at end, else decimal
-        if (/,\d{3}$/.test(text)) {
+        if (separatorIsGrouping(text, ',')) {
             text = text.replace(/,/g, '');
         } else {
             text = text.replace(',', '.');
         }
     } else if (hasPeriod) {
-        // Only periods: thousands separator if followed by exactly 3 digits at end, else decimal
-        if (/\.\d{3}$/.test(text)) {
+        if (separatorIsGrouping(text, '.')) {
             text = text.replace(/\./g, '');
         }
         // else leave as-is (valid decimal like "1.5")
