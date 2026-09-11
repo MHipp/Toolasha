@@ -356,6 +356,111 @@ function drawDungeonChests(body, chest) {
 }
 
 /**
+ * Everything currently on screen, as plain text for the clipboard.
+ *
+ * The whole point of this panel is a figure people compare with each other, so
+ * the summary mirrors it: the verdict first, then the session it was measured
+ * over, then revenue per player and for the party — or, inside a dungeon, the
+ * chest count each player is measured against, since there is no per-drop
+ * expectation there to lead with.
+ *
+ * @param {Object} party - From `partyLuck`
+ * @param {Object|null} chest - From `combatDropLuck.dungeonChestLuck()`
+ * @returns {string} Empty when there is nothing measured yet
+ */
+export function buildPartyLuckSummaryText(party, chest) {
+    if (chest) {
+        const lines = ['Party Luck — dungeon chests'];
+        for (const player of chest.players) {
+            if (!player.luck) {
+                lines.push(`${player.name}: no completion yet`);
+                continue;
+            }
+            const verdict = signedPercent(
+                player.luck.expected > 0 ? (player.luck.chests / player.luck.expected - 1) * 100 : 0
+            );
+            const percentile = player.luck.percentile === null ? '' : `, ${formatOrdinal(player.luck.percentile)}`;
+            lines.push(
+                `${player.name}: ${formatWithSeparator(player.luck.chests)} of ${player.luck.expected.toFixed(1)} ` +
+                    `${verdict.text}${percentile}`
+            );
+        }
+        return lines.join('\n');
+    }
+
+    if (!party?.players?.length) return '';
+
+    const lines = ['Party Luck'];
+    const result = combatDropLuck.lastResult;
+    if (result) {
+        const verdict = describeLuck(result.percentile);
+        const difference = (result.income || 0) - (result.expected || 0);
+        lines.push(
+            `Verdict: ${formatOrdinal(result.percentile)} percentile — ${verdict.text} ` +
+                `(${difference >= 0 ? '+' : ''}${formatKMB(difference)})`
+        );
+    }
+    lines.push(`Battles: ${formatWithSeparator(party.battles)}, Party: ${party.players.length}`);
+    lines.push('');
+
+    for (const player of party.players) {
+        const verdict = signedPercent(player.percent ?? 0);
+        lines.push(
+            `${player.name}: ${formatKMB(player.actualValue)} of ${formatKMB(player.expectedValue)} ` +
+                `${player.percent === null ? '—' : verdict.text}`
+        );
+    }
+    if (party.total) {
+        const total = signedPercent(party.total.percent ?? 0);
+        lines.push(
+            `TOTAL: ${formatKMB(party.total.actualValue)} of ${formatKMB(party.total.expectedValue)} ` +
+                `${party.total.percent === null ? '—' : total.text}`
+        );
+    }
+    return lines.join('\n');
+}
+
+/**
+ * A single copy affordance, right-aligned above the sections it summarises.
+ *
+ * Same shape as Party Loot's — a glyph rather than a word, because the panel
+ * is dense enough already, and a tick in its place rather than a colour change,
+ * because the flash has to read at a glance.
+ *
+ * @param {string} text - What clicking it copies
+ * @returns {HTMLElement}
+ */
+function copyBar(text) {
+    const bar = document.createElement('div');
+    Object.assign(bar.style, { display: 'flex', justifyContent: 'flex-end' });
+
+    const copyBtn = document.createElement('button');
+    copyBtn.textContent = '⧉';
+    copyBtn.title = 'Copy this reading as plain text — the figure people compare with each other.';
+    Object.assign(copyBtn.style, {
+        background: 'rgba(255, 255, 255, 0.06)',
+        color: ROW_COLORS.dim,
+        border: '1px solid rgba(255, 255, 255, 0.15)',
+        borderRadius: '4px',
+        padding: '2px 6px',
+        fontSize: '11px',
+        cursor: 'pointer',
+    });
+    copyBtn.addEventListener('click', () => {
+        if (!navigator.clipboard) return;
+        navigator.clipboard
+            .writeText(text)
+            .then(() => {
+                copyBtn.textContent = '✓';
+                setTimeout(() => (copyBtn.textContent = '⧉'), 1200);
+            })
+            .catch((error) => console.error('[PartyLuck] Copy failed:', error));
+    });
+    bar.appendChild(copyBtn);
+    return bar;
+}
+
+/**
  * Every drop the run produced, against what it owed.
  */
 export const partyLuckPanel = createPanel({
@@ -371,6 +476,7 @@ export const partyLuckPanel = createPanel({
         // A dungeon has no per-monster expectation to draw, so the chest card is
         // the panel rather than a section of it
         if (chest) {
+            body.appendChild(copyBar(buildPartyLuckSummaryText(party, chest)));
             drawDungeonChests(body, chest);
             body.appendChild(
                 panelNote(
@@ -392,6 +498,7 @@ export const partyLuckPanel = createPanel({
             return;
         }
 
+        body.appendChild(copyBar(buildPartyLuckSummaryText(party, chest)));
         drawVerdict(body);
         drawSessionStats(body, party);
         drawRevenue(body, party);

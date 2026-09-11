@@ -64,7 +64,7 @@ vi.mock('../../utils/panel-geometry.js', () => ({
 }));
 vi.mock('../../utils/marketplace-tabs.js', () => ({ navigateToMarketplace: () => {} }));
 
-const { partyLuckPanel } = await import('./party-luck-panel.js');
+const { partyLuckPanel, buildPartyLuckSummaryText } = await import('./party-luck-panel.js');
 const { partyLuck } = await import('./party-luck.js');
 
 beforeEach(() => {
@@ -198,6 +198,68 @@ describe('the panel renders', () => {
 
         expect(text()).toContain('No run measured yet');
         expect(text()).not.toContain(FAILED);
+    });
+});
+
+describe('the copy button', () => {
+    const button = () => [...partyLuckPanel.panel.querySelectorAll('button')].find((el) => el.textContent === '⧉');
+
+    test('copies the verdict and the party revenue, the figure people compare with each other', () => {
+        const written = [];
+        vi.spyOn(navigator.clipboard, 'writeText').mockImplementation((value) => {
+            written.push(value);
+            return Promise.resolve();
+        });
+
+        partyLuckPanel.show();
+        button().click();
+
+        expect(written[0]).toContain('15th percentile');
+        expect(written[0]).toContain('Geared');
+        expect(written[0]).toContain('Bare');
+        expect(written[0]).toContain('TOTAL');
+    });
+
+    test('is absent when nothing has been measured yet', () => {
+        game.context = null;
+        partyLuckPanel.show();
+
+        expect(button()).toBeUndefined();
+    });
+
+    test('inside a dungeon it copies the chest reading instead', () => {
+        game.actionDetail = { combatZoneInfo: { isDungeon: true } };
+        game.chests = {
+            partySize: 5,
+            players: [
+                {
+                    name: 'Geared',
+                    isCurrentPlayer: true,
+                    mean: 1.295,
+                    byPayout: {},
+                    luck: { chests: 16, expected: 15.54, percentile: 0.68 },
+                },
+            ],
+            counted: 'chests',
+            entryKey: null,
+        };
+        const written = [];
+        vi.spyOn(navigator.clipboard, 'writeText').mockImplementation((value) => {
+            written.push(value);
+            return Promise.resolve();
+        });
+
+        partyLuckPanel.show();
+        button().click();
+
+        expect(written[0]).toContain('16 of 15.5');
+        expect(written[0]).toContain('68th');
+    });
+});
+
+describe('buildPartyLuckSummaryText', () => {
+    test('is empty when there is nothing measured and no chests', () => {
+        expect(buildPartyLuckSummaryText({ players: [] }, null)).toBe('');
     });
 });
 
