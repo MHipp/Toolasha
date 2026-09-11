@@ -1209,6 +1209,33 @@ describe('gathering recorded live beside the loot log', () => {
     });
 });
 
+describe('dungeon keys', () => {
+    const KEY = '/items/pirate_entry_key';
+    const base = { from: D19, to: D20 + 3600_000 };
+
+    test('keys spent are a cost at today’s price, on the day they were taken, and not a consumable', () => {
+        const result = attributeGoldSources({
+            ...base,
+            price: (itemHrid) => (itemHrid === KEY ? 2_000_000 : null),
+            itemFlowDays: [{ d: '2026-08-20', keys: { [KEY]: 3 } }],
+        });
+        const day = result.days.find((row) => row.day === '2026-08-20');
+        expect(day.sources.dungeonKeys).toBe(-6_000_000);
+        expect(result.totals.sources.consumables).toBe(0);
+        expect(result.coverage.dungeonKeys).toBe(dayStart('2026-08-20'));
+    });
+
+    test('a key the market cannot price costs what net worth carried it at', () => {
+        const result = attributeGoldSources({
+            ...base,
+            price: () => null,
+            holdingPrice: (itemHrid) => (itemHrid === KEY ? 1_500_000 : null),
+            itemFlowDays: [{ d: '2026-08-20', keys: { [KEY]: 1 } }],
+        });
+        expect(result.totals.sources.dungeonKeys).toBe(-1_500_000);
+    });
+});
+
 describe('gains the market cannot price are worth what net worth carries them at', () => {
     const window = {
         from: D19,

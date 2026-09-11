@@ -11,6 +11,8 @@ import {
     seedInventory,
     applyInventoryChanges,
     foldGathering,
+    foldConsumed,
+    CONFIRM_MS,
     default as recorder,
 } from './item-flow-recorder.js';
 
@@ -21,6 +23,8 @@ const hoisted = vi.hoisted(() => ({
         charId: 'me',
         items: [],
         actionTypes: {},
+        details: {},
+        actions: [],
     },
 }));
 
@@ -46,7 +50,10 @@ vi.mock('../../core/data-manager.js', () => ({
         on: (event, handler) => hoisted.listeners.set(event, handler),
         off: (event) => hoisted.listeners.delete(event),
         getCurrentCharacterId: () => hoisted.game.charId,
-        getActionDetails: (hrid) => (hoisted.game.actionTypes[hrid] ? { type: hoisted.game.actionTypes[hrid] } : null),
+        getActionDetails: (hrid) =>
+            hoisted.game.details[hrid] ??
+            (hoisted.game.actionTypes[hrid] ? { type: hoisted.game.actionTypes[hrid] } : null),
+        getCurrentActions: () => hoisted.game.actions,
         get characterItems() {
             return hoisted.game.items;
         },
@@ -210,5 +217,103 @@ describe('recording from the game’s messages', () => {
         });
         await settle();
         expect(gathered()).toEqual([]);
+    });
+});
+
+describe('dungeon keys', () => {
+    const DUNGEON = '/actions/combat/pirate_cove';
+    const KEY = '/items/pirate_entry_key';
+    const OTHER_KEY = '/items/chimerical_entry_key';
+
+    beforeEach(async () => {
+        vi.useFakeTimers();
+        hoisted.saved = [];
+        hoisted.listeners.clear();
+        hoisted.game.charId = 'me';
+        hoisted.game.items = [row(KEY, 10), row(OTHER_KEY, 10)];
+        hoisted.game.details = { [DUNGEON]: { type: '/action_types/combat', combatZoneInfo: { isDungeon: true } } };
+        hoisted.game.actions = [];
+        recorder.cleanup();
+        recorder._rows = [];
+        recorder._charId = null;
+        recorder._loading = null;
+        await recorder.initialize();
+    });
+
+    afterEach(() => {
+        recorder.cleanup();
+        vi.useRealTimers();
+    });
+
+    const items = (data) => hoisted.listeners.get('items_updated')(data);
+    const listed = (itemHrid) =>
+        hoisted.listeners.get('market_listings_updated')({ endMarketListings: [{ itemHrid }] });
+    const keyCount = (itemHrid, count) => items({ endCharacterItems: [row(itemHrid, count)] });
+    const running = (actionHrid) => {
+        hoisted.game.actions = [{ id: 1, actionHrid, isDone: false, ordinal: 1 }];
+    };
+    const spent = (itemHrid = KEY) => recorder._rows.reduce((sum, day) => sum + (day.keys?.[itemHrid] || 0), 0);
+    const wait = async () => {
+        await vi.advanceTimersByTimeAsync(CONFIRM_MS);
+        await vi.advanceTimersByTimeAsync(0);
+    };
+
+    test('a key taken while its dungeon runs is spent', async () => {
+        running(DUNGEON);
+        keyCount(KEY, 9);
+        await wait();
+        expect(spent()).toBe(1);
+    });
+
+    test('the key a run takes as it starts counts, though the dungeon became the running action after', async () => {
+        keyCount(KEY, 9);
+        running(DUNGEON);
+        await wait();
+        expect(spent()).toBe(1);
+    });
+
+    test('a key listed on the market is not spent, whichever message arrives first', async () => {
+        running(DUNGEON);
+        keyCount(KEY, 9);
+        listed(KEY);
+        await wait();
+        listed(KEY);
+        keyCount(KEY, 8);
+        await wait();
+        expect(spent()).toBe(0);
+    });
+
+    test('a key that falls with no dungeon running is not spent', async () => {
+        keyCount(KEY, 9);
+        await wait();
+        expect(spent()).toBe(0);
+    });
+
+    test('two keys gone at once is not one run', async () => {
+        running(DUNGEON);
+        keyCount(KEY, 8);
+        await wait();
+        expect(spent()).toBe(0);
+    });
+
+    test('another dungeon’s key is not the running dungeon’s spend', async () => {
+        running(DUNGEON);
+        keyCount(OTHER_KEY, 9);
+        await wait();
+        expect(spent(OTHER_KEY)).toBe(0);
+    });
+
+    test('a switch before the wait is over books nothing under the arriving character', async () => {
+        running(DUNGEON);
+        keyCount(KEY, 9);
+        hoisted.listeners.get('character_switching')();
+        await wait();
+        expect(spent()).toBe(0);
+        expect(hoisted.saved).toEqual([]);
+    });
+
+    test('foldConsumed adds to the day’s tally', () => {
+        const day = foldConsumed(foldConsumed({ d: '2026-08-20' }, 'keys', KEY, 1), 'keys', KEY, 1);
+        expect(day.keys).toEqual({ [KEY]: 2 });
     });
 });
