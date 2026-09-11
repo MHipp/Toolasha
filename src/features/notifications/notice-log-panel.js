@@ -117,6 +117,87 @@ function drawNotice(card, entry) {
 }
 
 /**
+ * Categories currently hidden from the list. Empty means every category shows,
+ * which is the state a character who has never touched the filter is in.
+ *
+ * Module-level rather than per-draw, the same as Party Loot's `viewing` and
+ * Build Score's `sectionOpen`: the panel rebuilds its whole body on every
+ * refresh, so a selection kept in the DOM would forget itself a few seconds
+ * after being made. Categories are a fixed set from `notice-policy.js` rather
+ * than anything a character carries, so there is nothing here that a character
+ * switch could make stale.
+ *
+ * @type {Set<string>}
+ */
+let hiddenCategories = new Set();
+
+/** Put the filter back to "show everything", for a test that must not inherit it */
+export function resetNoticeCategoryFilter() {
+    hiddenCategories = new Set();
+}
+
+/**
+ * Flip one category's membership in {@link hiddenCategories} and redraw.
+ *
+ * A named function rather than a closure built inside the chip loop, so each
+ * click handler is not a fresh reference to a loop-scoped `let` on every pass.
+ *
+ * @param {string} category - The category the chip that was clicked stands for
+ * @param {boolean} wasActive - Whether that category was showing before the click
+ */
+function toggleCategoryChip(category, wasActive) {
+    if (wasActive) hiddenCategories.add(category);
+    else hiddenCategories.delete(category);
+    noticePanel.render();
+}
+
+/**
+ * The category toggle chips above the list.
+ *
+ * One chip per category actually present among the visible notices, in the
+ * order they first appear — not the full set `notice-policy.js` knows about,
+ * which would be a wall of chips that do nothing on a character who has only
+ * ever seen two kinds of notice. A single category is not worth a chip: there
+ * is nothing to narrow.
+ *
+ * @param {HTMLElement} body - Where it goes
+ * @param {Array<Object>} entries - Notices on screen, unfiltered
+ * @returns {string[]} Categories present, for stale-selection cleanup
+ */
+function drawCategoryChips(body, entries) {
+    const present = [...new Set(entries.map((entry) => entry.category))];
+    if (present.length < 2) return present;
+
+    const bar = document.createElement('div');
+    Object.assign(bar.style, { display: 'flex', flexWrap: 'wrap', gap: '4px', paddingBottom: '6px' });
+
+    for (const category of present) {
+        const active = !hiddenCategories.has(category);
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.textContent = categoryLabel(category);
+        chip.dataset.noticeCategoryChip = category;
+        Object.assign(chip.style, {
+            background: active ? 'rgba(158, 196, 255, 0.18)' : 'rgba(255, 255, 255, 0.04)',
+            border: `1px solid ${active ? 'rgba(158, 196, 255, 0.55)' : 'rgba(255, 255, 255, 0.14)'}`,
+            borderRadius: '10px',
+            color: active ? ROW_COLORS.accent : ROW_COLORS.dim,
+            cursor: 'pointer',
+            font: 'inherit',
+            fontSize: '11px',
+            padding: '2px 8px',
+        });
+        chip.title = active
+            ? `Showing ${categoryLabel(category)} — click to hide it`
+            : `${categoryLabel(category)} is hidden — click to show it`;
+        chip.addEventListener('click', () => toggleCategoryChip(category, active));
+        bar.appendChild(chip);
+    }
+    body.appendChild(bar);
+    return present;
+}
+
+/**
  * A button that reads as part of the panel.
  * @param {string} label - What it says
  * @param {Function} onClick - What it does
@@ -152,9 +233,22 @@ function draw(body) {
         return;
     }
 
+    const present = drawCategoryChips(body, entries);
+    // A category that has scrolled out of the visible window should not go on
+    // silently filtering the list from a chip nobody can see any more
+    for (const category of hiddenCategories) {
+        if (!present.includes(category)) hiddenCategories.delete(category);
+    }
+    const visible = entries.filter((entry) => !hiddenCategories.has(entry.category));
+
+    if (visible.length === 0) {
+        body.appendChild(panelNote('Every notice on screen is hidden by the category filter above.'));
+        return;
+    }
+
     let day = '';
     let card = null;
-    for (const entry of entries) {
+    for (const entry of visible) {
         const heading = noticeDay(entry.at);
         if (heading !== day) {
             day = heading;

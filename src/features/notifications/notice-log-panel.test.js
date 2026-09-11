@@ -43,7 +43,8 @@ vi.mock('./notice-log.js', () => ({
     }),
 }));
 
-const { noticePanel, noticeTime, noticeDay, VISIBLE_LIMIT } = await import('./notice-log-panel.js');
+const { noticePanel, noticeTime, noticeDay, VISIBLE_LIMIT, resetNoticeCategoryFilter } =
+    await import('./notice-log-panel.js');
 const { registerRow } = await import('../../utils/overlay-rows.js');
 const { markNoticesSeen, clearNotices } = await import('./notice-log.js');
 
@@ -79,6 +80,7 @@ beforeEach(() => {
 
 afterEach(() => {
     noticePanel.hide({ remember: false });
+    resetNoticeCategoryFilter();
 });
 
 describe('drawing', () => {
@@ -154,6 +156,67 @@ describe('drawing', () => {
         noticePanel.show({ remember: false });
 
         expect(noticePanel.panel.querySelectorAll('.toolasha-notice-row')).toHaveLength(VISIBLE_LIMIT);
+        expect(text()).not.toContain('could not be drawn');
+    });
+});
+
+describe('the category filter', () => {
+    const chip = (category) => noticePanel.panel.querySelector(`[data-notice-category-chip="${category}"]`);
+
+    test('no chips appear when every visible notice is the same category', () => {
+        log.entries = [entry({ category: 'market' }), entry({ category: 'market' })];
+        noticePanel.show({ remember: false });
+
+        expect(chip('market')).toBeNull();
+    });
+
+    test('a chip per category present, and nothing failed to draw', () => {
+        log.entries = [entry({ category: 'market' }), entry({ category: 'combat', text: 'You died.' })];
+        noticePanel.show({ remember: false });
+
+        expect(chip('market')).toBeTruthy();
+        expect(chip('combat')).toBeTruthy();
+        expect(text()).not.toContain('could not be drawn');
+    });
+
+    test('clicking a chip narrows the list to the other categories', () => {
+        log.entries = [
+            entry({ category: 'market', text: 'Cheese undercut.' }),
+            entry({ category: 'combat', text: 'You died.' }),
+        ];
+        noticePanel.show({ remember: false });
+
+        chip('market').click();
+
+        expect(text()).not.toContain('Cheese undercut');
+        expect(text()).toContain('You died');
+    });
+
+    test('clicking it again brings the category back', () => {
+        log.entries = [
+            entry({ category: 'market', text: 'Cheese undercut.' }),
+            entry({ category: 'combat', text: 'You died.' }),
+        ];
+        noticePanel.show({ remember: false });
+
+        chip('market').click();
+        chip('market').click();
+
+        expect(text()).toContain('Cheese undercut');
+        expect(text()).toContain('You died');
+    });
+
+    test('hiding every category present says so rather than an empty list', () => {
+        log.entries = [
+            entry({ category: 'market', text: 'Cheese undercut.' }),
+            entry({ category: 'combat', text: 'You died.' }),
+        ];
+        noticePanel.show({ remember: false });
+
+        chip('market').click();
+        chip('combat').click();
+
+        expect(text()).toContain('hidden by the category filter');
         expect(text()).not.toContain('could not be drawn');
     });
 });
