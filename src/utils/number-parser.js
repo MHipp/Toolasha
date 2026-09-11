@@ -33,11 +33,48 @@ function gameNumberLocale() {
     }
 }
 
+/** The letter suffix each spelled-out or abbreviated magnitude word stands for. */
+const SUFFIX_WORD_LETTERS = Object.freeze({
+    thousand: 'k',
+    million: 'm',
+    mil: 'm',
+    billion: 'b',
+    bn: 'b',
+    trillion: 't',
+    tn: 't',
+});
+
+/** A trailing magnitude word after a digit, optional space and plural `s` included; input is lowercased first. */
+const SUFFIX_WORD = /(\d)\s*(thousand|million|mil|billion|bn|trillion|tn)s?$/;
+
+/**
+ * A whole string that is nothing but an amount: digits with any grouping or
+ * decimal separators, and at most one recognised magnitude suffix.
+ */
+const AMOUNT_TEXT = /^\d[\d.,\s]*(?:[kmbt]|(?:thousand|million|mil|billion|bn|trillion|tn)s?)?$/i;
+
+/**
+ * Whether text a player typed is an amount and nothing else.
+ *
+ * {@link parseItemCount} is lenient on purpose — it reads game DOM text where a
+ * number sits among words — so "12 bananas" parses as 12 there. A box that
+ * asks for an amount wants the stricter answer: anything but digits,
+ * separators and one magnitude suffix ("12b", "1.5 million") is not one.
+ *
+ * @param {string|null|undefined} text - What was typed
+ * @returns {boolean} True for an amount {@link parseItemCount} reads whole
+ */
+export function isAmountText(text) {
+    return AMOUNT_TEXT.test(String(text ?? '').trim());
+}
+
 /**
  * Parse item count from text
  * Handles various formats including:
  * - Plain numbers: "100", "1000"
- * - K/M suffixes: "1.5K", "2M"
+ * - K/M/B/T suffixes: "1.5K", "2M"
+ * - Suffix words, any case, optional space and plural: "12 billion", "12bn",
+ *   "5 mil", "3 trillion", "750 thousand" — read exactly as their letter
  * - International formats with separators: "1,000", "1 000", "1.000"
  * - Mixed decimal formats: "1.234,56" (European) or "1,234.56" (US)
  * - Prefixed formats: "x5", "Amount: 1000", "Amount: 1 000"
@@ -53,6 +90,10 @@ export function parseItemCount(text, defaultValue = 1) {
 
     // Convert to string and normalize
     text = String(text).toLowerCase().trim();
+
+    // Spelled-out suffixes become their letter before anything else looks at
+    // the text, so every rule below treats "12 billion" exactly as "12b"
+    text = text.replace(SUFFIX_WORD, (_, digit, word) => digit + SUFFIX_WORD_LETTERS[word]);
 
     // Extract number from common patterns like "x5", "Amount: 1000"
     const prefixMatch = text.match(/x([\d,\s.kmb]+)|amount:\s*([\d,\s.kmb]+)/i);

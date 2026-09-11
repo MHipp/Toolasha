@@ -10,7 +10,7 @@
 import { forecastNetworth, MIN_RETURNS } from './networth-forecast.js';
 import { randomSeed } from '../combat-sim/engine/rng.js';
 import { formatDateTime, networthFormatter } from '../../utils/formatters.js';
-import { parseItemCount } from '../../utils/number-parser.js';
+import { isAmountText, parseItemCount } from '../../utils/number-parser.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -343,14 +343,17 @@ export function methodLabel(forecast) {
 /**
  * Read the target box the way every other typed amount in Toolasha is read.
  *
- * Players write net worth as "12b", not as eleven digits; a bare `Number()`
- * turned that into NaN and the target silently vanished.
+ * Players write net worth as "12b" or "12 billion", not as eleven digits. The
+ * box asks for an amount, so it is stricter than `parseItemCount` alone: text
+ * with anything besides digits, separators and one magnitude suffix ("12xyz",
+ * "12 bananas") is no target rather than 12.
  *
  * @param {string|null|undefined} text - What the player typed
  * @returns {number|null} A positive target, or null when there is none
  */
 export function parseForecastTarget(text) {
-    const value = parseItemCount(String(text ?? '').trim(), NaN);
+    if (!isAmountText(text)) return null;
+    const value = parseItemCount(String(text).trim(), NaN);
     return Number.isFinite(value) && value > 0 ? value : null;
 }
 

@@ -1,5 +1,6 @@
 /** @vitest-environment happy-dom */
 import {
+    isAmountText,
     parseItemCount,
     parseGameNumber,
     gameNumberSeparators,
@@ -67,6 +68,74 @@ describe('parseItemCount', () => {
         test('returns default on null', () => expect(parseItemCount(null, 0)).toBe(0));
         test('returns default on unparseable', () => expect(parseItemCount('abc', 0)).toBe(0));
     });
+
+    describe('suffix words', () => {
+        test.each([
+            ['12 billion', 12e9],
+            ['12 Billion', 12e9],
+            ['12billion', 12e9],
+            ['3 billions', 3e9],
+            ['12bn', 12e9],
+            ['12 BN', 12e9],
+            ['1.5 million', 1.5e6],
+            ['2 millions', 2e6],
+            ['5 mil', 5e6],
+            ['5mil', 5e6],
+            ['750 thousand', 750e3],
+            ['2 thousands', 2e3],
+            ['3 trillion', 3e12],
+            ['2tn', 2e12],
+            ['1,5 million', 1.5e6],
+            ['Amount: 5 million', 5e6],
+        ])('%j → %d', (text, expected) => expect(parseItemCount(text)).toBe(expected));
+    });
+
+    describe('leniency it already had is unchanged', () => {
+        // Read off the parser before suffix words existed: callers read DOM text
+        // where a number sits among words, and depend on these answers
+        test.each([
+            ['100M', 100e6],
+            ['1,234', 1234],
+            ['x5', 5],
+            ['Amount: 1 000', 1000],
+            ['12xyz', 12],
+            ['12 bananas', 12],
+            ['1,234M', 1234000],
+            ['x2k', 2000],
+            ['1.5 k', 1500],
+            ['12 B', 12e9],
+            ['1e10', 1e10],
+            ['-5', -5],
+            ['  7  ', 7],
+        ])('%j → %d', (text, expected) => expect(parseItemCount(text, 'DEFAULT')).toBe(expected));
+
+        test.each(['Best Sell: 994,000', 'max', 'abc'])('%j → default', (text) =>
+            expect(parseItemCount(text, 'DEFAULT')).toBe('DEFAULT')
+        );
+    });
+});
+
+describe('isAmountText', () => {
+    test.each([
+        '12b',
+        '12B',
+        ' 12b ',
+        '12 b',
+        '1.5t',
+        '500m',
+        '750k',
+        '12,000,000,000',
+        '12000000000',
+        '12bn',
+        '12 billion',
+        '3 trillions',
+        '1.234,5 mil',
+    ])('%j is an amount', (text) => expect(isAmountText(text)).toBe(true));
+
+    test.each(['', '   ', null, undefined, 'abc', '12xyz', '12 bananas', '12kb', '12bnx', 'x12', '-5', 'b12', '12ks'])(
+        '%j is not an amount',
+        (text) => expect(isAmountText(text)).toBe(false)
+    );
 });
 
 describe('parseGameNumber', () => {

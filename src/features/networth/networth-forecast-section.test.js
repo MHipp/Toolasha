@@ -309,3 +309,28 @@ describe('methodLabel', () => {
         );
     });
 });
+
+describe('forecast target words', () => {
+    it('reads "12bn" and "12 billion" as the same target as "12b"', () => {
+        const letter = figuresFor('12b');
+        expect(letter).toContain('Reach target by 30d');
+        expect(figuresFor('12bn')).toBe(letter);
+        expect(figuresFor('12 billion')).toBe(letter);
+    });
+
+    it.each(['12xyz', '12 bananas', '12bnx', 'x12b', '12kb'])('refuses %j rather than reading it as 12', (entry) => {
+        expect(parseForecastTarget(entry)).toBeNull();
+        expect(figuresFor(entry)).not.toContain('Reach target');
+    });
+
+    it.each([
+        ['12 Billion', 12e9],
+        ['1.5 million', 1.5e6],
+        ['750 thousand', 750e3],
+        ['3 trillion', 3e12],
+        ['2tn', 2e12],
+        ['5 mil', 5e6],
+    ])('reads %j as %d', (entry, expected) => {
+        expect(parseForecastTarget(entry)).toBe(expected);
+    });
+});
