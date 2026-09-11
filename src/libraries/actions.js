@@ -34,6 +34,10 @@ import teaRecommendation from '../features/actions/tea-recommendation.js';
 import inventoryCountDisplay from '../features/actions/inventory-count-display.js';
 import pinnedActionsPage from '../features/actions/pinned-actions-page.js';
 import drinkTimer from '../features/actions/drink-timer.js';
+// The buff board. Here rather than in the UI bundle because it reads the drink
+// supply estimate out of `drink-calculator.js`, which this bundle already
+// carries and which nothing else may copy.
+import { buffBoardPanel } from '../features/actions/buff-board.js';
 
 // Alchemy features
 import alchemyProfitDisplay from '../features/alchemy/alchemy-profit-display.js';
@@ -104,6 +108,7 @@ toolashaRoot.Actions = {
     // protection in ui) see the live cachedStats/pinnedActions this bundle fills
     actionPanelSort,
     drinkTimer,
+    buffBoardPanel,
     skillingOptimizer,
     goalPlanner,
     marketLiquidity,
