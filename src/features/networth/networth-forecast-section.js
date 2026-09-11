@@ -9,7 +9,7 @@
 
 import { forecastNetworth, MIN_RETURNS } from './networth-forecast.js';
 import { randomSeed } from '../combat-sim/engine/rng.js';
-import { networthFormatter } from '../../utils/formatters.js';
+import { formatDateTime, networthFormatter } from '../../utils/formatters.js';
 import { parseItemCount } from '../../utils/number-parser.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -326,6 +326,21 @@ function formatPercent(value) {
 }
 
 /**
+ * How the fan was drawn and from what: the generator, the number of changes
+ * and the real dates they span, which with gaps reach further back than the
+ * change count suggests.
+ * @param {Object} forecast - A completed forecast
+ * @returns {string} e.g. "Bootstrap (60 changes, 07-13 – 09-11)"
+ */
+export function methodLabel(forecast) {
+    const name = forecast.method === 'gbm' ? 'GBM' : 'Bootstrap';
+    const span = [forecast.windowStart, forecast.windowEnd].every(Number.isFinite)
+        ? `, ${formatDateTime(new Date(forecast.windowStart), { includeTime: false })} – ${formatDateTime(new Date(forecast.windowEnd), { includeTime: false })}`
+        : '';
+    return `${name} (${forecast.returnCount} changes${span})`;
+}
+
+/**
  * Read the target box the way every other typed amount in Toolasha is read.
  *
  * Players write net worth as "12b", not as eleven digits; a bare `Number()`
@@ -453,9 +468,7 @@ export function createForecastSection({ getHistory, seed = randomSeed() }) {
         figures.appendChild(buildFigure('Daily drift', formatPercent(forecast.dailyDriftPercent)));
         figures.appendChild(buildFigure('Volatility (EWMA)', formatPercent(forecast.dailyVolatilityPercent)));
         figures.appendChild(buildFigure('Doubling', forecast.doublingDays ? `${forecast.doublingDays}d` : '—'));
-        figures.appendChild(
-            buildFigure('Method', forecast.method === 'gbm' ? 'GBM' : `Bootstrap (${forecast.returnCount} days)`)
-        );
+        figures.appendChild(buildFigure('Method', methodLabel(forecast)));
 
         for (const [checkpoint, chance] of Object.entries(forecast.probabilities)) {
             figures.appendChild(buildFigure(`Reach target by ${checkpoint}d`, `${chance.toFixed(1)}%`));

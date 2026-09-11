@@ -6,6 +6,7 @@ import {
     buildFanPlot,
     dayTicks,
     fanDomain,
+    methodLabel,
     placeEndLabels,
     valueTicks,
 } from './networth-forecast-section.js';
@@ -279,5 +280,32 @@ describe('chart label helpers', () => {
         const placed = placeEndLabels(entries);
         expect(placed.map((entry) => entry.rank)).toEqual([4, 2, 0]);
         expect(placed.map((entry) => entry.top)).toEqual([127.5, 140.5, 153.5]);
+    });
+});
+
+describe('methodLabel', () => {
+    const july13 = new Date(2026, 6, 13, 12).getTime();
+    const september11 = new Date(2026, 8, 11, 20).getTime();
+
+    it('names the generator, the change count and the real dates the window spans', () => {
+        const label = methodLabel({
+            method: 'block-bootstrap',
+            returnCount: 60,
+            windowStart: july13,
+            windowEnd: september11,
+        });
+        expect(label).toBe('Bootstrap (60 changes, 07-13 – 09-11)');
+    });
+
+    it('names the normal fallback, and leaves the span out when the dates are missing', () => {
+        expect(methodLabel({ method: 'gbm', returnCount: 7 })).toBe('GBM (7 changes)');
+    });
+
+    it('shows the span in the live section', () => {
+        const section = createForecastSection({ getHistory: billionsHistory, seed: 11 });
+        section.element.querySelector('.mwi-nw-forecast-toggle').click();
+        expect(section.element.querySelector('.mwi-nw-forecast-figures').textContent).toMatch(
+            /MethodBootstrap \(39 changes, \d{2}-\d{2} – \d{2}-\d{2}\)/
+        );
     });
 });
