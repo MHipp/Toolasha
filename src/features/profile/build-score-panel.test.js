@@ -433,3 +433,43 @@ describe('setScoreSource', () => {
         expect(text()).not.toContain(FAILED);
     });
 });
+
+describe('the copy button', () => {
+    const button = () => [...buildScorePanel.panel.querySelectorAll('button')].find((el) => el.textContent === '⧉');
+
+    test('copies both totals and every section, largest first — the score people screenshot to compare builds', () => {
+        const written = [];
+        vi.spyOn(navigator.clipboard, 'writeText').mockImplementation((value) => {
+            written.push(value);
+            return Promise.resolve();
+        });
+
+        buildScorePanel.show();
+        button().click();
+
+        expect(written[0]).toContain('Combat Score: 300.0');
+        expect(written[0]).toContain('Equipment: 150.0');
+        expect(written[0]).toContain('Skiller Score: 90.0');
+    });
+
+    test('names whose build it is when it is not yours', () => {
+        const written = [];
+        vi.spyOn(navigator.clipboard, 'writeText').mockImplementation((value) => {
+            written.push(value);
+            return Promise.resolve();
+        });
+        setScoreSource(() => scored(), 'Briggsy99');
+
+        buildScorePanel.show();
+        button().click();
+
+        expect(written[0]).toContain('Build Score — Briggsy99');
+    });
+
+    test('is absent before a score has been computed', () => {
+        setScoreSource(() => null);
+        buildScorePanel.show();
+
+        expect(button()).toBeUndefined();
+    });
+});

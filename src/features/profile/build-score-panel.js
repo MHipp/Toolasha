@@ -284,6 +284,73 @@ function contributionSection(host, { id, title, score, rows, suffixOf = null, no
 }
 
 /**
+ * The panel's contents as plain text, for the clipboard.
+ *
+ * This is a score people screenshot to compare builds, so the summary leads
+ * with the two totals and then, like the panel, breaks each down by section —
+ * largest contribution first, same ordering as {@link combatSections} and
+ * {@link skillerSections}.
+ *
+ * @param {Object} score - Result of `calculateCombatScore`
+ * @param {string|null} owner - Whose build this is, or null for your own
+ * @returns {string} Empty when there is no score yet
+ */
+export function buildScoreSummaryText(score, owner) {
+    if (!score) return '';
+
+    const lines = [owner ? `Build Score — ${owner}` : 'Build Score'];
+    lines.push(`Combat Score: ${(score.total || 0).toFixed(1)}`);
+    for (const section of combatSections(score)) {
+        lines.push(`  ${section.title}: ${section.score.toFixed(1)}`);
+    }
+    lines.push(`Skiller Score: ${(score.skillerTotal || 0).toFixed(1)}`);
+    for (const section of skillerSections(score)) {
+        lines.push(`  ${section.title}: ${section.score.toFixed(1)}`);
+    }
+    return lines.join('\n');
+}
+
+/**
+ * A single copy affordance, right-aligned above the score cards.
+ *
+ * Same shape as Party Loot's and Party Luck's — a glyph rather than a word,
+ * and a tick in its place rather than a colour change on click, so the flash
+ * reads at a glance.
+ *
+ * @param {string} text - What clicking it copies
+ * @returns {HTMLElement}
+ */
+function copyBar(text) {
+    const bar = document.createElement('div');
+    Object.assign(bar.style, { display: 'flex', justifyContent: 'flex-end' });
+
+    const copyBtn = document.createElement('button');
+    copyBtn.textContent = '⧉';
+    copyBtn.title = 'Copy this score as plain text — the figure people compare builds with.';
+    Object.assign(copyBtn.style, {
+        background: 'rgba(255, 255, 255, 0.06)',
+        color: ROW_COLORS.dim,
+        border: '1px solid rgba(255, 255, 255, 0.15)',
+        borderRadius: '4px',
+        padding: '2px 6px',
+        fontSize: '11px',
+        cursor: 'pointer',
+    });
+    copyBtn.addEventListener('click', () => {
+        if (!navigator.clipboard) return;
+        navigator.clipboard
+            .writeText(text)
+            .then(() => {
+                copyBtn.textContent = '✓';
+                setTimeout(() => (copyBtn.textContent = '⧉'), 1200);
+            })
+            .catch((error) => console.error('[BuildScore] Copy failed:', error));
+    });
+    bar.appendChild(copyBtn);
+    return bar;
+}
+
+/**
  * A score and the contributions under it.
  *
  * @param {HTMLElement} body - Where it goes
@@ -479,6 +546,8 @@ export const buildScorePanel = createPanel({
             body.appendChild(panelNote(`Scoring ${whose} — this needs the marketplace prices and a moment.`));
             return;
         }
+
+        body.appendChild(copyBar(buildScoreSummaryText(score, scoreOwner)));
 
         const combat = scoreCard(body, 'Combat Score', score.total || 0, COMBAT_ACCENT);
         for (const definition of combatSections(score)) contributionSection(combat, definition);
