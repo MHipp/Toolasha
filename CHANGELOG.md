@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The changelog tests survive a release
+
+Four tests assumed the changelog had never been through a marked release, so 3.48.0 turned them red without anything being wrong. They now check what stays true at every release instead.
+
 <!-- shipped in 3.48.0 -->
 
 ### The lab sim's typed-over token levels stay with their character

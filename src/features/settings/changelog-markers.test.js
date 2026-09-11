@@ -245,16 +245,17 @@ describe('against the real CHANGELOG.md, across release states', () => {
      * contract instead, at all three points. Built with the modules' own
      * helpers, not hand-typed markdown, so they track the real marker format.
      */
-    const states = {
-        'no markers': sliceForkChangelog(stripMarkers(real)),
-        'one marker (today)': sliceForkChangelog(real),
-        'two markers (one release from now)': sliceForkChangelog(
-            stampChangelog(real, '9.9.9').text.replace(
-                markerFor('9.9.9'),
-                `${markerFor('9.9.9')}\n\n### Something new for 9.9.9\n\nBody text.`
-            )
+    const sources = {
+        'no markers': stripMarkers(real),
+        'one marker (today)': real,
+        'two markers (one release from now)': stampChangelog(real, '9.9.9').text.replace(
+            markerFor('9.9.9'),
+            `${markerFor('9.9.9')}\n\n### Something new for 9.9.9\n\nBody text.`
         ),
     };
+    const states = Object.fromEntries(
+        Object.entries(sources).map(([label, text]) => [label, sliceForkChangelog(text)])
+    );
 
     it('ships exactly the floor while there are fewer than two markers', () => {
         for (const [label, slice] of Object.entries(states)) {
@@ -274,10 +275,15 @@ describe('against the real CHANGELOG.md, across release states', () => {
         }
     );
 
-    it.each(Object.entries(states).filter(([, slice]) => slice.markerVersions.length > 0))(
+    it.each(Object.keys(sources))(
         'falls back to the whole marker-stripped slice when nothing is newer than the newest marker (%s)',
-        (_label, slice) => {
-            const result = filterChangelogSince(slice.text, slice.markerVersions[0]);
+        (label) => {
+            // Only true at the instant of a release: an entry written afterwards
+            // sits above the newest marker, so the real file is in this state for
+            // minutes at a time. Stamp a release on top rather than assume one.
+            const slice = sliceForkChangelog(stampChangelog(sources[label], '99.0.0').text);
+            expect(slice.markerVersions[0]).toBe('99.0.0');
+            const result = filterChangelogSince(slice.text, '99.0.0');
             expect(result.filtered).toBe(false);
             expect(result.text).toBe(stripMarkers(slice.text));
         }
