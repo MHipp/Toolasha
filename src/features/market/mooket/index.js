@@ -242,6 +242,13 @@ class MarketHistoryPanel {
         // until the *next* switch's teardown clears the registry wholesale.
         const ticket = captureOwner(this);
         await this.loadPrefs();
+        // Before the *first* side effect of the resumed tail, not merely before
+        // the registrations below. `registerCommand` used to sit above this
+        // check, so a teardown landing inside `loadPrefs()` left the palette
+        // offering "Market History Viewer" for a feature that was switched off
+        // — and picking it ran `toggle()` against a removed panel, which
+        // flipped `prefs.open` and wrote it back to storage anyway.
+        if (!stillOurs(ticket)) return;
 
         registerCommand({
             name: 'Market History Viewer',
