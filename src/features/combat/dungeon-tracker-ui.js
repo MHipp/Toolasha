@@ -1083,16 +1083,14 @@ class DungeonTrackerUI {
             // Clear instance reference
             this.container = null;
 
-            // Clean up module references (destroy Chart.js instances before dropping them)
+            // Clean up module references. The chart section is disposed rather
+            // than just destroyed: a render still parked on its stored-run read
+            // would otherwise resume and construct a fresh Chart.js instance
+            // against the canvas of the panel just removed, on a section object
+            // no one holds any more — a live rAF loop and resize observer that
+            // nothing can ever destroy, one per switch that lands in the window.
             if (this.chart) {
-                if (this.chart.chartInstance) {
-                    this.chart.chartInstance.destroy();
-                    this.chart.chartInstance = null;
-                }
-                if (this.chart.modalChartInstance) {
-                    this.chart.modalChartInstance.destroy();
-                    this.chart.modalChartInstance = null;
-                }
+                if (this.chart.dispose) this.chart.dispose();
                 this.chart = null;
             }
             if (this.history) {

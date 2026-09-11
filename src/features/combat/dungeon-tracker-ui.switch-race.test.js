@@ -57,6 +57,7 @@ const stubModule = vi.hoisted(() => () => ({
     default: class {
         render = vi.fn(async () => {});
         update = vi.fn(async () => {});
+        dispose = vi.fn();
         setupAll = vi.fn();
         applyInitialStates = vi.fn();
         onDelete = vi.fn();

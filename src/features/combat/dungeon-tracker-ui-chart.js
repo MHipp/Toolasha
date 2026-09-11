@@ -12,6 +12,47 @@ class DungeonTrackerUIChart {
         this.formatTime = formatTimeFunc;
         this.chartInstance = null;
         this.modalChartInstance = null; // Store modal chart for cleanup
+        this.closeModal = null; // Set while the pop-out modal is on the page
+        // Set by dispose(), read by every render that resumes from an await.
+        //
+        // Not an init-ownership ticket: `stillOurs()` also fails when the
+        // character moves, and a render interrupted by a switch that has not
+        // yet torn the panel down must still finish — it draws the runs of the
+        // character that asked into that character's still-live canvas, which
+        // is what the identity fix settled. What a resumed render must never do
+        // is build against a panel that has been taken down. That is a
+        // teardown question only, and it is answered by the object being asked:
+        // the parent builds a fresh section for the arriving character, so a
+        // disposed section's tail is reading its own flag and can neither
+        // overwrite nor destroy the new section's chart.
+        this.disposed = false;
+    }
+
+    /**
+     * Tear the section down: destroy both Chart.js instances and stop any
+     * render still in flight from constructing another.
+     *
+     * Chart.js instances hold a resize observer, an animation loop and a slot
+     * in Chart's own instance registry, so one built against the canvas of a
+     * removed panel is never collected and never destroyed — one leak per
+     * teardown that lands inside a render's storage read.
+     * @returns {void}
+     */
+    dispose() {
+        this.disposed = true;
+        if (this.chartInstance) {
+            this.chartInstance.destroy();
+            this.chartInstance = null;
+        }
+        if (this.closeModal) {
+            // Destroys modalChartInstance and takes the modal, and its
+            // document-level ESC handler, off the page with it
+            this.closeModal();
+        }
+        if (this.modalChartInstance) {
+            this.modalChartInstance.destroy();
+            this.modalChartInstance = null;
+        }
     }
 
     /**
@@ -30,6 +71,11 @@ class DungeonTrackerUIChart {
 
         // Get filtered runs based on current filters
         const allRuns = await dungeonTrackerStorage.getAllRuns();
+        // A teardown landing inside that read has already destroyed this
+        // section's chart and dropped the panel the canvas above belongs to.
+        // Everything below draws: abandon it rather than build a Chart.js
+        // instance nobody holds and nobody will ever destroy.
+        if (this.disposed) return;
         // Narrowed to the character the panel is speaking for before anything
         // else, so the chart plots the same runs the list beneath it counts
         let filteredRuns = filterRunsForCharacter(allRuns, this.state.filterCharacter, character);
@@ -259,7 +305,11 @@ class DungeonTrackerUIChart {
             }
             modal.remove();
             document.removeEventListener('keydown', escHandler);
+            this.closeModal = null;
         };
+        // Held so dispose() can take the modal down with the panel: it lives on
+        // document.body rather than inside the container the teardown removes
+        this.closeModal = closeModal;
         closeBtn.addEventListener('click', closeModal);
 
         header.appendChild(title);
@@ -303,6 +353,9 @@ class DungeonTrackerUIChart {
 
         // Get filtered runs (same as main chart)
         const allRuns = await dungeonTrackerStorage.getAllRuns();
+        // Same reason as render(): a section torn down inside the read must not
+        // construct a chart the teardown has already gone past destroying
+        if (this.disposed) return;
         // Narrowed to the character the panel is speaking for before anything
         // else, so the chart plots the same runs the list beneath it counts
         let filteredRuns = filterRunsForCharacter(allRuns, this.state.filterCharacter, character);
