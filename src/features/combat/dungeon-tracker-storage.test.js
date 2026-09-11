@@ -911,6 +911,35 @@ describe('filterRunsForCharacter', () => {
         expect(kept.map((run) => run.id)).toEqual(['mine', 'legacy-mine']);
         expect(await dungeonTrackerStorage.getRunsForCharacter('all')).toHaveLength(4);
     });
+
+    /**
+     * The store is one key for the whole account, so who asked is the only
+     * thing that makes "mine" mean anything — and it used to be asked *after*
+     * the read. A switch landing inside a cold read handed the caller the
+     * arriving character's runs in answer to the departing character's
+     * question, with nothing in the result to say so.
+     */
+    test('a switch inside the read does not re-aim the narrowing', async () => {
+        seedRuns(runs);
+
+        let release;
+        const held = new Promise((resolve) => {
+            release = resolve;
+        });
+        game.onRead = () => {
+            game.onRead = null;
+            return held;
+        };
+
+        const pending = dungeonTrackerStorage.getRunsForCharacter('mine');
+        // …and the switch settles while the read is still out
+        game.characterId = 'iron456';
+        game.characterName = 'IronCow';
+        release();
+
+        // MarketCow asked, so MarketCow's runs are the answer
+        expect((await pending).map((run) => run.id)).toEqual(['mine', 'legacy-mine']);
+    });
 });
 
 /**

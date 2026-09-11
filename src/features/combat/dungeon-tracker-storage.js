@@ -1318,11 +1318,21 @@ class DungeonTrackerStorage {
     /**
      * Every run, or only the ones this character recorded.
      *
+     * The identity is resolved *before* the store is read, not after. The read
+     * can take a moment — a cold `allRuns` is an IndexedDB round trip — and a
+     * character switch landing inside it used to move `currentCharacter()` out
+     * from under the narrowing, so the caller that asked "my runs" as one
+     * character was handed the *other* character's runs and could not tell.
+     * Capturing first means the answer always belongs to whoever asked; a
+     * caller that also has to decide whether the answer is still worth using
+     * checks that itself (`dungeon-tracker.js` does, around its own await).
+     *
      * @param {string} [filterCharacter] - 'mine' (default) or 'all'
      * @returns {Promise<Array>} Runs
      */
     async getRunsForCharacter(filterCharacter = 'mine') {
-        return filterRunsForCharacter(await this.getAllRuns(), filterCharacter, currentCharacter());
+        const asker = currentCharacter();
+        return filterRunsForCharacter(await this.getAllRuns(), filterCharacter, asker);
     }
 
     /**

@@ -181,6 +181,13 @@ class DungeonTrackerUIHistory {
         const runList = container.querySelector('#mwi-dt-run-list');
         if (!runList) return;
 
+        // Who the list is for, settled before the store is read rather than
+        // after it: a character switch landing inside that read used to move
+        // the answer, and the list — with the dungeon and team dropdowns built
+        // from it — was rewritten for the arriving character inside the
+        // departing character's panel.
+        const character = currentCharacter();
+
         try {
             // Get all runs from unified storage, narrowed to whoever the
             // character filter says the panel is speaking for. Everything below
@@ -189,7 +196,7 @@ class DungeonTrackerUIHistory {
             const allRuns = filterRunsForCharacter(
                 await dungeonTrackerStorage.getAllRuns(),
                 this.state.filterCharacter,
-                currentCharacter()
+                character
             );
 
             if (allRuns.length === 0) {

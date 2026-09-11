@@ -576,6 +576,15 @@ class DungeonTrackerUI {
             return;
         }
 
+        // Who this draw is for, settled before the first await rather than
+        // after it. Everything below the `getAllRuns()` read — the narrowing,
+        // the pace chip, the run list, the ROI board — is a claim about one
+        // character, and a switch landing inside that read used to move the
+        // answer out from under all four while the run being drawn stayed the
+        // departing character's.
+        const ticket = captureOwner(this);
+        const character = currentCharacter();
+
         // Update dungeon name and tier
         const dungeonName = this.container.querySelector('#mwi-dt-dungeon-name');
         if (dungeonName) {
@@ -686,10 +695,16 @@ class DungeonTrackerUI {
         // Through the store's memory, which a run just completed has already
         // joined — the write behind it is debounced
         const allRuns = await dungeonTrackerStorage.getAllRuns();
+        // A switch landing inside that read has already torn the panel down —
+        // `this.container`, `this.history` and `this.roiBoard` are null and the
+        // figures below would be the departing character's run measured against
+        // the arriving character's history. Leave what is on screen alone; the
+        // arriving character's own initialize() draws its panel.
+        if (!stillOurs(ticket)) return;
         // The run store is shared across characters on purpose (see
         // dungeon-tracker-storage.js); this is where "how am I doing" narrows
         // it back to the character asking
-        runHistory = filterRunsForCharacter(allRuns, this.state.filterCharacter, currentCharacter());
+        runHistory = filterRunsForCharacter(allRuns, this.state.filterCharacter, character);
 
         // Apply dungeon filter
         if (this.state.filterDungeon !== 'all') {
@@ -714,6 +729,9 @@ class DungeonTrackerUI {
             windowSize: normalizeAverageWindow(config.getSetting('dungeonTrackerAverageWindow')),
             baselines: (await dungeonTrackerStorage.getAverageBaselines?.()) || null,
         };
+        // Second suspension point, same teardown: every line below writes into
+        // `this.container`, which cleanup() has nulled by now
+        if (!stillOurs(ticket)) return;
 
         // Calculate stats from filtered runs
         if (runHistory.length > 0) {
@@ -753,7 +771,7 @@ class DungeonTrackerUI {
         // though: they are what "your avg" now means, the same redefinition the
         // chat line and the header above already honour, so pace honours them
         // too rather than measuring against a lifetime nobody else is quoting.
-        this.updatePaceChip(run, allRuns, averageLimits);
+        this.updatePaceChip(run, allRuns, averageLimits, character);
 
         // Update header stats (always visible)
         const headerLast = this.container.querySelector('#mwi-dt-header-last');
@@ -808,8 +826,12 @@ class DungeonTrackerUI {
      * @param {Array<Object>} allRuns - Every stored run, unfiltered
      * @param {Object} [averageLimits] - How far "your avg" may look back:
      *   `windowSize` runs, starting after the `baselines` marker
+     * @param {{id: string|null, name: string|null}} [character] - Whose pace this is.
+     *   Passed in rather than read here: update() settled it before its storage
+     *   read, and this runs after it, so reading it again would measure the
+     *   departing character's run against the arriving character's history.
      */
-    updatePaceChip(run, allRuns, averageLimits = {}) {
+    updatePaceChip(run, allRuns, averageLimits = {}, character = currentCharacter()) {
         const paceElement = this.container?.querySelector('#mwi-dt-pace');
         if (!paceElement) return;
 
@@ -817,7 +839,7 @@ class DungeonTrackerUI {
         // A partial run's wave count is not its position in the dungeon: two waves
         // timed at wave 50 would be compared against the first two of a whole run.
         if (config.getSetting('dungeonPace') && !run.joinedMidRun) {
-            const mine = filterRunsForCharacter(allRuns, 'mine', currentCharacter());
+            const mine = filterRunsForCharacter(allRuns, 'mine', character);
             const identity = {
                 dungeonName: run.dungeonName,
                 tier: run.tier,

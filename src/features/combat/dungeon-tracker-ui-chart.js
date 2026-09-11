@@ -22,11 +22,17 @@ class DungeonTrackerUIChart {
         const canvas = container.querySelector('#mwi-dt-chart-canvas');
         if (!canvas) return;
 
+        // Who the panel is speaking for, settled before the store is read: a
+        // character switch landing inside that read used to move the answer,
+        // and the chart drawn into the departing character's still-live canvas
+        // plotted the arriving character's runs.
+        const character = currentCharacter();
+
         // Get filtered runs based on current filters
         const allRuns = await dungeonTrackerStorage.getAllRuns();
         // Narrowed to the character the panel is speaking for before anything
         // else, so the chart plots the same runs the list beneath it counts
-        let filteredRuns = filterRunsForCharacter(allRuns, this.state.filterCharacter, currentCharacter());
+        let filteredRuns = filterRunsForCharacter(allRuns, this.state.filterCharacter, character);
 
         if (this.state.filterDungeon !== 'all') {
             filteredRuns = filteredRuns.filter((r) => r.dungeonName === this.state.filterDungeon);
@@ -292,11 +298,14 @@ class DungeonTrackerUIChart {
      * @param {HTMLElement} canvas - Canvas element
      */
     async renderModalChart(canvas) {
+        // Settled before the read, for the same reason render() does it
+        const character = currentCharacter();
+
         // Get filtered runs (same as main chart)
         const allRuns = await dungeonTrackerStorage.getAllRuns();
         // Narrowed to the character the panel is speaking for before anything
         // else, so the chart plots the same runs the list beneath it counts
-        let filteredRuns = filterRunsForCharacter(allRuns, this.state.filterCharacter, currentCharacter());
+        let filteredRuns = filterRunsForCharacter(allRuns, this.state.filterCharacter, character);
 
         if (this.state.filterDungeon !== 'all') {
             filteredRuns = filteredRuns.filter((r) => r.dungeonName === this.state.filterDungeon);

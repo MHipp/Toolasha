@@ -18,6 +18,8 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 const world = vi.hoisted(() => ({
     /** Held open to park initialize() inside the state read */
     gate: null,
+    /** Held open to park update() inside the stored-run read */
+    runGate: null,
     characterId: 'char1',
     settings: { dungeonTrackerUI: true, dungeonPace: true, dungeonTrackerAverageWindow: 0 },
 }));
@@ -67,7 +69,10 @@ vi.mock('./dungeon-roi-board-ui.js', stubModule);
 
 vi.mock('./dungeon-tracker-storage.js', () => ({
     default: {
-        getAllRuns: vi.fn(async () => []),
+        getAllRuns: vi.fn(async () => {
+            if (world.runGate) await world.runGate;
+            return [];
+        }),
         getAverageBaselines: vi.fn(async () => ({})),
         getStats: vi.fn(async () => ({ totalRuns: 0, avgTime: 0, fastestTime: 0, slowestTime: 0, avgWaveTime: 0 })),
         getDungeonInfo: () => null,
@@ -101,6 +106,7 @@ describe('a character switch landing inside the saved-state read', () => {
     beforeEach(() => {
         document.body.innerHTML = '';
         world.gate = null;
+        world.runGate = null;
         world.characterId = 'char1';
         ui.cleanup();
         dungeonTracker.onUpdate.mockClear();
@@ -159,5 +165,52 @@ describe('a character switch landing inside the saved-state read', () => {
         expect(dungeonTracker.offUpdate).toHaveBeenCalledWith(registered);
         expect(timer).not.toBe(null);
         expect(containers()).toHaveLength(0);
+    });
+});
+
+/**
+ * The same teardown landing inside `update()`'s stored-run read instead.
+ *
+ * Everything past that read draws: the narrowing to "my runs", the pace chip,
+ * the header figures, the run list and the ROI board. `cleanup()` nulls
+ * `this.container`, `this.history` and `this.roiBoard` while the read is out,
+ * and the resumed tail went straight on to `this.container.querySelector(...)`
+ * — so a switch timed into that window threw a TypeError out of the 1 Hz
+ * handler, and everything after it in the draw was skipped.
+ */
+describe('a character switch landing inside the stored-run read', () => {
+    beforeEach(async () => {
+        document.body.innerHTML = '';
+        world.gate = null;
+        world.runGate = null;
+        world.characterId = 'char1';
+        ui.cleanup();
+        await ui.initialize();
+    });
+
+    afterEach(() => {
+        ui.cleanup();
+        document.body.innerHTML = '';
+    });
+
+    test('the interrupted update leaves what is on screen alone instead of throwing', async () => {
+        const history = ui.history;
+        history.update.mockClear();
+
+        let release;
+        world.runGate = new Promise((resolve) => {
+            release = resolve;
+        });
+        const pending = ui.update({ dungeonName: 'Chimerical Den', tier: 1, currentWave: 3, maxWaves: 10 });
+        // `character_switching` — the panel comes down while the read is out
+        ui.cleanup();
+        world.characterId = 'char2';
+        release();
+        world.runGate = null;
+
+        await expect(pending).resolves.toBeUndefined();
+        // Nothing drew on top of the teardown
+        expect(history.update).not.toHaveBeenCalled();
+        expect(ui.container).toBe(null);
     });
 });
