@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Switching character no longer bleeds into the next one
+
+More places that kept working with the character you left: saved chat could be folded into the arriving character's history and written out under their name, panels reopened to the other character's arrangement and overwrote the stored one, and the lab's skilling upgrade analysis kept running — driving the new character's progress bar and quietly breaking the results table's sorting. The dungeon chart also left a dead pop-out and a leaked chart behind on every switch.
+
 ### Panels fit the screen when the keyboard is up
 
 The action panel's Queue and Start buttons sat under the on-screen keyboard with nothing to scroll to, and ten floating panels, the mention popup and the pop-out chat were all sized against a viewport that ignores the keyboard and the address bar. They now size to what is actually visible, and a panel taller than the screen is shortened instead of running off the bottom. The stat check panel's resize handle was off screen on every device.
