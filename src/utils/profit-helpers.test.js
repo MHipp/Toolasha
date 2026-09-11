@@ -5,17 +5,30 @@
 
 import { describe, test, expect, beforeEach, vi } from 'vitest';
 
-const chain = vi.hoisted(() => ({ market: null, custom: null, shop: 0, production: 0 }));
+const chain = vi.hoisted(() => ({
+    market: null,
+    custom: null,
+    shop: 0,
+    production: 0,
+    pricingMode: 'ask',
+    productionCostModes: [],
+}));
 
 vi.mock('./market-data.js', () => ({
     getItemPriceInfo: () => chain.market ?? { price: null, source: null, estimated: false },
+    // Mirrors the real getPricingMode's no-context default so callers that never
+    // pass a context (combat-sim, food-optimizer) see the same 'ask' as before.
+    getPricingMode: (context) => (context ? chain.pricingMode : 'ask'),
 }));
 vi.mock('../features/settings/custom-price-overrides.js', () => ({
     getCustomPrice: () => chain.custom,
 }));
 vi.mock('./game-lookups.js', () => ({ getShopCoinCost: () => chain.shop }));
 vi.mock('../features/enhancement/tooltip-enhancement.js', () => ({
-    getProductionCost: () => chain.production,
+    getProductionCost: (itemHrid, mode) => {
+        chain.productionCostModes.push(mode);
+        return chain.production;
+    },
 }));
 
 import {
@@ -462,6 +475,8 @@ describe('resolveItemPrice', () => {
         chain.custom = null;
         chain.shop = 0;
         chain.production = 0;
+        chain.pricingMode = 'ask';
+        chain.productionCostModes = [];
     });
 
     test('a custom override beats everything and is neither missing nor an estimate', () => {
@@ -533,5 +548,38 @@ describe('resolveItemPrice', () => {
             missing: true,
             estimated: false,
         });
+    });
+
+    test('a caller with no context still gets the old ask default for the fallback', () => {
+        chain.production = 700;
+
+        resolveItemPrice('/items/cheese', { side: 'buy' });
+
+        expect(chain.productionCostModes).toEqual(['ask']);
+    });
+
+    test('an explicit mode always wins over the context-derived one', () => {
+        chain.production = 700;
+        chain.pricingMode = 'bid';
+
+        resolveItemPrice('/items/cheese', { mode: 'ask', context: 'profit', side: 'buy' });
+
+        expect(chain.productionCostModes).toEqual(['ask']);
+    });
+
+    test('the production-cost fallback follows the resolved pricing mode, not a hardcoded ask', () => {
+        // A material with no order book at all (both ask and bid null) falls all the
+        // way to the crafting-cost estimate. Under 'optimistic'/'patientBuy' the buy
+        // side resolves to 'bid' — the fallback must be quoted the same way, or a
+        // material that is unpriceable on the book gets a bid-mode calculation that
+        // is secretly priced at ask, overstating its cost relative to every other
+        // material in the same calculation.
+        chain.production = 700;
+        chain.pricingMode = 'bid';
+
+        const result = resolveItemPrice('/items/cheese', { context: 'profit', side: 'buy' });
+
+        expect(chain.productionCostModes).toEqual(['bid']);
+        expect(result).toEqual({ price: 700, custom: false, missing: false, estimated: true });
     });
 });
