@@ -72,6 +72,7 @@ await import('../features/abilities/ability-checkpoints.js');
 await import('../features/actions/loot-log-history.js');
 await import('../features/networth/networth-history.js');
 await import('../features/networth/chest-opening-recorder.js');
+await import('../features/networth/combat-loot-recorder.js');
 await import('../features/networth/production-income-recorder.js');
 await import('../features/tasks/task-completion-tracker.js');
 await import('../features/tasks/task-reroll-tracker.js');
@@ -259,6 +260,10 @@ const corpus = [
     { store: 'networthHistory', key: `chestOpenRec_${CHAR}_2026-01-15`, label: 'ChestOpenings records' },
     { store: 'networthHistory', key: `chestOpenings_${CHAR}`, label: 'ChestOpenings legacy key' },
 
+    // networth/combat-loot-recorder.js — chunked, daily buckets
+    { store: 'networthHistory', key: `combatLootRec_${CHAR}_2026-01-15`, label: 'CombatLoot records' },
+    { store: 'networthHistory', key: `combatLoot_${CHAR}`, label: 'CombatLoot legacy key' },
+
     // networth/production-income-recorder.js — chunked
     { store: 'networthHistory', key: `prodIncomeRec_${CHAR}_2026-01-15`, label: 'ProductionIncome records' },
     { store: 'networthHistory', key: `prodIncome_${CHAR}`, label: 'ProductionIncome legacy key' },
@@ -307,6 +312,7 @@ const corpus = [
     { store: 'lootLogHistory', key: `lootLogRecTomb_${CHAR}`, label: 'LootLogHistory deletions' },
     { store: 'networthHistory', key: `networthSeriesTomb_${CHAR}`, label: 'NetworthHistory deletions' },
     { store: 'networthHistory', key: `chestOpenRecTomb_${CHAR}`, label: 'ChestOpenings deletions' },
+    { store: 'networthHistory', key: `combatLootRecTomb_${CHAR}`, label: 'CombatLoot deletions' },
     { store: 'networthHistory', key: `prodIncomeRecTomb_${CHAR}`, label: 'ProductionIncome deletions' },
     { store: 'rerollSpending', key: `taskCompletionRecTomb_${CHAR}`, label: 'TaskCompletionTracker deletions' },
     { store: 'alchemyHistory', key: `transmuteSessionsRecTomb_${CHAR}`, label: 'TransmuteHistoryTracker deletions' },

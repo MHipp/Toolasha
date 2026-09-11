@@ -100,6 +100,7 @@ vi.mock('./networth-history-chart.js', () => ({
 }));
 vi.mock('./production-income-recorder.js', () => ({ default: { initialize: async () => {}, cleanup: () => {} } }));
 vi.mock('./chest-opening-recorder.js', () => ({ default: { initialize: async () => {}, cleanup: () => {} } }));
+vi.mock('./combat-loot-recorder.js', () => ({ default: { initialize: async () => {}, cleanup: () => {} } }));
 vi.mock('./gold-sources-panel.js', () => ({ default: { closeModal: () => {} } }));
 vi.mock('./networth-exclusion-popup.js', () => ({ default: { refresh: () => {}, close: () => {} } }));
 vi.mock('../../utils/networth-worker-manager.js', () => ({ terminateItemValueWorkerPool: () => {} }));

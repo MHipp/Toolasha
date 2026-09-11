@@ -56,6 +56,7 @@ vi.mock('./networth-history-chart.js', () => ({
 }));
 vi.mock('./production-income-recorder.js', () => ({ default: { initialize: vi.fn(), cleanup: vi.fn() } }));
 vi.mock('./chest-opening-recorder.js', () => ({ default: { initialize: vi.fn(), cleanup: vi.fn() } }));
+vi.mock('./combat-loot-recorder.js', () => ({ default: { initialize: vi.fn(), cleanup: vi.fn() } }));
 vi.mock('./gold-sources-panel.js', () => ({ default: { closeModal: vi.fn() } }));
 vi.mock('./networth-exclusions.js', () => ({ initExclusions: vi.fn() }));
 vi.mock('../../utils/networth-worker-manager.js', () => ({
