@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Three more game windows reach their bottom in Firefox
+
+The same Firefox problem as the house panel hit the offline progress summary, long Item Dictionary entries on phones, and the player profile on small screens: the window grew past its frame and the end could not be scrolled to. Each is now capped at the visible screen.
+
 ### The house upgrade panel has one scrollbar
 
 The cost list no longer scrolls inside the panel's own scroll, so a swipe on a phone moves the whole panel instead of getting stuck in the list. The total and the Missing Mats button stay pinned to the bottom of the screen while the list is in view.
