@@ -25,6 +25,8 @@ const observer = vi.hoisted(() => ({
 const calc = vi.hoisted(() => ({
     calls: 0,
     drinks: [{ itemHrid: '/items/wisdom_tea', name: 'Wisdom Tea', totalSeconds: 10 * 3600 }],
+    /** actionTypeHrid -> drinks, for tests that need the answer to depend on which type was asked about */
+    drinksByType: null,
 }));
 
 const config = vi.hoisted(() => ({
@@ -33,6 +35,7 @@ const config = vi.hoisted(() => ({
 
 const notify = vi.hoisted(() => ({
     calls: 0,
+    lastKey: null,
 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -72,16 +75,17 @@ vi.mock('../../core/dom-observer.js', () => ({
 
 vi.mock('../notifications/notification-service.js', () => ({
     default: {
-        notify: () => {
+        notify: (key) => {
             notify.calls++;
+            notify.lastKey = key;
         },
     },
 }));
 
 vi.mock('../../utils/drink-calculator.js', () => ({
-    calculateDrinkRemainingSeconds: () => {
+    calculateDrinkRemainingSeconds: (actionTypeHrid) => {
         calc.calls++;
-        return calc.drinks;
+        return calc.drinksByType ? (calc.drinksByType[actionTypeHrid] ?? []) : calc.drinks;
     },
     calculateQueueTimeSeconds: () => 0,
 }));
@@ -120,8 +124,10 @@ beforeEach(() => {
     observer.domReady = true;
     calc.calls = 0;
     calc.drinks = [{ itemHrid: '/items/wisdom_tea', name: 'Wisdom Tea', totalSeconds: 10 * 3600 }];
+    calc.drinksByType = null;
     config.getSetting = () => false;
     notify.calls = 0;
+    notify.lastKey = null;
 });
 
 afterEach(() => {
@@ -226,6 +232,37 @@ describe('drink timer updates', () => {
         game.listeners.get('items_updated')();
         vi.advanceTimersByTime(300);
         expect(notify.calls).toBe(2);
+    });
+
+    test('the currently-running action is picked by ordinal, not array position', () => {
+        // notifications_consumableLow needs to read true for this scenario, like the character-switch test
+        config.getSetting = (key) => key === 'notifications_consumableLow';
+
+        // Woodcutting was requeued to the *front* of the array (array position 0)
+        // but carries a HIGHER ordinal than cooking, which is the one actually
+        // running (lowest ordinal = execution order). Reading the queue by array
+        // position would evaluate woodcutting's drinks instead of the skill
+        // actually being performed.
+        game.currentActions = [
+            { actionHrid: '/actions/woodcutting/oak_log', ordinal: 5, isDone: false },
+            { actionHrid: '/actions/cooking/cook_shrimp', ordinal: 2, isDone: false },
+        ];
+        game.actions = {
+            '/actions/woodcutting/oak_log': { type: '/action_types/woodcutting' },
+            '/actions/cooking/cook_shrimp': { type: '/action_types/cooking' },
+        };
+        calc.drinksByType = {
+            '/action_types/woodcutting': [{ name: 'Wisdom Tea', totalSeconds: 60 }],
+            '/action_types/cooking': [{ name: 'Gathering Tea', totalSeconds: 60 }],
+        };
+
+        drinkTimer.initialize();
+        game.listeners.get('items_updated')();
+        vi.advanceTimersByTime(300);
+
+        // The notification must be keyed and worded for cooking (the running
+        // action, lowest ordinal), never for woodcutting (queued, array[0]).
+        expect(notify.lastKey).toBe('consumable-low:/action_types/cooking');
     });
 
     test('cleanup cancels a pending redraw and removes the rows', () => {

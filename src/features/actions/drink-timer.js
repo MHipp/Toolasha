@@ -11,6 +11,7 @@ import domObserver from '../../core/dom-observer.js';
 import notificationService from '../notifications/notification-service.js';
 import { thresholdCrossing } from '../notifications/notification-predicates.js';
 import { calculateDrinkRemainingSeconds, calculateQueueTimeSeconds } from '../../utils/drink-calculator.js';
+import { runningAction } from '../../utils/combat-actions.js';
 
 const SECONDS_PER_HOUR = 3600;
 /** The consumables sections the timer lives in, for the one-time scan at start-up */
@@ -194,13 +195,15 @@ class DrinkTimer {
     /**
      * The action type the character is actually working on, if any.
      *
-     * The first queued action, because that is the one being performed — the
-     * rest are waiting, and their drinks are not being drunk yet.
+     * The queue is in insertion order, not execution order: a repeating action
+     * requeued to the front of the array carries a *higher* ordinal, so
+     * `actions[0]` can be a queued action sitting behind the one actually
+     * running. `runningAction` picks the lowest-ordinal unfinished entry instead.
      *
      * @returns {string|null} An action type hrid, or null when idle
      */
     _currentActionTypeHrid() {
-        const current = dataManager.getCurrentActions?.()?.[0];
+        const current = runningAction(dataManager.getCurrentActions?.() ?? []);
         if (!current?.actionHrid) return null;
         return dataManager.getActionDetails(current.actionHrid)?.type ?? null;
     }
