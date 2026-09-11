@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Leftovers: gathering, dungeon keys and skilling drinks join the gold panel
+
+"Where the gold came from" now records gathering drops live whenever the game is open, not only when the loot log is. Dungeon keys your runs use up and drinks you drink while skilling get rows of their own. The Marketplace row counts every buy and sell at today's value, so buying above what an item is worth shows as a loss rather than disappearing into the residual. All three recordings start from this version.
+
+Essence and rare-drop income now follows your profit pricing mode instead of always the bid. A party run recorded before the game flagged your own player no longer credits another member's loot to you, in the gold panel, the dungeon ROI board or the luck tile.
+
 ### Combat drops count whenever the game is open, not only when the loot log is
 
 "Where the gold came from" read combat loot mainly from the loot log, which the game only sends while its panel is open. Opening it for an hour of a ten-hour grind counted that hour and left the rest in the residual. Combat loot is now recorded live whenever the tab is open. Each run counts once, at the most any recording saw, and offline time is left to the offline row, which already counts it. A run that ended before a reload now counts, and loot the market can't price is valued as net worth values it. Gathering loot is spread over the time it was gathered. Task rerolls get their own row.
