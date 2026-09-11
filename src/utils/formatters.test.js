@@ -350,9 +350,48 @@ describe('networthFormatter', () => {
         expect(networthFormatter(89012345678)).toBe('89.01B');
     });
 
+    test('formats trillions with 2 decimals', () => {
+        expect(networthFormatter(6320000000000)).toBe('6.32T');
+    });
+
+    test('formats quadrillions with 2 decimals', () => {
+        expect(networthFormatter(6320000000000000)).toBe('6.32Q');
+    });
+
+    test('stays in Q beyond quadrillions rather than adding another suffix', () => {
+        expect(networthFormatter(6320000000000000000)).toBe('6320.00Q');
+    });
+
+    test('rolls a value that rounds up to 1000 into the next tier, at every boundary', () => {
+        // K -> M
+        expect(networthFormatter(999995)).toBe('1.00M');
+        // M -> B
+        expect(networthFormatter(999995000)).toBe('1.00B');
+        // B -> T
+        expect(networthFormatter(999995000000)).toBe('1.00T');
+        // T -> Q
+        expect(networthFormatter(999995000000000)).toBe('1.00Q');
+    });
+
+    test('values below 1e12 are unaffected by the T/Q tiers (pinned pre-existing outputs)', () => {
+        expect(networthFormatter(999)).toBe('999');
+        expect(networthFormatter(1234)).toBe('1.23K');
+        expect(networthFormatter(45678)).toBe('45.68K');
+        expect(networthFormatter(1234567)).toBe('1.23M');
+        expect(networthFormatter(89012345)).toBe('89.01M');
+        expect(networthFormatter(1234567890)).toBe('1.23B');
+        expect(networthFormatter(89012345678)).toBe('89.01B');
+    });
+
     test('handles negative numbers', () => {
         expect(networthFormatter(-1234)).toBe('-1.23K');
         expect(networthFormatter(-1234567)).toBe('-1.23M');
+        expect(networthFormatter(-6320000000000)).toBe('-6.32T');
+        expect(networthFormatter(-6320000000000000)).toBe('-6.32Q');
+    });
+
+    test('handles a negative value that rolls into the next tier', () => {
+        expect(networthFormatter(-999995000000)).toBe('-1.00T');
     });
 
     test('a small negative that rounds to zero displays as 0, not -0', () => {
@@ -362,6 +401,11 @@ describe('networthFormatter', () => {
     test('handles null and undefined', () => {
         expect(networthFormatter(null)).toBe(null);
         expect(networthFormatter(undefined)).toBe(null);
+    });
+
+    test('does not throw for NaN (e.g. Math.round of a missing value upstream)', () => {
+        expect(() => networthFormatter(NaN)).not.toThrow();
+        expect(networthFormatter(NaN)).toBe('NaNB');
     });
 });
 

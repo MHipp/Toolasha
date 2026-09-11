@@ -361,10 +361,22 @@ export function formatRelativeTime(ageMs) {
 }
 
 /**
+ * Magnitude tiers for {@link networthFormatter}, largest first. `absNum` is
+ * matched against the first tier whose `divisor` it clears.
+ */
+const NETWORTH_TIERS = Object.freeze([
+    { divisor: 1e15, suffix: 'Q' },
+    { divisor: 1e12, suffix: 'T' },
+    { divisor: 1e9, suffix: 'B' },
+    { divisor: 1e6, suffix: 'M' },
+    { divisor: 1e3, suffix: 'K' },
+]);
+
+/**
  * Format numbers for networth display with decimal precision
  * Uses 2 decimal places for better readability in detailed breakdowns
  * @param {number} num - The number to format
- * @returns {string} Formatted number (e.g., "1.23K", "45.67M", "89.01B")
+ * @returns {string} Formatted number (e.g., "1.23K", "45.67M", "89.01B", "6.32T", "6.32Q")
  *
  * @example
  * networthFormatter(1234) // "1.23K"
@@ -372,6 +384,8 @@ export function formatRelativeTime(ageMs) {
  * networthFormatter(1234567) // "1.23M"
  * networthFormatter(89012345) // "89.01M"
  * networthFormatter(1234567890) // "1.23B"
+ * networthFormatter(6320000000000) // "6.32T"
+ * networthFormatter(6320000000000000) // "6.32Q"
  */
 export function networthFormatter(num) {
     if (num === null || num === undefined) {
@@ -385,16 +399,25 @@ export function networthFormatter(num) {
     if (absNum < 1000) {
         return signedMagnitude(sign, Math.floor(absNum).toString());
     }
-    // 1,000-999,999: K with 2 decimals
-    if (absNum < 1000000) {
-        return sign + (absNum / 1000).toFixed(2) + 'K';
+
+    // NaN/Infinity clear no tier's `>=` check (every comparison against NaN is
+    // false) — fall back to the B tier, matching what the pre-tier-table code
+    // did for such values (its final, unconditional branch divided by 1e9).
+    const matchedTierIndex = NETWORTH_TIERS.findIndex((tier) => absNum >= tier.divisor);
+    let tierIndex =
+        matchedTierIndex === -1 ? NETWORTH_TIERS.findIndex((tier) => tier.suffix === 'B') : matchedTierIndex;
+    let formatted = (absNum / NETWORTH_TIERS[tierIndex].divisor).toFixed(2);
+
+    // Rounding can push a value right up to the next tier's boundary (e.g.
+    // 999,995,000,000 is B-tier by magnitude but rounds to "1000.00" at 2
+    // decimals) — bump to the next tier up rather than print "1000.00B". Not
+    // needed at the top (Q) tier, which has nowhere higher to bump to.
+    if (formatted === '1000.00' && tierIndex > 0) {
+        tierIndex -= 1;
+        formatted = (absNum / NETWORTH_TIERS[tierIndex].divisor).toFixed(2);
     }
-    // 1M-999,999,999: M with 2 decimals
-    if (absNum < 1000000000) {
-        return sign + (absNum / 1000000).toFixed(2) + 'M';
-    }
-    // 1B+: B with 2 decimals
-    return sign + (absNum / 1000000000).toFixed(2) + 'B';
+
+    return sign + formatted + NETWORTH_TIERS[tierIndex].suffix;
 }
 
 /**
