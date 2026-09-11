@@ -312,6 +312,32 @@ describe('attributeGoldSources', () => {
         expect(result.totals.sources.production).toBe(6000);
     });
 
+    test('a gathering entry is spread over the span it ran, less any time offline', () => {
+        // A foraging queue begun ten days before the 20th, the loot log opened
+        // at noon on the 20th: booked to its start day it sat outside the
+        // window. 10.5 days at 1,000 a day, and six hours of the 20th offline
+        const start = dayStart('2026-08-20') - 10 * DAY;
+        const end = dayStart('2026-08-20') + 12 * 3600_000;
+        const offline = [dayStart('2026-08-20'), dayStart('2026-08-20') + 6 * 3600_000];
+        const result = attributeGoldSources({
+            ...base,
+            lootEntries: [
+                {
+                    startTime: new Date(start).toISOString(),
+                    endTime: new Date(end).toISOString(),
+                    actionHrid: '/actions/milking/cow',
+                    drops: { '/items/milk': 262.5 },
+                },
+            ],
+            combatLootDays: [{ d: '2026-08-20', runs: {}, offline: [offline] }],
+        });
+
+        const perDay = Object.fromEntries(result.days.map((row) => [row.day, row.sources.gathering]));
+        expect(perDay['2026-08-19']).toBeCloseTo(1000, 6);
+        // Twelve hours of the 20th ran, six of them offline
+        expect(perDay['2026-08-20']).toBeCloseTo(250, 6);
+    });
+
     test('the residual is the measured change minus what was explained, and is never spread', () => {
         const result = attributeGoldSources({
             ...base,

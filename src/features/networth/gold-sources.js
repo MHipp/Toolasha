@@ -1284,7 +1284,18 @@ export function attributeGoldSources(input) {
             continue;
         }
         if (!GATHERING_ACTION_TYPES.includes(type)) continue;
-        add(localDayId(t), 'gathering', lootEntryValue(entry, price));
+        // Spread over the span the action ran, like every session here: a
+        // week-long foraging queue booked to the day it began sat outside
+        // every window that asked about it. Offline stretches are the offline
+        // row's — the Welcome Back delta already holds what was gathered there
+        const end = Date.parse(entry.endTime);
+        spreadOnline(
+            lootEntryValue(entry, price),
+            t,
+            Number.isFinite(end) && end > t ? end : t,
+            offlineWindows,
+            (day, value) => add(day, 'gathering', value)
+        );
     }
 
     // Production recorder: already per day, already valued
