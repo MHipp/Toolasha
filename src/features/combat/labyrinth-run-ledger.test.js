@@ -191,7 +191,7 @@ describe('foldSighting', () => {
     });
 
     test('a run seen to its end is not marked as inferred', () => {
-        let s = foldSighting(start, active({ currentFloor: 1, torchCount: 100 }), 1000).state;
+        const s = foldSighting(start, active({ currentFloor: 1, torchCount: 100 }), 1000).state;
         const { ended } = foldSighting(s, { isActive: false }, 2000);
         expect(ended.endedByInference).toBeUndefined();
         expect(observedUse([ended], 'torch')).toEqual([0]);

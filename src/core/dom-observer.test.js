@@ -399,8 +399,7 @@ describe('dispatch', () => {
     // once, unregister itself) silently cost its neighbour that insertion.
     test('a handler that unregisters itself mid-dispatch does not skip the next handler', () => {
         const second = vi.fn();
-        let unregisterFirst;
-        unregisterFirst = domObserver.register('first', () => unregisterFirst());
+        const unregisterFirst = domObserver.register('first', () => unregisterFirst());
         domObserver.register('second', second);
 
         domObserver.dispatch(document.createElement('div'), {});
@@ -411,12 +410,16 @@ describe('dispatch', () => {
 
     test('a class handler unregistered mid-dispatch by an earlier one is not called', () => {
         const order = [];
-        let unregisterB;
+        // A must register before B for this scenario (an earlier handler unregisters a
+        // later one mid-dispatch), so B's unregister function can't be a plain const —
+        // A's callback needs to close over it before it exists. A boxed cell keeps the
+        // binding itself const while still letting A reach the value assigned after it.
+        const box = {};
         domObserver.onClass('A', 'Watched_x', () => {
             order.push('A');
-            unregisterB();
+            box.unregisterB();
         });
-        unregisterB = domObserver.onClass('B', 'Watched_x', () => order.push('B'));
+        box.unregisterB = domObserver.onClass('B', 'Watched_x', () => order.push('B'));
         domObserver.onClass('C', 'Watched_x', () => order.push('C'));
 
         const el = document.createElement('div');
