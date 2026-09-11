@@ -498,7 +498,7 @@ export function createForecastSection({ getHistory, seed = randomSeed() }) {
                 `${networthFormatter(Math.round(forecast.fan.p10.at(-1)))} – ${networthFormatter(Math.round(forecast.fan.p90.at(-1)))}`
             )
         );
-        figures.appendChild(buildFigure('Daily drift', formatPercent(forecast.dailyDriftPercent)));
+        figures.appendChild(buildFigure('Daily drift', formatPercent(forecast.medianDailyGrowthPercent)));
         figures.appendChild(buildFigure('Volatility (EWMA)', formatPercent(forecast.dailyVolatilityPercent, false)));
         figures.appendChild(buildFigure('Doubling', forecast.doublingDays ? `${forecast.doublingDays}d` : '—'));
         figures.appendChild(buildFigure('Method', methodLabel(forecast)));

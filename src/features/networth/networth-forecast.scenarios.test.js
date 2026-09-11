@@ -6,7 +6,7 @@
  * moves one out of range is a change in what the panel tells a player.
  */
 import { describe, it, expect } from 'vitest';
-import { forecastNetworth } from './networth-forecast.js';
+import { forecastNetworth, recencyDrift, dailyChanges, dailySamples } from './networth-forecast.js';
 
 const HOUR_MS = 60 * 60 * 1000;
 const END = Date.UTC(2026, 8, 11, 20, 0, 0);
@@ -75,7 +75,7 @@ function run(history) {
     const forecast = forecastNetworth(history, { seed: 42, days: 30 });
     return {
         forecast,
-        drift: forecast.dailyDriftPercent,
+        drift: forecast.medianDailyGrowthPercent,
         p10: forecast.fan.p10.at(-1) / 1e9,
         p50: forecast.fan.p50.at(-1) / 1e9,
         p90: forecast.fan.p90.at(-1) / 1e9,
@@ -123,13 +123,29 @@ describe('forecast scenarios', () => {
         expect(p50).toBeLessThan(13.0);
     });
 
-    it('C: a permanent one-off +30% jump lifts the drift figure but not the median', () => {
-        // A known limitation, recorded rather than endorsed: the jump sits in the
-        // drift (and so the doubling time) while the typical-day shocks hold the
-        // median near the recent pace and the jump shows up as a long p90 tail
-        const { drift, p50, p90 } = run(build({ days: 70, rateAt: () => SLOW, jumps: { [JUMP_HOUR]: 1.3 } }));
-        expect(drift).toBeGreaterThan(0.58);
-        expect(drift).toBeLessThan(0.72);
+    it('C: a permanent one-off +30% jump lifts p90 but leaves the displayed pace near the recent one', () => {
+        // The jump still lifts recencyDrift, the pace fed to the simulation — the
+        // model's inputs are unchanged — but the displayed "Daily drift" and
+        // "Doubling" now read off the fan's own median, which the typical-day
+        // shocks hold near the recent pace. The jump shows up where it belongs:
+        // stretching the p90 tail, not the centre line.
+        const history = build({ days: 70, rateAt: () => SLOW, jumps: { [JUMP_HOUR]: 1.3 } });
+        const { forecast, drift, p50, p90 } = run(history);
+        const inputDriftPercent = (Math.exp(recencyDrift(dailyChanges(dailySamples(history)))) - 1) * 100;
+
+        // The scenario is still genuinely lopsided: the pace fed to the simulation
+        // is well above what the median path actually does.
+        expect(inputDriftPercent).toBeGreaterThan(0.58);
+        expect(inputDriftPercent).toBeLessThan(0.72);
+
+        // But the displayed figures agree with the median line, not that input.
+        const impliedGrowthPercent = ((forecast.fan.p50.at(-1) / forecast.current) ** (1 / forecast.days) - 1) * 100;
+        expect(drift).toBeCloseTo(impliedGrowthPercent, 9);
+        expect(drift).toBeGreaterThan(0.2);
+        expect(drift).toBeLessThan(0.3);
+        expect(forecast.doublingDays).toBeGreaterThan(250);
+        expect(forecast.doublingDays).toBeLessThan(320);
+
         expect(p50).toBeGreaterThan(12.0);
         expect(p50).toBeLessThan(12.3);
         expect(p90).toBeGreaterThan(15);

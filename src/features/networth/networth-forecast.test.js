@@ -178,19 +178,25 @@ describe('forecastNetworth', () => {
         expect(result.method).toBe('gbm');
     });
 
-    it('centres the normal fallback on the drift', () => {
+    it('reads the normal fallback pace off the median path, which tracks the input drift when shocks are symmetric', () => {
         const totals = compounding(1000, 0.005, 12).map((total, index) => total * (1 + (index % 2 ? 0.01 : -0.01)));
-        const result = forecastNetworth(series(totals), { seed: 9, days: 30, runs: 4000 });
+        const history = series(totals);
+        const result = forecastNetworth(history, { seed: 9, days: 30, runs: 4000 });
         expect(result.method).toBe('gbm');
-        const drift = Math.log(1 + result.dailyDriftPercent / 100);
-        expect(result.fan.p50.at(-1) / result.current).toBeCloseTo(Math.exp(30 * drift), 1);
+        const inputDrift = recencyDrift(dailyChanges(dailySamples(history)));
+        const displayedGrowth = Math.log(1 + result.medianDailyGrowthPercent / 100);
+        // Alternating +1%/-1% swings are symmetric, so the simulated median tracks
+        // the drift it was built from — unlike scenario C's one-off jump, where the
+        // two figures pull apart (see networth-forecast.scenarios.test.js).
+        expect(displayedGrowth).toBeCloseTo(inputDrift, 2);
+        expect(result.fan.p50.at(-1) / result.current).toBeCloseTo(Math.exp(30 * inputDrift), 1);
     });
 
     it('gives zero drift and a collapsed fan on a flat series', () => {
         const result = forecastNetworth(series(new Array(40).fill(1000)), { seed: 42, days: 30 });
         expect(result.status).toBe('complete');
         expect(result.method).toBe('block-bootstrap');
-        expect(result.dailyDriftPercent).toBeCloseTo(0, 12);
+        expect(result.medianDailyGrowthPercent).toBeCloseTo(0, 12);
         expect(result.dailyVolatilityPercent).toBeCloseTo(0, 12);
         expect(result.doublingDays).toBeNull();
         for (const key of ['p10', 'p25', 'p50', 'p75', 'p90']) {
@@ -202,12 +208,22 @@ describe('forecastNetworth', () => {
     it('gives a median matching compound growth on a constant +1%/day series', () => {
         const result = forecastNetworth(series(compounding(1000, 0.01, 40)), { seed: 42, days: 30 });
         expect(result.status).toBe('complete');
-        expect(result.dailyDriftPercent).toBeCloseTo(1, 9);
+        expect(result.medianDailyGrowthPercent).toBeCloseTo(1, 9);
         const last = result.current;
         expect(result.fan.p50.at(-1)).toBeCloseTo(last * 1.01 ** 30, 3);
         // A deterministic series has no spread, so the fan is one line
         expect(result.fan.p10.at(-1)).toBeCloseTo(result.fan.p90.at(-1), 3);
         expect(result.doublingDays).toBe(Math.ceil(Math.LN2 / Math.log(1.01)));
+    });
+
+    it('reads the displayed pace directly off the median path', () => {
+        // A generic, non-lopsided check that the field is what it claims to be; the
+        // scenario where this actually matters — a lopsided one-off jump pulling the
+        // input drift away from the median — is covered in
+        // networth-forecast.scenarios.test.js (scenario C).
+        const result = forecastNetworth(series(compounding(1000, 0.01, 40)), { seed: 5, days: 45, runs: 3000 });
+        const impliedGrowth = (result.fan.p50.at(-1) / result.current) ** (1 / result.days) - 1;
+        expect(result.medianDailyGrowthPercent).toBeCloseTo(impliedGrowth * 100, 6);
     });
 
     it('reports the dates the window spans', () => {

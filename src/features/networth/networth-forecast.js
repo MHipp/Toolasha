@@ -326,6 +326,13 @@ export function forecastNetworth(history, options = {}) {
         if (TARGET_CHECKPOINTS.includes(day)) checkpoints[day] = column;
     }
 
+    // The displayed pace tracks the fan's own median path, not the `drift` fed to
+    // the simulation above: a lopsided input (one permanent jump among many quiet
+    // days) pulls `recencyDrift` toward the jump while the typical day — and so the
+    // p50 line — barely moves. Reading the figure back off p50 keeps it agreeing
+    // with the yellow line the player is actually looking at.
+    const medianDailyGrowth = (fan.p50.at(-1) / current) ** (1 / horizon) - 1;
+
     const resolvedTarget = Number(target) > 0 ? Number(target) : null;
     const forecast = {
         status: 'complete',
@@ -338,13 +345,12 @@ export function forecastNetworth(history, options = {}) {
         windowStart: changes[0].start,
         windowEnd: changes.at(-1).end,
         target: resolvedTarget,
-        // Reported as percentages because that is how the panel reads them; the
-        // drift is the median daily move, not the mean of the levels
-        dailyDriftPercent: (Math.exp(drift) - 1) * 100,
+        // Reported as a percentage because that is how the panel reads it
+        medianDailyGrowthPercent: medianDailyGrowth * 100,
         dailyVolatilityPercent: (Math.exp(ewmaVolatility(shocks)) - 1) * 100,
-        // Only a positive drift ever doubles; a flat or shrinking account has no
+        // Only positive growth ever doubles; a flat or shrinking median has no
         // doubling day, and reporting Infinity or a negative one would invent one
-        doublingDays: drift > 0 ? Math.ceil(Math.LN2 / drift) : null,
+        doublingDays: medianDailyGrowth > 0 ? Math.ceil(Math.LN2 / Math.log(1 + medianDailyGrowth)) : null,
         fan,
         checkpoints,
         probabilities: {},
