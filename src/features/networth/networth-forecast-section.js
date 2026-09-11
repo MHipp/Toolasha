@@ -339,6 +339,20 @@ function formatPercent(value, signed = true) {
     return `${signed && value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
 }
 
+/** Past this a doubling time is a curiosity, not a plan; ten years. */
+const DOUBLING_CAP_DAYS = 3650;
+
+/**
+ * The Doubling figure.
+ * @param {number|null} days - From the forecast; null when the pace never doubles
+ * @returns {string} "70d", ">10y" past {@link DOUBLING_CAP_DAYS}, or "—" for no doubling
+ */
+export function doublingLabel(days) {
+    if (!(days > 0)) return '—';
+    if (days > DOUBLING_CAP_DAYS) return '>10y';
+    return `${days}d`;
+}
+
 /**
  * How the fan was drawn and from what: the generator, the number of changes
  * and the real dates they span, which with gaps reach further back than the
@@ -500,7 +514,7 @@ export function createForecastSection({ getHistory, seed = randomSeed() }) {
         );
         figures.appendChild(buildFigure('Daily drift', formatPercent(forecast.medianDailyGrowthPercent)));
         figures.appendChild(buildFigure('Volatility (EWMA)', formatPercent(forecast.dailyVolatilityPercent, false)));
-        figures.appendChild(buildFigure('Doubling', forecast.doublingDays ? `${forecast.doublingDays}d` : '—'));
+        figures.appendChild(buildFigure('Doubling', doublingLabel(forecast.doublingDays)));
         figures.appendChild(buildFigure('Method', methodLabel(forecast)));
 
         shown = forecast;

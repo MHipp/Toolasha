@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     createForecastSection,
+    doublingLabel,
     parseForecastTarget,
     buildFanPlot,
     dayTicks,
@@ -23,6 +24,31 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 function growingHistory(count) {
     return Array.from({ length: count }, (_, index) => ({ t: index * DAY_MS, total: 1000 * 1.01 ** index }));
 }
+
+describe('doublingLabel', () => {
+    it('prints days up to ten years and says ">10y" past that', () => {
+        expect(doublingLabel(70)).toBe('70d');
+        expect(doublingLabel(3650)).toBe('3650d');
+        expect(doublingLabel(3651)).toBe('>10y');
+        expect(doublingLabel(693147180560)).toBe('>10y');
+    });
+
+    it('prints a dash when nothing doubles', () => {
+        expect(doublingLabel(null)).toBe('—');
+        expect(doublingLabel(0)).toBe('—');
+    });
+
+    it('caps the figure a near-flat history draws', () => {
+        // One gold a day on a trillion: doubling is ~700 billion days
+        const history = Array.from({ length: 40 }, (_, index) => ({ t: index * DAY_MS, total: 1e12 + index }));
+        const section = createForecastSection({ getHistory: () => history, seed: 5 });
+        section.element.querySelector('.mwi-nw-forecast-toggle').click();
+        const figure = [...section.element.querySelectorAll('.mwi-nw-forecast-figures > div')].find(
+            (node) => node.firstChild.textContent === 'Doubling'
+        );
+        expect(figure.lastChild.textContent).toBe('>10y');
+    });
+});
 
 describe('createForecastSection', () => {
     it('starts collapsed and computes nothing until expanded', () => {
