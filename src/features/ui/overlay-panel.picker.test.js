@@ -67,7 +67,12 @@ vi.mock('../../utils/panel-geometry.js', () => ({
     clearGeometry: async () => {},
     allGeometry: async () => ({}),
 }));
-vi.mock('../../utils/floating-panel.js', () => ({ makeDraggable: () => () => {}, makeResizable: () => () => {} }));
+vi.mock('../../utils/floating-panel.js', () => ({
+    panelHeightCap: (px, fraction = 0.8) =>
+        `min(${px}px, calc(var(--toolasha-visual-viewport-height, 100vh) * ${fraction}))`,
+    makeDraggable: () => () => {},
+    makeResizable: () => () => {},
+}));
 vi.mock('../../utils/character-key.js', () => ({
     characterKey: (base) => `${base}_scoped`,
     readScopedFrom: async () => null,

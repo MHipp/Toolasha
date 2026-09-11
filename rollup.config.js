@@ -62,6 +62,12 @@ const utilsExternalGlobals = new Map([
     // of memoised summaries, reached from the actions and sim bundles
     [normalize(join(__dirname, 'src/utils/calibration-badge.js')), 'Toolasha.Utils.calibrationBadge'],
     [normalize(join(__dirname, 'src/utils/class-weapon.js')), 'Toolasha.Utils.classWeapon'],
+    // Tracks the visible viewport — address bar and on-screen keyboard — and
+    // publishes it as a CSS property. It holds the listener registration and
+    // the subscriber list, and the chat bundle's pop-out starts a second
+    // tracking session for its own window, so a second copy would be a second
+    // set of listeners with no way to stop the first.
+    [normalize(join(__dirname, 'src/utils/visual-viewport.js')), 'Toolasha.Utils.visualViewport'],
     // The one ledger of who has claimed what is in the bag. Five features in
     // three bundles read and write it, and a second copy would be a second
     // ledger — each plan invisible to the others, which is the bug the module

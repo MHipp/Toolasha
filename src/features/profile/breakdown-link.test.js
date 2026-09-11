@@ -15,6 +15,8 @@ import { describe, test, expect, vi, beforeEach } from 'vitest';
 const stub = vi.hoisted(() => ({ currentCharacterId: 7, resizeThrows: false, ownScore: null }));
 
 vi.mock('../../utils/floating-panel.js', () => ({
+    panelHeightCap: (px, fraction = 0.8) =>
+        `min(${px}px, calc(var(--toolasha-visual-viewport-height, 100vh) * ${fraction}))`,
     makeDraggable: () => () => {},
     makeResizable: () => {
         // One panel shell's setup failing is what leaves a phantom behind

@@ -6,6 +6,14 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Panels fit the screen when the keyboard is up
+
+The action panel's Queue and Start buttons sat under the on-screen keyboard with nothing to scroll to, and ten floating panels, the mention popup and the pop-out chat were all sized against a viewport that ignores the keyboard and the address bar. They now size to what is actually visible, and a panel taller than the screen is shortened instead of running off the bottom. The stat check panel's resize handle was off screen on every device.
+
+### Boards and scores no longer mix two characters
+
+Switching character while a panel was loading could hand one character's data to another: the dungeon ROI board drew one character's runs against another's sessions, the dungeon tracker's charts and history plotted the arriving character into the departing one's panel, build score priced its two equipment halves against two different enhancing levels, and the guild trial ledger kept showing the guild you left. The market history panel also leaked a price listener and a timer on every switch.
+
 ### The active tab keeps its highlight
 
 Opening Toolasha's settings tab deselected every tab bar on the page, not just the settings panel's own — so the chat channel you were in, or the panel tab top right, quietly lost its blue highlight and kept it off until something redrew that bar. Keyboard tab navigation was broken the same way. Settings now only touches its own tabs.

@@ -44,7 +44,12 @@ vi.mock('../../utils/panel-geometry.js', () => ({
     clearGeometry: async () => {},
     allGeometry: async () => ({}),
 }));
-vi.mock('../../utils/floating-panel.js', () => ({ makeDraggable: () => () => {}, makeResizable: () => () => {} }));
+vi.mock('../../utils/floating-panel.js', () => ({
+    panelHeightCap: (px, fraction = 0.8) =>
+        `min(${px}px, calc(var(--toolasha-visual-viewport-height, 100vh) * ${fraction}))`,
+    makeDraggable: () => () => {},
+    makeResizable: () => () => {},
+}));
 vi.mock('../../utils/opanel-config.js', () => ({ fromOPanelConfig: () => null, toOPanelConfig: () => ({}) }));
 vi.mock('../../utils/choice-dialog.js', () => ({ askChoice: async () => null }));
 

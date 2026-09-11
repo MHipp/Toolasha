@@ -43,6 +43,8 @@ vi.mock('./panel-z-index.js', () => ({
 }));
 
 vi.mock('./floating-panel.js', () => ({
+    panelHeightCap: (px, fraction = 0.8) =>
+        `min(${px}px, calc(var(--toolasha-visual-viewport-height, 100vh) * ${fraction}))`,
     makeDraggable: vi.fn(() => vi.fn()),
     makeResizable: vi.fn(() => vi.fn()),
 }));

@@ -318,9 +318,6 @@ const KNOWN_SAFE = {
     'src/features/market/market-history-viewer.js#initialize':
         'The tail calls `this.unsubscribeMarkers?.()` before resubscribing, which is a deliberate guard ' +
         'against exactly this race and is documented as such at the call site.',
-    'src/features/market/mooket/market-price-store.js#initialize':
-        'Its record is `createPersistedRecord({scoped: false})` — global rather than character-scoped, ' +
-        'so a switch has no meaning for it and there is no per-character layer to register against.',
     'src/features/market/tooltip-consumables.js#initialize':
         '`setupObserver()` calls `tooltipObserver.subscribe("TooltipConsumables", …)`, which is a `Map` ' +
         'keyed by name (replace on resubscribe), and `addTooltipStyles()` returns early when its style ' +

@@ -81,7 +81,12 @@ vi.mock('../../utils/panel-geometry.js', () => ({
     clearGeometry: async () => {},
     allGeometry: async () => ({ overlayPanel: { left: 10, top: 20, width: 500, height: 300 } }),
 }));
-vi.mock('../../utils/floating-panel.js', () => ({ makeDraggable: () => () => {}, makeResizable: () => () => {} }));
+vi.mock('../../utils/floating-panel.js', () => ({
+    panelHeightCap: (px, fraction = 0.8) =>
+        `min(${px}px, calc(var(--toolasha-visual-viewport-height, 100vh) * ${fraction}))`,
+    makeDraggable: () => () => {},
+    makeResizable: () => () => {},
+}));
 
 const dialog = vi.hoisted(() => ({ answer: null, offered: null }));
 vi.mock('../../utils/choice-dialog.js', () => ({
