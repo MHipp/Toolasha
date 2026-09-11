@@ -145,7 +145,13 @@ vi.mock('./labyrinth-tick-capture.js', () => ({
     startCapture: (ctx) => tickCapture.started.push(ctx),
 }));
 
-const { panel, default: monsterStatCheck } = await import('./monster-stat-check-ui.js');
+const {
+    panel,
+    default: monsterStatCheck,
+    PANEL_TOP_FRACTION,
+    PANEL_MAX_HEIGHT_FRACTION,
+    PANEL_HEIGHT_BUDGET,
+} = await import('./monster-stat-check-ui.js');
 
 /** A recorded snapshot of one monster/level in one buff state */
 function snap(buffs, hp = 100) {
@@ -591,5 +597,27 @@ describe('the player build check', () => {
 
         expect(clearRate.playerProbeCalls[0][2]).toBeNull();
         expect(panel.playerCheck.source).toEqual({ source: 'labyrinth', loadoutName: 'Lab magic' });
+    });
+});
+
+describe('the panel fits the viewport it is placed in', () => {
+    // The only thing about this panel's placement a test without layout can
+    // reach, and the thing that was wrong: `top: 8%` with `max-height: 94vh`
+    // asks for 102% of the viewport, so the bottom 2% — the `resize: both`
+    // corner handle among it — sat off screen on every device. The shared
+    // clamp never corrected it because the panel is centred with a
+    // `transform`, and `clampPanelToViewport` refuses transformed elements by
+    // design. Nothing else catches this: happy-dom lays out nothing, so the
+    // rendered geometry is all zeroes.
+    test('the top offset plus the height cap leaves room below', () => {
+        expect(PANEL_HEIGHT_BUDGET).toBe(PANEL_TOP_FRACTION + PANEL_MAX_HEIGHT_FRACTION);
+        expect(PANEL_HEIGHT_BUDGET).toBeLessThan(1);
+    });
+
+    test('the panel is still most of the screen tall', () => {
+        // The cap is there to keep a full readout scrollbar-free, so shrinking
+        // it to satisfy the check above would trade one bug for another
+        expect(PANEL_MAX_HEIGHT_FRACTION).toBeGreaterThan(0.8);
+        expect(PANEL_TOP_FRACTION).toBeGreaterThan(0);
     });
 });

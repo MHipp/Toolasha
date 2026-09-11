@@ -102,6 +102,38 @@ const TRIAL_NOT_MODELLED =
 
 const SETTING_KEY = 'labyrinthMonsterStatCheck';
 const PANEL_ID = 'toolasha-monster-stat-check';
+
+/**
+ * Where the panel's top edge sits and how tall it may grow, both as fractions
+ * of the visible viewport's height.
+ *
+ * They are constants rather than literals in the style string because the one
+ * thing that can be wrong here is their sum, and a sum is checkable. It was
+ * wrong: `top: 8%` with `max-height: 94vh` is 102% of the viewport, so the
+ * bottom 2% — including the `resize: both` corner handle — was off screen on
+ * every device, before the mobile address bar took its own slice on top. The
+ * shared clamp never caught it: the panel is centred with a `transform`, and
+ * `clampPanelToViewport` deliberately refuses transformed elements
+ * (`panel-geometry.js`) because a viewport-relative `left` would move them.
+ *
+ * Measured against `--toolasha-visual-viewport-height` (published on `<html>`
+ * by `src/utils/visual-viewport.js`) rather than `vh`, so the cap follows the
+ * mobile address bar and keyboard instead of the layout viewport, which does
+ * not move for either. `100vh` is the fallback where `visualViewport` is
+ * missing. Both must read from the same height: an 8% top taken from the
+ * layout viewport against a max-height taken from the visible one overflows
+ * again the moment the two differ.
+ *
+ * `PANEL_HEIGHT_BUDGET` asserts the invariant — see the test.
+ */
+export const PANEL_TOP_FRACTION = 0.08;
+/** Tallest the panel may grow, as a fraction of the visible viewport's height */
+export const PANEL_MAX_HEIGHT_FRACTION = 0.88;
+/** Fraction of the viewport the panel occupies at full height. Must stay below 1. */
+export const PANEL_HEIGHT_BUDGET = PANEL_TOP_FRACTION + PANEL_MAX_HEIGHT_FRACTION;
+
+/** The visible viewport's height, with a layout-viewport fallback */
+const VIEWPORT_HEIGHT = 'var(--toolasha-visual-viewport-height, 100vh)';
 const PANEL_KEY = 'monsterStatCheck';
 /** Discrepancy records kept, deduped by monster+room, oldest evicted. */
 const MAX_HISTORY = 100;
@@ -1022,7 +1054,7 @@ class MonsterStatCheckPanel {
         container.id = PANEL_ID;
         container.style.cssText = `
             position: fixed;
-            top: 8%;
+            top: calc(${VIEWPORT_HEIGHT} * ${PANEL_TOP_FRACTION});
             left: 50%;
             transform: translateX(-50%);
             z-index: ${config.Z_FLOATING_PANEL};
@@ -1032,9 +1064,10 @@ class MonsterStatCheckPanel {
             display: flex;
             flex-direction: column;
             /* Height grows to fit the content (header + body), so a full readout
-               shows without a scrollbar; capped just under the viewport so it can
-               never run off screen, and resizable from the corner. */
-            max-height: 94vh;
+               shows without a scrollbar; capped so the panel's bottom edge —
+               the resize handle included — stays on screen once the top offset
+               above is paid for, and resizable from the corner. */
+            max-height: calc(${VIEWPORT_HEIGHT} * ${PANEL_MAX_HEIGHT_FRACTION});
             resize: both;
             background: rgba(10, 10, 20, 0.96);
             border: 2px solid ${config.COLOR_ACCENT};
