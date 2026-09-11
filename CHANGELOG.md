@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The active tab keeps its highlight
+
+Opening Toolasha's settings tab deselected every tab bar on the page, not just the settings panel's own — so the chat channel you were in, or the panel tab top right, quietly lost its blue highlight and kept it off until something redrew that bar. Keyboard tab navigation was broken the same way. Settings now only touches its own tabs.
+
 ### Restored chat history lands in the tab it came from
 
 Reported: party chat reappearing in Trade. Only the open tab has a pane, and history was filed by that pane's position — so every tab, whispers included, shared one record and came back wherever you were. Tabs are now named by which tab is open, and switching clears the pane.
