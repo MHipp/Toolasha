@@ -62,10 +62,12 @@ const AMOUNT_TEXT = /^\d[\d.,\s]*(?:[kmbt]|(?:thousand|million|mil|billion|bn|tr
  * separators and one magnitude suffix ("12b", "1.5 million") is not one.
  *
  * @param {string|null|undefined} text - What was typed
- * @returns {boolean} True for an amount {@link parseItemCount} reads whole
+ * @returns {boolean} True for an amount {@link parseItemCount} reads whole;
+ *   false for anything it refuses, such as malformed grouping ("1.2.3")
  */
 export function isAmountText(text) {
-    return AMOUNT_TEXT.test(String(text ?? '').trim());
+    const trimmed = String(text ?? '').trim();
+    return AMOUNT_TEXT.test(trimmed) && Number.isFinite(parseItemCount(trimmed, NaN));
 }
 
 /**
@@ -86,6 +88,29 @@ function separatorIsGrouping(text, separator) {
     const escaped = escapeRegExpChar(separator);
     if (new RegExp(`${escaped}\\d{3}$`).test(text)) return true;
     return new RegExp(`${escaped}\\d{3}\\s*[kmbt]$`).test(text) && gameNumberSeparators().group === separator;
+}
+
+/**
+ * Whether the number leading lowercased text is grouped the way grouping is
+ * written: one to three digits, then groups of exactly three, then at most one
+ * decimal separator. Text that does not start with a number is not judged here;
+ * it fails or succeeds at parseFloat exactly as before.
+ *
+ * @param {string} text - Lowercased text
+ * @param {string} group - The separator taken as grouping
+ * @param {string|null} decimal - The separator taken as the decimal point, if any
+ * @returns {boolean} False for "1.2.3", "12,34,5", "1,234.5.6" and the like
+ */
+function isWellGrouped(text, group, decimal) {
+    const run = text.match(/^-?\d[\d.,]*/)?.[0];
+    if (!run) return true;
+    let whole = run.replace(/^-/, '');
+    if (decimal) {
+        const parts = whole.split(decimal);
+        if (parts.length > 2) return false;
+        [whole] = parts;
+    }
+    return new RegExp(`^\\d{1,3}(?:${escapeRegExpChar(group)}\\d{3})*$`).test(whole);
 }
 
 /**
@@ -134,6 +159,8 @@ export function parseItemCount(text, defaultValue = 1) {
     //    "1.250b" stays 1.25b there and is 1250b in German.
     // 4. Otherwise treat as decimal separator.
     //    e.g. "1.5" → 1.5,  "1,5" → 1.5
+    // 5. Grouping that is not 1-3 digits then groups of exactly three ("1.2.3",
+    //    "12,34,5"), or a second decimal separator, is not a number: default.
 
     const hasPeriod = text.includes('.');
     const hasComma = text.includes(',');
@@ -143,20 +170,24 @@ export function parseItemCount(text, defaultValue = 1) {
         const lastPeriod = text.lastIndexOf('.');
         const lastComma = text.lastIndexOf(',');
         if (lastPeriod > lastComma) {
+            if (!isWellGrouped(text, ',', '.')) return defaultValue;
             // Period is decimal: remove commas as thousands separators
             text = text.replace(/,/g, '');
         } else {
+            if (!isWellGrouped(text, '.', ',')) return defaultValue;
             // Comma is decimal: remove periods as thousands separators, replace comma with period
             text = text.replace(/\./g, '').replace(',', '.');
         }
     } else if (hasComma) {
         if (separatorIsGrouping(text, ',')) {
+            if (!isWellGrouped(text, ',', null)) return defaultValue;
             text = text.replace(/,/g, '');
         } else {
             text = text.replace(',', '.');
         }
     } else if (hasPeriod) {
         if (separatorIsGrouping(text, '.')) {
+            if (!isWellGrouped(text, '.', null)) return defaultValue;
             text = text.replace(/\./g, '');
         }
         // else leave as-is (valid decimal like "1.5")

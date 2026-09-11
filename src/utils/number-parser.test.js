@@ -113,6 +113,28 @@ describe('parseItemCount', () => {
         );
     });
 
+    describe('malformed grouping', () => {
+        // Grouping is 1-3 digits then groups of exactly three; anything else is not
+        // a number, rather than whatever parseFloat makes of its first two groups
+        test.each(['1.2.3', '12,34,5', '1,2,3', '1.2.3k', '1,234,56', '12,34,567', '1.2.3,5', '1,234.5.6', '1,234,'])(
+            '%j → default',
+            (text) => expect(parseItemCount(text, 'DEFAULT')).toBe('DEFAULT')
+        );
+
+        test.each([
+            ['1,234,567', 1234567],
+            ['1.500.000k', 1.5e9],
+            ['1.234.567,89', 1234567.89],
+            ['1,234,567.89', 1234567.89],
+            ['-1,234,567', -1234567],
+        ])('well-formed %j → %d', (text, expected) => expect(parseItemCount(text)).toBe(expected));
+
+        test('a lone separator before other than three digits is a decimal, not bad grouping', () => {
+            expect(parseItemCount('1,2345')).toBe(1.2345);
+            expect(parseItemCount('0,1234')).toBe(0.1234);
+        });
+    });
+
     describe('a separator before a suffix', () => {
         const asLocale = (value) => {
             if (value === null) localStorage.removeItem('i18nextLng');
@@ -175,10 +197,24 @@ describe('isAmountText', () => {
         '1.234,5 mil',
     ])('%j is an amount', (text) => expect(isAmountText(text)).toBe(true));
 
-    test.each(['', '   ', null, undefined, 'abc', '12xyz', '12 bananas', '12kb', '12bnx', 'x12', '-5', 'b12', '12ks'])(
-        '%j is not an amount',
-        (text) => expect(isAmountText(text)).toBe(false)
-    );
+    test.each([
+        '',
+        '   ',
+        null,
+        undefined,
+        'abc',
+        '12xyz',
+        '12 bananas',
+        '12kb',
+        '12bnx',
+        'x12',
+        '-5',
+        'b12',
+        '12ks',
+        '1.2.3',
+        '12,34,5',
+        '1,2,3b',
+    ])('%j is not an amount', (text) => expect(isAmountText(text)).toBe(false));
 });
 
 describe('parseGameNumber', () => {
