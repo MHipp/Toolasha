@@ -1275,6 +1275,10 @@ export const settingsGroups = {
                 id: 'market_autoFillBuyStrategy',
                 label: 'Auto-fill buy price strategy',
                 type: 'select',
+                // 'match' applies to new installs only. This deliberately has no
+                // entry in settings-storage.js's DEFAULT_REWRITES: an existing
+                // user's stored 'outbid' (the old shipped default) is their
+                // strategy, not a value to be moved off of, so it is left alone.
                 default: 'match',
                 options: [
                     { value: 'outbid', label: 'Outbid by 1 (best buy + 1)' },

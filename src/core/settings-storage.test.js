@@ -166,6 +166,33 @@ describe('one-time rewrites of superseded schema defaults', () => {
     });
 });
 
+describe('the marketplace buy-strategy default change is new-installs-only, by design', () => {
+    // market_autoFillBuyStrategy's schema default moved from 'outbid' to
+    // 'match', but — unlike the labyrinth defaults above — it has no
+    // DEFAULT_REWRITES entry, deliberately: an existing user's stored
+    // 'outbid' is their chosen strategy, not a stale default to be nudged off.
+    // Only a fresh install (nothing stored at all) ever sees 'match'.
+    const KEY = 'script_settingsMap_alice';
+
+    beforeEach(() => {
+        stored.clear();
+        settingsStorage.currentCharacterId = 'alice';
+        settingsStorage.currentCharacterName = 'Alice';
+    });
+
+    test('an existing user with outbid stored keeps outbid after load', async () => {
+        stored.set(`json:${KEY}`, {
+            market_autoFillBuyStrategy: { id: 'market_autoFillBuyStrategy', type: 'select', value: 'outbid' },
+        });
+
+        const settings = await settingsStorage.loadSettings();
+
+        expect(settings.market_autoFillBuyStrategy.value).toBe('outbid');
+        // and nothing rewrote the stored value either
+        expect(stored.get(`json:${KEY}`).market_autoFillBuyStrategy.value).toBe('outbid');
+    });
+});
+
 describe('SettingsStorage copy-from-character', () => {
     beforeEach(() => {
         stored.clear();
