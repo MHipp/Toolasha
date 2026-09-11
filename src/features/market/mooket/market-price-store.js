@@ -58,6 +58,12 @@ class MarketPriceStore {
         this.saveTimer = null;
         this.dirty = false;
         this.loaded = false;
+        /**
+         * Bumped by every {@link MarketPriceStore#cleanup}, so a start-up whose
+         * read is still in flight can tell that the layer it was started for
+         * has been torn down since.
+         */
+        this.generation = 0;
         /** The marketplace.json object last folded in, so the same one is not re-walked */
         this.lastSnapshot = null;
     }
@@ -74,8 +80,21 @@ class MarketPriceStore {
     async initialize() {
         if (this.bookHandler) return;
 
+        // The guard above is the only thing between two concurrent start-ups,
+        // and it is read *before* the read below — so a character switch, which
+        // tears the panel down mid-read and immediately starts the arriving
+        // character's initialize, put two runs past it. Both then resumed and
+        // both registered: the second overwrote `bookHandler` and `saveTimer`,
+        // leaving the first run's order-book listener and 60s flush interval
+        // live with no handle left to remove them by. One leaked pair per
+        // switch, and they outlived the feature being switched off entirely.
+        const generation = this.generation;
+
         // An unreadable store keeps the cache in hand rather than starting empty
         await this.record.load();
+        // Torn down while the read was in flight, or another run got there
+        // first — either way this one registers nothing
+        if (generation !== this.generation || this.bookHandler) return;
         this.entries = pruneStale(this.entries, Date.now() - PRICE_MAX_AGE_MS);
         this.loaded = true;
 
@@ -88,6 +107,9 @@ class MarketPriceStore {
     }
 
     cleanup() {
+        // First, so a teardown that throws part-way has still invalidated the
+        // start-up it interrupted
+        this.generation += 1;
         if (this.bookHandler) {
             dataManager.off('market_item_order_books_updated', this.bookHandler);
             this.bookHandler = null;

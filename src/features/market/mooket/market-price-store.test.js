@@ -11,7 +11,10 @@ const storageMock = vi.hoisted(() => {
     const mock = {
         saved: {},
         unavailable: false,
+        /** Held open so a test can park a start-up inside its first read */
+        gate: null,
         tryGet: vi.fn(async (key) => {
+            if (mock.gate) await mock.gate;
             if (mock.unavailable) return null;
             return key in mock.saved
                 ? { found: true, value: structuredClone(mock.saved[key]) }
@@ -28,10 +31,15 @@ const storageMock = vi.hoisted(() => {
 
 const dataManagerMock = vi.hoisted(() => ({
     handlers: {},
+    /** Every live subscription, so a leaked one is countable */
+    live: [],
     on: vi.fn((event, handler) => {
         dataManagerMock.handlers[event] = handler;
+        dataManagerMock.live.push({ event, handler });
     }),
-    off: vi.fn(),
+    off: vi.fn((event, handler) => {
+        dataManagerMock.live = dataManagerMock.live.filter((entry) => entry.handler !== handler);
+    }),
     getCurrentCharacterId: () => 'char1',
 }));
 
@@ -56,6 +64,8 @@ beforeEach(async () => {
     await marketPriceStore.record.flushed();
     storageMock.saved = {};
     storageMock.unavailable = false;
+    storageMock.gate = null;
+    dataManagerMock.live = [];
     storageMock.tryGet.mockClear();
     storageMock.set.mockClear();
     dataManagerMock.on.mockClear();
@@ -250,5 +260,52 @@ describe('cleanup', () => {
         expect(dataManagerMock.off).toHaveBeenCalledWith('market_item_order_books_updated', expect.any(Function));
         expect(marketPriceStore.bookHandler).toBeNull();
         expect(marketPriceStore.saveTimer).toBeNull();
+    });
+});
+
+/**
+ * The store's only re-entrancy guard is `bookHandler`, and it is read *before*
+ * the record's first storage read. A character switch tears the price panel
+ * down mid-read and starts the arriving character's `initialize()` at once, so
+ * both runs got past the guard on a null handler and both registered when they
+ * resumed — the second overwriting `bookHandler` and `saveTimer`, leaving the
+ * first run's order-book listener and 60s flush interval live with nothing left
+ * to remove them by. One leaked pair per switch, outliving even the feature
+ * being switched off.
+ */
+describe('a teardown landing inside the first read', () => {
+    test('the interrupted start-up registers no second listener and no second timer', async () => {
+        marketPriceStore.cleanup();
+        await marketPriceStore.record.flushed();
+        dataManagerMock.live = [];
+        const timersBefore = vi.getTimerCount();
+
+        let release;
+        storageMock.gate = new Promise((resolve) => {
+            release = resolve;
+        });
+
+        // The departing character's start-up parks on its read…
+        const interrupted = marketPriceStore.initialize();
+        // …the switch tears the store down…
+        marketPriceStore.cleanup();
+        // …and the arriving character starts its own, which parks too
+        const arriving = marketPriceStore.initialize();
+
+        release();
+        storageMock.gate = null;
+        await interrupted;
+        await arriving;
+
+        expect(dataManagerMock.live.filter((entry) => entry.event === 'market_item_order_books_updated')).toHaveLength(
+            1
+        );
+        expect(vi.getTimerCount()).toBe(timersBefore + 1);
+
+        // …and that one pair is the one the next teardown can take away
+        marketPriceStore.cleanup();
+        await marketPriceStore.record.flushed();
+        expect(dataManagerMock.live).toEqual([]);
+        expect(vi.getTimerCount()).toBe(timersBefore);
     });
 });
