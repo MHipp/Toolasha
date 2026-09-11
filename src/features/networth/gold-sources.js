@@ -92,6 +92,7 @@
 
 /** Milliseconds in a day */
 import { localDayKey, localDayStart } from './networth-calendar.js';
+import { ownPlayer } from '../../utils/combat-players.js';
 
 /**
  * How many archived combat runs the history keeps, when the caller does not
@@ -366,15 +367,15 @@ export function lootEntryValue(entry, price) {
  * gold attribution is one character's ledger: counting the party's loot would
  * credit this account with four people's drops. The current player is flagged,
  * and a solo run recorded before the flag existed falls back to the only player
- * there is — which is exactly how the consumables row scopes itself, and the
- * two rows must not disagree about whose run it was.
+ * there is; an unflagged *party* run has no honest answer and gets none — see
+ * {@link ownPlayer}. That is exactly how the consumables row scopes itself, and
+ * the two rows must not disagree about whose run it was.
  *
  * @param {Object} session - An archived combat run
  * @returns {Object|null} The player entry, or null
  */
 export function ownCombatPlayer(session) {
-    const players = session?.players || [];
-    return players.find((player) => player?.isCurrentPlayer) || players[0] || null;
+    return ownPlayer(session?.players);
 }
 
 /**

@@ -60,6 +60,7 @@ import { partyLevelGaps, isLevelGapped } from '../../utils/dungeon-level-gap.js'
 import { combatLevel } from '../../utils/combat-level.js';
 import { partyLuckPanel } from '../../utils/bundle-bridge.js';
 import { runningCombatAction } from '../../utils/combat-actions.js';
+import { ownPlayer } from '../../utils/combat-players.js';
 
 const DISPLAY_ID = 'mwi-drop-luck';
 const EXP_SECTION_SELECTOR = '[class*="BattlePanel_gainedExp"]';
@@ -949,7 +950,7 @@ registerRow({
         const { text } = describeLuck(result.percentile);
 
         const party = partyLuck(combatDropLuck.context);
-        const me = party.players.find((player) => player.isCurrentPlayer) || party.players[0];
+        const me = ownPlayer(party.players);
         const overFor = (name) => party.players.find((player) => player.name === name)?.percent ?? null;
 
         // A row each where there is a party, because everybody's drop gear

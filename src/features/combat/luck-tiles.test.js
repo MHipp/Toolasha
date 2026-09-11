@@ -100,6 +100,26 @@ describe('the merged luck tile', () => {
         expect(text).toContain('-6.3%');
     });
 
+    test('an unflagged party falls back to the session figure rather than slot 0', () => {
+        // No isCurrentPlayer flag anywhere - an old snapshot recorded on a party
+        // run. Before the fix this read party.players[0] and would have shown
+        // Slot0's own name and percent as if they were this character's.
+        game.party = {
+            battles: 900,
+            players: [
+                { name: 'Slot0', percent: 999 },
+                { name: 'Slot1', percent: -50 },
+            ],
+            total: { percent: -5 },
+        };
+        const text = draw('luck');
+
+        expect(text).not.toContain('Slot0');
+        expect(text).not.toContain('999.0%');
+        expect(text).toContain('Luck');
+        expect(text).toContain('-6.3%');
+    });
+
     test('a run owed nothing still shows where it sat', () => {
         // The percentile stands on its own: only the half that needs an
         // expectation to divide by goes missing

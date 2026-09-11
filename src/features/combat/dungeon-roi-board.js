@@ -39,6 +39,7 @@
 
 import { DUNGEON_CHEST_CHEST_KEYS } from '../../utils/dungeon-keys.js';
 import { isRefinementChest } from '../../utils/dungeon-chest-luck.js';
+import { ownPlayer } from '../../utils/combat-players.js';
 
 /** Runs at or above which a measured figure is treated as settled */
 export const HIGH_CONFIDENCE_RUNS = 20;
@@ -180,7 +181,7 @@ export function measuredSessionRates(sessions, dungeonHrid, consumablePrice) {
         if (!session || session.actionHrid !== dungeonHrid) continue;
         const duration = Number(session.durationSeconds);
         if (!(duration > 0)) continue;
-        const me = (session.players || []).find((player) => player?.isCurrentPlayer) || session.players?.[0];
+        const me = ownPlayer(session.players);
         if (!me) continue;
 
         seconds += duration;

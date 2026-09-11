@@ -82,6 +82,29 @@ describe('combat session loot', () => {
         expect(ownCombatPlayer(null)).toBeNull();
     });
 
+    test('ownCombatPlayer picks the flagged player regardless of slot', () => {
+        const flaggedButSecond = {
+            players: [
+                { name: 'Slot0', isCurrentPlayer: false },
+                { name: 'Slot1', isCurrentPlayer: true },
+            ],
+        };
+        expect(ownCombatPlayer(flaggedButSecond).name).toBe('Slot1');
+    });
+
+    test('an unflagged party run is not credited to slot 0', () => {
+        // Before the fix this fell back to players[0] and the loot row silently
+        // credited this account with slot 0's drops in any unflagged party run.
+        const unflaggedParty = {
+            players: [
+                { name: 'Slot0', loot: { a: { itemHrid: '/items/cheese', count: 100 } } },
+                { name: 'Slot1', loot: { a: { itemHrid: '/items/milk', count: 2 } } },
+            ],
+        };
+        expect(ownCombatPlayer(unflaggedParty)).toBeNull();
+        expect(combatSessionLootValue(unflaggedParty, price)).toEqual({ value: 0, items: 0 });
+    });
+
     test('two slots of one item are added rather than one overwriting the other', () => {
         expect(combatSessionLootValue(session, price)).toEqual({ value: 5 * 40, items: 2 });
     });
@@ -794,6 +817,34 @@ describe('attributeGoldSources', () => {
         // Both days of the window are uncovered — the run recorded no loot and
         // the loot log recorded nothing at all
         expect(result.combatBasis.uncoveredDays).toBe(2);
+    });
+
+    test('an unflagged party run credits neither loot nor consumables to slot 0', () => {
+        // A snapshot from before the isCurrentPlayer flag existed, recorded on a
+        // party run. Before the fix, ownCombatPlayer fell back to players[0] and
+        // this account's ledger picked up someone else's cheese and coffee.
+        const result = attributeGoldSources({
+            ...base,
+            combatSessions: [
+                {
+                    combatStartTime: new Date(D20).toISOString(),
+                    players: [
+                        {
+                            name: 'Slot0',
+                            loot: { a: { itemHrid: '/items/cheese', count: 100 } },
+                            consumables: [{ itemHrid: '/items/coffee', consumed: 8 }],
+                        },
+                        { name: 'Slot1', loot: {}, consumables: [] },
+                    ],
+                },
+            ],
+        });
+
+        // Both the loot row and the consumables row go through ownCombatPlayer
+        // and must agree: this run is unattributed on both, not just one
+        expect(result.totals.sources.combat).toBe(0);
+        expect(result.totals.sources.consumables).toBe(0);
+        expect(result.combatBasis.emptySessions).toBe(1);
     });
 
     test('consumables alone are enough to prove combat ran on an unrecorded day', () => {

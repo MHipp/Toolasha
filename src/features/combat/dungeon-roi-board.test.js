@@ -151,6 +151,36 @@ describe('measured sessions and the sim snapshot', () => {
         expect(measuredSessionRates(sessions, '/actions/combat/nowhere', () => 200)).toBeNull();
     });
 
+    test('an unflagged party session is skipped rather than read as slot 0', () => {
+        // A snapshot from before the isCurrentPlayer flag existed, on a party
+        // run. Before the fix this fell back to players[0] and mixed someone
+        // else's consumables and XP into the character's own rate.
+        const sessions = [
+            {
+                actionHrid: DEN,
+                durationSeconds: 1800,
+                players: [
+                    { consumables: [{ itemHrid: '/items/x', consumed: 999 }], experience: { attack: 999_999 } },
+                    { consumables: [{ itemHrid: '/items/coffee', consumed: 10 }], experience: { attack: 6000 } },
+                ],
+            },
+        ];
+        expect(measuredSessionRates(sessions, DEN, () => 200)).toBeNull();
+    });
+
+    test('an unflagged solo session still counts', () => {
+        const sessions = [
+            {
+                actionHrid: DEN,
+                durationSeconds: 1800,
+                players: [{ consumables: [{ itemHrid: '/items/coffee', consumed: 10 }], experience: { attack: 6000 } }],
+            },
+        ];
+        const rates = measuredSessionRates(sessions, DEN, () => 200);
+        expect(rates.sessions).toBe(1);
+        expect(rates.xpPerHour).toBeCloseTo(12_000);
+    });
+
     test('the snapshot gives a clear time only when its dungeon figures are there', () => {
         const snapshot = {
             zones: [

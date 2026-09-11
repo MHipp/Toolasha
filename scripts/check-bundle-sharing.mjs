@@ -191,6 +191,14 @@ const ALLOWLIST = new Map([
         // bundles respectively).
         'pure functions and constants; no module state',
     ],
+    [
+        'src/utils/combat-players.js',
+        // One exported function over the players array it is handed, no
+        // module state: every copy answers the same question the same way.
+        // Reached from the combat bundle (dungeon ROI board, drop luck) and
+        // the market bundle (net worth's gold-source attribution).
+        'stateless player-attribution selector; no module state to share',
+    ],
 ]);
 
 /**
