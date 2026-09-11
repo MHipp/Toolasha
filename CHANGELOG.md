@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The net worth forecast follows how fast you are growing now
+
+The forecast averaged your last 60 recorded days equally, so a fast stretch weeks ago kept it well above your current pace. Recent days now count more (half the weight falls on the last ten), offline gaps are measured in real time, and the method line shows the dates it covers. Amounts like `12bn` and `12 billion` are now accepted, the target updates as you type, and volatility no longer shows a sign.
+
 ### The net worth forecast takes 12b, and its chart is labelled
 
 The forecast's target box now accepts amounts like `12b`, `500m` and `1.5t`. It used to drop anything but a plain number and quietly hide the "reach target" figure. The forecast chart also names each line with its value at the horizon, and has value and day marks on its axes.
