@@ -86,19 +86,29 @@ export function getProRatesParams() {
 const DETECTION_CACHE_MS = 1000;
 let _detectionCache = null;
 let _detectionCacheAt = 0;
+let _detectionCacheFor = null;
 
 /**
  * Detected gear settings, memoised for a moment.
+ *
+ * Keyed on the character as well as the clock. A character *switch* is exactly
+ * the re-gearing the time key assumes cannot happen, and for up to a second
+ * after one this handed the departing character's detected kit — their
+ * enhancing level, their enhancer, their teas — to whoever asked, which is the
+ * whole of a networth or inventory sweep run straight after a switch.
+ *
  * @returns {Object} Map of settingId → detected value
  */
 function getDetectedSettingsCached() {
     const now = Date.now();
-    if (_detectionCache && now - _detectionCacheAt < DETECTION_CACHE_MS) {
+    const character = dataManager.getCurrentCharacterId?.() ?? null;
+    if (_detectionCache && _detectionCacheFor === character && now - _detectionCacheAt < DETECTION_CACHE_MS) {
         return _detectionCache;
     }
 
     _detectionCache = getDetectedGearSettings();
     _detectionCacheAt = now;
+    _detectionCacheFor = character;
     return _detectionCache;
 }
 
@@ -109,6 +119,7 @@ function getDetectedSettingsCached() {
 export function resetDetectedSettingsCache() {
     _detectionCache = null;
     _detectionCacheAt = 0;
+    _detectionCacheFor = null;
 }
 
 /**

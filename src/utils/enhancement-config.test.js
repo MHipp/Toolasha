@@ -18,6 +18,7 @@ const character = vi.hoisted(() => ({
     communityBuffLevel: 0,
     achievementSuccessRatio: 0,
     settings: {},
+    id: 'market123',
 }));
 
 /** Every (settingId, fallback) pair the module hands to config — the shipped defaults */
@@ -48,6 +49,7 @@ vi.mock('../core/data-manager.js', () => ({
         getAchievementBuffRatioBoost: () => character.achievementSuccessRatio,
         getActionDrinkSlots: () => character.drinks,
         getEquipment: () => character.equipment,
+        getCurrentCharacterId: () => character.id,
     },
 }));
 
@@ -68,6 +70,7 @@ beforeEach(() => {
     resetDetectedSettingsCache();
     character.achievementSuccessRatio = 0;
     character.communityBuffLevel = 0;
+    character.id = 'market123';
 });
 
 // The values the settings panel ships with — a professional enhancer, not this character
@@ -216,6 +219,41 @@ describe('detected stats reaching a prediction surface', () => {
         // Loading mathjs and running the first chain takes ~1 s alone and well over vitest's
         // 5 s default when the whole suite is contending for the CPU
     }, 30_000);
+});
+
+/**
+ * The detection memo is there because a networth or inventory sweep asks once per item and the
+ * character cannot re-gear between two items of the same sweep. A character *switch* is exactly
+ * that re-gearing, though, and keying the memo on the clock alone handed the departing
+ * character's enhancing level, enhancer and teas to everything that asked for up to a second
+ * afterwards — which is the whole of a sweep kicked off by the arrival.
+ */
+describe('the detection memo across a character switch', () => {
+    // An untouched manual panel: every field still holds what it shipped with, so every field
+    // is answered from detection — which is what the memo holds
+    beforeEach(() => {
+        character.settings = { enhanceSim_autoDetect: false, ...SHIPPED };
+    });
+
+    test('the arriving character is detected at once, not a second later', () => {
+        character.skills = [{ skillHrid: '/skills/enhancing', level: 42 }];
+        expect(getEnhancingParams().enhancingLevel).toBe(42);
+
+        // The switch: a different character, well inside the memo's one-second window
+        character.id = 'iron456';
+        character.skills = [{ skillHrid: '/skills/enhancing', level: 91 }];
+
+        expect(getEnhancingParams().enhancingLevel).toBe(91);
+    });
+
+    test('the same character inside the window is still answered from the memo', () => {
+        character.skills = [{ skillHrid: '/skills/enhancing', level: 42 }];
+        expect(getEnhancingParams().enhancingLevel).toBe(42);
+
+        // No switch, so the sweep that follows re-inspects nothing — the point of the memo
+        character.skills = [{ skillHrid: '/skills/enhancing', level: 91 }];
+        expect(getEnhancingParams().enhancingLevel).toBe(42);
+    });
 });
 
 describe('getProRatesParams', () => {
