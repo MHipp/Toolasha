@@ -1669,6 +1669,17 @@ function registerFeatures() {
             customCheck: () => true,
         },
         {
+            // A `max-height` fix for a Firefox-only layout bug in three game
+            // dialogs (see modal-scroll-caps.js) — not a togglable feature, so
+            // no settings-schema entry: always on, same as updateCheck above.
+            key: 'modalScrollCaps',
+            name: 'Modal Scroll Caps',
+            category: 'UI',
+            module: UI.modalScrollCaps,
+            async: false,
+            customCheck: () => true,
+        },
+        {
             key: 'welcomeBackValue',
             name: 'Welcome Back Value',
             category: 'UI',

@@ -24,6 +24,7 @@ import { describeHouses } from '../features/house/house-affordability.js';
 import combatPanelScale from '../features/ui/combat-panel-scale.js';
 import updateCheck from '../features/ui/update-check.js';
 import welcomeBackValue from '../features/ui/welcome-back-value.js';
+import modalScrollCaps from '../features/ui/modal-scroll-caps.js';
 import combatText from '../features/ui/combat-text.js';
 import { dpsPanel, deathsPanel, profitPanel, combatProfitView } from '../features/ui/combat-panels.js';
 import { partyLootPanel } from '../features/ui/party-loot-panel.js';
@@ -198,6 +199,7 @@ toolashaRoot.UI = {
     combatPanelScale,
     updateCheck,
     welcomeBackValue,
+    modalScrollCaps,
     altClickNavigation,
     collectionNavigation,
     collectionFilters,
