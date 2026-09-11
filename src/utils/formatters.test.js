@@ -435,6 +435,19 @@ describe('networthFormatter', () => {
 });
 
 describe('formatThreshold', () => {
+    test('abbreviates trillions and quadrillions instead of stopping at B', () => {
+        expect(formatThreshold(1.5e12, 2)).toBe('1.50T');
+        expect(formatThreshold(-1.5e12, 2)).toBe('-1.50T');
+        expect(formatThreshold(6.32e15, 2)).toBe('6.32Q');
+    });
+
+    test('promotes a value that rounds up to 1000 into the next tier', () => {
+        expect(formatThreshold(999950, 1)).toBe('1.0M');
+        expect(formatThreshold(999999.999, 2)).toBe('1.00M');
+        expect(formatThreshold(999995000000, 2)).toBe('1.00T');
+        expect(formatThreshold(10000, 2)).toBe('10.00K');
+    });
+
     test('a small negative that rounds to zero displays as 0, not -0', () => {
         expect(formatThreshold(-0.4)).toBe('0');
     });

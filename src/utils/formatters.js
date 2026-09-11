@@ -189,14 +189,25 @@ export function formatKMB(num, decimals = 1) {
         tierIndex = NETWORTH_TIERS.length - 1;
     }
 
-    // Promote on the printed text: 999,950 is K by magnitude but "1000.0" at one decimal
-    let text = (absNum / NETWORTH_TIERS[tierIndex].divisor).toFixed(decimals);
-    while (Number(text) >= 1000 && tierIndex > 0) {
-        tierIndex -= 1;
-        text = (absNum / NETWORTH_TIERS[tierIndex].divisor).toFixed(decimals);
-    }
+    return sign + tieredText(absNum, decimals, tierIndex);
+}
 
-    return sign + text + NETWORTH_TIERS[tierIndex].suffix;
+/**
+ * A positive value in a tier's units with its suffix, moved up a tier while the
+ * printed text reaches 1000: 999,950 is K by magnitude but "1000.0" at one decimal.
+ * @param {number} absNum - The value, >= 0
+ * @param {number} decimals - Decimal places
+ * @param {number} tierIndex - Index into NETWORTH_TIERS the value's magnitude falls in
+ * @returns {string} e.g. "1.0M"; the top tier (Q) keeps whatever it prints
+ */
+function tieredText(absNum, decimals, tierIndex) {
+    let index = tierIndex;
+    let text = (absNum / NETWORTH_TIERS[index].divisor).toFixed(decimals);
+    while (Number(text) >= 1000 && index > 0) {
+        index -= 1;
+        text = (absNum / NETWORTH_TIERS[index].divisor).toFixed(decimals);
+    }
+    return text + NETWORTH_TIERS[index].suffix;
 }
 
 /**
@@ -542,18 +553,14 @@ export function formatThreshold(num, decimals = 1) {
 }
 
 /**
- * Internal: abbreviate a positive number with K/M/B suffix.
+ * Internal: abbreviate a positive number through the same K/M/B/T/Q tiers as
+ * {@link formatKMB}, so the threshold and compact styles agree on large figures.
  * @private
  */
 function _abbreviate(absNum, decimals) {
-    if (absNum >= 1e9) {
-        return (absNum / 1e9).toFixed(decimals) + 'B';
-    } else if (absNum >= 1e6) {
-        return (absNum / 1e6).toFixed(decimals) + 'M';
-    } else if (absNum >= 1e3) {
-        return (absNum / 1e3).toFixed(decimals) + 'K';
-    }
-    return absNum.toFixed(0);
+    const tierIndex = NETWORTH_TIERS.findIndex((tier) => absNum >= tier.divisor);
+    if (tierIndex === -1) return absNum.toFixed(0);
+    return tieredText(absNum, decimals, tierIndex);
 }
 
 /**
