@@ -1275,7 +1275,7 @@ export const settingsGroups = {
                 id: 'market_autoFillBuyStrategy',
                 label: 'Auto-fill buy price strategy',
                 type: 'select',
-                default: 'outbid',
+                default: 'match',
                 options: [
                     { value: 'outbid', label: 'Outbid by 1 (best buy + 1)' },
                     { value: 'match', label: 'Match best buy price' },

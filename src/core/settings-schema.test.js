@@ -42,6 +42,16 @@ describe('labyrinth defaults', () => {
     });
 });
 
+describe('marketplace autofill strategy defaults', () => {
+    test('buy and sell both default to matching the best price, not outbidding or undercutting it', () => {
+        // A default of 'outbid'/'undercut' quietly escalates or discounts every
+        // fresh install's listings; matching is the only default that cannot
+        // itself move the market. A saved explicit choice is untouched either way.
+        expect(getSettingDefinition('market_autoFillBuyStrategy').default).toBe('match');
+        expect(getSettingDefinition('market_autoFillSellStrategy').default).toBe('match');
+    });
+});
+
 describe('startup recovery defaults', () => {
     test('automatic recovery ships off, and its help says what turning it on does', () => {
         const setting = getSettingDefinition('startupRecovery_autoReload');

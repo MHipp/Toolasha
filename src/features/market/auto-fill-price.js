@@ -217,7 +217,7 @@ class AutoFillPrice {
         }
 
         if (isBuyOrder) {
-            const buyStrategy = config.getSettingValue('market_autoFillBuyStrategy', 'outbid');
+            const buyStrategy = config.getSettingValue('market_autoFillBuyStrategy', 'match');
 
             if (buyStrategy === 'outbid') {
                 controls.inc?.click();

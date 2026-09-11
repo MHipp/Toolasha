@@ -433,3 +433,21 @@ describe('adjustPrice presses the step button matching the strategy, not an inde
         expect(clicks).toEqual(['-']);
     });
 });
+
+describe('the auto-fill strategies both default to matching the best price', () => {
+    afterEach(() => {
+        config.getSettingValue.mockImplementation((_key, fallback) => fallback);
+    });
+
+    test('the buy strategy falls back to match, not outbid, when nothing is saved', () => {
+        const { modal } = orderModalWithPriceRow({ header: 'Buy Listing', price: '1,000' });
+        autoFillPrice.adjustPrice(modal, true, false);
+        expect(config.getSettingValue).toHaveBeenCalledWith('market_autoFillBuyStrategy', 'match');
+    });
+
+    test('the sell strategy still falls back to match when nothing is saved', () => {
+        const { modal } = orderModalWithPriceRow({ header: 'Sell Listing', price: '1,000' });
+        autoFillPrice.adjustPrice(modal, false, true);
+        expect(config.getSettingValue).toHaveBeenCalledWith('market_autoFillSellStrategy', 'match');
+    });
+});
