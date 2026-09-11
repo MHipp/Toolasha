@@ -18,8 +18,7 @@
  */
 
 import dataManager from '../../core/data-manager.js';
-import storage from '../../core/storage.js';
-import { characterKey, readScoped, writeScoped } from '../../utils/character-key.js';
+import { readScoped, writeScoped } from '../../utils/character-key.js';
 import { createCuratedRecord } from '../../utils/persisted-record.js';
 
 const STORAGE_KEY = 'enhancementTracker_sessions';
@@ -178,27 +177,6 @@ export function importSession(jsonStr) {
         return session;
     } catch {
         return null;
-    }
-}
-
-/**
- * Clear all sessions (for testing/reset)
- * @returns {Promise<void>}
- */
-export async function clearAllSessions() {
-    try {
-        sessionsHeld = true;
-        sessionsRecord.set({});
-        pendingCurrentSessionId = null;
-        hasPendingCurrentSessionId = true;
-        // Immediate: a clear is a one-off the user asked for and waited on, and
-        // awaiting the debounced path would mean waiting out its timer. The
-        // one write meant to lose sessions, so it does not go through the
-        // record's merge.
-        await storage.set(characterKey(STORAGE_KEY), {}, STORAGE_STORE, true);
-        await storage.set(characterKey(CURRENT_SESSION_KEY), null, STORAGE_STORE, true);
-    } catch (error) {
-        console.error('[EnhancementStorage] Failed to clear sessions:', error);
     }
 }
 

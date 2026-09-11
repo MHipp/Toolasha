@@ -87,7 +87,6 @@ const {
     loadCurrentSessionId,
     deleteSession,
     archiveOldSessions,
-    clearAllSessions,
     resetPendingSessionCache,
     sessionsLoaded,
     flushSessionWrites,
@@ -166,21 +165,6 @@ describe('reads during the debounce lag', () => {
 
         expect(await loadCurrentSessionId()).toBeNull();
         expect(storageMock.get).not.toHaveBeenCalled();
-    });
-
-    test('clearing empties both, immediately and in memory', async () => {
-        await saveSessions({ s1: {} });
-
-        await clearAllSessions();
-
-        expect(await loadSessions()).toEqual({});
-        expect(await loadCurrentSessionId()).toBeNull();
-        // A clear is awaited by its caller, so it does not go through the debounce
-        const immediateCalls = storageMock.set.mock.calls.filter(([, , , immediate]) => immediate === true);
-        expect(immediateCalls.map(([key]) => key)).toEqual([
-            'enhancementTracker_sessions_market123',
-            'enhancementTracker_currentSession_market123',
-        ]);
     });
 });
 
