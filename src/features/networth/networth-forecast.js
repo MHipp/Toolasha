@@ -285,7 +285,10 @@ export function forecastNetworth(history, options = {}) {
 
     const horizon = Math.min(365, Math.max(1, Math.floor(days)));
     const count = Math.min(10000, Math.max(100, Math.floor(runs)));
-    const current = source.at(-1).value;
+    // The last positive total, the same readings the changes were measured from: a
+    // zero or negative close (prices not loaded yet) would start every path at or
+    // below zero, turning the fan upside down and the pace into 0/0
+    const current = source.filter((sample) => sample.value > 0).at(-1).value;
 
     const drift = recencyDrift(changes);
     const shocks = dayShocks(changes);

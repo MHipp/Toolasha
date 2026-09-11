@@ -252,6 +252,19 @@ describe('forecastNetworth', () => {
         expect(result.probabilities[60]).toBe(100);
     });
 
+    it.each([
+        ['zero', 0],
+        ['negative', -5e8],
+    ])('projects from the last positive total when the latest one is %s', (_, glitch) => {
+        const totals = compounding(1000, 0.01, 20);
+        const result = forecastNetworth(series([...totals, glitch]), { seed: 3, days: 30 });
+        expect(result.status).toBe('complete');
+        expect(result.current).toBe(totals.at(-1));
+        expect(result.medianDailyGrowthPercent).toBeCloseTo(1, 6);
+        expect(result.fan.p10.at(-1)).toBeGreaterThan(result.current);
+        expect(result.fan.p10.at(-1)).toBeLessThanOrEqual(result.fan.p90.at(-1));
+    });
+
     it('ignores a non-positive target', () => {
         const result = forecastNetworth(series(compounding(1000, 0.01, 40)), { seed: 1, target: -5 });
         expect(result.target).toBeNull();
