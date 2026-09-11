@@ -63,8 +63,12 @@ const sim = vi.hoisted(() => ({
     calls: [],
     onCall: null,
 }));
-/** Every key the panel wrote, so a persisted choice can be asserted on */
-const storage = vi.hoisted(() => ({ written: {}, values: {} }));
+/**
+ * Every key the panel wrote, so a persisted choice can be asserted on.
+ * `pending`: key → an in-flight promise a test controls, for staging a read
+ * that resolves after a character switch rather than before it.
+ */
+const storage = vi.hoisted(() => ({ written: {}, values: {}, pending: {} }));
 const rowActions = vi.hoisted(() => ({ wired: [] }));
 
 vi.mock('../../core/config.js', () => ({
@@ -78,7 +82,10 @@ vi.mock('../../core/config.js', () => ({
 
 vi.mock('../../core/storage.js', () => ({
     default: {
-        get: async (key, _store, fallback) => (key in storage.values ? storage.values[key] : fallback),
+        get: async (key, _store, fallback) => {
+            if (key in storage.pending) return storage.pending[key];
+            return key in storage.values ? storage.values[key] : fallback;
+        },
         set: async (key, value) => {
             storage.written[key] = value;
         },
@@ -2172,6 +2179,80 @@ describe('the labyrinth tokens a simulation runs under can be chosen', () => {
 
         expect(simmedDamage()).toBe(0);
         expect(ui.panel.querySelector('#mwi-labsim-buffs-note').textContent).toBe('simulating Damage 3→0');
+    });
+});
+
+/**
+ * `_restoreTokenBuffLevels` has no ownership check on the value it reads back:
+ * the read is always scoped to whoever asked (`readScoped` fixes the key
+ * before its first await), but the *adoption* into `this._tokenBuffOverrides`
+ * and the render that follows happen unconditionally. A storage stall (the
+ * read watchdog retrying on a fresh connection) can let a departing
+ * character's read resolve after the arriving character's own restore has
+ * already run, adopting the departing character's typed-over levels into the
+ * arriving character's panel.
+ */
+describe('a character switch mid-restore does not adopt the departing character’s token levels', () => {
+    beforeEach(() => {
+        geometry.saved = null;
+        geometry.wasOpen = false;
+        storage.written = {};
+        storage.values = {};
+        storage.pending = {};
+        game.characterId = 'me';
+        game.characterInfo = { labyrinthCombatDamageLevel: 3 };
+    });
+
+    afterEach(() => {
+        storage.pending = {};
+        ui.destroy();
+        game.characterId = 'me';
+        game.characterInfo = null;
+    });
+
+    test('a read that resolves after the switch is not adopted, and does not render', async () => {
+        ui.buildPanel();
+        await settle();
+        // Open the section so a wrongful render would actually show up
+        ui.panel.querySelector('#mwi-labsim-buffs-header').click();
+        const bodyBefore = ui.panel.querySelector('#mwi-labsim-buffs-body').innerHTML;
+
+        let resolveRead;
+        storage.pending['labSimTokenBuffLevels_me'] = new Promise((resolve) => {
+            resolveRead = resolve;
+        });
+        const restore = ui._restoreTokenBuffLevels();
+
+        // The switch: an arriving character's own restore has already claimed
+        // `this` by the time this stale read comes back
+        game.characterId = 'alt';
+        resolveRead({ labyrinthCombatDamageLevel: 8 });
+        await restore;
+
+        expect(ui._tokenBuffOverrides).toEqual({});
+        expect(ui.panel.querySelector('#mwi-labsim-buffs-note').textContent).toBe('');
+        expect(ui.panel.querySelector('#mwi-labsim-buffs-body').innerHTML).toBe(bodyBefore);
+    });
+
+    test('a same-character restore still adopts the stored levels', async () => {
+        storage.values['labSimTokenBuffLevels_me'] = { labyrinthCombatDamageLevel: 8 };
+
+        ui.buildPanel();
+        await settle();
+        ui.panel.querySelector('#mwi-labsim-buffs-header').click();
+
+        expect(ui._tokenBuffOverrides).toEqual({ labyrinthCombatDamageLevel: 8 });
+        expect(ui.panel.querySelector('[data-lab-token-buff="labyrinthCombatDamageLevel"]').value).toBe('8');
+    });
+
+    test('destroy() resets the typed-over token levels, not just the standing choice', async () => {
+        ui.buildPanel();
+        await settle();
+        ui._tokenBuffOverrides = { labyrinthCombatDamageLevel: 8 };
+
+        ui.destroy();
+
+        expect(ui._tokenBuffOverrides).toEqual({});
     });
 });
 

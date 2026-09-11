@@ -2281,12 +2281,21 @@ class LabSimUI {
      * @private
      */
     async _restoreTokenBuffLevels() {
+        // Captured before the first await — see `_stillSameCharacter`
+        const ownerId = dataManager.getCurrentCharacterId();
+        let levels;
         try {
-            this._tokenBuffOverrides = sanitizeTokenLevels(await readScoped(TOKEN_BUFF_LEVELS_KEY, 'settings', null));
+            levels = sanitizeTokenLevels(await readScoped(TOKEN_BUFF_LEVELS_KEY, 'settings', null));
         } catch (error) {
             console.error('[LabSimUI] Failed to restore labyrinth token levels:', error);
-            this._tokenBuffOverrides = {};
+            levels = {};
         }
+        // A switch mid-read must not adopt the departing character's levels
+        // into the arriving character's panel: the arriving character's own
+        // restore (issued by its own buildPanel()) already raced this one and
+        // would otherwise be overwritten by whichever read resolves last.
+        if (!this._stillSameCharacter(ownerId)) return;
+        this._tokenBuffOverrides = levels;
         this._refreshBuffsHeaderNote();
         const body = this.panel?.querySelector('#mwi-labsim-buffs-body');
         if (body && body.style.display !== 'none') this._renderBuffsSection();
@@ -6343,6 +6352,10 @@ class LabSimUI {
         // own, silently, until they notice and touch the dropdown themselves.
         this._skillingCratesUserSet = false;
         this._combatCratesUserSet = false;
+        // Typed-over token levels are per-panel state, not a standing
+        // preference; the stored value is re-read by the next build's
+        // _restoreTokenBuffLevels().
+        this._tokenBuffOverrides = {};
         // Every sim behind this panel is a worker run, and the feature's
         // `disable()` rejects all of them through `cancelSimulation()` — except
         // the Skilling tab's upgrade analysis, which is main-thread arithmetic
