@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The forecast's growth figures match its chart
+
+"Daily drift" and "Doubling" are now read off the forecast's middle line, so one huge trade can no longer make them promise faster growth than the chart shows. Axis ticks stay on round values at any size.
+
 ### Net worth reads in T and Q past a trillion
 
 A net worth of a trillion or more used to print as a long run of B, like "6321172774.25B". It now reads "6.32T" or "6.32Q". Values just under a boundary no longer show as "1000.00K" or "1000.00M" either; they move up to "1.00M" and "1.00B".
