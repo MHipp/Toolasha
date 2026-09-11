@@ -433,3 +433,55 @@ describe('cascadedPanelPosition', () => {
         }
     });
 });
+
+describe('on-screen keyboard re-clamp', () => {
+    const originalWidth = window.innerWidth;
+    const originalHeight = window.innerHeight;
+
+    afterEach(() => {
+        vi.useRealTimers();
+        delete window.visualViewport;
+        Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth });
+        Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalHeight });
+        document.body.replaceChildren();
+        vi.resetModules();
+    });
+
+    test('a keyboard that window.resize never reports still shortens a panel', async () => {
+        // iOS fires no `resize` and does not change `innerHeight` when the
+        // keyboard comes up, so the window listener is not merely late here —
+        // it never runs at all. Only `visualViewport` sees it.
+        const listeners = {};
+        const visual = {
+            width: 400,
+            height: 800,
+            scale: 1,
+            addEventListener: vi.fn((type, fn) => {
+                listeners[type] = fn;
+            }),
+            removeEventListener: vi.fn(),
+        };
+        Object.defineProperty(window, 'visualViewport', { configurable: true, value: visual });
+        Object.defineProperty(window, 'innerWidth', { configurable: true, value: 400 });
+        Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
+
+        // A fresh copy, because the subscription is made once at import
+        vi.resetModules();
+        const fresh = await import('./panel-z-index.js');
+        expect(visual.addEventListener).toHaveBeenCalledWith('resize', expect.any(Function));
+
+        vi.useFakeTimers();
+        const panel = makePanel({ left: 0, top: 0, width: 300, height: 600 });
+        fresh.registerFloatingPanel(panel);
+        vi.advanceTimersByTime(20);
+        expect(panel.style.height).toBe('600px');
+
+        // The keyboard takes the bottom 400px. `innerHeight` is deliberately
+        // left alone — that is the whole point of the case.
+        visual.height = 400;
+        listeners.resize(new Event('resize'));
+        vi.advanceTimersByTime(250);
+
+        expect(panel.style.height).toBe('400px');
+    });
+});

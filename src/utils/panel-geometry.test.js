@@ -195,6 +195,18 @@ describe('holding a panel that is already on screen inside the window', () => {
         expect(panel.style.width).toBe('400px');
     });
 
+    test('a panel taller than the screen is shortened to it', () => {
+        // The position clamp can only push `top` down to 0, so without a height
+        // shrink this panel still runs 400px off the bottom — taking the close
+        // button with it. This is the keyboard case on a phone.
+        const panel = panelAt({ left: 0, top: 0, width: 300, height: 1200 });
+
+        const applied = clampPanelToViewport(panel);
+
+        expect(applied.height).toBe(800);
+        expect(panel.style.height).toBe('800px');
+    });
+
     test('a panel that fits is not touched at all', () => {
         const panel = panelAt({ left: 30, top: 40, width: 300, height: 400 });
 

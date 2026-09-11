@@ -129,6 +129,31 @@ export function clampGeometry(geometry, viewport, min = { width: 200, height: 80
 }
 
 /**
+ * The window as much of it as is actually visible.
+ *
+ * `window.innerHeight` is the *layout* viewport, and iOS does not shrink it
+ * when the on-screen keyboard comes up — it does not even fire `resize`. A
+ * clamp measured against it therefore concludes every panel still fits at the
+ * exact moment half the screen has just been taken away. `visualViewport` is
+ * the only thing that sees the keyboard, which is why the CSS height cap
+ * (`panelHeightCap` in `floating-panel.js`) is written against it too.
+ *
+ * Pinch-zoom shrinks `visualViewport` as well, and unlike the keyboard it is
+ * not a reason to permanently shrink a panel — the clamp writes inline styles
+ * that do not come back when the zoom does. `scale` is how the two are told
+ * apart: the keyboard leaves it at 1.
+ *
+ * @returns {{width: number, height: number}} Pixels
+ */
+function visibleViewport() {
+    const layout = { width: window.innerWidth, height: window.innerHeight };
+    const visual = window.visualViewport;
+    if (!visual || !(visual.height > 0) || !(visual.width > 0)) return layout;
+    if (Number.isFinite(visual.scale) && visual.scale > 1.01) return layout;
+    return { width: Math.min(layout.width, visual.width), height: Math.min(layout.height, visual.height) };
+}
+
+/**
  * Hold a panel that is already on screen inside the window it is on screen in.
  *
  * The saved-geometry clamp only ever ran on what was *stored*, so a panel that
@@ -151,7 +176,7 @@ export function clampGeometry(geometry, viewport, min = { width: 200, height: 80
 export function clampPanelToViewport(panel, min) {
     if (typeof window === 'undefined' || !panel?.isConnected) return null;
 
-    const viewport = { width: window.innerWidth, height: window.innerHeight };
+    const viewport = visibleViewport();
     if (!(viewport.width > 0) || !(viewport.height > 0)) return null;
 
     if (typeof getComputedStyle === 'function') {
@@ -176,6 +201,14 @@ export function clampPanelToViewport(panel, min) {
     if (rect.width > viewport.width && clamped.width) {
         panel.style.width = `${clamped.width}px`;
         applied.width = clamped.width;
+    }
+    // The same for height, and for the same reason: the position clamp below can
+    // only push `top` as far as 0, so a panel taller than the window keeps
+    // hanging off the bottom however far up it is moved — and its footer is
+    // where the close button is. Shrinking is the only thing that gets it back.
+    if (rect.height > viewport.height && clamped.height) {
+        panel.style.height = `${clamped.height}px`;
+        applied.height = clamped.height;
     }
     if (Math.round(clamped.left) !== Math.round(rect.left) || Math.round(clamped.top) !== Math.round(rect.top)) {
         panel.style.left = `${clamped.left}px`;

@@ -254,4 +254,13 @@ function onWindowResize() {
 
 if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     window.addEventListener('resize', onWindowResize);
+    // The mobile on-screen keyboard is a viewport change that `window.resize`
+    // does not report: iOS neither fires it nor changes `window.innerHeight`
+    // when the keyboard comes up, so the re-clamp above never ran for the one
+    // case where a panel most needs shortening — the keyboard is covering its
+    // footer, and the footer is where the close button is. Only `visualViewport`
+    // sees it. Subscribing here rather than per panel is what makes this a
+    // facility: every `registerFloatingPanel` caller gets it with no edit of
+    // its own.
+    window.visualViewport?.addEventListener?.('resize', onWindowResize);
 }
