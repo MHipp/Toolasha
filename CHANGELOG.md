@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Audit round: "1,500m" meant 1.5 million, and numbers that printed "1000.0K"
+
+Typed amounts ignored a thousands separator before a suffix, so "1,500m" read as 1.5M and "1,500,000k" as 1.5K, a thousand or more times too small. This hit the forecast target and the market quantity boxes. Malformed input like "1.2.3" is now refused, and the budget and goal boxes accept `t` and `q`. Compact numbers just under a boundary now read "1.0M" rather than "1000.0K" or "1000K", and the threshold format reaches T and Q.
+
+The forecast no longer projects from a zero or negative latest total, and near-flat growth reads `>10y` instead of a doubling time of billions of days. An item with no order book is now costed at your pricing mode's side rather than always at the ask. The cost summary counts coin a recipe charges directly.
+
 <!-- shipped in 3.49.0 -->
 
 ### The forecast's growth figures match its chart
