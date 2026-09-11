@@ -124,7 +124,17 @@ export function resetLedgerView() {
     state.loadouts = {};
     state.accuracy = [];
     state.accuracyTrend = [];
-    refreshGeneration = 0;
+    // Bumped, never zeroed. Zeroing it handed the *next* refresh the same
+    // generation number an in-flight one was already holding: the switch
+    // handler below calls this and then `refreshLedgerView()`, so after a
+    // single-refresh session the departing character's outstanding reads
+    // carried generation 1 and the arriving character's fresh run was also
+    // generation 1 — the staleness guard passed, and whichever set of reads
+    // resolved last drew. Storage reads are explicitly not FIFO here, so the
+    // departed guild's cycles, kits and accuracy could land on top of the
+    // arriving one's. A reset means "abandon everything in flight", which is
+    // what a bump says and what a zero cannot.
+    refreshGeneration += 1;
 }
 
 /** @returns {string|null} The guild whose ledger is being drawn */
@@ -166,6 +176,12 @@ export async function refreshLedgerView() {
         // storage reads do not resolve in call order, so writing this one's
         // answer now would draw the window the user has already moved past
         if (generation !== refreshGeneration) return;
+        // …and the answer belongs to the character it was asked for. The
+        // generation alone covers a switch only because the switch handler
+        // starts a refresh of its own; a guild change, or any teardown that
+        // does not, would leave this writing one character's ledger into
+        // another's panel.
+        if (characterId !== (dataManager.getCurrentCharacterId?.() ?? null)) return;
 
         state.cycles = cycles;
         state.loaded = true;

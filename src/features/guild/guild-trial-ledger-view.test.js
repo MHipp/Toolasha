@@ -251,6 +251,36 @@ describe('buildLedgerTable', () => {
         const table = buildLedgerTable();
         expect(table.rows.find((row) => row.name === 'Alice').damage).toBe(222);
     });
+
+    // The staleness guard is a counter, and `resetLedgerView()` used to zero
+    // it. The character-switch handler calls reset and then starts a refresh of
+    // its own, so the arriving character's first run was handed generation 1 —
+    // the very number a read still outstanding for the departing character was
+    // holding. The guard compared equal, and whichever read landed last drew:
+    // with storage reads explicitly not resolving in call order, that is the
+    // departed guild's cycles on the arriving character's panel.
+    test('a read outstanding across a character switch does not draw the departed guild’s ledger', async () => {
+        let releaseDeparting;
+        const gate = new Promise((resolve) => {
+            releaseDeparting = resolve;
+        });
+        world.cyclesQueue = [{ gate, value: [cycle(WEEK, 1, { alice: { name: 'Alice', trials: 1, damage: 111 } })] }];
+        // The departing character's refresh — the first since the reset, so it
+        // holds generation 1 — parks on its read
+        const departing = refreshLedgerView();
+
+        // The switch: `resetLedgerView()` and then the handler's own refresh
+        world.guildName = 'Testmaxxing';
+        world.cycles = [cycle(WEEK, 1, { zed: { name: 'Zed', trials: 1, damage: 500 } })];
+        await world.listeners.character_switched?.[0]?.();
+        expect(buildLedgerTable().rows.map((row) => row.name)).toEqual(['Zed']);
+
+        // …and only now does the departed character's read land
+        releaseDeparting();
+        await departing;
+
+        expect(buildLedgerTable().rows.map((row) => row.name)).toEqual(['Zed']);
+    });
 });
 
 describe('filterLedgerRows', () => {
