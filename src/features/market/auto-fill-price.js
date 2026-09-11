@@ -7,7 +7,6 @@ import config from '../../core/config.js';
 import domObserver from '../../core/dom-observer.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { parseItemCount } from '../../utils/number-parser.js';
-import { setReactInputValue } from '../../utils/react-input.js';
 import { tradableRangeFrom, clampToRange } from '../../utils/tradable-range.js';
 
 /**
@@ -17,6 +16,49 @@ import { tradableRangeFrom, clampToRange } from '../../utils/tradable-range.js';
  */
 export { tradableRangeFrom, clampToRange };
 
+/**
+ * A marketplace price row's own bound/step controls, found by position
+ * rather than by button label (the game is localised — "最低", "最高", not
+ * "Min"/"Max") or by array index. `marketplace-shortcuts.js` splices its own
+ * ÷2/×2 buttons onto either end of this same row, as containers carrying the
+ * game's own button-container class plus `mwi-mp-multiplier`, so an
+ * index-based pick shifts by one the moment those exist.
+ *
+ * Row layout, left to right: `[Min] - <input|priceDisplay> + [Max]`. Min and
+ * Max exist only when the modal states a tradable range for the item.
+ *
+ * @param {HTMLElement} row - The `MarketplacePanel_priceInputs` row
+ * @returns {{dec: HTMLButtonElement|null, inc: HTMLButtonElement|null, min: HTMLButtonElement|null, max: HTMLButtonElement|null}|null}
+ *   The row's controls, or null when the row has no recognizable center cell
+ */
+function priceRowControls(row) {
+    if (!row) return null;
+
+    const center = row.querySelector(
+        'div[class*="MarketplacePanel_input"]:not([class*="buttonContainer"]):not([class*="priceInputs"]):not([class*="inputContainer"])'
+    );
+    if (!center) return null;
+
+    // The row's own controls, in DOM order, with the shortcuts feature's
+    // ÷2/×2 wrappers filtered out regardless of which end they landed on.
+    const ordered = Array.from(row.children).filter(
+        (el) =>
+            el === center ||
+            (el.matches('div[class*="MarketplacePanel_buttonContainer"]') &&
+                !el.classList.contains('mwi-mp-multiplier'))
+    );
+    const centerIndex = ordered.indexOf(center);
+    if (centerIndex === -1) return null;
+
+    const buttonOf = (el) => el?.querySelector('button') || null;
+    return {
+        dec: buttonOf(ordered[centerIndex - 1]),
+        inc: buttonOf(ordered[centerIndex + 1]),
+        min: buttonOf(ordered[centerIndex - 2]),
+        max: buttonOf(ordered[centerIndex + 2]),
+    };
+}
+
 class AutoFillPrice {
     constructor() {
         this.isActive = false;
@@ -24,6 +66,11 @@ class AutoFillPrice {
         this.processedModals = new WeakSet(); // Track processed modals to prevent duplicates
         this.isInitialized = false;
         this.timerRegistry = createTimerRegistry();
+        // Per-modal: the out-of-range price the last bound-press produced, so
+        // a game bound that is itself outside a range parsed from rounded
+        // text ("77.8M" ceiling, exact button target 77,84x,xxx) is not
+        // pressed again on every 300ms tick. See clampPriceToTradableRange.
+        this.clampState = new WeakMap();
     }
 
     /**
@@ -142,12 +189,9 @@ class AutoFillPrice {
         const interval = setInterval(() => {
             if (!modal.isConnected) {
                 clearInterval(interval);
+                this.clampState.delete(modal);
                 return;
             }
-            const input = modal.querySelector(
-                'div[class*="MarketplacePanel_inputContainer"] div[class*="MarketplacePanel_priceInputs"] input'
-            );
-            if (!input || document.activeElement === input) return;
             this.clampPriceToTradableRange(modal);
         }, 300);
         this.timerRegistry.registerInterval(interval);
@@ -160,18 +204,15 @@ class AutoFillPrice {
      * @param {boolean} isSellOrder - True if sell order
      */
     adjustPrice(modal, isBuyOrder, isSellOrder) {
-        // Find the price input container
-        const inputContainer = modal.querySelector(
+        const row = modal.querySelector(
             'div[class*="MarketplacePanel_inputContainer"] div[class*="MarketplacePanel_priceInputs"]'
         );
-        if (!inputContainer) {
+        if (!row) {
             return;
         }
 
-        // Find the increment/decrement buttons
-        const buttonContainers = inputContainer.querySelectorAll('div[class*="MarketplacePanel_buttonContainer"]');
-
-        if (buttonContainers.length < 3) {
+        const controls = priceRowControls(row);
+        if (!controls) {
             return;
         }
 
@@ -179,49 +220,80 @@ class AutoFillPrice {
             const buyStrategy = config.getSettingValue('market_autoFillBuyStrategy', 'outbid');
 
             if (buyStrategy === 'outbid') {
-                // Click the 3rd button container's button (increment)
-                const button = buttonContainers[2].querySelector('div button');
-                if (button) button.click();
+                controls.inc?.click();
             } else if (buyStrategy === 'undercut') {
-                // Click the 2nd button container's button (decrement)
-                const button = buttonContainers[1].querySelector('div button');
-                if (button) button.click();
+                controls.dec?.click();
             }
             // If 'match', do nothing (use best buy price as-is)
         } else if (isSellOrder) {
             const sellStrategy = config.getSettingValue('market_autoFillSellStrategy', 'match');
 
             if (sellStrategy === 'undercut') {
-                // Click the 2nd button container's button (decrement)
-                const button = buttonContainers[1].querySelector('div button');
-                if (button) button.click();
+                controls.dec?.click();
             }
             // If 'match', do nothing (use best sell price as-is)
         }
     }
 
     /**
-     * Rewrite the filled price to the nearest bound of the modal's tradable
-     * range when it landed outside it. Modals stating no range (or in a locale
-     * whose wording differs) are left exactly as filled.
+     * Pull the filled price back to the nearest bound of the modal's tradable
+     * range when it landed outside it, by pressing the game's own Min/Max
+     * button rather than writing the field directly. The row usually has no
+     * `<input>` to write at all — the price renders as plain text until the
+     * player clicks into it — and the game's own button commits its own
+     * exact, binned bound through its own state either way, editing or not.
+     * Modals stating no range (or in a locale whose wording differs) are left
+     * exactly as filled.
+     *
+     * A price being typed is left alone: the input is read only when it is
+     * not focused. And a bound already pressed is not pressed again while the
+     * price still reads as what that press produced — the range is parsed
+     * from rounded text ("77.8M"), while the game's own exact bound can be
+     * e.g. 77,84x,xxx, which still reads "above 77.8M" forever if every tick
+     * presses Max again.
      * @param {HTMLElement} modal - Modal container element
      */
     clampPriceToTradableRange(modal) {
         const range = tradableRangeFrom(modal.textContent);
         if (!range) return;
 
-        const input = modal.querySelector(
-            'div[class*="MarketplacePanel_inputContainer"] div[class*="MarketplacePanel_priceInputs"] input'
+        const row = modal.querySelector(
+            'div[class*="MarketplacePanel_inputContainer"] div[class*="MarketplacePanel_priceInputs"]'
         );
-        if (!input) return;
+        if (!row) return;
 
-        const price = parseItemCount(input.value, NaN);
+        const input = row.querySelector('input');
+        if (input && document.activeElement === input) return;
+
+        const price = input
+            ? parseItemCount(input.value, NaN)
+            : parseItemCount(row.querySelector('div[class*="MarketplacePanel_priceDisplay"]')?.textContent, NaN);
         if (!Number.isFinite(price)) return;
 
-        const clamped = clampToRange(price, range);
-        if (clamped !== price) {
-            setReactInputValue(input, String(clamped));
+        if (clampToRange(price, range) === price) {
+            // Back in range: a later excursion is a fresh event, not a repeat.
+            this.clampState.delete(modal);
+            return;
         }
+
+        const state = this.clampState.get(modal);
+
+        if (state?.armed) {
+            // The tick right after a bound press: this is the price it produced.
+            this.clampState.set(modal, { armed: false, lastActedPrice: price });
+            return;
+        }
+
+        if (state && state.lastActedPrice === price) {
+            return;
+        }
+
+        const controls = priceRowControls(row);
+        const button = price < range.min ? controls?.min : controls?.max;
+        if (!button) return;
+
+        button.click();
+        this.clampState.set(modal, { armed: true, lastActedPrice: state?.lastActedPrice });
     }
 
     /**
@@ -232,6 +304,7 @@ class AutoFillPrice {
             this.unregisterHandlers.forEach((unregister) => unregister());
             this.unregisterHandlers = [];
             this.timerRegistry.clearAll();
+            this.clampState = new WeakMap();
             this.isActive = false;
             this.isInitialized = false;
         } catch (error) {

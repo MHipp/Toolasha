@@ -5,15 +5,25 @@
  * matters: the best standing offer sits outside the game's daily tradable
  * band (a stale order from before the band moved), and matching it fills a
  * price nobody can trade against.
+ *
+ * The price row itself: since the marketplace rework the center cell is a
+ * plain `priceDisplay` div until the player clicks it — there is no `<input>`
+ * to write in the common case — flanked by `-`/`+` step buttons and, when the
+ * item has a stated band, `Min`/`Max` bound buttons. Fixtures below mirror
+ * that shape rather than the pre-rework "always an `<input>`" one.
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
 vi.mock('../../core/config.js', () => ({
-    default: { getSetting: () => true, getSettingValue: (_key, fallback) => fallback },
+    default: {
+        getSetting: vi.fn(() => true),
+        getSettingValue: vi.fn((_key, fallback) => fallback),
+    },
 }));
 vi.mock('../../core/dom-observer.js', () => ({ default: { onClass: () => () => {} } }));
 
+import config from '../../core/config.js';
 import autoFillPrice, { tradableRangeFrom, clampToRange } from './auto-fill-price.js';
 
 describe('reading the tradable range off the modal', () => {
@@ -105,28 +115,199 @@ describe('the one-shot is spent on work done, not on a modal being seen', () => 
     });
 });
 
-describe('the clamp stays live while the modal is open', () => {
-    /**
-     * A Buy Listing modal with a stated band and a filled price input.
-     * @param {string} rangeText - The tradable-range line the game renders
-     * @param {string} price - The price input's current value
-     * @returns {{modal: HTMLElement, input: HTMLInputElement, rangeEl: HTMLElement}}
-     */
-    const modalWithPrice = (rangeText, price) => {
-        const modal = document.createElement('div');
-        modal.innerHTML = `
-            <div class="MarketplacePanel_header__yahJo">Buy Listing</div>
-            <span class="range">${rangeText}</span>
-            <div class="MarketplacePanel_inputContainer__1qP2x">
-                <div class="MarketplacePanel_priceInputs__1qP2x"><input value="${price}"></div>
-            </div>`;
-        document.body.appendChild(modal);
-        return { modal, input: modal.querySelector('input'), rangeEl: modal.querySelector('.range') };
-    };
+/**
+ * A marketplace order modal shaped like the game's real price row: a
+ * `MarketplacePanel_input` center cell holding either a live `<input>` (once
+ * the player has clicked into it) or, the default, a `priceDisplay` div —
+ * flanked by `-`/`+` step buttons and, when the modal states a band, `Min`/
+ * `Max` bound buttons. `withMultiplier` also splices the shortcuts feature's
+ * own `mwi-mp-multiplier` ÷2/×2 wrappers onto either end of the row, exactly
+ * where `injectMultiplierButtons` in marketplace-shortcuts.js puts them.
+ * @param {Object} [options]
+ * @param {string} [options.header] - Modal header text
+ * @param {string} [options.rangeText] - The "Tradable range: ..." line, or '' for none
+ * @param {string|number} options.price - The price shown, editing or not
+ * @param {boolean} [options.editing] - Render a live `<input>` instead of the display div
+ * @param {boolean} [options.hasBounds] - Whether Min/Max buttons exist
+ * @param {boolean} [options.withMultiplier] - Splice in the ÷2/×2 wrappers
+ * @returns {{modal: HTMLElement, clicks: string[], input: HTMLInputElement|null,
+ *   priceDisplay: HTMLElement|null, rangeEl: HTMLElement|null,
+ *   setDisplayed: (value: string) => void}}
+ */
+function orderModalWithPriceRow({
+    header = 'Sell Listing',
+    rangeText = '',
+    price,
+    editing = false,
+    hasBounds = true,
+    withMultiplier = false,
+} = {}) {
+    const minCell = hasBounds ? '<div class="MarketplacePanel_buttonContainer__min"><button>Min</button></div>' : '';
+    const maxCell = hasBounds ? '<div class="MarketplacePanel_buttonContainer__max"><button>Max</button></div>' : '';
+    const divCell = withMultiplier
+        ? '<div class="MarketplacePanel_buttonContainer__div mwi-mp-multiplier"><button>÷2</button></div>'
+        : '';
+    const mulCell = withMultiplier
+        ? '<div class="MarketplacePanel_buttonContainer__mul mwi-mp-multiplier"><button>×2</button></div>'
+        : '';
+    const centerCell = editing
+        ? `<div class="MarketplacePanel_input__ctr"><input value="${price}"></div>`
+        : `<div class="MarketplacePanel_input__ctr"><div class="MarketplacePanel_priceDisplay__ctr">${price}</div></div>`;
 
+    const modal = document.createElement('div');
+    modal.innerHTML = `
+        <div class="MarketplacePanel_header__yahJo">${header}</div>
+        <span class="range">${rangeText}</span>
+        <div class="MarketplacePanel_inputContainer__1qP2x">
+            <div class="MarketplacePanel_priceInputs__1qP2x">
+                ${divCell}${minCell}
+                <div class="MarketplacePanel_buttonContainer__dec"><button>-</button></div>
+                ${centerCell}
+                <div class="MarketplacePanel_buttonContainer__inc"><button>+</button></div>
+                ${maxCell}${mulCell}
+            </div>
+        </div>`;
+    document.body.appendChild(modal);
+
+    const clicks = [];
+    const buttonNamed = (text) =>
+        Array.from(modal.querySelectorAll('button')).find((b) => b.textContent.trim() === text) || null;
+    ['Min', '-', '+', 'Max', '÷2', '×2'].forEach((text) => {
+        buttonNamed(text)?.addEventListener('click', () => clicks.push(text));
+    });
+
+    return {
+        modal,
+        clicks,
+        input: modal.querySelector('input'),
+        priceDisplay: modal.querySelector('div[class*="MarketplacePanel_priceDisplay"]'),
+        rangeEl: modal.querySelector('.range'),
+        setDisplayed(value) {
+            const display = modal.querySelector('div[class*="MarketplacePanel_priceDisplay"]');
+            if (display) display.textContent = value;
+            const input = modal.querySelector('input');
+            if (input) input.value = value;
+        },
+    };
+}
+
+describe("clamping a price by pressing the game's own bound buttons", () => {
+    afterEach(() => {
+        autoFillPrice.clampState = new WeakMap();
+        document.body.innerHTML = '';
+    });
+
+    test('a displayed price above the ceiling clicks Max once', () => {
+        const { modal, clicks } = orderModalWithPriceRow({
+            rangeText: 'Tradable range: 63.8M – 77.8M',
+            price: '100,000,000',
+        });
+        autoFillPrice.clampPriceToTradableRange(modal);
+        expect(clicks).toEqual(['Max']);
+    });
+
+    test('a displayed price below the floor clicks Min', () => {
+        const { modal, clicks } = orderModalWithPriceRow({
+            rangeText: 'Tradable range: 63.8M – 77.8M',
+            price: '50,000,000',
+        });
+        autoFillPrice.clampPriceToTradableRange(modal);
+        expect(clicks).toEqual(['Min']);
+    });
+
+    test('a displayed price inside the band is left alone', () => {
+        const { modal, clicks } = orderModalWithPriceRow({
+            rangeText: 'Tradable range: 63.8M – 77.8M',
+            price: '70,000,000',
+        });
+        autoFillPrice.clampPriceToTradableRange(modal);
+        expect(clicks).toEqual([]);
+    });
+
+    test('a focused edit-mode input is left alone even when out of range', () => {
+        const { modal, input, clicks } = orderModalWithPriceRow({
+            rangeText: 'Tradable range: 63.8M – 77.8M',
+            price: '100,000,000',
+            editing: true,
+        });
+        input.focus();
+        autoFillPrice.clampPriceToTradableRange(modal);
+        expect(clicks).toEqual([]);
+    });
+
+    test('an out-of-range edit-mode input that is not focused is still clamped by button', () => {
+        const { modal, clicks } = orderModalWithPriceRow({
+            rangeText: 'Tradable range: 63.8M – 77.8M',
+            price: '100,000,000',
+            editing: true,
+        });
+        autoFillPrice.clampPriceToTradableRange(modal);
+        expect(clicks).toEqual(['Max']);
+    });
+
+    test('no Min/Max buttons means no press, even out of range', () => {
+        const { modal, clicks } = orderModalWithPriceRow({
+            rangeText: 'Tradable range: 63.8M – 77.8M',
+            price: '100,000,000',
+            hasBounds: false,
+        });
+        autoFillPrice.clampPriceToTradableRange(modal);
+        expect(clicks).toEqual([]);
+    });
+
+    test('the bound button is still found past the ÷2/×2 multiplier wrappers', () => {
+        const { modal, clicks } = orderModalWithPriceRow({
+            rangeText: 'Tradable range: 63.8M – 77.8M',
+            price: '100,000,000',
+            withMultiplier: true,
+        });
+        autoFillPrice.clampPriceToTradableRange(modal);
+        expect(clicks).toEqual(['Max']);
+    });
+
+    test("the game's own exact bound, still outside a range parsed from rounded text, is not re-pressed", () => {
+        const { modal, clicks, setDisplayed } = orderModalWithPriceRow({
+            rangeText: 'Tradable range: 63.8M – 77.8M',
+            price: '100,000,000',
+        });
+        autoFillPrice.clampPriceToTradableRange(modal);
+        expect(clicks).toEqual(['Max']);
+
+        // The game settles on its own exact ceiling; the rounded range text
+        // still calls this "above 77.8M"
+        setDisplayed('77,841,234');
+        autoFillPrice.clampPriceToTradableRange(modal);
+        expect(clicks).toEqual(['Max']);
+
+        autoFillPrice.clampPriceToTradableRange(modal);
+        expect(clicks).toEqual(['Max']);
+    });
+
+    test('a later change to a different out-of-range price presses again', () => {
+        const { modal, clicks, setDisplayed } = orderModalWithPriceRow({
+            rangeText: 'Tradable range: 63.8M – 77.8M',
+            price: '100,000,000',
+        });
+        autoFillPrice.clampPriceToTradableRange(modal);
+        expect(clicks).toEqual(['Max']);
+
+        setDisplayed('77,841,234');
+        autoFillPrice.clampPriceToTradableRange(modal); // captures the produced price
+        expect(clicks).toEqual(['Max']);
+
+        // A best-price refill (or a band re-render after an enhancement-level
+        // change) lands on a new, different out-of-range price
+        setDisplayed('90,000,000');
+        autoFillPrice.clampPriceToTradableRange(modal);
+        expect(clicks).toEqual(['Max', 'Max']);
+    });
+});
+
+describe('the clamp stays live on the interval while the modal is open', () => {
     beforeEach(() => {
         vi.useFakeTimers();
         autoFillPrice.timerRegistry.clearAll();
+        autoFillPrice.clampState = new WeakMap();
     });
 
     afterEach(() => {
@@ -135,47 +316,120 @@ describe('the clamp stays live while the modal is open', () => {
         document.body.innerHTML = '';
     });
 
-    test('a best offer refilled under the floor after open snaps up to the floor', () => {
-        // The reported case: 15.1M–18.4M band, best buy offer 15M filled later
-        const { modal, input } = modalWithPrice('Tradable range: 15.1M – 18.4M', '16,000,000');
+    test('a displayed price above the ceiling is clicked to Max on the first tick', () => {
+        const { modal, clicks } = orderModalWithPriceRow({
+            rangeText: 'Tradable range: 15.1M – 18.4M',
+            price: '20,000,000',
+        });
         autoFillPrice.watchPriceBand(modal);
-
-        input.value = '15000000';
         vi.advanceTimersByTime(300);
-        expect(input.value).toBe('15100000');
+        expect(clicks).toEqual(['Max']);
     });
 
-    test('a sell price over a ceiling that moved snaps down to the ceiling', () => {
-        const { modal, input, rangeEl } = modalWithPrice('Tradable range: 15.1M – 18.4M', '18,000,000');
+    test('the produced price is not re-pressed on later ticks', () => {
+        const { modal, clicks, setDisplayed } = orderModalWithPriceRow({
+            rangeText: 'Tradable range: 15.1M – 18.4M',
+            price: '20,000,000',
+        });
         autoFillPrice.watchPriceBand(modal);
-
-        // The enhancement level changes and the band re-renders lower
-        rangeEl.textContent = 'Tradable range: 10M – 12M';
         vi.advanceTimersByTime(300);
-        expect(input.value).toBe('12000000');
+        expect(clicks).toEqual(['Max']);
+
+        setDisplayed('18,432,109');
+        vi.advanceTimersByTime(900); // three more ticks: capture, then two no-ops
+        expect(clicks).toEqual(['Max']);
     });
 
-    test('a price being typed is not snapped out from under the cursor', () => {
-        const { modal, input } = modalWithPrice('Tradable range: 15.1M – 18.4M', '16,000,000');
-        autoFillPrice.watchPriceBand(modal);
-
+    test('a focused input is never touched by the interval', () => {
+        const { modal, input, clicks } = orderModalWithPriceRow({
+            rangeText: 'Tradable range: 15.1M – 18.4M',
+            price: '20,000,000',
+            editing: true,
+        });
         input.focus();
-        input.value = '1'; // the prefix of 16,500,000, not a price
+        autoFillPrice.watchPriceBand(modal);
         vi.advanceTimersByTime(900);
-        expect(input.value).toBe('1');
-
-        input.blur();
-        vi.advanceTimersByTime(300);
-        expect(input.value).toBe('15100000');
+        expect(clicks).toEqual([]);
     });
 
     test('a closed modal stops being watched', () => {
-        const { modal, input } = modalWithPrice('Tradable range: 15.1M – 18.4M', '16,000,000');
+        const { modal, clicks } = orderModalWithPriceRow({
+            rangeText: 'Tradable range: 15.1M – 18.4M',
+            price: '20,000,000',
+        });
         autoFillPrice.watchPriceBand(modal);
-
         modal.remove();
-        input.value = '15000000';
         vi.advanceTimersByTime(900);
-        expect(input.value).toBe('15000000');
+        expect(clicks).toEqual([]);
+    });
+});
+
+describe('adjustPrice presses the step button matching the strategy, not an index', () => {
+    afterEach(() => {
+        document.body.innerHTML = '';
+        config.getSettingValue.mockImplementation((_key, fallback) => fallback);
+    });
+
+    test('buy outbid presses +', () => {
+        config.getSettingValue.mockImplementation((key) => (key === 'market_autoFillBuyStrategy' ? 'outbid' : 'match'));
+        const { modal, clicks } = orderModalWithPriceRow({ header: 'Buy Listing', price: '1,000' });
+        autoFillPrice.adjustPrice(modal, true, false);
+        expect(clicks).toEqual(['+']);
+    });
+
+    test('buy undercut presses -', () => {
+        config.getSettingValue.mockImplementation((key) =>
+            key === 'market_autoFillBuyStrategy' ? 'undercut' : 'match'
+        );
+        const { modal, clicks } = orderModalWithPriceRow({ header: 'Buy Listing', price: '1,000' });
+        autoFillPrice.adjustPrice(modal, true, false);
+        expect(clicks).toEqual(['-']);
+    });
+
+    test('buy match presses nothing', () => {
+        config.getSettingValue.mockImplementation((key) => (key === 'market_autoFillBuyStrategy' ? 'match' : 'match'));
+        const { modal, clicks } = orderModalWithPriceRow({ header: 'Buy Listing', price: '1,000' });
+        autoFillPrice.adjustPrice(modal, true, false);
+        expect(clicks).toEqual([]);
+    });
+
+    test('sell undercut presses -', () => {
+        config.getSettingValue.mockImplementation((key) =>
+            key === 'market_autoFillSellStrategy' ? 'undercut' : 'match'
+        );
+        const { modal, clicks } = orderModalWithPriceRow({ header: 'Sell Listing', price: '1,000' });
+        autoFillPrice.adjustPrice(modal, false, true);
+        expect(clicks).toEqual(['-']);
+    });
+
+    test('sell match presses nothing', () => {
+        config.getSettingValue.mockImplementation((key) => (key === 'market_autoFillSellStrategy' ? 'match' : 'match'));
+        const { modal, clicks } = orderModalWithPriceRow({ header: 'Sell Listing', price: '1,000' });
+        autoFillPrice.adjustPrice(modal, false, true);
+        expect(clicks).toEqual([]);
+    });
+
+    test('buy outbid presses + with the ÷2/×2 multiplier wrappers present', () => {
+        config.getSettingValue.mockImplementation((key) => (key === 'market_autoFillBuyStrategy' ? 'outbid' : 'match'));
+        const { modal, clicks } = orderModalWithPriceRow({
+            header: 'Buy Listing',
+            price: '1,000',
+            withMultiplier: true,
+        });
+        autoFillPrice.adjustPrice(modal, true, false);
+        expect(clicks).toEqual(['+']);
+    });
+
+    test('sell undercut presses - with the ÷2/×2 multiplier wrappers present', () => {
+        config.getSettingValue.mockImplementation((key) =>
+            key === 'market_autoFillSellStrategy' ? 'undercut' : 'match'
+        );
+        const { modal, clicks } = orderModalWithPriceRow({
+            header: 'Sell Listing',
+            price: '1,000',
+            withMultiplier: true,
+        });
+        autoFillPrice.adjustPrice(modal, false, true);
+        expect(clicks).toEqual(['-']);
     });
 });
