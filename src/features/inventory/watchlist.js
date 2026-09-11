@@ -41,6 +41,7 @@ import marketAPI from '../../api/marketplace.js';
 import { createCuratedRecord } from '../../utils/persisted-record.js';
 import { getItemPrices } from '../../utils/market-data.js';
 import { formatWithSeparator, formatKMB } from '../../utils/formatters.js';
+import { toCsv, csvFilename, downloadCsv } from '../../utils/csv-export.js';
 import { registerFloatingPanel, unregisterFloatingPanel, bringPanelToFront } from '../../utils/panel-z-index.js';
 import { makeDraggable, makeResizable, panelHeightCap } from '../../utils/floating-panel.js';
 import { restoreGeometry, saveGeometry } from '../../utils/panel-geometry.js';
@@ -313,6 +314,27 @@ function vendorPriceOf(itemHrid) {
 }
 
 /**
+ * The watchlist export, one row per tracked item.
+ *
+ * Raw numbers rather than the panel's `1.2M` — a spreadsheet needs `1200000`
+ * to sort or sum a column, and a CSV of display strings is a screenshot with
+ * extra steps.
+ */
+export const WATCHLIST_CSV_COLUMNS = [
+    { key: 'name', label: 'Item' },
+    { key: 'enhancementLevel', label: 'Enhancement' },
+    { key: 'held', label: 'Held' },
+    { key: 'listed', label: 'Listed' },
+    { key: 'unclaimed', label: 'Unclaimed' },
+    { key: 'quantity', label: 'Total Qty' },
+    { key: 'ask', label: 'Ask (unit)' },
+    { key: 'bid', label: 'Bid (unit)' },
+    { key: 'totalAsk', label: 'Total Ask' },
+    { key: 'totalBid', label: 'Total Bid' },
+    { key: 'flag', label: 'Flag' },
+];
+
+/**
  * Every row, priced and counted.
  * @returns {Array<Object>} From `valueWatchlist`, sorted
  */
@@ -528,9 +550,58 @@ class WatchlistPanel {
             'Adds Track / Untrack beside Sell when you click an inventory item. Off by default, because it ' +
                 'changes a menu you open for other reasons and a misclick there is a sale.'
         );
+        this.exportBtn = this._exportButton();
 
-        header.append(title, this.headerCount, this.headerTotal, spacer, this.dotsBtn, this.menuBtn, close);
+        header.append(
+            title,
+            this.headerCount,
+            this.headerTotal,
+            spacer,
+            this.dotsBtn,
+            this.menuBtn,
+            this.exportBtn,
+            close
+        );
         return header;
+    }
+
+    /**
+     * The CSV export button.
+     *
+     * A plain action rather than a toggle — same look as the two switches
+     * beside it, since it belongs in the same row, but nothing here reflects a
+     * setting. Disabled rather than removed when there is nothing to export:
+     * removing it on an empty list would move every other header control on
+     * the one refresh that emptied it.
+     *
+     * @returns {HTMLButtonElement}
+     */
+    _exportButton() {
+        const button = document.createElement('button');
+        button.textContent = 'Export CSV';
+        button.title =
+            'Save every tracked item as a spreadsheet — held, listed, unclaimed and both prices, raw numbers.';
+        Object.assign(button.style, {
+            background: 'rgba(255, 255, 255, 0.06)',
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: '3px',
+            color: COLORS.textDim,
+            cursor: 'pointer',
+            fontSize: '10px',
+            padding: '2px 7px',
+            whiteSpace: 'nowrap',
+        });
+        button.addEventListener('click', (event) => {
+            event.stopPropagation();
+            try {
+                const rows = watchlistRows();
+                if (!rows.length) return;
+                downloadCsv(csvFilename('watchlist'), toCsv(rows, WATCHLIST_CSV_COLUMNS));
+            } catch (error) {
+                console.error('[Watchlist] CSV export failed:', error);
+            }
+        });
+        return button;
     }
 
     /**
@@ -591,6 +662,13 @@ class WatchlistPanel {
         this.headerCount.title = 'How many of the tracked items you hold any of.';
         this.headerTotal.textContent = `${formatKMB(totals.ask)} ask · ${formatKMB(totals.bid)} bid`;
         this._paintToggles();
+
+        if (this.exportBtn) {
+            const hasRows = rows.length > 0;
+            this.exportBtn.disabled = !hasRows;
+            this.exportBtn.style.opacity = hasRows ? '1' : '0.4';
+            this.exportBtn.style.cursor = hasRows ? 'pointer' : 'default';
+        }
 
         // Drawn into a detached scratch box and swapped in only when the markup
         // actually changed — the combat-panels.js `_render` idiom. Counts and

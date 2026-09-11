@@ -174,8 +174,10 @@ const {
     clearWatchlist,
     unwatchItem,
     flushWatchlistWrites,
+    WATCHLIST_CSV_COLUMNS,
     default: watchlist,
 } = await import('./watchlist.js');
+const { toCsv } = await import('../../utils/csv-export.js');
 const { _resetAdoptionCache } = await import('../../utils/character-key.js');
 // The real registry, so the overlay tile registered by the module above can be
 // asked for its `version()`
@@ -486,6 +488,38 @@ describe('the header', () => {
 
         // Cheese is held, the hat is not
         expect(watchlistPanel.headerCount.textContent).toBe('1 / 2');
+    });
+});
+
+describe('the CSV export', () => {
+    const exportButton = () =>
+        [...watchlistPanel.panel.querySelectorAll('button')].find((el) => el.textContent === 'Export CSV');
+
+    test('is disabled until something is tracked, then enabled', () => {
+        watchlistPanel.show();
+        expect(exportButton().disabled).toBe(true);
+
+        watchItem('/items/cheese');
+        watchlistPanel._render();
+
+        expect(exportButton().disabled).toBe(false);
+    });
+
+    test('carries the expected header and a row per tracked item', () => {
+        watchItem('/items/cheese');
+        watchlistPanel.show();
+
+        const csv = toCsv(watchlistRows(), WATCHLIST_CSV_COLUMNS);
+
+        expect(csv).toContain(
+            'Item,Enhancement,Held,Listed,Unclaimed,Total Qty,Ask (unit),Bid (unit),Total Ask,Total Bid,Flag'
+        );
+        expect(csv).toContain('Cheese');
+    });
+
+    test('clicking it does nothing harmful when the list is empty', () => {
+        watchlistPanel.show();
+        expect(() => exportButton().click()).not.toThrow();
     });
 });
 
