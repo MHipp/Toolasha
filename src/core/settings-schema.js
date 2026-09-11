@@ -1522,6 +1522,13 @@ export const settingsGroups = {
                 default: true,
                 help: 'Passively records every fill on your own listings (partial fills included) and adds a "Ledger" tab to the marketplace showing per-item realized profit — sells matched against your average recorded buy cost, proceeds net of the 5% market tax — with weekly totals and CSV export.',
             },
+            market_staleCapital: {
+                id: 'market_staleCapital',
+                label: 'Market: Show stale capital tab',
+                type: 'checkbox',
+                default: true,
+                help: 'Adds a "Stale" tab to the marketplace ranking your open sell listings and buy orders by coins tied up, with each row\'s age and how its price compares to the current book.',
+            },
             market_listingPricePrecision: {
                 id: 'market_listingPricePrecision',
                 label: 'Market: Listing price decimal precision',

@@ -894,6 +894,13 @@ function registerFeatures() {
             async: false,
         },
         {
+            key: 'staleCapitalView',
+            name: 'Stale Capital View',
+            category: 'Market',
+            module: Market.staleCapitalView,
+            async: false,
+        },
+        {
             key: 'tradeHistoryDisplay',
             name: 'Trade History Display',
             category: 'Market',

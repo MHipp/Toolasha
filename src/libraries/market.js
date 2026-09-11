@@ -72,6 +72,7 @@ import dungeonTokenTooltips from '../features/inventory/dungeon-token-tooltips.j
 import treasureTracker from '../features/inventory/treasure-tracker.js';
 import tradeLedgerStore from '../features/market/trade-ledger-store.js';
 import tradeLedgerView from '../features/market/trade-ledger-view.js';
+import staleCapitalView from '../features/market/stale-capital-view.js';
 import watchlist, { watchlistPanel, watchItem } from '../features/inventory/watchlist.js';
 import autoAllButton from '../features/inventory/auto-all-button.js';
 import inventoryCategoryTotals from '../features/inventory/inventory-category-totals.js';
@@ -138,6 +139,7 @@ toolashaRoot.Market = {
     treasureTracker,
     tradeLedgerStore,
     tradeLedgerView,
+    staleCapitalView,
     abilityBookPanel,
     abilityCheckpoints,
     watchlist,
