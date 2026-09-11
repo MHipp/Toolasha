@@ -238,31 +238,40 @@ export function formatKMB3Digits(num) {
     const absNum = Math.abs(num);
     const sign = num < 0 ? '-' : '';
 
+    // NaN clears no tier below, and a missing tier would throw
+    if (Number.isNaN(absNum)) return 'NaN';
+
     if (absNum < 1e3) {
         return signedMagnitude(sign, Math.floor(absNum).toString());
     }
 
     // The first tier `absNum` clears — always finds one, since absNum >= 1e3 here
     let tierIndex = KMB_3DIGIT_TIERS.findIndex((tier) => absNum >= tier.threshold);
-    let { threshold, suffix } = KMB_3DIGIT_TIERS[tierIndex];
-    let value = absNum / threshold;
-    let rounded = parseFloat(value.toFixed(2));
+    let text = threeDigitText(absNum / KMB_3DIGIT_TIERS[tierIndex].threshold);
 
     // A value that rounds up to 4 digits belongs a tier higher (999999 -> "1.00M",
-    // not "1000K"). This used to stop at B with no T/Q above it to promote into,
-    // so a trillion-plus gold figure displayed as "1000B" instead of "1.00T".
-    while (rounded >= 1000 && tierIndex > 0) {
+    // not "1000K"), judged on the text as printed: 999.5 is 999.50 at two decimals
+    // but "1000" at the none it prints with
+    while (Number(text) >= 1000 && tierIndex > 0) {
         tierIndex -= 1;
-        ({ threshold, suffix } = KMB_3DIGIT_TIERS[tierIndex]);
-        value = absNum / threshold;
-        rounded = parseFloat(value.toFixed(2));
+        text = threeDigitText(absNum / KMB_3DIGIT_TIERS[tierIndex].threshold);
     }
 
-    let decimals = 2;
-    if (rounded >= 100) decimals = 0;
-    else if (rounded >= 10) decimals = 1;
+    return sign + text + KMB_3DIGIT_TIERS[tierIndex].suffix;
+}
 
-    return sign + value.toFixed(decimals) + suffix;
+/**
+ * A tier value at three significant digits, the decimals chosen from the text
+ * as rounded rather than from the raw value, so 9.995 prints "10.0", not "10.00".
+ * @param {number} value - The value in its tier's units, >= 1
+ * @returns {string} Two, one or no decimals; "1000" or more means promote a tier
+ */
+function threeDigitText(value) {
+    const hundredths = value.toFixed(2);
+    if (Number(hundredths) < 10) return hundredths;
+    const tenths = value.toFixed(1);
+    if (Number(tenths) < 100) return tenths;
+    return value.toFixed(0);
 }
 
 /**

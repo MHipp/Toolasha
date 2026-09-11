@@ -238,6 +238,19 @@ describe('formatKMB3Digits', () => {
         expect(formatKMB3Digits(999999999999)).toBe('1.00T');
     });
 
+    test('checks for a fourth digit after rounding at the decimals it prints', () => {
+        // 999.5K is 999.50 at two decimals, under the promotion check, but prints
+        // with none because it is over 100 — and 999.5 at no decimals is "1000"
+        expect(formatKMB3Digits(999500)).toBe('1.00M');
+        expect(formatKMB3Digits(-999500)).toBe('-1.00M');
+        expect(formatKMB3Digits(999500000000)).toBe('1.00T');
+        expect(formatKMB3Digits(99950)).toBe('100K');
+    });
+
+    test('returns NaN for NaN instead of throwing', () => {
+        expect(formatKMB3Digits(NaN)).toBe('NaN');
+    });
+
     test('formats trillions and quadrillions with the same 3-significant-digit rule as the lower tiers', () => {
         expect(formatKMB3Digits(1250000000000)).toBe('1.25T');
         expect(formatKMB3Digits(82300000000000)).toBe('82.3T');
