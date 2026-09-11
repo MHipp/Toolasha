@@ -6,6 +6,8 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+<!-- shipped in 3.48.0 -->
+
 ### The lab sim's typed-over token levels stay with their character
 
 A slow storage read could land after a character switch and hand the departing character's labyrinth token levels to the arriving one's simulations, then save them under that character. The read is now refused once the character has moved, and closing the panel forgets the levels until they are read back.
@@ -2707,6 +2709,68 @@ The marketplace layout change gave the price row its own "Max" button and put it
 ### Combat sim nets the market sale tax off drop revenue
 
 The simulator valued every drop at its gross market price, so profit ignored the sale tax entirely — which is why the rise to 5% never moved it. Every drop-revenue path now nets the tax off each non-coin drop, cowbell bags at their own 18%: the Results summary, the Drops table's Gold columns, and the comparison and upgrade rows. Coin drops stay whole.
+
+## [3.48.0](https://github.com/Millennium44/Toolasha/compare/v3.47.0...v3.48.0) (2026-09-11)
+
+### Features
+
+- ship the startup recovery off until it is turned on ([cf64ae5](https://github.com/Millennium44/Toolasha/commit/cf64ae5ff5e4f65decaa0eaf4dab69e60ce02462))
+- what's new shows the entries since your version ([b70426e](https://github.com/Millennium44/Toolasha/commit/b70426edbd31f0875098720d2cffdf1a7d0e7046))
+
+### Bug Fixes
+
+- a restored chat message keeps the name its profile link needs ([dd800f1](https://github.com/Millennium44/Toolasha/commit/dd800f1e2ab7cbfb35b17afb142e4c6a716a1c3e))
+- a restored chat message's sender name opens the profile again ([0ba99ab](https://github.com/Millennium44/Toolasha/commit/0ba99abc09893ea946cf64b3c2c5d4db4ce762b1))
+- a storage read that never comes back no longer stops the whole script ([2d21389](https://github.com/Millennium44/Toolasha/commit/2d21389b9b58ead71415ef5f439d9ecb55db5231))
+- a switch mid-load no longer files one character's chat under another's ([724137e](https://github.com/Millennium44/Toolasha/commit/724137ed51c8cbb33303f16b0f392bb2a31ca3a3))
+- a switch mid-load no longer leaks a price listener and a flush timer ([2fa8912](https://github.com/Millennium44/Toolasha/commit/2fa891206247ea1f077f9680999023c40d9e1c1f))
+- a switch mid-read no longer reopens one character's panels as another's ([5b78b50](https://github.com/Millennium44/Toolasha/commit/5b78b50fd9fe0b4bcd3971aca1a63fe29e492458))
+- a torn-down market history panel stops re-offering its palette command ([aab56fb](https://github.com/Millennium44/Toolasha/commit/aab56fbd9b865d88a1921b244ac8ef94d66783af))
+- action panel's height cap ignores the mobile keyboard ([53c0503](https://github.com/Millennium44/Toolasha/commit/53c05036c22196bfed3446410cb7e041c32904f1))
+- bound the mention popup and pop-out chat to the visible viewport ([93647f5](https://github.com/Millennium44/Toolasha/commit/93647f5312e421f4236ac9bf29bdb91922dcb596))
+- build score priced its two equipment halves against two characters ([b8a7c10](https://github.com/Millennium44/Toolasha/commit/b8a7c100639e147d4b9fe138a0ccadd645c87cf1))
+- close the IndexedDB connection when the page goes away ([5d56440](https://github.com/Millennium44/Toolasha/commit/5d56440fd4de723bc64acf756578aba1e60cf0af))
+- dungeon chart render resuming after a teardown leaks a Chart.js instance ([6b59950](https://github.com/Millennium44/Toolasha/commit/6b59950571d357da6581fbcdf95dac8fa5a6f189))
+- dungeon ROI board built rows across a character switch ([500f7c9](https://github.com/Millennium44/Toolasha/commit/500f7c9b5bba4501d6055ea666d5ebc2cf7872b4))
+- dungeon tracker narrows runs to whoever asked, not whoever arrived ([208edb8](https://github.com/Millennium44/Toolasha/commit/208edb8098cf25e9b3bef0c0132761123370ae66))
+- enhancing detection memo survives a character switch ([e22827a](https://github.com/Millennium44/Toolasha/commit/e22827a47b206a2da90518b9e905b365bcc73147))
+- floating panels size to the visible viewport, not the layout one ([9a5985d](https://github.com/Millennium44/Toolasha/commit/9a5985dd2356147e7bb0d4a7e11bf0cdf49716dd))
+- hold the bulk sell strip's buttons still and let its status line unfold ([e84202c](https://github.com/Millennium44/Toolasha/commit/e84202cb7f942d5a8ec3bd2693de0f033d189618))
+- house cumulative section keeps its height instead of squeezing the panel ([f0dea72](https://github.com/Millennium44/Toolasha/commit/f0dea72c70e557bc31ca8c85a5cfd13591d4a083))
+- house upgrade cumulative cost list scrolls on mobile ([588ea35](https://github.com/Millennium44/Toolasha/commit/588ea358d9faf410b2df1aa872bf0065be9b2118))
+- keep two panel lists where the reader scrolled them, and cut the changelog down ([015a72a](https://github.com/Millennium44/Toolasha/commit/015a72a15866fb469febeb1d37c25f24689d61b4))
+- lab sim token buff restore no longer adopts a stale character's levels ([5d437ad](https://github.com/Millennium44/Toolasha/commit/5d437adc6ddfdea533ba756a1d6792d779f3cfaf))
+- restored chat history lands in the tab it came from ([7e66d05](https://github.com/Millennium44/Toolasha/commit/7e66d05b14f52a47fc97e32acd9cdc997d634c16))
+- scope settings tab-switch deselect to its own tab list ([db6a954](https://github.com/Millennium44/Toolasha/commit/db6a9547d15ad743e285efe6996192c61b612d6a))
+- share one visual-viewport tracker, and changelog the leftovers round ([7980123](https://github.com/Millennium44/Toolasha/commit/7980123bf2920fb117d8c444240f2f7fdff9a0d8))
+- ship the newest twelve changelog entries, whole, instead of 20k characters of them ([29f1c80](https://github.com/Millennium44/Toolasha/commit/29f1c80ff3adbeef4cff080bd566a2f2176351a0))
+- shorten a panel taller than the screen, and re-clamp when the keyboard opens ([a166b3b](https://github.com/Millennium44/Toolasha/commit/a166b3b08e54ced175c0fae88afa473b62acbe49))
+- size the what's-new slice by release, not by a guessed count ([ef6ae98](https://github.com/Millennium44/Toolasha/commit/ef6ae986168b68c750af04a2e80858a3ef983009))
+- stat check panel's bottom edge and resize handle sit off screen ([7844ce8](https://github.com/Millennium44/Toolasha/commit/7844ce852e31e0d35e89e5b2c4eb961d7b5b4db6))
+- stop the lab skilling analysis at teardown instead of letting it run into the next character ([027a9d1](https://github.com/Millennium44/Toolasha/commit/027a9d152ccd5ef4ae945d4a81b4f632ead14dda))
+- the house cost list keeps its place when an action redraws it ([cdde557](https://github.com/Millennium44/Toolasha/commit/cdde55708789dbdcd84ab61550da75d5a25f16e2))
+- the loot log pivot panel reaches the class, not the feature descriptor ([d96a87e](https://github.com/Millennium44/Toolasha/commit/d96a87e8659805e6a723d81a2c9dcdf987a39c8d))
+- the trial ledger stops drawing the departed guild over the arriving one ([55e4343](https://github.com/Millennium44/Toolasha/commit/55e43438696fbef9b0b3b444edd18e451f3248a2))
+
+### Documentation
+
+- changelog for the bulk sell strip's steady controls ([2b97ad7](https://github.com/Millennium44/Toolasha/commit/2b97ad7d9f3f34851cc6bfe729d0d03b40e44197))
+- changelog for the house cost list scrolling on mobile ([d5c3934](https://github.com/Millennium44/Toolasha/commit/d5c393483659fecc23f378ca113708b771913964))
+- changelog for the second leftovers round ([cccfb64](https://github.com/Millennium44/Toolasha/commit/cccfb64940980b6fc5db3e3552d779ed66faedee))
+- changelog for the since-your-version panel slice ([a143910](https://github.com/Millennium44/Toolasha/commit/a14391043d35184737c4aee382644ce60993b031))
+- changelog for the squeezed house cumulative section ([f49ff93](https://github.com/Millennium44/Toolasha/commit/f49ff93b0dceed320d2866613f4fabad460e8cea))
+- changelog for the storage read watchdog ([0c93295](https://github.com/Millennium44/Toolasha/commit/0c93295e4bb75e6cea99bae3bcf44de92ab430d6))
+- changelog for the tab-highlight fix ([02050cd](https://github.com/Millennium44/Toolasha/commit/02050cdcc9ba22d5f0e0a8b9e9a87dc6a445bd83))
+- changelog for the teardown connection close and write watchdog ([c83f11e](https://github.com/Millennium44/Toolasha/commit/c83f11e044f4349599305455b4147a07b6f6abec))
+- changelog for the third leftovers round ([95c84b0](https://github.com/Millennium44/Toolasha/commit/95c84b057f7556796fbbf10a1b8890293af9f871))
+- changelog for the what's-new slice ([7fcb374](https://github.com/Millennium44/Toolasha/commit/7fcb374da7f525ff8c77ebdd69244d47c8e63710))
+- trim the first 100 unreleased changelog entries to the brevity cap ([1db2234](https://github.com/Millennium44/Toolasha/commit/1db2234e83d2fdddd87b6f962b722d6f8ce50a50))
+- trim the last unreleased changelog entries to the brevity cap ([bfe1084](https://github.com/Millennium44/Toolasha/commit/bfe1084ffb29b4584086e6a23d55c8cb8a0e63ed))
+- trim unreleased changelog entries 100-144 to the brevity cap ([08e7cf9](https://github.com/Millennium44/Toolasha/commit/08e7cf99c4930dacf67e98c2832cf90bae07a11c))
+- trim unreleased changelog entries 145-234 to the brevity cap ([ef7f3b4](https://github.com/Millennium44/Toolasha/commit/ef7f3b447a0c3caa19de68609e13dab44a095a61))
+- trim unreleased changelog entries 235-339 to the brevity cap ([72326b3](https://github.com/Millennium44/Toolasha/commit/72326b3f427c6ca706fccbdd3fd677459f8646fc))
+- trim unreleased changelog entries 340-399 to the brevity cap ([9dd2041](https://github.com/Millennium44/Toolasha/commit/9dd2041dd3a1b1281019b380215e0306122cb915))
+- trim unreleased changelog entries 400-469 to the brevity cap ([c384621](https://github.com/Millennium44/Toolasha/commit/c384621a1ba7c9f8264584c30db55c4443f77b73))
 
 ## [3.47.0](https://github.com/Millennium44/Toolasha/compare/v3.46.0...v3.47.0) (2026-09-10)
 
