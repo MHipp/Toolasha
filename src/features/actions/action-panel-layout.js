@@ -15,7 +15,8 @@
  *
  * Three things, all CSS:
  *
- * - **The modal stops growing at the height of the window.** It is the panel
+ * - **The modal stops growing at the height of the window** — the visible part
+ *   of it, so the cap still holds with the mobile keyboard up. It is the panel
  *   that scrolls after that, not the page, so the close button and the title
  *   stay where they are instead of drifting off the top.
  * - **The buttons stick to the bottom of the panel.** They are the panel's
@@ -43,11 +44,28 @@ const STYLE_ID = 'toolasha-action-panel-layout';
 /** Room for the modal's own chrome — its padding and the close button */
 const CHROME_PX = 96;
 
+/**
+ * The height to size against: the *visible* viewport, not the layout one.
+ *
+ * `100vh` and `window.innerHeight` do not shrink when the mobile on-screen
+ * keyboard comes up, and this panel has two text inputs that bring it up — the
+ * game's quantity field and the budget box this script adds
+ * (`budget-calculator.js`). The buttons strip below is `position: sticky;
+ * bottom: 0`, pinned to the bottom of whatever box these rules describe, so
+ * sizing that box off the layout viewport puts Queue and Start underneath the
+ * keyboard with nothing left to scroll to — the exact failure this file exists
+ * to prevent, reintroduced by the keyboard. `--toolasha-visual-viewport-height`
+ * (published on `<html>` by `src/utils/visual-viewport.js`) tracks the keyboard
+ * as well as the address bar; `100vh` is the fallback for browsers without
+ * `visualViewport`, which is what these rules said before.
+ */
+const VIEWPORT_HEIGHT = 'var(--toolasha-visual-viewport-height, 100vh)';
+
 const CSS = `
     /* Only modals holding an action panel. The marketplace and the settings
        dialogs share these class names and want none of this. */
     [class*="Modal_modal__"]:has([class*="SkillActionDetail_skillActionDetail"]) {
-        max-height: calc(100vh - 24px);
+        max-height: calc(${VIEWPORT_HEIGHT} - 24px);
     }
 
     [class*="Modal_modal__"]:has([class*="SkillActionDetail_skillActionDetail"])
@@ -64,7 +82,7 @@ const CSS = `
        of padding a side is a card wider than its column — and those are fixed
        where they are built rather than clipped here. */
     [class*="SkillActionDetail_skillActionDetail"] {
-        max-height: calc(100vh - ${CHROME_PX}px);
+        max-height: calc(${VIEWPORT_HEIGHT} - ${CHROME_PX}px);
         overflow-y: auto;
         overflow-x: hidden;
         overscroll-behavior: contain;
