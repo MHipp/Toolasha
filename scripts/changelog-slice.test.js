@@ -146,9 +146,10 @@ describe('sliceForkChangelog', () => {
  * into it every day, so a test pinned to today's exact marker count goes red
  * on the next release (as happened when 3.48.0 became the first marked one).
  * These instead check invariants the code documents, at three points in the
- * changelog's life: before any release ever stamped a marker, today (one
- * marker), and one release from now (a second, newer marker with a new entry
- * shipped under it). The last two are built with the modules' own helpers
+ * changelog's life: before any release ever stamped a marker, today (however
+ * many markers it has), and one release from now (a newer marker with a new
+ * entry shipped under it). Nothing here may depend on how many entries sit
+ * above a marker, which changes with every changelog entry. The last two are built with the modules' own helpers
  * rather than hand-typed markdown, so they track the real marker format
  * instead of a guess at it.
  */
@@ -156,9 +157,9 @@ describe('the real CHANGELOG.md across release states', () => {
     const real = readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf-8');
 
     const states = {
-        'no markers': real.replace(/^<!--\s*shipped in\s+[\d.]+\s*-->\n\n/m, ''),
-        'one marker (today)': real,
-        'two markers (one release from now)': (() => {
+        'no markers': real.replace(/^<!--\s*shipped in\s+[\d.]+\s*-->\n\n/gm, ''),
+        'as it stands today': real,
+        'one release from now': (() => {
             const stamped = stampChangelog(real, '9.9.9').text;
             return stamped.replace(
                 markerFor('9.9.9'),
@@ -176,9 +177,10 @@ describe('the real CHANGELOG.md across release states', () => {
 
     test.each(Object.entries(states))('%s: ships within the documented bounds', (_label, changelog) => {
         const result = sliceForkChangelog(changelog);
-        // Fewer than two markers: no release boundary to slice on, so the floor
-        // answers exactly (`entriesToCover` returns 0, per changelog-slice.js).
-        if (result.markerVersions.length < 2) {
+        // No marker: nothing to slice on, so the floor answers exactly
+        // (`entriesToCover` returns 0). Any marker, even a lone one, asks for the
+        // entries above it, which the floor and ceiling then clamp.
+        if (result.markerVersions.length === 0) {
             expect(result.shownEntries).toBe(DEFAULT_MIN_ENTRIES);
         } else {
             expect(result.shownEntries).toBeGreaterThanOrEqual(DEFAULT_MIN_ENTRIES);
