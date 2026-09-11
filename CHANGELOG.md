@@ -6,6 +6,8 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+<!-- shipped in 3.50.0 -->
+
 ### Leftovers: one button walks the sell queue, and the gold panel owns up to what it could not value
 
 Bulk Sell's Confirm and Next now share one slot, so the whole queue can be worked by clicking the same spot: Confirm sells the open item, Next opens the following one. Skip has its own button beside them and appears only while an item is open, so it can no longer be hit by accident, and Stop stays where it is.
@@ -2781,6 +2783,56 @@ The marketplace layout change gave the price row its own "Max" button and put it
 ### Combat sim nets the market sale tax off drop revenue
 
 The simulator valued every drop at its gross market price, so profit ignored the sale tax entirely — which is why the rise to 5% never moved it. Every drop-revenue path now nets the tax off each non-coin drop, cowbell bags at their own 18%: the Results summary, the Drops table's Gold columns, and the comparison and upgrade rows. Coin drops stay whole.
+
+## [3.50.0](https://github.com/Millennium44/Toolasha/compare/v3.49.0...v3.50.0) (2026-09-11)
+
+### Features
+
+- gold panel counts the dungeon keys your runs use up ([e09d8db](https://github.com/Millennium44/Toolasha/commit/e09d8dbb4748139ea836d22f2480db01374a4ebe))
+- gold panel counts the teas drunk while skilling ([9e9a610](https://github.com/Millennium44/Toolasha/commit/9e9a6104afdc2d62134049375558b35cd7132ebf))
+- gold panel counts what rerolling tasks cost ([d56c573](https://github.com/Millennium44/Toolasha/commit/d56c57330a53b4d03eae849e577f3ab36cf3607b))
+- let a timer name itself instead of guessing from its tick ([6798d4e](https://github.com/Millennium44/Toolasha/commit/6798d4e6b802810990f1c6ff19901d2f49ddd767))
+- record combat loot live whenever the game is open ([63124e0](https://github.com/Millennium44/Toolasha/commit/63124e054b6331e237ee77e5b4a6e268e0803363))
+- record gathering drops live whenever the game is open ([8c3c83e](https://github.com/Millennium44/Toolasha/commit/8c3c83e574d8b99abc3b55281573b0dcf22f7cd1))
+
+### Bug Fixes
+
+- 3-digit prices never print "1000K", and NaN no longer throws ([0bae07f](https://github.com/Millennium44/Toolasha/commit/0bae07f492ecfef9824242c8f4c437119a157c17))
+- alchemy action protection reads the running action, not the array-first one ([561bfa6](https://github.com/Millennium44/Toolasha/commit/561bfa6ab4d9f27da37ae9b80ad52ee9de82b805))
+- an unflagged party run is credited to nobody, not to slot 0 ([bdb5faa](https://github.com/Millennium44/Toolasha/commit/bdb5faaa27703a1317701b39093e4431bbe3afdd))
+- bonus revenue drops follow the profit pricing mode ([8c0d2bb](https://github.com/Millennium44/Toolasha/commit/8c0d2bbc228fb5bab4fc183fd512a5a58aeaa534))
+- budget and goal boxes accept "1.5t" and "2q" ([b3e7450](https://github.com/Millennium44/Toolasha/commit/b3e745080f8a9b843800510b7800d85f3fc6b0b3))
+- bulk sell strip shares one slot between Confirm and Next ([92aede3](https://github.com/Millennium44/Toolasha/commit/92aede32860b647fe2b5c7f54c94d9320fabd49b))
+- combat drops count each run once, as the most any recording saw ([3d650f0](https://github.com/Millennium44/Toolasha/commit/3d650f0fd28e7ce3eb5f7138c694073bf3e1eeeb))
+- compact numbers promote at 1000 instead of printing "1000.0K" ([ea6aeda](https://github.com/Millennium44/Toolasha/commit/ea6aeda760c94d8b2a30362c00622721d767b6ca))
+- cost summary no longer drops coin from a recipe's direct cost ([e0f9ed0](https://github.com/Millennium44/Toolasha/commit/e0f9ed0d963ce65f42b70c146f04524f06a00996))
+- forecast doubling time reads "&gt;10y" instead of 700 billion days ([74bdb6f](https://github.com/Millennium44/Toolasha/commit/74bdb6f631267515fd1eb308761aae5ea5968cae))
+- gains the market cannot price count at their net worth valuation ([e1e26a0](https://github.com/Millennium44/Toolasha/commit/e1e26a0953e445542c66982272a51bdd7eaec309))
+- gathering loot is spread over the span the action ran ([937ef2d](https://github.com/Millennium44/Toolasha/commit/937ef2de668c377a421b3e6338ca3b2f3e28d47e))
+- gold attribution counts a combat run that ended before a reload ([53e733d](https://github.com/Millennium44/Toolasha/commit/53e733db75c2a199c4b16dcd8c04e3f6d90a7229))
+- gold panel says when a marketplace fill could not be valued ([605903f](https://github.com/Millennium44/Toolasha/commit/605903fd1dbe45ac23c91089fd6778cd4986d2d1))
+- marketplace row counts each fill at today's valuation, buys and sells alike ([b984254](https://github.com/Millennium44/Toolasha/commit/b9842543a5059206d3cd11be0e17315d21662dae))
+- net worth forecast starts from the last positive total ([788f714](https://github.com/Millennium44/Toolasha/commit/788f71462b0236861f3ee7735d0ad6a9e7b68a28))
+- resolveItemPrice's production-cost fallback now follows the pricing mode ([40a7571](https://github.com/Millennium44/Toolasha/commit/40a75711542b03f904881e1bc2a4e4339752f743))
+- threshold number format shows T and Q and promotes at 1000 ([4c73888](https://github.com/Millennium44/Toolasha/commit/4c73888a393dec700408c91e10e8038b9696fe8b))
+- typed amounts read "1,500m" as 1.5 billion, not 1.5 million ([76ac167](https://github.com/Millennium44/Toolasha/commit/76ac16792f49246e95ea9050d8ddbcd4db0e4929))
+- typed amounts refuse malformed grouping like "1.2.3" ([2088951](https://github.com/Millennium44/Toolasha/commit/208895126ebb007fb7114e21949654fcddff1018))
+
+### Code Refactoring
+
+- remove dead profit-calculator code ([5f7a617](https://github.com/Millennium44/Toolasha/commit/5f7a61711af4e5bfe33f12b7743c257bbf8430b8))
+
+### Documentation
+
+- changelog for combat drops counted whenever the game is open ([3ab4aff](https://github.com/Millennium44/Toolasha/commit/3ab4aff265ef400b8b3a2728b5e993bb20800cf4))
+- changelog for the audit round on typed amounts, compact numbers and profit fallbacks ([414e69a](https://github.com/Millennium44/Toolasha/commit/414e69a0e2111aea3ec31fcff83725abaa1a900f))
+- changelog for the gold panel leftovers ([aa9de5d](https://github.com/Millennium44/Toolasha/commit/aa9de5d4ae1ec30570d683a39e1f6937f4ecaab8))
+- changelog for the sell strip slot and the gold panel leftovers ([27a8f2a](https://github.com/Millennium44/Toolasha/commit/27a8f2ab6b431b3d69fb0b480cae7395649ac801))
+- the autofill match default is for new installs only ([fe92314](https://github.com/Millennium44/Toolasha/commit/fe92314a65d9b930e010c145b0d14438371556bc))
+
+### Tests
+
+- changelog slice bounds hold however many markers the real changelog has ([156833c](https://github.com/Millennium44/Toolasha/commit/156833ccdd4f1b30c7e5b4f7582288a7a7a07aa8))
 
 ## [3.49.0](https://github.com/Millennium44/Toolasha/compare/v3.48.0...v3.49.0) (2026-09-11)
 
