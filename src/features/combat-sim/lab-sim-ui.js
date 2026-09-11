@@ -5616,7 +5616,19 @@ class LabSimUI {
                 },
             });
 
-            this._renderSkillingUpgradeResults(analysisResult, resultsEl);
+            // The results element this run started drawing into, still where it
+            // was. A skilling analysis is not a worker run — it is a main-thread
+            // loop that yields between candidates — so the `cancelSimulation()`
+            // a feature teardown fires never reached it, and a run that outlived
+            // a character switch came back to a panel that had been rebuilt for
+            // somebody else. Drawn anyway, it replaced `_skillingSortHandler`
+            // with one bound to the torn-down container, leaving the arriving
+            // character's own sort handler orphaned on their table — every
+            // later render stacked another, and sorting the skilling results
+            // silently stopped working.
+            if (this.panel?.contains(resultsEl)) {
+                this._renderSkillingUpgradeResults(analysisResult, resultsEl);
+            }
         } catch (error) {
             console.error('[LabSimUI] Skilling upgrade analysis failed:', error);
             this._setStatus('Skilling upgrade analysis failed: ' + error.message);
@@ -6331,6 +6343,17 @@ class LabSimUI {
         // own, silently, until they notice and touch the dropdown themselves.
         this._skillingCratesUserSet = false;
         this._combatCratesUserSet = false;
+        // Every sim behind this panel is a worker run, and the feature's
+        // `disable()` rejects all of them through `cancelSimulation()` — except
+        // the Skilling tab's upgrade analysis, which is main-thread arithmetic
+        // that yields between candidates and stops only when this flag is set.
+        // Nothing set it here, so a switch left it running against the
+        // departing character's build: it kept burning CPU, and its progress
+        // callbacks re-read `this.panel` on every tick, so once the arriving
+        // character's panel was built it drove *their* progress bar and text
+        // from a run that was never theirs — with the Stop button that could
+        // have ended it torn down along with the panel it belonged to.
+        this._skillingAborted = true;
         // Everything below is a reading of one character's build. None of it is
         // re-derived on the way back in — `_maxLevelByMonster` is consulted only
         // when a monster is missing from it, and the rest is simply redrawn — so

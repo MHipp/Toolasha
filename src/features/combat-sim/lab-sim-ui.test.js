@@ -200,6 +200,9 @@ vi.mock('./sim-editor.js', () => ({
         getEditedDTOs() {
             return game.editedDTOs;
         }
+        getSelfHrid() {
+            return game.players[0]?.hrid ?? null;
+        }
     },
 }));
 
@@ -3240,5 +3243,97 @@ describe('ranking upgrades by room levels', () => {
         );
 
         expect(container.innerHTML).not.toContain('Levels');
+    });
+});
+
+/**
+ * The Skilling tab's upgrade analysis is the one run behind this panel that is
+ * not a worker sim: it is main-thread arithmetic that yields between candidates
+ * and stops only when `_skillingAborted` is set. The feature's `disable()`
+ * cancels every worker run on a character switch and never reached this one.
+ */
+describe('a skilling analysis left running by a character switch', () => {
+    beforeEach(() => {
+        geometry.saved = null;
+        geometry.wasOpen = false;
+        game.characterId = 'me';
+        game.players = [{ hrid: 'p1', equipment: {}, abilities: [], guildShrineLevels: {} }];
+        game.editedDTOs = {
+            p1: { hrid: 'p1', equipment: {}, abilities: [], communityBuffLevels: {}, tokenUpgrades: {} },
+        };
+    });
+
+    afterEach(() => {
+        game.characterId = 'me';
+        game.editedDTOs = null;
+        ui._skillingSortHandler = null;
+        ui.destroy();
+    });
+
+    test('is stopped by the teardown, and does not draw into the arriving character’s panel', async () => {
+        ui.buildPanel();
+        await settle();
+        ui._switchTab('skilling');
+        ui._skillingSortHandler = null;
+
+        let onProgress;
+        let abortSignal;
+        let finish;
+        const spy = vi
+            .spyOn(upgradeAdvisor, 'runSkillingUpgradeAnalysis')
+            .mockImplementation((_params, progress, options) => {
+                onProgress = progress;
+                abortSignal = options.abortSignal;
+                return new Promise((resolve) => {
+                    finish = () =>
+                        resolve({
+                            baseline: { clearRate: 0.5, xpPerRoom: 10 },
+                            results: [
+                                {
+                                    candidate: { description: 'Cheese Hat +5' },
+                                    costType: 'gold',
+                                    cost: 1e6,
+                                    clearRate: 0.6,
+                                    clearRateDelta: 0.1,
+                                    xpPerRoom: 11,
+                                    xpPerRoomDelta: 1,
+                                    metricType: 'clearRate',
+                                },
+                            ],
+                        });
+                });
+            });
+
+        const run = ui._onSkillingUpgradeAnalyze();
+        await settle();
+        expect(spy).toHaveBeenCalledTimes(1);
+
+        // The switch: the feature is disabled and re-initialised around it
+        ui.destroy();
+        game.characterId = 'alt';
+        ui.buildPanel();
+        await settle();
+        ui._switchTab('skilling');
+
+        // Nothing in the worker-cancel path reaches this loop; only the flag does
+        expect(abortSignal()).toBe(true);
+
+        // A progress tick re-reads `this.panel`, which is now the arriving
+        // character's
+        const fill = ui.panel.querySelector('#mwi-labsim-skilling-progress-fill');
+        fill.style.width = '';
+        onProgress({ current: 3, total: 10, description: 'Cheese Hat +5' });
+        expect(fill.style.width).toBe('');
+
+        finish();
+        await run;
+
+        // Nothing drawn into the arriving character's table, and — the
+        // accumulating half — their own sort handler not replaced by one bound
+        // to the container that went away with the previous panel
+        expect(ui.panel.querySelector('#mwi-labsim-skilling-results').innerHTML).toBe('');
+        expect(ui._skillingSortHandler).toBeNull();
+
+        spy.mockRestore();
     });
 });
