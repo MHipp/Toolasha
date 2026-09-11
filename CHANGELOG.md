@@ -6,6 +6,8 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+<!-- shipped in 3.49.0 -->
+
 ### The forecast's growth figures match its chart
 
 "Daily drift" and "Doubling" are now read off the forecast's middle line, so one huge trade can no longer make them promise faster growth than the chart shows. Axis ticks stay on round values at any size.
@@ -2756,56 +2758,50 @@ The simulator valued every drop at its gross market price, so profit ignored the
 
 ## [3.49.0](https://github.com/Millennium44/Toolasha/compare/v3.48.0...v3.49.0) (2026-09-11)
 
-
 ### Features
 
-* label the net worth forecast chart ([d7657d5](https://github.com/Millennium44/Toolasha/commit/d7657d52f48cf1dce2eb2f0eae3227e1a0944d95))
-* marketplace autofill matches the best price on both sides by default ([eb18ffe](https://github.com/Millennium44/Toolasha/commit/eb18ffeeb8bf44289c760c26ee7d91ca72e0fe0d))
-* net worth forecast follows your recent pace, measured in real time ([68d0a0b](https://github.com/Millennium44/Toolasha/commit/68d0a0bcdf1b491d5f3da5ceb4ed701f3d97546d))
-* net worth shows T and Q for trillions and quadrillions ([4762349](https://github.com/Millennium44/Toolasha/commit/476234927e3f2824a14e18aa1fcf739a7b0b7691))
-
+- label the net worth forecast chart ([d7657d5](https://github.com/Millennium44/Toolasha/commit/d7657d52f48cf1dce2eb2f0eae3227e1a0944d95))
+- marketplace autofill matches the best price on both sides by default ([eb18ffe](https://github.com/Millennium44/Toolasha/commit/eb18ffeeb8bf44289c760c26ee7d91ca72e0fe0d))
+- net worth forecast follows your recent pace, measured in real time ([68d0a0b](https://github.com/Millennium44/Toolasha/commit/68d0a0bcdf1b491d5f3da5ceb4ed701f3d97546d))
+- net worth shows T and Q for trillions and quadrillions ([4762349](https://github.com/Millennium44/Toolasha/commit/476234927e3f2824a14e18aa1fcf739a7b0b7691))
 
 ### Bug Fixes
 
-* forecast axis ticks stay round numbers at large magnitudes ([69b4c75](https://github.com/Millennium44/Toolasha/commit/69b4c75198fde8bea762b068381554fba249856a))
-* forecast volatility has no sign, and the target updates as you type ([ab943a4](https://github.com/Millennium44/Toolasha/commit/ab943a4a5f9c5e3cf9fdaac90d94903194ac00a8))
-* forecast's daily drift and doubling now track the median path ([189f439](https://github.com/Millennium44/Toolasha/commit/189f4394b59dcdf9f3a3092c85306c05f0533b45))
-* house cost footer stays put at the end of the scroll ([835475b](https://github.com/Millennium44/Toolasha/commit/835475b48f90792d8a2f056045135e286cbf1060))
-* house cost list scrolls with the dialog, with the total and Missing Mats pinned below it ([1a41962](https://github.com/Millennium44/Toolasha/commit/1a41962df2d0abf9dd7192057e07f6793b067ec1))
-* house upgrade panel's scroll area stays inside its frame in Firefox ([7e6c10a](https://github.com/Millennium44/Toolasha/commit/7e6c10a1768e0d0e0d0cec8b48c71669730e497a))
-* marketplace autofill pulls an out-of-range price back into the tradable range ([5cdfda0](https://github.com/Millennium44/Toolasha/commit/5cdfda0feec9752c38cce96abadbf32da9389460))
-* net worth forecast accepts 12b-style amounts ([4cc7ccc](https://github.com/Millennium44/Toolasha/commit/4cc7ccc14f5126e1e154546692336df97996945d))
-* offline progress, item dictionary and profile dialogs reach their bottom in Firefox ([426a351](https://github.com/Millennium44/Toolasha/commit/426a351d68289a731da2bc48255465b1656e1577))
-* typed amounts accept "12bn" and "12 billion", and the forecast target refuses "12xyz" ([a948c48](https://github.com/Millennium44/Toolasha/commit/a948c4878398690e41f564070873813ecfa409cd))
-
+- forecast axis ticks stay round numbers at large magnitudes ([69b4c75](https://github.com/Millennium44/Toolasha/commit/69b4c75198fde8bea762b068381554fba249856a))
+- forecast volatility has no sign, and the target updates as you type ([ab943a4](https://github.com/Millennium44/Toolasha/commit/ab943a4a5f9c5e3cf9fdaac90d94903194ac00a8))
+- forecast's daily drift and doubling now track the median path ([189f439](https://github.com/Millennium44/Toolasha/commit/189f4394b59dcdf9f3a3092c85306c05f0533b45))
+- house cost footer stays put at the end of the scroll ([835475b](https://github.com/Millennium44/Toolasha/commit/835475b48f90792d8a2f056045135e286cbf1060))
+- house cost list scrolls with the dialog, with the total and Missing Mats pinned below it ([1a41962](https://github.com/Millennium44/Toolasha/commit/1a41962df2d0abf9dd7192057e07f6793b067ec1))
+- house upgrade panel's scroll area stays inside its frame in Firefox ([7e6c10a](https://github.com/Millennium44/Toolasha/commit/7e6c10a1768e0d0e0d0cec8b48c71669730e497a))
+- marketplace autofill pulls an out-of-range price back into the tradable range ([5cdfda0](https://github.com/Millennium44/Toolasha/commit/5cdfda0feec9752c38cce96abadbf32da9389460))
+- net worth forecast accepts 12b-style amounts ([4cc7ccc](https://github.com/Millennium44/Toolasha/commit/4cc7ccc14f5126e1e154546692336df97996945d))
+- offline progress, item dictionary and profile dialogs reach their bottom in Firefox ([426a351](https://github.com/Millennium44/Toolasha/commit/426a351d68289a731da2bc48255465b1656e1577))
+- typed amounts accept "12bn" and "12 billion", and the forecast target refuses "12xyz" ([a948c48](https://github.com/Millennium44/Toolasha/commit/a948c4878398690e41f564070873813ecfa409cd))
 
 ### Code Refactoring
 
-* remove dead clearAllSessions from enhancement storage ([a15def0](https://github.com/Millennium44/Toolasha/commit/a15def0cfeb046a4681da1c988a330ca1aaa81ab))
-
+- remove dead clearAllSessions from enhancement storage ([a15def0](https://github.com/Millennium44/Toolasha/commit/a15def0cfeb046a4681da1c988a330ca1aaa81ab))
 
 ### Documentation
 
-* changelog for forecast figures that match the chart ([ebc6072](https://github.com/Millennium44/Toolasha/commit/ebc6072d899a5a09b12b6b50dc859b69a1e30b94))
-* changelog for T and Q net worth suffixes ([775e125](https://github.com/Millennium44/Toolasha/commit/775e1254adeb0bf4574316f01a50c41ff6f072b6))
-* changelog for the autofill range clamp and match-best default ([f53f331](https://github.com/Millennium44/Toolasha/commit/f53f33125e3cd9c18a2f8a00ef6b43c6775c0f33))
-* changelog for the Firefox dialog caps ([49cd323](https://github.com/Millennium44/Toolasha/commit/49cd3233aeb923ac8e3d179f48a87ec0c90a8682))
-* changelog for the Firefox house panel fix ([d2f4ccd](https://github.com/Millennium44/Toolasha/commit/d2f4ccddea14631cfbc77e46e847f4bb7a8dd47d))
-* changelog for the forecast target box and chart labels ([36edc8c](https://github.com/Millennium44/Toolasha/commit/36edc8c475a4b0a45c38d651693c4155faaa6a86))
-* changelog for the forecast that follows your recent pace ([787fd96](https://github.com/Millennium44/Toolasha/commit/787fd966789ef24a7a90156814a4978bc156fc55))
-* changelog for the house footer staying put ([f0f5124](https://github.com/Millennium44/Toolasha/commit/f0f5124563c90a6c62cdbf33745403d641d50a0f))
-* changelog for the house panel's single scrollbar ([59d24ee](https://github.com/Millennium44/Toolasha/commit/59d24ee9a8929f5661360409b38bae5b42502776))
-
+- changelog for forecast figures that match the chart ([ebc6072](https://github.com/Millennium44/Toolasha/commit/ebc6072d899a5a09b12b6b50dc859b69a1e30b94))
+- changelog for T and Q net worth suffixes ([775e125](https://github.com/Millennium44/Toolasha/commit/775e1254adeb0bf4574316f01a50c41ff6f072b6))
+- changelog for the autofill range clamp and match-best default ([f53f331](https://github.com/Millennium44/Toolasha/commit/f53f33125e3cd9c18a2f8a00ef6b43c6775c0f33))
+- changelog for the Firefox dialog caps ([49cd323](https://github.com/Millennium44/Toolasha/commit/49cd3233aeb923ac8e3d179f48a87ec0c90a8682))
+- changelog for the Firefox house panel fix ([d2f4ccd](https://github.com/Millennium44/Toolasha/commit/d2f4ccddea14631cfbc77e46e847f4bb7a8dd47d))
+- changelog for the forecast target box and chart labels ([36edc8c](https://github.com/Millennium44/Toolasha/commit/36edc8c475a4b0a45c38d651693c4155faaa6a86))
+- changelog for the forecast that follows your recent pace ([787fd96](https://github.com/Millennium44/Toolasha/commit/787fd966789ef24a7a90156814a4978bc156fc55))
+- changelog for the house footer staying put ([f0f5124](https://github.com/Millennium44/Toolasha/commit/f0f5124563c90a6c62cdbf33745403d641d50a0f))
+- changelog for the house panel's single scrollbar ([59d24ee](https://github.com/Millennium44/Toolasha/commit/59d24ee9a8929f5661360409b38bae5b42502776))
 
 ### Styles
 
-* fix the three prefer-const eslint warnings in tests ([3ce1cfc](https://github.com/Millennium44/Toolasha/commit/3ce1cfc984a3df3d69d1db3c9fa74098a97121f8))
-
+- fix the three prefer-const eslint warnings in tests ([3ce1cfc](https://github.com/Millennium44/Toolasha/commit/3ce1cfc984a3df3d69d1db3c9fa74098a97121f8))
 
 ### Tests
 
-* build the just-released moment instead of assuming the real changelog is in it ([a55ac26](https://github.com/Millennium44/Toolasha/commit/a55ac26dd30dab65e237bf3f1a93624b23c7104a))
-* pin real-changelog marker tests to invariants, not today's marker count ([be0c929](https://github.com/Millennium44/Toolasha/commit/be0c9292737326517fdf6885e3240832a317b38c))
+- build the just-released moment instead of assuming the real changelog is in it ([a55ac26](https://github.com/Millennium44/Toolasha/commit/a55ac26dd30dab65e237bf3f1a93624b23c7104a))
+- pin real-changelog marker tests to invariants, not today's marker count ([be0c929](https://github.com/Millennium44/Toolasha/commit/be0c9292737326517fdf6885e3240832a317b38c))
 
 ## [3.48.0](https://github.com/Millennium44/Toolasha/compare/v3.47.0...v3.48.0) (2026-09-11)
 
