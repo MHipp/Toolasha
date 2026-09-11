@@ -90,6 +90,32 @@ function isHandleControl(target, handle) {
 }
 
 /**
+ * The opening height for a floating panel, capped against the *visible* viewport.
+ *
+ * `80vh`, `80dvh` and `window.innerHeight` all measure the **layout** viewport,
+ * which does not shrink when the mobile on-screen keyboard covers the bottom of
+ * the screen. A panel sized off any of them while the keyboard is up therefore
+ * renders as if it were not there, and its footer — the close button on most of
+ * these panels, a submit control on the rest — ends up underneath it. Only
+ * `visualViewport` tracks the keyboard, and `src/utils/visual-viewport.js`
+ * publishes its height as `--toolasha-visual-viewport-height`; the `100vh`
+ * fallback inside the `var()` covers browsers with no `visualViewport` and any
+ * environment where the tracking never started.
+ *
+ * Nine panels each carried this expression as their own `vh` literal and were
+ * missed when the overlay shell was fixed, which is why it is a function now
+ * rather than a string to copy. Adapted from MWITools
+ * src/features/mobile-viewport-fix.js, CC-BY-NC-SA-4.0, see third-party/mwitools/.
+ *
+ * @param {number} px - The panel's preferred height, in pixels
+ * @param {number} [fraction] - How much of the visible viewport it may take
+ * @returns {string} A CSS `height` value
+ */
+export function panelHeightCap(px, fraction = 0.8) {
+    return `min(${px}px, calc(var(--toolasha-visual-viewport-height, 100vh) * ${fraction}))`;
+}
+
+/**
  * Let a panel be dragged by one of its parts.
  *
  * Listeners live on the document rather than the handle, because a fast drag

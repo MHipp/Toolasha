@@ -42,7 +42,7 @@ import { takenBreakdown } from '../../features/combat/damage-taken-tracker.js';
 import { primeRecordTarget, recordControlState, toggleRecording } from '../../features/combat/combat-record-control.js';
 import { formatWithSeparator, formatKMB, timeReadable } from '../../utils/formatters.js';
 import { registerFloatingPanel, unregisterFloatingPanel, bringPanelToFront } from '../../utils/panel-z-index.js';
-import { makeDraggable, makeResizable } from '../../utils/floating-panel.js';
+import { makeDraggable, makeResizable, panelHeightCap } from '../../utils/floating-panel.js';
 import { restoreGeometry, saveGeometry, saveOpenState, reopenIfLeftOpen } from '../../utils/panel-geometry.js';
 import { attachMinimize } from '../../utils/panel-minimize.js';
 import { ROW_COLORS } from '../../utils/overlay-format.js';
@@ -404,7 +404,7 @@ class CombatPanel {
             zIndex: String(config.Z_FLOATING_PANEL),
             // Clamped so the first open on a phone is not wider than the screen
             width: `min(${this.size.width}px, 92vw)`,
-            height: `min(${this.size.height}px, 80vh)`,
+            height: panelHeightCap(this.size.height),
             background: COLORS.background,
             border: `1px solid ${COLORS.border}`,
             borderRadius: '8px',

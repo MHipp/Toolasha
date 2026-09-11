@@ -25,7 +25,7 @@ import { registerRow } from '../../utils/overlay-rows.js';
 import { rows, blank, itemIcon, skillIcon, linkToMarketplace, ROW_COLORS } from '../../utils/overlay-format.js';
 import { formatLargeNumber } from '../../utils/formatters.js';
 import { registerFloatingPanel, unregisterFloatingPanel, bringPanelToFront } from '../../utils/panel-z-index.js';
-import { makeDraggable, makeResizable } from '../../utils/floating-panel.js';
+import { makeDraggable, makeResizable, panelHeightCap } from '../../utils/floating-panel.js';
 import { restoreGeometry, saveGeometry, saveOpenState, reopenIfLeftOpen } from '../../utils/panel-geometry.js';
 import { attachMinimize } from '../../utils/panel-minimize.js';
 import { navigateToMarketplace } from '../../utils/marketplace-tabs.js';
@@ -393,7 +393,7 @@ class HousesPanel {
             zIndex: String(config.Z_FLOATING_PANEL),
             // Clamped so the first open on a phone is not wider than the screen
             width: `min(${DEFAULT_PANEL.width}px, 92vw)`,
-            height: `min(${DEFAULT_PANEL.height}px, 80vh)`,
+            height: panelHeightCap(DEFAULT_PANEL.height),
             background: COLORS.background,
             border: `1px solid ${COLORS.border}`,
             borderRadius: '8px',

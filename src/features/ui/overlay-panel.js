@@ -85,7 +85,7 @@ import storage from '../../core/storage.js';
 import performanceMonitor from '../../utils/performance-monitor.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { registerFloatingPanel, unregisterFloatingPanel, bringPanelToFront } from '../../utils/panel-z-index.js';
-import { makeDraggable, makeResizable } from '../../utils/floating-panel.js';
+import { makeDraggable, makeResizable, panelHeightCap } from '../../utils/floating-panel.js';
 import { restoreGeometry, saveGeometry, clearGeometry, allGeometry } from '../../utils/panel-geometry.js';
 import { characterKey, readScopedFrom, writeScoped } from '../../utils/character-key.js';
 import {
@@ -959,14 +959,11 @@ class OverlayPanel {
             // tabs and buttons it happens to overlap
             zIndex: String(config.Z_HUD),
             // Clamped so the first open on a phone is not wider than the screen.
-            // Height is capped against the *visible* viewport, not the layout
-            // one — 80vh does not shrink for the mobile on-screen keyboard, so a
-            // panel opened while it is up would size as if it were not there and
-            // its footer would end up underneath it. Adapted from MWITools
-            // src/features/mobile-viewport-fix.js, CC-BY-NC-SA-4.0, see
-            // third-party/mwitools/.
+            // Height goes through `panelHeightCap`, which measures the *visible*
+            // viewport rather than the layout one — see its comment for why a
+            // `vh` literal here hides the footer under the on-screen keyboard.
             width: `min(${DEFAULT_PANEL.width}px, 92vw)`,
-            height: `min(${DEFAULT_PANEL.height}px, calc(var(--toolasha-visual-viewport-height, 100vh) * 0.8))`,
+            height: panelHeightCap(DEFAULT_PANEL.height),
             // Explicit, so no amount of content can widen it and set the
             // observer watching it going
             boxSizing: 'border-box',

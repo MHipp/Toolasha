@@ -20,7 +20,7 @@ vi.mock('./mobile.js', () => ({ hasCoarsePointer: vi.fn(() => false) }));
 const grabbed = vi.hoisted(() => vi.fn());
 vi.mock('./panel-geometry.js', () => ({ markPanelInteracted: grabbed }));
 
-const { makeDraggable, makeResizable } = await import('./floating-panel.js');
+const { makeDraggable, makeResizable, panelHeightCap } = await import('./floating-panel.js');
 const { hasCoarsePointer } = await import('./mobile.js');
 
 let panel;
@@ -273,5 +273,23 @@ describe('a press aimed at a control in the handle is not a drag', () => {
         handle.innerHTML = '<span id="label" style="cursor: move;">Build Score</span>';
         pressOn(document.getElementById('label'));
         expect(dragStarted()).toBe(true);
+    });
+});
+
+describe('panelHeightCap', () => {
+    test('caps against the visible viewport, never a vh unit', () => {
+        // `80vh` is what eight panels each said instead, and it is the bug:
+        // the layout viewport does not shrink for the on-screen keyboard, so a
+        // panel sized off it hides its own footer underneath the keyboard.
+        const value = panelHeightCap(520);
+
+        expect(value).toBe('min(520px, calc(var(--toolasha-visual-viewport-height, 100vh) * 0.8))');
+        expect(value).not.toContain('80vh');
+    });
+
+    test('a panel that wants a different share of the screen says so', () => {
+        expect(panelHeightCap(600, 0.82)).toBe(
+            'min(600px, calc(var(--toolasha-visual-viewport-height, 100vh) * 0.82))'
+        );
     });
 });

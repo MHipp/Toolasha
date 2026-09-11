@@ -52,7 +52,7 @@ import { openShoppingList } from '../../utils/shopping-list.js';
 import { navigateToAction } from '../../utils/item-navigation.js';
 import { formatKMB, parseKMB, timeReadable } from '../../utils/formatters.js';
 import { registerFloatingPanel, unregisterFloatingPanel, bringPanelToFront } from '../../utils/panel-z-index.js';
-import { makeDraggable, makeResizable } from '../../utils/floating-panel.js';
+import { makeDraggable, makeResizable, panelHeightCap } from '../../utils/floating-panel.js';
 import { restoreGeometry, saveGeometry, saveOpenState, reopenIfLeftOpen } from '../../utils/panel-geometry.js';
 import { attachMinimize } from '../../utils/panel-minimize.js';
 import {
@@ -601,7 +601,7 @@ class GoalPlannerPanel {
             left: '90px',
             zIndex: String(config.Z_FLOATING_PANEL),
             width: `min(${DEFAULT_PANEL.width}px, 94vw)`,
-            height: `min(${DEFAULT_PANEL.height}px, 82vh)`,
+            height: panelHeightCap(DEFAULT_PANEL.height, 0.82),
             background: COLORS.background,
             border: `1px solid ${COLORS.border}`,
             borderRadius: '8px',
