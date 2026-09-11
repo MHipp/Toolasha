@@ -4,11 +4,11 @@
  * Shared by both gathering and production profit calculators
  */
 
-import marketAPI from '../api/marketplace.js';
 import expectedValueCalculator from '../features/market/expected-value-calculator.js';
 import dataManager from '../core/data-manager.js';
 import { parseEssenceFindBonus, parseRareFindBonus, parseRareFindBreakdown } from './equipment-parser.js';
 import { calculateHouseRareFind } from './house-efficiency.js';
+import { getItemPrice } from './market-data.js';
 
 /**
  * Calculate bonus revenue from essence and rare find drops
@@ -93,10 +93,11 @@ export function calculateBonusRevenue(actionDetails, actionsPerHour, characterEq
                     isMissingPrice = true;
                 }
             } else {
-                // Use market price for regular items
-                const price = marketAPI.getPrice(drop.itemHrid, 0);
-                itemPrice = price?.bid ?? 0; // Use bid price (instant sell)
-                isMissingPrice = price?.bid === null || price?.bid === undefined;
+                // Use market price for regular items, resolved the same way the other
+                // outputs are: the user's profit pricing mode, sell side.
+                const price = getItemPrice(drop.itemHrid, { context: 'profit', side: 'sell' });
+                itemPrice = price ?? 0;
+                isMissingPrice = price === null;
             }
 
             // Revenue per hour from this drop
@@ -153,10 +154,11 @@ export function calculateBonusRevenue(actionDetails, actionsPerHour, characterEq
                     isMissingPrice = true;
                 }
             } else {
-                // Use market price for regular items
-                const price = marketAPI.getPrice(drop.itemHrid, 0);
-                itemPrice = price?.bid ?? 0; // Use bid price (instant sell)
-                isMissingPrice = price?.bid === null || price?.bid === undefined;
+                // Use market price for regular items, resolved the same way the other
+                // outputs are: the user's profit pricing mode, sell side.
+                const price = getItemPrice(drop.itemHrid, { context: 'profit', side: 'sell' });
+                itemPrice = price ?? 0;
+                isMissingPrice = price === null;
             }
 
             // Revenue per hour from this drop
