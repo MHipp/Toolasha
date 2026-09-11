@@ -110,15 +110,32 @@ function insertBlock(panel, block) {
     }
 }
 
-function buildBlock(actionHrid, numActions, outputHrid, outputCount) {
-    const materials = calculateMaterialRequirements(actionHrid, numActions, true);
-
+/**
+ * Sum a material list into direct-cost and missing-cost totals.
+ *
+ * Coin is priced at exactly 1 whatever its own `isTradeable` flag says — it
+ * has no market listing to look up (you cannot list currency on the
+ * marketplace) and would otherwise fall through the "no price" branch and be
+ * quietly dropped from the total. Some tier-0 recipes pay their upgrade slot
+ * in coin outright, same as {@link module:profit-calculator} special-cases it,
+ * and a recipe like that was undercounting its own direct cost by however much
+ * coin it required, with no partial-data marker to say so.
+ *
+ * @param {Array<Object>} materials - From {@link calculateMaterialRequirements}
+ * @returns {{directCost: number, missingCost: number, directComplete: boolean, missingComplete: boolean}}
+ */
+export function computeDirectCosts(materials) {
     let directCost = 0;
     let missingCost = 0;
     let directComplete = true;
     let missingComplete = true;
 
     for (const mat of materials) {
+        if (mat.itemHrid === '/items/coin') {
+            directCost += mat.required;
+            missingCost += mat.missing;
+            continue;
+        }
         if (!mat.isTradeable) continue;
         const unitPrice = getItemPrice(mat.itemHrid, { context: 'profit', side: 'buy' });
         if (unitPrice === null) {
@@ -129,6 +146,13 @@ function buildBlock(actionHrid, numActions, outputHrid, outputCount) {
         directCost += unitPrice * mat.required;
         missingCost += unitPrice * mat.missing;
     }
+
+    return { directCost, missingCost, directComplete, missingComplete };
+}
+
+function buildBlock(actionHrid, numActions, outputHrid, outputCount) {
+    const materials = calculateMaterialRequirements(actionHrid, numActions, true);
+    const { directCost, missingCost, directComplete, missingComplete } = computeDirectCosts(materials);
 
     let planCost = null;
     if (outputHrid) {
