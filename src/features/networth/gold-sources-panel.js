@@ -678,6 +678,21 @@ export function buildPanelBody(attribution, { series = null, now = undefined, on
         body.appendChild(warning);
     }
 
+    // The marketplace row's own version of the same warning: a fill nothing
+    // could price never reaches `add()` at all, so it is not short in the row —
+    // it is entirely absent from it, and silently so without this line
+    const unpricedMarketFills = attribution?.unpricedMarketFills || 0;
+    if (unpricedMarketFills > 0) {
+        const warning = document.createElement('div');
+        warning.className = 'mwi-gold-sources-unpriced-market';
+        warning.style.cssText = 'font-size: 10px; color: #fbbf24; margin-top: 6px;';
+        warning.textContent =
+            `${unpricedMarketFills} market fill${unpricedMarketFills === 1 ? '' : 's'} could not be valued — the ` +
+            'item has no market price and no net worth valuation to fall back to — so they are left out of the ' +
+            'marketplace row and the difference sits in the residual; their tax still counts either way.';
+        body.appendChild(warning);
+    }
+
     // The combat row's own version of the unpriced-production warning: a day
     // neither recording covers is not a day of no combat, and a zero on the row
     // without this line said it was

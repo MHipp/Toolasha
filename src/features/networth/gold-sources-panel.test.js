@@ -122,6 +122,19 @@ describe('buildPanelBody', () => {
         expect(body.querySelector('.mwi-gold-sources-unpriced-production')).toBeNull();
     });
 
+    test('market fills that could not be valued are said out loud', () => {
+        const body = buildPanelBody(attribution({ unpricedMarketFills: 5 }));
+        const note = body.querySelector('.mwi-gold-sources-unpriced-market');
+        expect(note.textContent).toContain('5 market fills');
+        expect(note.textContent).toContain('residual');
+        expect(note.textContent).toContain('tax still counts');
+    });
+
+    test('nothing is said when every market fill was priced', () => {
+        const body = buildPanelBody(attribution());
+        expect(body.querySelector('.mwi-gold-sources-unpriced-market')).toBeNull();
+    });
+
     test('draws every source row plus a residual row of its own', () => {
         const body = buildPanelBody(attribution());
         const text = body.textContent;
