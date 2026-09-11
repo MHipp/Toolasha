@@ -38,7 +38,7 @@ vi.mock('../market/profit-calculator.js', () => ({
     },
 }));
 
-const { calculateProductionProfit, formatProfitDisplay } = await import('./production-profit.js');
+const { calculateProductionProfit } = await import('./production-profit.js');
 
 const TEA = '/items/efficiency_tea';
 const BREW = '/actions/brewing/efficiency_tea';
@@ -134,65 +134,5 @@ describe('calculateProductionProfit', () => {
 
         expect(await calculateProductionProfit(BREW)).toBeNull();
         expect(calculator.requestedItems).toEqual([TEA]);
-    });
-});
-
-describe('formatProfitDisplay', () => {
-    test('returns null for missing profit data', () => {
-        expect(formatProfitDisplay(null)).toBeNull();
-    });
-
-    test('pins revenue, costs and rounding', () => {
-        const display = formatProfitDisplay(profitCalculatorResult());
-
-        // revenue = (660 base + 39.6 gourmet) × 490.2 = 699.6 × 490.2 = 342,943.92 → 342,944
-        expect(display.revenue).toBe(342944);
-        // costs = 200,000.4 materials + 6,900.6 tea = 206,901
-        expect(display.costs).toBe(206901);
-        expect(display.profit).toBe(61235); // 61,234.6 rounded
-        expect(display.profitPerDay).toBe(1469630); // 1,469,630.4 rounded
-        expect(display.priceEach).toBe(490); // 490.2 rounded
-        expect(display.totalMaterialCost).toBe(200000);
-        expect(display.totalTeaCost).toBe(6901);
-    });
-
-    test('keeps one decimal on rates at or above 1 and two below it', () => {
-        const display = formatProfitDisplay(
-            profitCalculatorResult({
-                actionsPerHour: 300.456,
-                itemsPerHour: 660.44,
-                gourmetBonusItems: 0.396,
-            })
-        );
-
-        expect(display.actionsPerHour).toBe(300.5);
-        expect(display.baseOutputItems).toBe(660.4);
-        expect(display.gourmetBonusItems).toBe(0.4); // 0.396 → 2dp → 0.40 → 0.4
-    });
-
-    test('carries the pricing mode and efficiency breakdown through untouched', () => {
-        const source = profitCalculatorResult({ pricingMode: 'bid' });
-        const display = formatProfitDisplay(source);
-
-        expect(display.pricingMode).toBe('bid');
-        expect(display.totalEfficiency).toBe(120);
-        expect(display.details).toEqual({
-            levelEfficiency: 45,
-            houseEfficiency: 12,
-            teaEfficiency: 13.5,
-            equipmentEfficiency: 49.5,
-            artisanBonus: 0.112,
-            gourmetBonus: 0.06,
-            efficiencyMultiplier: 2.2,
-        });
-        expect(display.materialCosts).toBe(source.materialCosts);
-        expect(display.teaCosts).toBe(source.teaCosts);
-    });
-
-    test('reports a loss without mangling the sign', () => {
-        const display = formatProfitDisplay(profitCalculatorResult({ profitPerHour: -1500.4, profitPerDay: -36009.6 }));
-
-        expect(display.profit).toBe(-1500);
-        expect(display.profitPerDay).toBe(-36010);
     });
 });

@@ -5,7 +5,6 @@
 
 import config from '../../core/config.js';
 import dataManager from '../../core/data-manager.js';
-import { calculateHouseEfficiency } from '../../utils/house-efficiency.js';
 import { getCommunityProductionEfficiency } from '../../utils/community-buffs.js';
 import { getActionEfficiencyContext } from '../../utils/efficiency.js';
 import { calculateBonusRevenue } from '../../utils/bonus-revenue-calculator.js';
@@ -106,10 +105,6 @@ class ProfitCalculator {
         // Initialize price cache for this calculation
         const getCachedPrice = createPriceCache(getItemPrice);
 
-        // Calculate base action time
-        // Game uses NANOSECONDS (1e9 = 1 second)
-        const baseTime = actionDetails.baseTimeCost / 1e9; // Convert nanoseconds to seconds
-
         // Get character level for the action's skill
         const skillLevel = this.getSkillLevel(skills, actionDetails.type);
 
@@ -147,9 +142,6 @@ class ProfitCalculator {
         } = effCtx;
 
         const { totalEfficiency, levelEfficiency, effectiveRequirement } = efficiencyBreakdown;
-
-        // Build time breakdown for display
-        const timeBreakdown = this.calculateTimeBreakdown(baseTime, equipmentSpeedBonus + personalSpeedBonus);
 
         // Adjust action time for crafting chain if upgrade item is crafted.
         // "Direct recipe only" buys the upgrade item at market instead of
@@ -251,10 +243,6 @@ class ProfitCalculator {
         // Total costs per hour (materials + teas + market tax)
         const totalCostPerHour = materialCostPerHour + totalTeaCostPerHour + marketTax;
 
-        // Total costs per action (fixed, unaffected by efficiency)
-        const totalCostPerAction =
-            totalMaterialCost + totalTeaCostPerHour / actionsPerHour + marketTax / actionsPerHour;
-
         // Profit per hour (revenue + bonus revenue - total costs)
         const profitPerHour = revenuePerHour + efficiencyBoostedBonusRevenue - totalCostPerHour;
 
@@ -279,7 +267,6 @@ class ProfitCalculator {
             materialCosts,
             totalMaterialCost,
             materialCostPerHour, // Material costs per hour (with efficiency)
-            totalCostPerAction, // Total cost per action (materials + tea + tax, no efficiency)
             teaCosts, // Tea consumption costs breakdown
             totalTeaCostPerHour, // Total tea costs per hour
             costPerItem,
@@ -317,7 +304,6 @@ class ProfitCalculator {
             baseRequirement, // Base requirement level
             effectiveRequirement, // Requirement after Action Level bonus
             requiredLevel: effectiveRequirement, // For backwards compatibility
-            timeBreakdown,
             pricingMode, // Pricing mode for display
         };
     }
@@ -555,64 +541,6 @@ class ProfitCalculator {
             console.error(`[ProfitCalculator] Skill not found: ${skillHrid}`);
         }
         return skill?.level || 1;
-    }
-
-    /**
-     * Calculate efficiency bonus from multiple sources
-     * @param {number} characterLevel - Character's skill level
-     * @param {number} requiredLevel - Action's required level
-     * @param {string} actionTypeHrid - Action type HRID for house room matching
-     * @returns {number} Total efficiency bonus percentage
-     */
-    calculateEfficiencyBonus(characterLevel, requiredLevel, actionTypeHrid) {
-        // Level efficiency: +1% per level above requirement
-        const levelEfficiency = Math.max(0, characterLevel - requiredLevel);
-
-        // House room efficiency: houseLevel × 1.5%
-        const houseEfficiency = calculateHouseEfficiency(actionTypeHrid);
-
-        // Total efficiency (sum of all sources)
-        const totalEfficiency = levelEfficiency + houseEfficiency;
-
-        return totalEfficiency;
-    }
-
-    /**
-     * Calculate time breakdown showing how modifiers affect action time
-     * @param {number} baseTime - Base action time in seconds
-     * @param {number} equipmentSpeedBonus - Equipment speed bonus as decimal (e.g., 0.15 for 15%)
-     * @returns {Object} Time breakdown with steps
-     */
-    calculateTimeBreakdown(baseTime, equipmentSpeedBonus) {
-        const steps = [];
-
-        // Equipment Speed step (if > 0)
-        if (equipmentSpeedBonus > 0) {
-            const finalTime = baseTime / (1 + equipmentSpeedBonus);
-            const reduction = baseTime - finalTime;
-
-            steps.push({
-                name: 'Equipment Speed',
-                bonus: equipmentSpeedBonus * 100, // convert to percentage
-                reduction: reduction, // seconds saved
-                timeAfter: finalTime, // final time
-            });
-
-            return {
-                baseTime: baseTime,
-                steps: steps,
-                finalTime: finalTime,
-                actionsPerHour: calculateActionsPerHour(finalTime),
-            };
-        }
-
-        // No modifiers - final time is base time
-        return {
-            baseTime: baseTime,
-            steps: [],
-            finalTime: baseTime,
-            actionsPerHour: calculateActionsPerHour(baseTime),
-        };
     }
 
     /**

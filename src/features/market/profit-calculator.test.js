@@ -1,6 +1,6 @@
 /**
- * Profit Calculator — material cost breakdown, time breakdown, community buff
- * math, skill lookup, production-action lookup and the crafting-cost fallback.
+ * Profit Calculator — material cost breakdown, community buff math, skill
+ * lookup, production-action lookup and the crafting-cost fallback.
  * `calculateProfit` itself pulls in the full efficiency/bonus-revenue web and
  * is not exercised end-to-end here; these are the self-contained pieces it is
  * built from.
@@ -33,7 +33,6 @@ vi.mock('../../core/data-manager.js', () => ({
     },
 }));
 vi.mock('../../api/marketplace.js', () => ({ default: { getPrice: () => null } }));
-vi.mock('../../utils/house-efficiency.js', () => ({ calculateHouseEfficiency: () => 0 }));
 vi.mock('../../utils/efficiency.js', () => ({ getActionEfficiencyContext: () => mocks.efficiencyContext }));
 vi.mock('../../utils/bonus-revenue-calculator.js', () => ({ calculateBonusRevenue: () => null }));
 vi.mock('../enhancement/tooltip-enhancement.js', () => ({
@@ -137,25 +136,6 @@ describe('calculateMaterialCosts', () => {
             0
         );
         expect(costs).toHaveLength(0);
-    });
-});
-
-describe('calculateTimeBreakdown', () => {
-    test('with no speed bonus, final time equals base time and there are no steps', () => {
-        const breakdown = profitCalculator.calculateTimeBreakdown(10, 0);
-        expect(breakdown).toEqual({
-            baseTime: 10,
-            steps: [],
-            finalTime: 10,
-            actionsPerHour: 360,
-        });
-    });
-
-    test('a speed bonus reduces time and is reported as a step', () => {
-        const breakdown = profitCalculator.calculateTimeBreakdown(10, 0.25);
-        expect(breakdown.finalTime).toBeCloseTo(8, 6); // 10 / 1.25
-        expect(breakdown.steps[0].bonus).toBeCloseTo(25, 6);
-        expect(breakdown.steps[0].reduction).toBeCloseTo(2, 6);
     });
 });
 

@@ -58,7 +58,7 @@ vi.mock('../../utils/bonus-revenue-calculator.js', () => ({
     calculateBonusRevenue: () => buffs.bonusRevenue,
 }));
 
-const { calculateGatheringProfit, formatProfitDisplay } = await import('./gathering-profit.js');
+const { calculateGatheringProfit } = await import('./gathering-profit.js');
 
 const MILK = '/items/milk';
 const CHEESE = '/items/cheese';
@@ -241,10 +241,7 @@ describe('calculateGatheringProfit — baseline drop table math', () => {
 
         expect(result.baseOutputs[0].itemsPerHour).toBeCloseTo(450, 6);
         expect(result.profitPerHour).toBeCloseTo(45000 * (1 - MARKET_TAX), 6);
-        expect(result.totalGathering).toBe(0.25);
         expect(result.gatheringQuantity).toBe(0.25);
-        expect(result.gatheringTea).toBe(0.05);
-        expect(result.communityGathering).toBe(0.2);
         expect(result.details.communityBuffQuantity).toBe(0.2);
         expect(result.details.gatheringTeaBonus).toBe(0.05);
     });
@@ -378,35 +375,6 @@ describe('calculateGatheringProfit — Processing Tea', () => {
     });
 });
 
-describe('calculateGatheringProfit — Gourmet bonus', () => {
-    test('adds free duplicate drops at the raw price', async () => {
-        // gourmetBonus is a percentage here (10 → 10%)
-        buffs.context = efficiencyContext({ gourmetBonus: 10 });
-
-        // bonus/action = 1 raw × 0.10 = 0.1 → 360 × 0.1 = 36/hour @ 100 = 3,600
-        // revenue 36,000 + 3,600 = 39,600 → tax 39,600 × MARKET_TAX → profit
-        const result = await calculateGatheringProfit(COW);
-
-        expect(result.gourmetRevenueBonus).toBeCloseTo(3600, 6);
-        expect(result.gourmetRevenueBonusPerAction).toBeCloseTo(10, 10);
-        expect(result.gourmetBonuses[0].itemsPerHour).toBeCloseTo(36, 10);
-        expect(result.revenuePerHour).toBeCloseTo(39600, 6);
-        expect(result.profitPerHour).toBeCloseTo(39600 * (1 - MARKET_TAX), 6);
-    });
-
-    test('prices gourmet duplicates at the raw/processed weighted average', async () => {
-        buffs.context = efficiencyContext({ gourmetBonus: 10, processingBonus: 0.5 });
-
-        // after processing: raw/action 0.5, processed/action 0.5
-        // weighted price = (0.5 × 100 + 0.5 × 250) / 1 = 175
-        // bonus items/hour = 360 × (1 × 0.10) = 36 → 36 × 175 = 6,300
-        const result = await calculateGatheringProfit(COW);
-
-        expect(result.gourmetBonuses[0].priceEach).toBeCloseTo(175, 10);
-        expect(result.gourmetRevenueBonus).toBeCloseTo(6300, 6);
-    });
-});
-
 describe('calculateGatheringProfit — bonus revenue and edge cases', () => {
     test('essence/rare-find revenue is scaled by efficiency', async () => {
         buffs.bonusRevenue = { ...noBonusRevenue(), totalBonusRevenue: 1000 };
@@ -512,42 +480,5 @@ describe('calculateGatheringProfit — bonus revenue and edge cases', () => {
         const result = await calculateGatheringProfit(COW);
 
         expect(result.pricingMode).toBe('bid');
-    });
-});
-
-describe('formatProfitDisplay', () => {
-    test('returns an empty string when there is nothing to show', () => {
-        expect(formatProfitDisplay(null)).toBe('');
-    });
-
-    test('renders the headline numbers and hides per-day on a loss', async () => {
-        const profitable = await calculateGatheringProfit(COW);
-        const html = formatProfitDisplay(profitable);
-
-        expect(html).toContain('34,200/hour');
-        expect(html).toContain('820,800/day');
-        expect(html).toContain('Actions: 360.0/hour');
-        expect(html).toContain('Milk (Base)');
-
-        const losing = { ...profitable, profitPerHour: -500, profitPerDay: -12000 };
-        expect(formatProfitDisplay(losing)).not.toContain('/day');
-    });
-
-    test('lists gathering quantity sources when the bonus is non-zero', async () => {
-        buffs.context = efficiencyContext({
-            totalGathering: 0.25,
-            gatheringDetails: {
-                gatheringTea: 0.05,
-                communityGathering: 0.2,
-                achievementGathering: 0,
-                personalGathering: 0,
-            },
-        });
-
-        const html = formatProfitDisplay(await calculateGatheringProfit(COW));
-
-        expect(html).toContain('Gathering: +25.0% quantity');
-        expect(html).toContain('5.0% tea');
-        expect(html).toContain('20.0% community');
     });
 });
