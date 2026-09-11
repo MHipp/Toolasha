@@ -10,6 +10,7 @@
 import { forecastNetworth, MIN_RETURNS } from './networth-forecast.js';
 import { randomSeed } from '../combat-sim/engine/rng.js';
 import { networthFormatter } from '../../utils/formatters.js';
+import { parseItemCount } from '../../utils/number-parser.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -103,6 +104,20 @@ function formatPercent(value) {
 }
 
 /**
+ * Read the target box the way every other typed amount in Toolasha is read.
+ *
+ * Players write net worth as "12b", not as eleven digits; a bare `Number()`
+ * turned that into NaN and the target silently vanished.
+ *
+ * @param {string|null|undefined} text - What the player typed
+ * @returns {number|null} A positive target, or null when there is none
+ */
+export function parseForecastTarget(text) {
+    const value = parseItemCount(String(text ?? '').trim(), NaN);
+    return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/**
  * Build the collapsed Forecast section.
  *
  * The projection is computed on first expand and on every control change, not
@@ -187,10 +202,9 @@ export function createForecastSection({ getHistory, seed = randomSeed() }) {
         plot.textContent = '';
         figures.textContent = '';
 
-        const target = Number(String(targetInput.value).replace(/[,\s]/g, ''));
         const forecast = forecastNetworth(getHistory() || [], {
             days: Number(horizonSelect.value),
-            target: Number.isFinite(target) && target > 0 ? target : null,
+            target: parseForecastTarget(targetInput.value),
             seed,
         });
 
