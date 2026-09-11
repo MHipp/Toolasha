@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The net worth forecast takes 12b, and its chart is labelled
+
+The forecast's target box now accepts amounts like `12b`, `500m` and `1.5t`. It used to drop anything but a plain number and quietly hide the "reach target" figure. The forecast chart also names each line with its value at the horizon, and has value and day marks on its axes.
+
 ### An autofilled price outside the tradable range is pulled back into it
 
 Reported: a Sell Listing filled 100M, the best offer, when the range stopped at 77.8M. The game now shows the price as text until you click it, so the clamp never found anything to fix. It now presses the game's own Max or Min instead. Outbid and undercut also stopped relying on button positions that the ÷2/×2 buttons could shift.
