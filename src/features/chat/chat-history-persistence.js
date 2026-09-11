@@ -469,28 +469,46 @@ export function handleRestoredClick(event) {
 }
 
 /**
- * Prefix of the positional keys older versions wrote when the tab strip had not
- * rendered yet. Never written any more — see {@link dropPositionalKeys}.
+ * Prefix every key this module will accept, and the marker of the key format.
+ *
+ * The generation number is load-bearing rather than decorative. Two earlier
+ * formats named a *slot* instead of a tab: `idx:<n>` named a position in the
+ * tab strip, and `tab:<label>` claimed to name the tab but was resolved by
+ * index alignment against a strip that renders one container for *every* tab —
+ * so in practice every tab's history went under the first button's name. A
+ * record under either is an unattributable mixture of whichever tabs the player
+ * used, whispers included, and nothing on disk says which message came from
+ * where. They cannot be migrated; see {@link dropForeignKeys}.
+ *
+ * Bumping the prefix rather than reusing `tab:` is what makes that drop safe:
+ * a key written by an older build can never be mistaken for one written by this
+ * one, so no record can mix content across the change.
  */
-const POSITIONAL_KEY_PREFIX = 'idx:';
+export const TAB_KEY_PREFIX = 'tab2:';
 
 /**
- * Copy a stored `{tabKey: [html]}` map without the positional keys.
+ * Copy a stored `{tabKey: [html]}` map without keys this build cannot have
+ * written.
  *
- * `idx:<n>` names the *n*th slot in the tab strip, not a tab, so restoring one
- * puts whatever was recorded there into whichever tab now sits at that index —
- * a whisper into Global. Nothing on disk records which tab was in that slot
- * when the record was written, so these cannot be migrated to a name and are
- * dropped instead. The drop reaches storage on the next flush, because the
- * working record is what this returns.
+ * The only survivors are {@link TAB_KEY_PREFIX} keys, which are produced by one
+ * function (`chatTabKey` in `chat-history-extender.js`) and name the tab that
+ * was open when the message was recorded. Everything else is a slot-named
+ * record from an older format: restoring one puts whatever it holds into
+ * whichever tab happens to be open, which is a whisper in Global. A tab whose
+ * history is missing is recoverable; a private conversation in a public tab's
+ * scrollback is not.
+ *
+ * This is deliberately a format test and not a one-shot migration flag. It is
+ * idempotent, needs nothing remembered on disk, and can only ever discard keys
+ * that no current writer produces — so there is no later run of it that can eat
+ * good data. The drop reaches storage on the next flush, because the working
+ * record is what this returns.
  *
  * @param {Record<string, Array<string>>} tabs - Not mutated
- * @returns {Record<string, Array<string>>} A fresh map holding only named tabs
+ * @returns {Record<string, Array<string>>} A fresh map holding only current-format keys
  */
-export function dropPositionalKeys(tabs) {
-    return Object.fromEntries(
-        Object.entries(tabs || {}).filter(([key]) => !String(key).startsWith(POSITIONAL_KEY_PREFIX))
-    );
+export function dropForeignKeys(tabs) {
+    return Object.fromEntries(Object.entries(tabs || {}).filter(([key]) => String(key).startsWith(TAB_KEY_PREFIX)));
 }
 
 /**
@@ -607,7 +625,7 @@ class ChatHistoryPersistence {
             // A record from a version we do not understand is discarded rather
             // than half-read; the cost is one session's history.
             const stored = record && record.v === RECORD_VERSION && record.tabs ? record.tabs : {};
-            const loaded = applyCaps(dropPositionalKeys(stored), this.getMaxHistory());
+            const loaded = applyCaps(dropForeignKeys(stored), this.getMaxHistory());
 
             // Anything recorded while the read was in flight belongs after what
             // was on disk, not instead of it.
@@ -634,10 +652,11 @@ class ChatHistoryPersistence {
      */
     record(tabKey, html) {
         if (!this.enabled || !tabKey || !html) return;
-        // Belt and braces beside `chatTabKey`, which no longer produces one:
-        // a positional key names a slot in the tab strip rather than a tab, so
-        // nothing may enter the record under it.
-        if (tabKey.startsWith(POSITIONAL_KEY_PREFIX)) return;
+        // Belt and braces beside `chatTabKey`: only a key in the current
+        // format names a tab rather than a slot, and nothing else may enter the
+        // record — a key this build would not write is one a restore has to
+        // throw away again.
+        if (!tabKey.startsWith(TAB_KEY_PREFIX)) return;
         if (!this.tabs) this.tabs = {};
         if (!this.tabs[tabKey]) this.tabs[tabKey] = [];
         this.tabs[tabKey].push(html);

@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Restored chat history lands in the tab it came from
+
+Reported: party chat reappearing in Trade. Only the open tab has a pane, and history was filed by that pane's position — so every tab, whispers included, shared one record and came back wherever you were. Tabs are now named by which tab is open, and switching clears the pane.
+
+History saved before this cannot be told apart by tab, and is discarded.
+
 ### Clicking a sender's name in restored chat opens their profile
 
 The name at the start of a chat line is the game's own link, and the game's click handler cannot be saved — so restored and extended history showed it looking clickable and did nothing. It now opens the profile through Toolasha instead, and because the name is re-read from the message itself, chat already saved before this works too. A name that cannot be read stops pretending to be a link.

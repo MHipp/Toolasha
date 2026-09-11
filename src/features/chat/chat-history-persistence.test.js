@@ -99,26 +99,43 @@ import chatHistoryPersistence, {
 const STORAGE_KEY = `${CHAT_HISTORY_KEY_BASE}_char1`;
 
 /**
- * Build the chat DOM: a tab strip whose buttons name the tabs, and one message
- * container per tab in the same order — which is how `chatTabKey` names them.
+ * Build the chat DOM the way the game renders it: a tab strip naming every tab,
+ * one of them `aria-selected`, and a message container for **that tab only**.
+ *
+ * One container is the load-bearing part of the fixture. The game does not
+ * render a pane per tab, which is exactly why naming a container by its index
+ * among the containers named every tab "Global".
+ *
  * @param {Array<string>} tabNames
- * @returns {Array<Element>} The message containers, in tab order
+ * @param {number} selected - Index of the open tab
+ * @returns {Array<Element>} The open tab's container, as a one-element array
  */
-function buildChat(tabNames = ['General']) {
+function buildChat(tabNames = ['General'], selected = 0) {
     document.body.innerHTML = '<div id="root"><div class="Chat_tabsComponentContainer__x"></div></div>';
     const strip = document.querySelector('.Chat_tabsComponentContainer__x');
-    const root = document.getElementById('root');
-    return tabNames.map((name) => {
+    tabNames.forEach((name, index) => {
         const button = document.createElement('button');
         button.setAttribute('role', 'tab');
+        button.setAttribute('aria-selected', index === selected ? 'true' : 'false');
         button.textContent = name;
         strip.appendChild(button);
-
-        const container = document.createElement('div');
-        container.className = 'ChatHistory_chatHistory__abc';
-        root.appendChild(container);
-        return container;
     });
+
+    const container = document.createElement('div');
+    container.className = 'ChatHistory_chatHistory__abc';
+    document.getElementById('root').appendChild(container);
+    return [container];
+}
+
+/**
+ * Switch tabs the way the game does: the same pane node, a different button
+ * selected. Returns nothing — the container from {@link buildChat} is still the
+ * one on screen.
+ * @param {number} index - Tab to open
+ */
+function selectTab(index) {
+    const buttons = [...document.querySelectorAll('[class*="Chat_tabsComponentContainer"] button[role="tab"]')];
+    buttons.forEach((button, i) => button.setAttribute('aria-selected', i === index ? 'true' : 'false'));
 }
 
 /**
@@ -252,38 +269,47 @@ describe('chat history persistence', () => {
     });
 
     test('whisper and private tabs are persisted too — the maintainer’s explicit choice', async () => {
-        const [general, whispers] = buildChat(['General', 'Whispers']);
-        expect(chatTabKey(whispers)).toBe('tab:Whispers');
+        const [pane] = buildChat(['General', 'Whispers'], 1);
+        expect(chatTabKey(pane)).toBe('tab2:name:Whispers');
 
         const secret = makeMessage('[1/2 10:00:00] Alice: meet me at the tower');
-        whispers.appendChild(secret);
-        const public_ = makeMessage('[1/2 10:00:00] hello');
-        general.appendChild(public_);
+        pane.appendChild(secret);
 
         chatHistoryExtender.initialize();
         await settle();
-        await evict(whispers, secret);
-        await evict(general, public_);
+        await evict(pane, secret);
+
+        // The same pane, now showing General — the game reuses the node. The
+        // switch itself is its own mutation batch; what General evicts after it
+        // is an eviction like any other.
+        selectTab(0);
+        const public_ = makeMessage('[1/2 10:00:00] hello');
+        pane.appendChild(public_);
+        await settle();
+        await evict(pane, public_);
         await chatHistoryPersistence.flush();
 
         const stored = db.settings[STORAGE_KEY];
-        expect(Object.keys(stored.tabs).sort()).toEqual(['tab:General', 'tab:Whispers']);
-        expect(stored.tabs['tab:Whispers'][0]).toContain('meet me at the tower');
+        expect(Object.keys(stored.tabs).sort()).toEqual(['tab2:name:General', 'tab2:name:Whispers']);
+        expect(stored.tabs['tab2:name:Whispers'][0]).toContain('meet me at the tower');
+        expect(stored.tabs['tab2:name:General'][0]).not.toContain('meet me at the tower');
     });
 
     test('caps trim oldest-first and hold the write bounded', () => {
         // Message cap: the newest survive, the oldest go.
-        const tabs = { 'tab:General': Array.from({ length: MAX_MESSAGES_PER_TAB + 20 }, (_, i) => `<div>${i}</div>`) };
+        const tabs = {
+            'tab2:name:General': Array.from({ length: MAX_MESSAGES_PER_TAB + 20 }, (_, i) => `<div>${i}</div>`),
+        };
         applyCaps(tabs, MAX_MESSAGES_PER_TAB);
-        expect(tabs['tab:General']).toHaveLength(MAX_MESSAGES_PER_TAB);
-        expect(tabs['tab:General'][0]).toBe('<div>20</div>');
+        expect(tabs['tab2:name:General']).toHaveLength(MAX_MESSAGES_PER_TAB);
+        expect(tabs['tab2:name:General'][0]).toBe('<div>20</div>');
 
         // Byte cap: many tabs of large messages, each within the message cap and
         // the per-tab count, still may not add up past the total.
         const big = 'x'.repeat(4000);
         const many = {};
         for (let t = 0; t < 12; t += 1) {
-            many[`tab:${t}`] = Array.from({ length: MAX_MESSAGES_PER_TAB }, () => big);
+            many[`tab2:name:${t}`] = Array.from({ length: MAX_MESSAGES_PER_TAB }, () => big);
         }
         const before = JSON.stringify(many).length;
         applyCaps(many, MAX_MESSAGES_PER_TAB);
@@ -308,7 +334,7 @@ describe('chat history persistence', () => {
         db.settings[STORAGE_KEY] = {
             v: 1,
             savedAt: 1,
-            tabs: { 'tab:General': ['<div class="ChatMessage_chatMessage__z">old</div>'] },
+            tabs: { 'tab2:name:General': ['<div class="ChatMessage_chatMessage__z">old</div>'] },
         };
         settingValues.chatHistoryExtender = false;
 
@@ -347,7 +373,11 @@ describe('chat history persistence', () => {
             v: 1,
             savedAt: 1,
             tabs: {
-                'tab:General': ['', 'not markup at all', '<div class="ChatMessage_chatMessage__z">survivor</div>'],
+                'tab2:name:General': [
+                    '',
+                    'not markup at all',
+                    '<div class="ChatMessage_chatMessage__z">survivor</div>',
+                ],
             },
         };
 
@@ -364,7 +394,7 @@ describe('chat history persistence', () => {
         db.settings[STORAGE_KEY] = {
             v: 1,
             savedAt: 1,
-            tabs: { 'tab:General': ['<div class="ChatMessage_chatMessage__z">older</div>'] },
+            tabs: { 'tab2:name:General': ['<div class="ChatMessage_chatMessage__z">older</div>'] },
         };
 
         const [container] = buildChat(['General']);
@@ -464,17 +494,17 @@ describe('restored markup cannot execute or phone home', () => {
 
 describe('a corrupt record costs its own contents and nothing else', () => {
     test('applyCaps drops entries that are not strings rather than throwing', () => {
-        const tabs = { 'tab:General': ['<div>ok</div>', null, 7, undefined, '<div>also ok</div>'] };
+        const tabs = { 'tab2:name:General': ['<div>ok</div>', null, 7, undefined, '<div>also ok</div>'] };
         expect(() => applyCaps(tabs, MAX_MESSAGES_PER_TAB)).not.toThrow();
-        expect(tabs['tab:General']).toEqual(['<div>ok</div>', '<div>also ok</div>']);
+        expect(tabs['tab2:name:General']).toEqual(['<div>ok</div>', '<div>also ok</div>']);
     });
 
     test('a load over such a record still resolves, and recording still works', async () => {
-        db.settings[STORAGE_KEY] = { v: 1, savedAt: 1, tabs: { 'tab:General': [null, '<div>kept</div>'] } };
+        db.settings[STORAGE_KEY] = { v: 1, savedAt: 1, tabs: { 'tab2:name:General': [null, '<div>kept</div>'] } };
         chatHistoryPersistence.enable(() => MAX_MESSAGES_PER_TAB);
 
-        await expect(chatHistoryPersistence.load()).resolves.toEqual({ 'tab:General': ['<div>kept</div>'] });
-        expect(() => chatHistoryPersistence.record('tab:General', '<div>new</div>')).not.toThrow();
+        await expect(chatHistoryPersistence.load()).resolves.toEqual({ 'tab2:name:General': ['<div>kept</div>'] });
+        expect(() => chatHistoryPersistence.record('tab2:name:General', '<div>new</div>')).not.toThrow();
     });
 });
 
@@ -550,6 +580,7 @@ describe('tab identity is a name, never a position', () => {
         strip.className = 'Chat_tabsComponentContainer__x';
         const button = document.createElement('button');
         button.setAttribute('role', 'tab');
+        button.setAttribute('aria-selected', 'true');
         button.textContent = 'Whispers';
         strip.appendChild(button);
         document.getElementById('root').prepend(strip);
@@ -559,16 +590,22 @@ describe('tab identity is a name, never a position', () => {
         await evict(container, secret);
         await chatHistoryPersistence.flush();
 
-        expect(Object.keys(db.settings[STORAGE_KEY].tabs)).toEqual(['tab:Whispers']);
+        expect(Object.keys(db.settings[STORAGE_KEY].tabs)).toEqual(['tab2:name:Whispers']);
     });
 
-    test('a stored positional record is dropped, never restored into the tab now at that index', async () => {
+    test('a record written under an older key format is discarded, not restored into whichever tab is open', async () => {
         db.settings[STORAGE_KEY] = {
             v: 1,
             savedAt: 1,
             tabs: {
+                // `idx:` named a slot; `tab:` claimed to name a tab but was
+                // resolved by index against a one-container strip, so it is an
+                // unattributable mixture of every tab the player used.
                 'idx:0': ['<div class="ChatMessage_chatMessage__z">Alice: meet me at the tower</div>'],
-                'tab:General': ['<div class="ChatMessage_chatMessage__z">hello</div>'],
+                'tab:/chat_channel_types/global': [
+                    '<div class="ChatMessage_chatMessage__z">Bob whispers: the vault code is 1234</div>',
+                ],
+                'tab2:name:General': ['<div class="ChatMessage_chatMessage__z">hello</div>'],
             },
         };
 
@@ -581,10 +618,44 @@ describe('tab identity is a name, never a position', () => {
         );
         expect(rendered).toEqual(['hello']);
         expect(general.textContent).not.toContain('meet me at the tower');
+        expect(general.textContent).not.toContain('the vault code');
 
-        // And it is gone from the record, not merely unread this session
+        // And they are gone from the record, not merely unread this session
         await chatHistoryPersistence.flush();
-        expect(Object.keys(db.settings[STORAGE_KEY].tabs)).toEqual(['tab:General']);
+        expect(Object.keys(db.settings[STORAGE_KEY].tabs)).toEqual(['tab2:name:General']);
+    });
+
+    test('the discard is a format test, so a second run cannot eat what the first left', async () => {
+        db.settings[STORAGE_KEY] = {
+            v: 1,
+            savedAt: 1,
+            tabs: { 'tab:General': ['<div class="ChatMessage_chatMessage__z">mixed</div>'] },
+        };
+
+        const [container] = buildChat(['General']);
+        chatHistoryExtender.initialize();
+        await settle();
+        await evict(
+            container,
+            (() => {
+                const live = makeMessage('[1/2 10:00:00] kept');
+                container.appendChild(live);
+                return live;
+            })()
+        );
+        await chatHistoryPersistence.flush();
+        expect(Object.keys(db.settings[STORAGE_KEY].tabs)).toEqual(['tab2:name:General']);
+
+        // Reload onto the record the first run left behind: nothing more goes.
+        chatHistoryExtender.disable();
+        chatHistoryPersistence.reset();
+        const [reloaded] = buildChat(['General']);
+        chatHistoryExtender.initialize();
+        await settle();
+        await chatHistoryPersistence.flush();
+
+        expect(db.settings[STORAGE_KEY].tabs['tab2:name:General']).toHaveLength(1);
+        expect(reloaded.textContent).toContain('kept');
     });
 
     test('a key matching no current tab is skipped and renders nowhere', async () => {
@@ -592,7 +663,7 @@ describe('tab identity is a name, never a position', () => {
             v: 1,
             savedAt: 1,
             tabs: {
-                'tab:Whispers': ['<div class="ChatMessage_chatMessage__z">Alice: meet me at the tower</div>'],
+                'tab2:name:Whispers': ['<div class="ChatMessage_chatMessage__z">Alice: meet me at the tower</div>'],
             },
         };
 
@@ -727,8 +798,8 @@ describe('a restored message’s sender name opens the profile', () => {
         // an older version, carrying no attribute this code could have put
         // there. It still restores clickable, which is what makes the backfill
         // free — no migration, no record-version bump.
-        db.settings[STORAGE_KEY] = { v: 1, savedAt: 1, tabs: { 'tab:General': [senderHTML('Millennium')] } };
-        expect(db.settings[STORAGE_KEY].tabs['tab:General'][0]).not.toContain('data-mwi');
+        db.settings[STORAGE_KEY] = { v: 1, savedAt: 1, tabs: { 'tab2:name:General': [senderHTML('Millennium')] } };
+        expect(db.settings[STORAGE_KEY].tabs['tab2:name:General'][0]).not.toContain('data-mwi');
 
         const [container] = buildChat(['General']);
         chatHistoryExtender.initialize();
@@ -775,5 +846,215 @@ describe('a restored message’s sender name opens the profile', () => {
         senderOf(el).dispatchEvent(new MouseEvent('click', { bubbles: true }));
         document.body.removeEventListener('click', handleRestoredClick, true);
         expect(openPlayerProfile).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('a chat tab is named by the tab that is open', () => {
+    beforeEach(() => {
+        settingValues.chatHistoryExtender = true;
+        settingValues.chatHistoryExtender_maxHistory = null;
+        observerReady.handlers = [];
+        observerReady.domReady = true;
+        db.settings = {};
+        db.quota = false;
+        db.writes = 0;
+    });
+
+    afterEach(() => {
+        chatHistoryExtender.disable();
+        chatHistoryPersistence.reset();
+        document.body.innerHTML = '';
+    });
+
+    /**
+     * The live client's chat markup, measured: several tab buttons, exactly one
+     * message container, and the open tab marked with `aria-selected`. Channel
+     * tabs carry `data-mention-channel`; the rest are named by their text.
+     * @param {string} openChannel - `data-mention-channel` of the open tab
+     * @returns {Element} The one message container
+     */
+    function buildLiveChat(openChannel = '/chat_channel_types/beginner') {
+        const channels = [
+            '/chat_channel_types/global',
+            '/chat_channel_types/beginner',
+            '/chat_channel_types/trade',
+            '/chat_channel_types/party',
+        ];
+        document.body.innerHTML = '<div id="root"><div class="Chat_tabsComponentContainer__x"></div></div>';
+        const strip = document.querySelector('.Chat_tabsComponentContainer__x');
+        for (const channel of channels) {
+            const button = document.createElement('button');
+            button.setAttribute('role', 'tab');
+            button.setAttribute('data-mention-channel', channel);
+            button.setAttribute('aria-selected', channel === openChannel ? 'true' : 'false');
+            button.textContent = channel.split('/').pop();
+            strip.appendChild(button);
+        }
+        const container = document.createElement('div');
+        container.className = 'ChatHistory_chatHistory__abc';
+        document.getElementById('root').appendChild(container);
+        return container;
+    }
+
+    /** Open a different tab, the way the game does: same pane, new selection. */
+    function openChannelTab(channel) {
+        for (const button of document.querySelectorAll('button[role="tab"]')) {
+            button.setAttribute(
+                'aria-selected',
+                button.getAttribute('data-mention-channel') === channel ? 'true' : 'false'
+            );
+        }
+    }
+
+    /**
+     * The identification this module used to do: find the container's index
+     * among the containers, and take the tab button at the same index. Kept
+     * here, and nowhere else, to hold the bug still.
+     * @param {Element} containerEl
+     * @returns {string|null}
+     */
+    function legacyChatTabKey(containerEl) {
+        const containers = [...document.querySelectorAll('[class*="ChatHistory_chatHistory"]')];
+        const index = containers.indexOf(containerEl);
+        if (index < 0) return null;
+        const buttons = [...document.querySelectorAll('[class*="Chat_tabsComponentContainer"] button[role="tab"]')];
+        const button = buttons[index];
+        const label =
+            button?.getAttribute('data-mention-channel') ||
+            button?.textContent?.trim().replace(/\d+$/, '').trim() ||
+            '';
+        return label ? `tab:${label}` : null;
+    }
+
+    test('the bug: index alignment named every tab Global, because only the open tab has a container', () => {
+        const container = buildLiveChat('/chat_channel_types/beginner');
+        expect(document.querySelectorAll('[class*="ChatHistory_chatHistory"]')).toHaveLength(1);
+        expect(document.querySelectorAll('button[role="tab"]').length).toBeGreaterThan(1);
+
+        // What shipped: the container is always at index 0, so the key is always
+        // the first button's — whatever tab is actually open.
+        expect(legacyChatTabKey(container)).toBe('tab:/chat_channel_types/global');
+
+        // What the open tab says
+        expect(chatTabKey(container)).toBe('tab2:ch:/chat_channel_types/beginner');
+    });
+
+    test('a different open tab gives a different key, the same pane notwithstanding', () => {
+        const container = buildLiveChat('/chat_channel_types/party');
+        expect(chatTabKey(container)).toBe('tab2:ch:/chat_channel_types/party');
+
+        openChannelTab('/chat_channel_types/trade');
+        expect(chatTabKey(container)).toBe('tab2:ch:/chat_channel_types/trade');
+    });
+
+    test('no tab selected is not a tab identity', () => {
+        const container = buildLiveChat('/chat_channel_types/global');
+        openChannelTab('nothing');
+        expect(chatTabKey(container)).toBeNull();
+
+        // Two tabs claiming to be open is markup that no longer means what this
+        // reads it as, and is no more of an identity than none.
+        const buttons = [...document.querySelectorAll('button[role="tab"]')];
+        buttons[0].setAttribute('aria-selected', 'true');
+        buttons[1].setAttribute('aria-selected', 'true');
+        expect(chatTabKey(container)).toBeNull();
+    });
+
+    test('a whisper tab gets its own key, distinct from a channel tab of the same text', () => {
+        const container = buildLiveChat('/chat_channel_types/global');
+        openChannelTab('nothing');
+
+        // A whisper tab carries no channel attribute — it is named by its text
+        const strip = document.querySelector('.Chat_tabsComponentContainer__x');
+        const whisper = document.createElement('button');
+        whisper.setAttribute('role', 'tab');
+        whisper.setAttribute('aria-selected', 'true');
+        whisper.textContent = 'global';
+        strip.appendChild(whisper);
+
+        // Same text as the Global channel tab, and deliberately not the same key
+        expect(chatTabKey(container)).toBe('tab2:name:global');
+        expect(chatTabKey(container)).not.toBe('tab2:ch:/chat_channel_types/global');
+    });
+
+    test('the unread badge on a tab button does not change its key', () => {
+        const container = buildLiveChat('/chat_channel_types/global');
+        openChannelTab('nothing');
+        const whisper = document.createElement('button');
+        whisper.setAttribute('role', 'tab');
+        whisper.setAttribute('aria-selected', 'true');
+        whisper.textContent = 'Alice';
+        document.querySelector('.Chat_tabsComponentContainer__x').appendChild(whisper);
+        expect(chatTabKey(container)).toBe('tab2:name:Alice');
+
+        whisper.textContent = 'Alice 3';
+        expect(chatTabKey(container)).toBe('tab2:name:Alice');
+    });
+
+    test('more than one container means the one-pane claim has stopped holding, so nothing is keyed', () => {
+        const container = buildLiveChat('/chat_channel_types/global');
+        const second = document.createElement('div');
+        second.className = 'ChatHistory_chatHistory__abc';
+        container.parentElement.appendChild(second);
+
+        // With no link from the button to the pane there is no way to say which
+        // of these the open tab is, and a guess is the whole bug.
+        expect(chatTabKey(container)).toBeNull();
+        expect(chatTabKey(second)).toBeNull();
+    });
+
+    test('aria-controls ties a pane to its tab even when several are rendered', () => {
+        const container = buildLiveChat('/chat_channel_types/party');
+        const open = document.querySelector('button[aria-selected="true"]');
+        const panel = document.createElement('div');
+        panel.id = 'chat-panel-party';
+        open.setAttribute('aria-controls', panel.id);
+        document.getElementById('root').appendChild(panel);
+        panel.appendChild(container);
+
+        const other = document.createElement('div');
+        other.className = 'ChatHistory_chatHistory__abc';
+        document.getElementById('root').appendChild(other);
+
+        expect(chatTabKey(container)).toBe('tab2:ch:/chat_channel_types/party');
+        expect(chatTabKey(other)).toBeNull();
+    });
+
+    test('switching tabs in the same pane re-keys it and does not leave the old tab on screen', async () => {
+        db.settings[STORAGE_KEY] = {
+            v: 1,
+            savedAt: 1,
+            tabs: {
+                'tab2:ch:/chat_channel_types/party': [
+                    '<div class="ChatMessage_chatMessage__z">Alice: meet me at the tower</div>',
+                ],
+                'tab2:ch:/chat_channel_types/trade': ['<div class="ChatMessage_chatMessage__z">selling cheese</div>'],
+            },
+        };
+
+        const container = buildLiveChat('/chat_channel_types/party');
+        chatHistoryExtender.initialize();
+        await settle();
+        expect(container.textContent).toContain('meet me at the tower');
+
+        // The game swaps the pane's contents and moves the selection in one
+        // commit, so the outgoing tab's live lines leave with it. They are not
+        // evictions and must not be buffered or recorded under the new tab.
+        const live = makeMessage('[1/2 10:00:00] Alice: and bring the key');
+        container.appendChild(live);
+        openChannelTab('/chat_channel_types/trade');
+        await evict(container, live);
+        await settle();
+
+        expect(container.textContent).not.toContain('meet me at the tower');
+        expect(container.textContent).not.toContain('and bring the key');
+        expect(container.textContent).toContain('selling cheese');
+
+        await chatHistoryPersistence.flush();
+        const stored = db.settings[STORAGE_KEY].tabs;
+        expect(stored['tab2:ch:/chat_channel_types/trade']).toEqual([
+            '<div class="ChatMessage_chatMessage__z">selling cheese</div>',
+        ]);
+        expect(JSON.stringify(stored)).not.toContain('bring the key');
     });
 });

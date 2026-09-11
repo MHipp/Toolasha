@@ -14,6 +14,7 @@ import chatHistoryPersistence, {
     parseStoredMessage,
     rewireRestoredMessage,
     serializeMessage,
+    TAB_KEY_PREFIX,
 } from './chat-history-persistence.js';
 
 const STYLE_ID = 'mwi-chat-history-extender-css';
@@ -32,39 +33,98 @@ const CSS = `
     .mwi-history-restore-anchor { display: none; }
 `;
 
+/** The tab strip. Scoped: the game has other tab widgets, and none of them is chat. */
+const TAB_STRIP_SELECTOR = '[class*="Chat_tabsComponentContainer"]';
+
+/** A chat message container — one of these, for the open tab only. */
+const CHAT_CONTAINER_SELECTOR = '[class*="ChatHistory_chatHistory"]';
+
+/**
+ * The label part of a tab's key, namespaced by where it was read from.
+ *
+ * The two sources disagree about what a label looks like: channel tabs carry
+ * `data-mention-channel` (`/chat_channel_types/global`), while the rest —
+ * language rooms, Help, whispers — have none and are named by their button
+ * text (`English`, `Help`, a player name). Namespacing rather than mixing them
+ * into one flat label keeps a whisper from a player called `Help` out of the
+ * Help tab's record; the channel form additionally cannot collide with a text
+ * label, because a player name cannot contain `/`.
+ *
+ * The trailing-digit trim takes off the unread badge the button renders after
+ * its name, which would otherwise make the key change every time a message
+ * arrives.
+ *
+ * @param {Element} button - A tab button
+ * @returns {string} The namespaced label, or '' when the button names nothing
+ */
+function tabLabel(button) {
+    const channel = button?.getAttribute?.('data-mention-channel');
+    if (channel) return `ch:${channel}`;
+    const text = button?.textContent?.trim().replace(/\d+$/, '').trim();
+    return text ? `name:${text}` : '';
+}
+
 /**
  * The identity of one chat tab's message container: its name, or nothing.
  *
- * The game gives these containers nothing to be named by, so the tab strip is
- * used instead: containers and tab buttons are rendered in the same order, so
- * the button at the container's index names it. Whispers get their own tabs and
- * so their own keys, which is the point — every tab is persisted, private ones
- * included.
+ * The game renders a container for the **open tab only** — one container, eight
+ * buttons — so the tab is named by the button carrying `aria-selected="true"`,
+ * never by the container's position. Naming it by position is what this
+ * function used to do, and with a single container `indexOf` was always 0, so
+ * every tab's history went under the first button's name and was restored into
+ * whichever tab happened to be open. That is the failure the docstring here
+ * used to warn about and then commit.
  *
- * There is deliberately no positional fallback. The tab strip is not always
- * rendered when a container appears, and a key of `idx:<n>` names a *slot*,
- * not a tab: the record written under it is restored into whichever tab later
- * sits at that index, which is a whisper reappearing in Global. An unnamed tab
- * is therefore not keyed at all — its history is skipped until the strip names
+ * Two ways the container is tied to that button, strongest first:
+ *
+ * 1. `aria-controls` on the button naming the panel the container sits in. This
+ *    is a real link and holds however many containers the game decides to
+ *    render, so it is preferred wherever the markup provides it.
+ * 2. Otherwise, the fact that exactly one container exists. This is only sound
+ *    while that is true, so it is *checked* rather than assumed: two containers
+ *    means the claim has stopped holding and nothing is keyed.
+ *
+ * There is no mid-switch window to worry about: the button's `aria-selected`
+ * and the container's contents are written by the same React commit, and the
+ * DOM mutations of one commit are applied before any MutationObserver callback
+ * — which is every path into here — is delivered. No caller can observe half a
+ * switch.
+ *
+ * Whispers get their own tabs and so their own keys, which is the point — every
+ * tab is persisted, private ones included.
+ *
+ * There is deliberately no positional fallback, and nothing is guessed. An
+ * unnamed tab is not keyed at all: its history is skipped until the strip names
  * it. A tab whose history is missing is recoverable; a private conversation in
  * a public tab's scrollback is not.
  *
  * @param {Element} containerEl - A `ChatHistory_chatHistory` element
- * @returns {string|null} `tab:<label>`, or null when the tab cannot be named
+ * @returns {string|null} `tab2:<label>`, or null when the tab cannot be named
  */
 export function chatTabKey(containerEl) {
     try {
-        const containers = [...document.querySelectorAll('[class*="ChatHistory_chatHistory"]')];
-        const index = containers.indexOf(containerEl);
-        if (index < 0) return null;
+        if (!containerEl || !containerEl.isConnected) return null;
 
-        const buttons = [...document.querySelectorAll('[class*="Chat_tabsComponentContainer"] button[role="tab"]')];
-        const button = buttons[index];
-        const label =
-            button?.getAttribute('data-mention-channel') ||
-            button?.textContent?.trim().replace(/\d+$/, '').trim() ||
-            '';
-        return label ? `tab:${label}` : null;
+        const strip = document.querySelector(TAB_STRIP_SELECTOR);
+        if (!strip) return null;
+
+        const selected = [...strip.querySelectorAll('button[role="tab"]')].filter(
+            (button) => button.getAttribute('aria-selected') === 'true'
+        );
+        // Zero means the strip has not settled; more than one means the markup
+        // no longer means what this reads it as. Neither is a tab identity.
+        if (selected.length !== 1) return null;
+
+        const label = tabLabel(selected[0]);
+        if (!label) return null;
+
+        const panelId = selected[0].getAttribute('aria-controls');
+        const panel = panelId ? document.getElementById(panelId) : null;
+        if (panel) return panel.contains(containerEl) ? `${TAB_KEY_PREFIX}${label}` : null;
+
+        const containers = document.querySelectorAll(CHAT_CONTAINER_SELECTOR);
+        if (containers.length !== 1 || containers[0] !== containerEl) return null;
+        return `${TAB_KEY_PREFIX}${label}`;
     } catch {
         return null;
     }
@@ -159,28 +219,65 @@ class ChatTabHandler {
     }
 
     /**
-     * This tab's persistence key, resolved late when it could not be resolved
-     * at attach time.
+     * Empty the buffer of rendered messages, keeping the restore anchor.
      *
-     * The tab strip can still be unrendered when a container appears, and there
-     * is no positional key to fall back on any more, so an unnamed tab simply
-     * does not persist. It stays unnamed only until the strip renders: the next
-     * eviction asks again, and the first answer is cached — the container is
-     * this tab's identity for as long as it lives, and re-querying the strip on
-     * every evicted message would be two document queries per message.
+     * Used when the container stops being the tab it was: what it is showing
+     * belongs to the tab that was open before, and leaving it on screen is the
+     * whole reported symptom — a private conversation in a public tab's
+     * scrollback. Nothing on disk is touched; both tabs' records are intact and
+     * the new tab's is restored straight after.
+     */
+    _clearBuffer() {
+        for (const node of this._messageNodes()) {
+            node.querySelectorAll('[data-mwi-uid]').forEach((u) => {
+                this.interactionCache.delete(u.getAttribute('data-mwi-uid'));
+            });
+            if (node.hasAttribute('data-mwi-uid')) {
+                this.interactionCache.delete(node.getAttribute('data-mwi-uid'));
+            }
+            node.remove();
+        }
+    }
+
+    /**
+     * This tab's persistence key, re-read rather than remembered.
      *
-     * The restore that could not run while the tab was unnamed is fired here,
-     * once. It inserts above the restore anchor, so history still lands above
-     * whatever this session has already evicted into the buffer.
+     * Deliberately not cached for the life of the handler. The game renders one
+     * container for the open tab, and there is no guarantee it builds a fresh
+     * one per tab — React is free to reuse the node and swap its contents, in
+     * which case a remembered key would file a whisper under whichever tab was
+     * open when the container first appeared. The key is a property of what the
+     * container is showing *now*, so it is asked for now: one scoped query per
+     * mutation batch, not per message.
      *
-     * @returns {string|null} `tab:<label>`, or null while the tab is unnamed
+     * Three transitions matter:
+     *
+     * - Unnamed → named (the tab strip rendered late): the buffer holds this
+     *   tab's own evictions, so it is kept, and the restore that could not run
+     *   while the tab was unnamed is fired here, once.
+     * - Named → a *different* name (the container is now another tab): the
+     *   buffer is emptied before anything else, and the new tab's history is
+     *   restored into it.
+     * - Named → unnamed (the strip stopped naming things): recording stops,
+     *   because a guess is what this module exists to avoid. The buffer is left
+     *   alone; the container has not changed tab, we have merely stopped being
+     *   able to say which tab it is.
+     *
+     * @returns {string|null} `tab2:<label>`, or null while the tab is unnamed
      */
     _resolveTabKey() {
-        if (this.tabKey) return this.tabKey;
         const key = chatTabKey(this.container);
-        if (!key) return null;
+        if (key === this.tabKey) return key;
+
+        const previous = this.tabKey;
         this.tabKey = key;
-        if (!this.restoreStarted) {
+
+        if (previous && key && key !== previous) {
+            this._clearBuffer();
+            this.restoreStarted = false;
+        }
+
+        if (key && !this.restoreStarted) {
             this.restore(key).catch((error) => {
                 console.error('[ChatHistoryExtender] Late restore failed:', error);
             });
@@ -368,6 +465,18 @@ class ChatTabHandler {
     _onMutation(mutations) {
         const isAtBottom = this.container.scrollHeight - this.container.scrollTop - this.container.clientHeight < 50;
         const maxHistory = this.getMaxHistory();
+        // Once per batch, before anything is buffered or recorded: a tab switch
+        // arrives as a batch of mutations, and a message must never be filed
+        // under, or rendered beside, the tab that was open a moment ago.
+        const previousKey = this.tabKey;
+        const tabKey = this._resolveTabKey();
+        // A switch tears the outgoing tab's messages out of the pane, and those
+        // removals look exactly like evictions. They are not: the buffer has
+        // just been emptied for the incoming tab, and treating them as
+        // evictions would clone the outgoing tab's lines — whispers among them
+        // — straight back onto the incoming tab's scrollback and into its
+        // record under the incoming tab's key.
+        const switched = Boolean(previousKey) && Boolean(tabKey) && tabKey !== previousKey;
 
         mutations.forEach((mut) => {
             mut.addedNodes.forEach((node) => {
@@ -376,25 +485,28 @@ class ChatTabHandler {
                 }
             });
 
-            mut.removedNodes.forEach((node) => {
-                if (
-                    node.nodeType === 1 &&
-                    node.className?.includes('ChatMessage_chatMessage') &&
-                    node !== this.bufferEl
-                ) {
-                    const clone = node.cloneNode(true);
-                    this.bufferEl.appendChild(clone);
+            // The buffer element itself still has to be kept in place below,
+            // so this skips the evictions rather than the whole batch.
+            if (!switched) {
+                mut.removedNodes.forEach((node) => {
+                    if (
+                        node.nodeType === 1 &&
+                        node.className?.includes('ChatMessage_chatMessage') &&
+                        node !== this.bufferEl
+                    ) {
+                        const clone = node.cloneNode(true);
+                        this.bufferEl.appendChild(clone);
 
-                    // Serialized from the clone, before the trim below can take
-                    // it away again: the record is capped separately from the
-                    // buffer, so a message can leave the screen and stay stored.
-                    const html = serializeMessage(clone);
-                    const tabKey = this._resolveTabKey();
-                    if (html && tabKey) chatHistoryPersistence.record(tabKey, html);
+                        // Serialized from the clone, before the trim below can take
+                        // it away again: the record is capped separately from the
+                        // buffer, so a message can leave the screen and stay stored.
+                        const html = serializeMessage(clone);
+                        if (html && tabKey) chatHistoryPersistence.record(tabKey, html);
 
-                    this._trim(maxHistory);
-                }
-            });
+                        this._trim(maxHistory);
+                    }
+                });
+            }
 
             if (this.container.firstChild !== this.bufferEl) {
                 this.container.prepend(this.bufferEl);
