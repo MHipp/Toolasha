@@ -6,6 +6,10 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The house upgrade panel has one scrollbar
+
+The cost list no longer scrolls inside the panel's own scroll, so a swipe on a phone moves the whole panel instead of getting stuck in the list. The total and the Missing Mats button stay pinned to the bottom of the screen while the list is in view.
+
 ### The house upgrade list reaches its bottom in Firefox
 
 Reported: the house upgrade panel scrolled but never reached the bottom, with cost rows drawn below the window's frame. Firefox lets the game's window grow past its own frame when its content is tall, so the end of the list, and the Missing Mats button, stayed off screen. The house panel now caps its scroll area at the visible screen.
