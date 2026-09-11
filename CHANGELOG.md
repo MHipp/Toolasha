@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Combat drops count whenever the game is open, not only when the loot log is
+
+"Where the gold came from" read combat loot mainly from the loot log, which the game only sends while its panel is open. Opening it for an hour of a ten-hour grind counted that hour and left the rest in the residual. Combat loot is now recorded live whenever the tab is open. Each run counts once, at the most any recording saw, and offline time is left to the offline row, which already counts it. A run that ended before a reload now counts, and loot the market can't price is valued as net worth values it. Gathering loot is spread over the time it was gathered. Task rerolls get their own row.
+
+The live recording starts from this version, so older days are unchanged.
+
 ### Audit round: "1,500m" meant 1.5 million, and numbers that printed "1000.0K"
 
 Typed amounts ignored a thousands separator before a suffix, so "1,500m" read as 1.5M and "1,500,000k" as 1.5K, a thousand or more times too small. This hit the forecast target and the market quantity boxes. Malformed input like "1.2.3" is now refused, and the budget and goal boxes accept `t` and `q`. Compact numbers just under a boundary now read "1.0M" rather than "1000.0K" or "1000K", and the threshold format reaches T and Q.
