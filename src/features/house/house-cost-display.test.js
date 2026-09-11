@@ -54,22 +54,19 @@ beforeEach(() => {
     document.body.innerHTML = '';
 });
 
-describe('cumulative cost list height bound', () => {
-    // happy-dom does no layout at all: clientHeight and scrollHeight are both 0
-    // here, so nothing below measures scrolling. What is assertable is that the
-    // declarations a browser needs in order to scroll are present, and that the
-    // button is not inside the box that scrolls.
-    test('the materials list carries a real height bound, not a bare overflow', async () => {
+describe('the materials list has no scroller of its own', () => {
+    // One scroller now: the game's dialog (`Modal_modalContent`, bounded by
+    // SCROLLER_MAX_HEIGHT). A second bound on the list here would recreate the
+    // nested-scrollbar bug this replaces, so this asserts the bound is gone
+    // rather than merely that a new one looks right.
+    test('the list carries no inline max-height or overflow', async () => {
         const section = await render();
         const list = section.querySelector('.mwi-cumulative-materials-list');
 
         expect(list).toBeTruthy();
-        expect(list.style.overflowY).toBe('auto');
-        // `overflow-y: auto` on an unbounded box can never scroll - the box just
-        // grows to fit. The bound is what makes the overflow mean anything.
-        expect(list.style.maxHeight).not.toBe('');
-        expect(list.style.maxHeight).toContain('--toolasha-visual-viewport-height');
-        expect(list.style.maxHeight).toContain('100vh'); // fallback for no visualViewport
+        expect(list.style.maxHeight).toBe('');
+        expect(list.style.overflowY).toBe('');
+        expect(list.style.overscrollBehavior).toBe('');
     });
 
     test('the section itself does not claim to scroll without a bound', async () => {
@@ -362,57 +359,74 @@ describe('the scroller max-height fallback on browsers without :has()', () => {
 });
 
 describe('Missing Mats Marketplace button placement', () => {
-    test('the button lives below the scrolling list, not inside it', async () => {
+    test('the button lives in the pinned footer, not inside the list', async () => {
         const section = await render();
         const list = section.querySelector('.mwi-cumulative-materials-list');
+        const footer = section.querySelector('.mwi-cumulative-footer');
         const button = [...section.querySelectorAll('button')].find(
             (b) => b.textContent === 'Missing Mats Marketplace'
         );
 
         expect(button).toBeTruthy();
         expect(list.contains(button)).toBe(false);
-        expect(section.contains(button)).toBe(true);
+        expect(footer).toBeTruthy();
+        expect(footer.contains(button)).toBe(true);
     });
 
-    test('rows scroll; total and button are siblings after the list', async () => {
+    test('rows are followed by one footer holding the total and the button', async () => {
         const section = await render();
         const container = section.querySelector('.mwi-cumulative-cost-container');
         const children = [...container.children];
 
         expect(children[0].className).toBe('mwi-cumulative-materials-list');
+        expect(children[1].className).toBe('mwi-cumulative-footer');
         expect(children[1].textContent).toContain('Total Market Value');
-        expect(children[2].textContent).toBe('Missing Mats Marketplace');
+        expect(children[1].textContent).toContain('Missing Mats Marketplace');
         // Coins plus every material
         expect(children[0].children.length).toBe(MATERIALS.length + 1);
     });
 });
 
-describe('the list keeps its place when an action redraws it', () => {
-    // happy-dom does no layout, so nothing here is really scrollable — but
-    // `scrollTop` is a settable property on the element, which is all this
-    // needs: the point is that the value is carried from the old scroller to
-    // the new one across a rebuild, not that either can actually scroll.
-    test('a redraw restores the scroll position onto the rebuilt list', async () => {
+describe('the footer is pinned to the bottom of the single scroller', () => {
+    // happy-dom does no layout, so this cannot show the footer actually stays
+    // visible — that was checked in real browsers against a reproduction. What
+    // is assertable here is the sticky-positioning contract.
+    //
+    // The footer's opaque background is not asserted here: it is set as
+    // `background: var(--color-midnight-900, #0a0a12)`, and happy-dom's
+    // CSSStyleDeclaration rejects `var()` as a color value outright — it drops
+    // the whole declaration rather than keeping the string, the same way it
+    // drops `color: var(...)` — so `style.background` reads back empty
+    // regardless of whether the source sets it. That the background is opaque
+    // and not the section's translucent `rgba(0, 0, 0, 0.3)` was checked in a
+    // real browser, not here.
+    test('the footer is sticky and pinned to the bottom, above the rows', async () => {
+        const section = await render();
+        const footer = section.querySelector('.mwi-cumulative-footer');
+
+        expect(footer.style.position).toBe('sticky');
+        expect(footer.style.bottom).toBe('0px');
+        expect(footer.style.zIndex).toBe('1');
+    });
+});
+
+describe('the list has no scroll position of its own to carry across a redraw', () => {
+    // Superseded by the single-scroller change: the list no longer scrolls on
+    // its own, so it has no scrollTop worth carrying, and the fragment
+    // clear+append is synchronous with no layout in between — so the dialog's
+    // own scrollTop (the one real scroller now) is never touched by a rebuild.
+    // This replaces the old "keeps its place" tests, which asserted a
+    // scrollTop carry-over onto the list that no longer exists.
+    test('a redraw does not put a scroll position on the rebuilt list', async () => {
         const section = await render();
         const container = section.querySelector('.mwi-cumulative-cost-container');
         const before = container.querySelector('.mwi-cumulative-materials-list');
-        before.scrollTop = 120;
 
         // What an `items_updated` does — the same call the handler makes
         await houseCostDisplay.updateCompactCumulativeDisplay(container, '/house_rooms/mystical_study', 5, 8);
 
         const after = container.querySelector('.mwi-cumulative-materials-list');
         expect(after).not.toBe(before); // genuinely rebuilt, not reused
-        expect(after.scrollTop).toBe(120);
-    });
-
-    test('a list read from the top stays at the top', async () => {
-        const section = await render();
-        const container = section.querySelector('.mwi-cumulative-cost-container');
-        container.querySelector('.mwi-cumulative-materials-list').scrollTop = 0;
-
-        await houseCostDisplay.updateCompactCumulativeDisplay(container, '/house_rooms/mystical_study', 5, 8);
-
-        expect(container.querySelector('.mwi-cumulative-materials-list').scrollTop).toBe(0);
+        expect(after.scrollTop).toBe(0);
     });
 });

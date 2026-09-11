@@ -24,28 +24,6 @@ import {
     attachRegularTabClearListener,
 } from '../../utils/marketplace-tabs.js';
 
-/**
- * Height bound for the cumulative materials list.
- *
- * `overflow-y: auto` only ever scrolls a box that something stops from growing,
- * so the list needs a real bound of its own — it has no height-constraining
- * ancestor (the game's modal lets its content run as long as it likes).
- *
- * The unit is the visual viewport, not `vh`: `vh` on mobile is measured against
- * the *largest* viewport and ignores the address bar and the on-screen keyboard,
- * which is exactly the space that is missing when the list runs off a phone
- * screen. `--toolasha-visual-viewport-height` is published by
- * `src/utils/visual-viewport.js` and tracks what is actually visible; the `100vh`
- * fallback covers browsers without `visualViewport`, and a browser that does not
- * understand `max()` simply drops the declaration and gets today's behaviour.
- *
- * The floor keeps a very short viewport from producing a two-row peephole, and
- * 55% is loose enough that a desktop viewport (~1000px+) fits a full eight-level
- * material list without scrolling at all — the bound only bites when the content
- * genuinely does not fit.
- */
-const MATERIALS_LIST_MAX_HEIGHT = 'max(200px, calc(var(--toolasha-visual-viewport-height, 100vh) * 0.55))';
-
 const PANEL_LAYOUT_STYLE_ID = 'toolasha-house-panel-layout';
 
 /**
@@ -129,8 +107,8 @@ const PANEL_MIN_HEIGHT_VALUES = [PANEL_MIN_HEIGHT, '-webkit-fit-content', '-moz-
  * border-box` puts the scroller's own padding (`Modal_modalContent`'s
  * `padding: var(--spacing-sm)`) inside that cap rather than added on top of
  * it — without it Firefox still overshoots, by the padding (measured 11px).
- * The unit is the visible viewport, same as `MATERIALS_LIST_MAX_HEIGHT` above
- * and `--toolasha-visual-viewport-height`'s other use in
+ * The unit is the visible viewport, same as
+ * `--toolasha-visual-viewport-height`'s other use in
  * `action-panel-layout.js`: it tracks the address bar and the on-screen
  * keyboard, which `vh` does not.
  *
@@ -664,8 +642,9 @@ class HouseCostDisplay {
         const section = document.createElement('div');
         section.className = 'mwi-house-to-level';
         // `flex-shrink: 0` replaces the `min-height: 0` that used to sit here.
-        // The list already has its own bound and its own scrollbar, so a section
-        // squeezed below that bound is not saving space, it is spilling its
+        // Nothing inside this section bounds its own height any more — the
+        // list scrolls with the game's dialog, not on its own — so a section
+        // squeezed by the flex line is not saving space, it is spilling its
         // contents out of its own border. It is safe to refuse only because
         // PANEL_LAYOUT_CSS lets the panel grow rather than pushing the deficit
         // onto the game's Build button — the two go together.
@@ -773,19 +752,18 @@ class HouseCostDisplay {
         // Build into a detached fragment, then clear+append in one synchronous swap
         const fragment = document.createDocumentFragment();
 
-        // Materials list as vertical stack of single-line rows
-        // Only the rows scroll; the total and the marketplace button below stay
-        // pinned under them so the button is reachable without scrolling to the
-        // end of a fourteen-material list.
+        // Materials list as vertical stack of single-line rows.
+        // No height bound and no `overflow-y` of its own: the game's own dialog
+        // scroller (`Modal_modalContent`, capped by SCROLLER_MAX_HEIGHT above)
+        // is the only scroller here. A second, nested scroller on the list used
+        // to fight the dialog's for a swipe or a wheel event, and on a phone a
+        // swipe over the rows scrolled the list instead of the dialog.
         const materialsList = document.createElement('div');
         materialsList.className = 'mwi-cumulative-materials-list';
         materialsList.style.cssText = `
             display: flex;
             flex-direction: column;
             gap: 8px;
-            max-height: ${MATERIALS_LIST_MAX_HEIGHT};
-            overflow-y: auto;
-            overscroll-behavior: contain;
         `;
 
         // Coins first
@@ -804,6 +782,25 @@ class HouseCostDisplay {
 
         fragment.appendChild(materialsList);
 
+        // Total and the Missing Mats button live in a footer that is `position:
+        // sticky; bottom: 0` against the dialog scroller (its nearest scrolling
+        // ancestor, now that the list itself does not scroll) — it rides the
+        // bottom of the visible dialog while the list is on screen, then
+        // settles at the list's end once you scroll that far. The section's own
+        // background is a translucent `rgba(0, 0, 0, 0.3)`, so rows scrolling
+        // underneath a sticky footer with the same background would read as
+        // overlap; the footer needs an opaque one of its own.
+        const footer = document.createElement('div');
+        footer.className = 'mwi-cumulative-footer';
+        footer.style.cssText = `
+            position: sticky;
+            bottom: 0;
+            z-index: 1;
+            padding: 6px 0;
+            border-top: 1px solid ${config.COLOR_BORDER};
+            background: var(--color-midnight-900, #0a0a12);
+        `;
+
         // Total
         const totalDiv = document.createElement('div');
         totalDiv.style.cssText = `
@@ -816,31 +813,24 @@ class HouseCostDisplay {
             text-align: center;
         `;
         totalDiv.textContent = `Total Market Value: ${coinFormatter(costData.totalValue)}`;
-        fragment.appendChild(totalDiv);
+        footer.appendChild(totalDiv);
 
         // Add Missing Mats Marketplace button if any materials are missing
         const missingMaterials = this.getMissingMaterials(costData);
         if (missingMaterials.length > 0) {
             const button = this.createMissingMaterialsButton(missingMaterials);
-            fragment.appendChild(button);
+            footer.appendChild(button);
         }
 
-        // Every `items_updated` redraws this whole container, and an action
-        // completing is an `items_updated` — so a player reading the list while
-        // gathering had it yanked back to the top every few seconds. The rows
-        // are rebuilt rather than patched, so the scroller is a different
-        // element afterwards and its position has to be carried across by hand.
-        // A shorter list clamps the restored value on its own, and a player who
-        // was already at the top restores a 0 and notices nothing.
-        const previousScroll = container.querySelector('.mwi-cumulative-materials-list')?.scrollTop ?? 0;
+        fragment.appendChild(footer);
 
+        // No scroll position to carry across here: this clear+append is one
+        // synchronous swap with no layout in between, so the DIALOG's scrollTop
+        // (the only scroller now) is never touched and survives the rebuild on
+        // its own. Do not re-add a per-rebuild scroll carry-over for the list —
+        // it no longer has a scroll position of its own to carry.
         container.innerHTML = '';
         container.appendChild(fragment);
-
-        if (previousScroll > 0) {
-            const restored = container.querySelector('.mwi-cumulative-materials-list');
-            if (restored) restored.scrollTop = previousScroll;
-        }
     }
 
     /**
