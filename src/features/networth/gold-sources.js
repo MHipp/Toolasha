@@ -199,7 +199,11 @@ export const SOURCE_META = {
         label: 'Marketplace',
         measured: true,
         source: 'Trade ledger',
-        note: 'Realised profit on your own filled listings, before tax — average-cost matched against recorded buys.',
+        note:
+            'What each of your own filled orders did to your net worth, priced at today’s market: a buy adds ' +
+            'what the items are worth less the coins paid, a sell the coins it raised before tax less what the ' +
+            'items were worth. Instant buys and sells place an order too, so they are included. Counted on the ' +
+            'day each fill lands; the tax is its own row.',
     },
     offline: {
         label: 'Offline progress',
@@ -238,7 +242,7 @@ export const SOURCE_META = {
         label: 'Market tax',
         measured: true,
         source: 'Trade ledger',
-        note: 'Tax paid on every filled sell listing, shown apart from the marketplace profit it is deducted from.',
+        note: 'Tax paid on every filled sell listing, shown apart from the marketplace row it is deducted from.',
     },
 };
 
@@ -531,69 +535,61 @@ export function enhancementSessionNet(session, price, basisPrice = price) {
 }
 
 /**
- * Realised marketplace profit and tax paid, per local day.
+ * What your own filled orders did to net worth, and the tax they paid, per local day.
  *
- * Average-cost matched per item and enhancement level, chronologically over the
- * *whole* ledger rather than the window — a sell inside the window was very
- * often bought before it, and starting the pool at the window edge would call
- * that whole sale profit.
+ * Every row here prices at today's market, and so does this: a fill is an
+ * exchange of coins for items (or items for coins), and the net worth moved by
+ * the difference between the coins and what net worth carries the items at.
  *
- * The profit reported is before tax, and the tax is reported beside it, so the
- * two lines sum to what actually landed. Sells with no recorded buy behind them
- * realise nothing: calling untracked cost zero would fake a total margin.
+ * - a **buy** adds `value × quantity − coins paid`: buying under the valuation
+ *   is a gain the day it fills, buying at an ask above it a loss;
+ * - a **sell** adds `gross − value × quantity`, and its tax goes to the tax row,
+ *   so the two lines sum to the coins that landed less the items that left.
+ *
+ * Both sides are counted on the day they fill, whether or not the other side
+ * was ever recorded, which is what keeps this in step with the rows that consume
+ * or produce the same items at the same valuation: an input bought and crafted
+ * away counts its buy gap here and its valuation in the production row, and the
+ * two sum to what the account actually paid.
+ *
+ * A fill whose item net worth cannot value is left out of the figure and
+ * counted; its tax is real coins either way and still counts.
  *
  * @param {Array<Object>} fills - Trade ledger fill records, any order
  * @param {number} marketTax - Sell tax rate, e.g. 0.05
- * @returns {Object<string, {realisedGross: number, tax: number}>} Keyed by day id
+ * @param {Function} [value] - `(itemHrid, enhancementLevel) => number|null`, what net
+ *   worth carries one unit at
+ * @returns {Object<string, {value: number, tax: number, unpriced: number}>} Keyed by day id
  */
-export function marketplaceByDay(fills, marketTax) {
-    const sorted = (Array.isArray(fills) ? fills.filter((fill) => fill && fill.itemHrid) : []).slice();
-    sorted.sort((a, b) => num(a.t) - num(b.t));
-
-    const pools = new Map();
+export function marketplaceByDay(fills, marketTax, value = () => null) {
     const byDay = {};
-
     const dayFor = (t) => {
         const id = localDayId(t);
-        if (!byDay[id]) byDay[id] = { realisedGross: 0, tax: 0 };
+        if (!byDay[id]) byDay[id] = { value: 0, tax: 0, unpriced: 0 };
         return byDay[id];
     };
 
-    for (const fill of sorted) {
-        const key = `${fill.itemHrid}:${num(fill.enhancementLevel)}`;
-        let pool = pools.get(key);
-        if (!pool) {
-            pool = { qty: 0, cost: 0 };
-            pools.set(key, pool);
-        }
-
+    for (const fill of Array.isArray(fills) ? fills : []) {
+        if (!fill?.itemHrid || (fill.side !== 'buy' && fill.side !== 'sell')) continue;
         const quantity = num(fill.quantity);
         if (quantity <= 0) continue;
 
+        const day = dayFor(fill.t);
+        const unit = value(fill.itemHrid, num(fill.enhancementLevel));
+        const held = Number.isFinite(unit) ? unit * quantity : null;
+
         if (fill.side === 'buy') {
-            pool.qty += quantity;
-            pool.cost += num(fill.coins);
+            if (held === null) day.unpriced += 1;
+            else day.value += held - num(fill.coins);
             continue;
         }
-        if (fill.side !== 'sell') continue;
 
         // `coins` on a sell is already net of tax; the gross is what the
         // listing was worth before the market took its cut
-        const net = num(fill.coins);
         const gross = num(fill.price) * quantity;
-        const tax = Math.max(0, gross - net) || gross * num(marketTax);
-
-        const day = dayFor(fill.t);
-        day.tax += tax;
-
-        const matched = Math.min(quantity, pool.qty);
-        if (matched > 0) {
-            const avgCost = pool.cost / pool.qty;
-            const costOut = avgCost * matched;
-            pool.qty -= matched;
-            pool.cost -= costOut;
-            day.realisedGross += gross * (matched / quantity) - costOut;
-        }
+        day.tax += Math.max(0, gross - num(fill.coins)) || gross * num(marketTax);
+        if (held === null) day.unpriced += 1;
+        else day.value += gross - held;
     }
 
     return byDay;
@@ -1543,10 +1539,14 @@ export function attributeGoldSources(input) {
         for (const { day, share } of shares) add(day, 'enhancement', net * share);
     }
 
-    const market = marketplaceByDay(tradeFills, marketTax);
+    // Every fill at today's valuation of what changed hands, the rule the other
+    // rows follow — see `marketplaceByDay`
+    const market = marketplaceByDay(tradeFills, marketTax, dropPrice);
+    let unpricedMarketFills = 0;
     for (const [day, figures] of Object.entries(market)) {
-        add(day, 'marketplace', figures.realisedGross);
+        add(day, 'marketplace', figures.value);
         add(day, 'marketTax', -figures.tax);
+        if (inWindow.has(day)) unpricedMarketFills += figures.unpriced;
     }
 
     // The archived runs pay for the consumables row: the food and drinks each
@@ -1759,6 +1759,7 @@ export function attributeGoldSources(input) {
         unpricedProductionActions,
         unpricedChestItems,
         unpricedChests,
+        unpricedMarketFills,
         // What actually fed the combat row, so the panel can say so rather than
         // calling a fallback and a gap alike "Measured"
         combatBasis: {

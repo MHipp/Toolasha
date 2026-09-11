@@ -248,30 +248,37 @@ describe('enhancementSessionNet', () => {
 });
 
 describe('marketplaceByDay', () => {
-    test('profit is matched against recorded buys, and tax is reported apart', () => {
+    test('each side of a trade counts its gap to the valuation on the day it fills, tax apart', () => {
+        // Cheese carried at 100: bought at 90, sold at 120
         const fills = [
-            { t: D18, itemHrid: '/items/cheese', side: 'buy', quantity: 10, price: 100, coins: 1000 },
-            { t: D20, itemHrid: '/items/cheese', side: 'sell', quantity: 10, price: 200, coins: 1900 },
+            { t: D18, itemHrid: '/items/cheese', side: 'buy', quantity: 10, price: 90, coins: 900 },
+            { t: D20, itemHrid: '/items/cheese', side: 'sell', quantity: 10, price: 120, coins: 1140 },
         ];
-        const byDay = marketplaceByDay(fills, 0.05);
-        // Gross 2000, cost 1000, tax 100
-        expect(byDay['2026-08-20'].realisedGross).toBe(1000);
-        expect(byDay['2026-08-20'].tax).toBe(100);
+        const byDay = marketplaceByDay(fills, 0.05, price);
+        expect(byDay['2026-08-18'].value).toBe(100);
+        expect(byDay['2026-08-20'].value).toBe(200);
+        expect(byDay['2026-08-20'].tax).toBe(60);
     });
 
-    test('a sell with no recorded buy realises nothing but still pays tax', () => {
+    test('buying at an ask above the valuation is a loss the day it fills, not nothing', () => {
+        const fills = [{ t: D20, itemHrid: '/items/cheese', side: 'buy', quantity: 1, price: 110, coins: 110 }];
+        expect(marketplaceByDay(fills, 0.05, price)['2026-08-20'].value).toBe(-10);
+    });
+
+    test('a sell with no recorded buy still counts what it raised against the valuation', () => {
         const fills = [{ t: D20, itemHrid: '/items/cheese', side: 'sell', quantity: 5, price: 100, coins: 475 }];
-        const byDay = marketplaceByDay(fills, 0.05);
-        expect(byDay['2026-08-20'].realisedGross).toBe(0);
+        const byDay = marketplaceByDay(fills, 0.05, price);
+        expect(byDay['2026-08-20'].value).toBe(0);
         expect(byDay['2026-08-20'].tax).toBe(25);
     });
 
-    test('buys before the window still fill the cost pool', () => {
+    test('an item net worth cannot value is counted and left out, and its tax still counts', () => {
         const fills = [
-            { t: D18 - 30 * DAY, itemHrid: '/items/cheese', side: 'buy', quantity: 4, price: 50, coins: 200 },
-            { t: D20, itemHrid: '/items/cheese', side: 'sell', quantity: 4, price: 100, coins: 380 },
+            { t: D20, itemHrid: '/items/mystery', side: 'sell', quantity: 2, price: 500, coins: 950 },
+            { t: D20, itemHrid: '/items/mystery', side: 'buy', quantity: 1, price: 400, coins: 400 },
         ];
-        expect(marketplaceByDay(fills, 0.05)['2026-08-20'].realisedGross).toBe(200);
+        const day = marketplaceByDay(fills, 0.05, price)['2026-08-20'];
+        expect(day).toEqual({ value: 0, tax: 50, unpriced: 2 });
     });
 });
 
@@ -1247,6 +1254,36 @@ describe('skilling drinks', () => {
         expect(result.totals.sources.skillingDrinks).toBe(-36_000);
         expect(result.totals.sources.consumables).toBe(0);
         expect(result.totals.sources.dungeonKeys).toBe(0);
+    });
+});
+
+describe('the marketplace row at today’s valuation', () => {
+    const base = { from: D19, to: D20 + 3600_000, price, marketTax: 0.05 };
+
+    test('an input bought and crafted away is never counted twice between the two rows', () => {
+        // 10 cheese carried at 100, bought for 900 and crafted into 2,000 of output:
+        // the account paid 900 and gained 2,000, so 1,100 in all
+        const result = attributeGoldSources({
+            ...base,
+            tradeFills: [{ t: D20, itemHrid: '/items/cheese', side: 'buy', quantity: 10, price: 90, coins: 900 }],
+            productionDays: [{ d: '2026-08-20', outputValue: 2000, inputValue: 1000 }],
+        });
+        expect(result.totals.sources.marketplace).toBe(100);
+        expect(result.totals.sources.production).toBe(1000);
+        expect(result.totals.explained).toBe(1100);
+    });
+
+    test('a fill on an item the market cannot price is valued at net worth’s own figure, or counted', () => {
+        const result = attributeGoldSources({
+            ...base,
+            holdingPrice: (itemHrid) => (itemHrid === '/items/relic' ? 1000 : null),
+            tradeFills: [
+                { t: D20, itemHrid: '/items/relic', side: 'buy', quantity: 1, price: 800, coins: 800 },
+                { t: D20, itemHrid: '/items/mystery', side: 'buy', quantity: 1, price: 800, coins: 800 },
+            ],
+        });
+        expect(result.totals.sources.marketplace).toBe(200);
+        expect(result.unpricedMarketFills).toBe(1);
     });
 });
 
