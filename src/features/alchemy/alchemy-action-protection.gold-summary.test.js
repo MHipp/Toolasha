@@ -109,3 +109,49 @@ describe('the gold summary caps by whole actions the item stock can sustain', ()
         expect(summary.textContent).toBe('Gold for all: 30 / 0');
     });
 });
+
+describe('the gold summary reads the action actually running, not the array-first one', () => {
+    beforeEach(() => {
+        alchemyActionProtection._inventoryTotals = null;
+    });
+
+    test('a repeat requeued to the front of the array carries a higher ordinal, and must be skipped', () => {
+        // Bulk 1 and a huge item stack, so neither queued count is capped by
+        // `maxFromItems` — whichever action's `hasMaxCount` remainder wins is
+        // what the summary reads out.
+        dm.itemDetails = { '/items/thing': { alchemyDetail: { bulkMultiplier: 1 } } };
+        dm.inventory = [{ itemLocationHrid: '/item_locations/inventory', itemHrid: '/items/thing', count: 1000 }];
+        dm.actions = [
+            // Array-first, but requeued to the front on its last repeat — a
+            // HIGHER ordinal than the one actually running.
+            {
+                actionHrid: '/actions/alchemy/decompose',
+                primaryItemHash: 'char-1::/item_locations/inventory::/items/thing::0',
+                isDone: false,
+                ordinal: 5,
+                hasMaxCount: true,
+                maxCount: 100,
+                currentCount: 0,
+            },
+            // Array-second, lower ordinal: this is the one actually running.
+            {
+                actionHrid: '/actions/alchemy/decompose',
+                primaryItemHash: 'char-1::/item_locations/inventory::/items/thing::0',
+                isDone: false,
+                ordinal: 2,
+                hasMaxCount: true,
+                maxCount: 10,
+                currentCount: 5,
+            },
+        ];
+
+        const alchemyComponent = buildAlchemyComponent('thing');
+        alchemyActionProtection._doUpdateGoldSummary(alchemyComponent);
+
+        const summary = alchemyComponent.querySelector('.mwi-alchemy-gold-summary');
+        // The running action has 10 - 5 = 5 left, at a mocked cost of 10 each:
+        // "Gold for 5: 50 / 0". Reading the array-first action instead (100
+        // left) would print "Gold for 100: 1000 / 0".
+        expect(summary.textContent).toBe('Gold for 5: 50 / 0');
+    });
+});

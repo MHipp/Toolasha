@@ -12,6 +12,7 @@ import storage from '../../core/storage.js';
 import bundledActionPanelSort from '../actions/action-panel-sort.js';
 import { actionPanelSort } from '../../utils/bundle-bridge.js';
 import { getAlchemyCoinCost } from '../../utils/alchemy-fees.js';
+import { runningAction } from '../../utils/combat-actions.js';
 import { formatLargeNumber } from '../../utils/formatters.js';
 import { PANEL_Z_CAP } from '../../utils/panel-z-index.js';
 
@@ -443,7 +444,14 @@ class AlchemyActionProtection {
         const goldBalance = totals.coins;
 
         const actions = dataManager.getCurrentActions();
-        const activeAction = actions?.find((a) => a.actionHrid === actionHrid && a.primaryItemHash?.includes(itemHrid));
+        // The queue is insertion order, not execution order — a repeating action
+        // requeued to the front carries a HIGHER ordinal, so `.find` can return an
+        // action queued behind the one actually running. `runningAction` picks the
+        // lowest-ordinal unfinished match instead.
+        const activeAction = runningAction(
+            actions,
+            (a) => a.actionHrid === actionHrid && a.primaryItemHash?.includes(itemHrid)
+        );
 
         let totalActions;
         let label = 'all';
