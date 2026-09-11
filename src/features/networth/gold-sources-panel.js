@@ -63,6 +63,7 @@ const SOURCE_COLORS = {
     offline: '#14b8a6',
     consumables: '#94a3b8',
     dungeonKeys: '#78716c',
+    skillingDrinks: '#a8a29e',
     marketTax: '#64748b',
     residual: '#4b5563',
 };

@@ -41,6 +41,19 @@
  *
  * Each guard can only make a real run go uncounted, never make a listing count.
  *
+ * ## Skilling drinks
+ *
+ * A drink is used up from the inventory, one at a time, and the count falls by
+ * one when it is. The same guards apply, with the drink's slot in place of the
+ * dungeon: a fall of exactly one, of a drink sitting in an active drink slot of
+ * the running non-combat action's type (now or within `CONFIRM_MS`), with no
+ * listing of it alongside. Two more keep other consumption out:
+ *
+ * - nothing is held while a combat action runs; combat drinks are the combat
+ *   consumables row's, from the archived runs;
+ * - a fall inside the completed action's own message, of an item that action
+ *   takes as an input, is the recipe's (the production recorder's), not a drink.
+ *
  * ## Storage
  *
  * One record per local day in the `networthHistory` store, day-chunked for the
@@ -51,7 +64,7 @@ import storage from '../../core/storage.js';
 import config from '../../core/config.js';
 import dataManager from '../../core/data-manager.js';
 import { createChunkedHistory, timeChunkId } from '../../utils/chunked-history.js';
-import { runningCombatAction } from '../../utils/combat-actions.js';
+import { runningAction, runningCombatAction } from '../../utils/combat-actions.js';
 import { dungeonEntryKey } from '../../utils/dungeon-key-forecast.js';
 import { localDayId, dayStart, GATHERING_ACTION_TYPES } from './gold-sources.js';
 
@@ -93,6 +106,7 @@ const rowChunkId = (row) => timeChunkId(dayStart(row?.d), 'day');
  *   gained: Object<string, number>}>}>} [gathering] - Keyed by the character action's id:
  *   the action hrid, and what each unbroken watched stretch gained, as drop key → count
  * @property {Object<string, number>} [keys] - Dungeon entry keys spent, item hrid → count
+ * @property {Object<string, number>} [drinks] - Drinks used up while skilling, item hrid → count
  */
 
 /**
@@ -206,6 +220,26 @@ export function foldConsumed(row, kind, itemHrid, count) {
  */
 function isEntryKeyCandidate(itemHrid) {
     return /^\/items\/[a-z_]+_entry_key$/.test(String(itemHrid || ''));
+}
+
+/** Combat drinks are the consumables row's */
+const COMBAT_TYPE = '/action_types/combat';
+
+/**
+ * Whether the action a message completed takes this item as an input, so that a
+ * fall of it in that message is the recipe's rather than a drink.
+ * @param {Object|null} action - `endCharacterAction`
+ * @param {Object|null} details - Its action details
+ * @param {string} itemHrid
+ * @returns {boolean}
+ */
+export function consumedByAction(action, details, itemHrid) {
+    if (!action || !itemHrid) return false;
+    if ((details?.inputItems || []).some((input) => input?.itemHrid === itemHrid)) return true;
+    if (details?.upgradeItemHrid === itemHrid) return true;
+    // Alchemy and enhancing name what they work on in the action itself
+    const hashes = [action.primaryItemHash, action.secondaryItemHash];
+    return hashes.some((hash) => typeof hash === 'string' && hash.includes(`${itemHrid}::`));
 }
 
 class ItemFlowRecorder {
@@ -432,6 +466,27 @@ class ItemFlowRecorder {
     }
 
     /**
+     * The action type of whatever the character is running, or null when idle.
+     * @returns {string|null}
+     */
+    _runningType() {
+        const running = runningAction(dataManager.getCurrentActions?.());
+        return running?.actionHrid ? dataManager.getActionDetails?.(running.actionHrid)?.type || null : null;
+    }
+
+    /**
+     * Whether a drink sits in an active drink slot of the running non-combat action's type.
+     * @param {string} itemHrid
+     * @returns {boolean}
+     */
+    _drinkingNow(itemHrid) {
+        const type = this._runningType();
+        if (!type || type === COMBAT_TYPE) return false;
+        const slots = dataManager.getActionDrinkSlots?.(type) || [];
+        return slots.some((slot) => slot?.itemHrid === itemHrid && slot.isActive !== false);
+    }
+
+    /**
      * The entry key the running dungeon takes, or null when no dungeon is running.
      * @returns {string|null}
      */
@@ -462,10 +517,17 @@ class ItemFlowRecorder {
             const charId = this._currentCharId();
             if (owner !== undefined && owner !== null && String(owner) !== String(charId)) return;
 
+            const completed = action?.actionHrid ? dataManager.getActionDetails?.(action.actionHrid) : null;
             for (const { itemHrid, enhancementLevel, delta } of moved) {
                 if (delta !== -1 || enhancementLevel > 0) continue;
-                if (this._runningDungeonKey() !== itemHrid && !isEntryKeyCandidate(itemHrid)) continue;
-                this._hold('keys', itemHrid, () => this._runningDungeonKey() === itemHrid);
+                if (this._runningDungeonKey() === itemHrid || isEntryKeyCandidate(itemHrid)) {
+                    this._hold('keys', itemHrid, () => this._runningDungeonKey() === itemHrid);
+                    continue;
+                }
+                if (dataManager.getItemDetails?.(itemHrid)?.categoryHrid !== '/item_categories/drink') continue;
+                if (this._runningType() === COMBAT_TYPE) continue;
+                if (consumedByAction(action, completed, itemHrid)) continue;
+                this._hold('drinks', itemHrid, () => this._drinkingNow(itemHrid));
             }
 
             if (!action?.actionHrid) return;

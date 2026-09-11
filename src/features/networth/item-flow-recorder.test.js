@@ -12,6 +12,7 @@ import {
     applyInventoryChanges,
     foldGathering,
     foldConsumed,
+    consumedByAction,
     CONFIRM_MS,
     default as recorder,
 } from './item-flow-recorder.js';
@@ -25,6 +26,8 @@ const hoisted = vi.hoisted(() => ({
         actionTypes: {},
         details: {},
         actions: [],
+        drinkSlots: {},
+        itemDetails: {},
     },
 }));
 
@@ -54,6 +57,8 @@ vi.mock('../../core/data-manager.js', () => ({
             hoisted.game.details[hrid] ??
             (hoisted.game.actionTypes[hrid] ? { type: hoisted.game.actionTypes[hrid] } : null),
         getCurrentActions: () => hoisted.game.actions,
+        getActionDrinkSlots: (type) => hoisted.game.drinkSlots[type] || [],
+        getItemDetails: (hrid) => hoisted.game.itemDetails[hrid] ?? null,
         get characterItems() {
             return hoisted.game.items;
         },
@@ -315,5 +320,108 @@ describe('dungeon keys', () => {
     test('foldConsumed adds to the day’s tally', () => {
         const day = foldConsumed(foldConsumed({ d: '2026-08-20' }, 'keys', KEY, 1), 'keys', KEY, 1);
         expect(day.keys).toEqual({ [KEY]: 2 });
+    });
+});
+
+describe('drinks used up while skilling', () => {
+    const FORAGING = '/actions/foraging/farmland';
+    const COMBAT = '/actions/combat/cow';
+    const BREWING = '/actions/brewing/super_foraging_tea';
+    const TEA = '/items/foraging_tea';
+    const COFFEE = '/items/wisdom_coffee';
+    const DRINK = { categoryHrid: '/item_categories/drink' };
+
+    beforeEach(async () => {
+        vi.useFakeTimers();
+        hoisted.saved = [];
+        hoisted.listeners.clear();
+        hoisted.game.charId = 'me';
+        hoisted.game.items = [row(TEA, 10), row(COFFEE, 10)];
+        hoisted.game.details = {
+            [FORAGING]: { type: '/action_types/foraging' },
+            [COMBAT]: { type: '/action_types/combat' },
+            [BREWING]: { type: '/action_types/brewing', inputItems: [{ itemHrid: TEA, count: 1 }] },
+        };
+        hoisted.game.itemDetails = { [TEA]: DRINK, [COFFEE]: DRINK };
+        hoisted.game.drinkSlots = {
+            '/action_types/foraging': [{ itemHrid: TEA, isActive: true, slotIndex: 0 }, null],
+            '/action_types/brewing': [{ itemHrid: TEA, isActive: true, slotIndex: 0 }],
+            '/action_types/combat': [{ itemHrid: COFFEE, isActive: true, slotIndex: 0 }],
+        };
+        hoisted.game.actions = [];
+        recorder.cleanup();
+        recorder._rows = [];
+        recorder._charId = null;
+        recorder._loading = null;
+        await recorder.initialize();
+    });
+
+    afterEach(() => {
+        recorder.cleanup();
+        vi.useRealTimers();
+    });
+
+    const items = (data) => hoisted.listeners.get('items_updated')(data);
+    const running = (actionHrid) => {
+        hoisted.game.actions = [{ id: 1, actionHrid, isDone: false, ordinal: 1 }];
+    };
+    const drunk = (itemHrid) => recorder._rows.reduce((sum, day) => sum + (day.drinks?.[itemHrid] || 0), 0);
+    const wait = async () => {
+        await vi.advanceTimersByTimeAsync(CONFIRM_MS);
+        await vi.advanceTimersByTimeAsync(0);
+    };
+
+    test('a slotted tea falling by one while foraging is one drink', async () => {
+        running(FORAGING);
+        items({ endCharacterItems: [row(TEA, 9)] });
+        await wait();
+        expect(drunk(TEA)).toBe(1);
+    });
+
+    test('the first drink of an action counts though the action became the running one after', async () => {
+        items({ endCharacterItems: [row(TEA, 9)] });
+        running(FORAGING);
+        await wait();
+        expect(drunk(TEA)).toBe(1);
+    });
+
+    test('a combat drink is the consumables row’s, not a skilling drink', async () => {
+        running(COMBAT);
+        items({ endCharacterItems: [row(COFFEE, 9)] });
+        await wait();
+        expect(drunk(COFFEE)).toBe(0);
+    });
+
+    test('a drink the running skill has not slotted is not being drunk', async () => {
+        running(FORAGING);
+        items({ endCharacterItems: [row(COFFEE, 9)] });
+        await wait();
+        expect(drunk(COFFEE)).toBe(0);
+    });
+
+    test('a tea the completed recipe took as an input is the recipe’s, not a drink', async () => {
+        running(BREWING);
+        items({
+            endCharacterAction: { id: 1, characterID: 'me', actionHrid: BREWING },
+            endCharacterItems: [row(TEA, 9)],
+        });
+        await wait();
+        expect(drunk(TEA)).toBe(0);
+    });
+
+    test('a tea listed on the market is not drunk', async () => {
+        running(FORAGING);
+        items({ endCharacterItems: [row(TEA, 9)] });
+        hoisted.listeners.get('market_listings_updated')({ endMarketListings: [{ itemHrid: TEA }] });
+        await wait();
+        expect(drunk(TEA)).toBe(0);
+    });
+
+    test('consumedByAction reads the recipe, the upgrade and the item an alchemy action works on', () => {
+        expect(consumedByAction({}, { inputItems: [{ itemHrid: TEA }] }, TEA)).toBe(true);
+        expect(consumedByAction({}, { upgradeItemHrid: TEA }, TEA)).toBe(true);
+        expect(consumedByAction({ primaryItemHash: `me::/item_locations/inventory::${TEA}::0` }, {}, TEA)).toBe(true);
+        expect(consumedByAction(null, { inputItems: [{ itemHrid: TEA }] }, TEA)).toBe(false);
+        expect(consumedByAction({}, {}, TEA)).toBe(false);
     });
 });

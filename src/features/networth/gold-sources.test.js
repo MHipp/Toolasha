@@ -1236,6 +1236,20 @@ describe('dungeon keys', () => {
     });
 });
 
+describe('skilling drinks', () => {
+    test('drinks used up skilling are a cost, and the combat consumables row is untouched by them', () => {
+        const result = attributeGoldSources({
+            from: D19,
+            to: D20 + 3600_000,
+            price: (itemHrid) => (itemHrid === '/items/foraging_tea' ? 900 : null),
+            itemFlowDays: [{ d: '2026-08-20', drinks: { '/items/foraging_tea': 40 } }],
+        });
+        expect(result.totals.sources.skillingDrinks).toBe(-36_000);
+        expect(result.totals.sources.consumables).toBe(0);
+        expect(result.totals.sources.dungeonKeys).toBe(0);
+    });
+});
+
 describe('gains the market cannot price are worth what net worth carries them at', () => {
     const window = {
         from: D19,

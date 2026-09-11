@@ -119,6 +119,7 @@ export const SOURCE_KEYS = [
     'offline',
     'consumables',
     'dungeonKeys',
+    'skillingDrinks',
     'marketTax',
 ];
 
@@ -222,6 +223,16 @@ export const SOURCE_META = {
             'starting, and not when a listing of that key appears alongside — listing keys lowers the count the ' +
             'same way. Keys a run took while you were offline are in the offline row. The record is forward-only ' +
             '— it starts the day it was installed.',
+    },
+    skillingDrinks: {
+        label: 'Skilling drinks',
+        measured: true,
+        source: 'Item flow recorder',
+        note:
+            'Teas and other drinks used up while a non-combat action ran and the game was open, priced at ' +
+            'today’s market: each one counted as its own count fell by one while it sat in the running ' +
+            'skill’s drink slot. Drinks drunk in combat are in the consumables row, and those drunk offline ' +
+            'in the offline row. The record is forward-only — it starts the day it was installed.',
     },
     marketTax: {
         label: 'Market tax',
@@ -1310,7 +1321,7 @@ export function gatheringByDay({ liveDays = [], entries = [], offline = [], pric
  * @param {Array<Object>} [input.tradeFills] - Trade ledger fill records
  * @param {Array<Object>} [input.combatSessions] - Archived combat runs
  * @param {Array<Object>} [input.combatLootDays] - Combat loot recorder rows `{d, runs, offline}`
- * @param {Array<Object>} [input.itemFlowDays] - Item flow recorder rows `{d, gathering, keys}`
+ * @param {Array<Object>} [input.itemFlowDays] - Item flow recorder rows `{d, gathering, keys, drinks}`
  * @param {Array<Object>} [input.taskCompletions] - Claimed task records `{completedAt, coins, tokens, items}`
  * @param {Array<Object>} [input.taskRerolls] - Retired-task reroll records `{retiredAt, goldSpent, cowbellsSpent}`
  * @param {Array<Object>} [input.chestDays] - Chest opening recorder rows `{d, openings}`
@@ -1569,11 +1580,15 @@ export function attributeGoldSources(input) {
         if (combatSessionLootValue(session, price).items === 0) emptyLootSessions += 1;
     }
 
-    // Dungeon entry keys spent, at the value net worth carried each at
+    // Dungeon entry keys spent and drinks used up skilling, at the value net
+    // worth carried each at
     for (const row of itemFlowDays || []) {
         if (!row?.d) continue;
         for (const [itemHrid, count] of Object.entries(row.keys || {})) {
             add(row.d, 'dungeonKeys', -num(count) * num(dropPrice(itemHrid, 0)));
+        }
+        for (const [itemHrid, count] of Object.entries(row.drinks || {})) {
+            add(row.d, 'skillingDrinks', -num(count) * num(dropPrice(itemHrid, 0)));
         }
     }
 
@@ -1737,6 +1752,7 @@ export function attributeGoldSources(input) {
             marketTax: earliest(tradeFills, (fill) => num(fill?.t) || NaN),
             consumables: earliest(combatSessions, (session) => Date.parse(session?.combatStartTime)),
             dungeonKeys: earliest(itemFlowDays, (row) => dayStart(row?.d)),
+            skillingDrinks: earliest(itemFlowDays, (row) => dayStart(row?.d)),
         },
         unpricedAlchemySessions,
         unpricedEnhancementSessions,
