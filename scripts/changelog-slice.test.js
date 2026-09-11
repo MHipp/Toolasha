@@ -2,7 +2,13 @@ import { describe, test, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { sliceForkChangelog, DEFAULT_MAX_ENTRIES, DEFAULT_MAX_CHARS } from './changelog-slice.js';
+import {
+    sliceForkChangelog,
+    DEFAULT_RELEASES_BACK,
+    DEFAULT_MIN_ENTRIES,
+    DEFAULT_MAX_ENTRIES,
+    DEFAULT_MAX_CHARS,
+} from './changelog-slice.js';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -62,13 +68,18 @@ describe('sliceForkChangelog', () => {
 
     test('says how many entries are not shown, once, at the end', () => {
         const result = sliceForkChangelog(changelogWith(40), { maxEntries: 5 });
-        expect(result.text).toContain('35 earlier changes are not shown here');
+        expect(result.text).toContain('35 more changes are not shown here');
         expect(result.text.trim().endsWith('the full list is in CHANGELOG.md on GitHub.')).toBe(true);
     });
 
     test('says it in the singular when exactly one is left out', () => {
         const result = sliceForkChangelog(changelogWith(4), { maxEntries: 3 });
-        expect(result.text).toContain('One earlier change is not shown here');
+        expect(result.text).toContain('One more change is not shown here');
+    });
+
+    test('never calls what it left out "earlier" — the build cannot know that', () => {
+        const result = sliceForkChangelog(changelogWith(40), { maxEntries: 5 });
+        expect(result.text).not.toContain('earlier');
     });
 
     test('says nothing about omissions when nothing was omitted', () => {
@@ -94,12 +105,12 @@ describe('sliceForkChangelog', () => {
         const result = sliceForkChangelog(changelogWith(3, 'y'.repeat(5000)), { maxChars: 1000 });
         expect(result.shownEntries).toBe(1);
         expect(result.text).toContain('y'.repeat(5000));
-        expect(result.text).toContain('2 earlier changes are not shown here');
+        expect(result.text).toContain('2 more changes are not shown here');
     });
 
-    test('the entry count is the binding limit, not the character ceiling', () => {
+    test('an unmarked changelog falls back to the floor, which is what it always shipped', () => {
         const result = sliceForkChangelog(changelogWith(100));
-        expect(result.shownEntries).toBe(DEFAULT_MAX_ENTRIES);
+        expect(result.shownEntries).toBe(DEFAULT_MIN_ENTRIES);
         expect(result.text.length).toBeLessThan(DEFAULT_MAX_CHARS);
     });
 
@@ -115,7 +126,7 @@ describe('sliceForkChangelog', () => {
         expect(result.totalEntries).toBe(0);
     });
 
-    test('the real CHANGELOG.md ships whole entries inside both limits', () => {
+    test('the real CHANGELOG.md ships whole entries inside every limit', () => {
         const changelog = readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf-8');
         const result = sliceForkChangelog(changelog);
         expect(result.shownEntries).toBeGreaterThan(0);
@@ -126,48 +137,115 @@ describe('sliceForkChangelog', () => {
         expect(/[.!?)`”]\s*$/.test(result.text.trim())).toBe(true);
         if (result.omittedEntries > 0) expect(result.text).toContain('not shown here');
     });
+
+    test('the real CHANGELOG.md has no markers yet, so it ships exactly the floor', () => {
+        const changelog = readFileSync(join(repoRoot, 'CHANGELOG.md'), 'utf-8');
+        const result = sliceForkChangelog(changelog);
+        expect(result.markerVersions).toEqual([]);
+        expect(result.shownEntries).toBe(DEFAULT_MIN_ENTRIES);
+    });
 });
 
-describe('release markers', () => {
-    /** `changelogWith`, with a marker stamped before every `every`th entry. */
-    function markedChangelog(count, every) {
-        let version = 100;
-        return changelogWith(count).replace(/^### Entry (\d+)$/gm, (line, n) =>
-            Number(n) % every === 1 && Number(n) > 1 ? `<!-- shipped in 3.${version--}.0 -->\n\n${line}` : line
-        );
-    }
+/**
+ * A changelog as it looks at build time, with `perRelease[i]` entries in the
+ * release `i` releases back.
+ *
+ * A release stamps its marker above *everything*, so the newest marker has no
+ * entries above it and its own entries sit directly below it; the next marker
+ * down sits between that release's entries and the one before it. Entries are
+ * numbered from the top so a test can name them.
+ */
+function markedChangelog(perRelease, { body = 'A sentence about what changed.' } = {}) {
+    const lines = ['# Changelog', '', '## Unreleased — branch `main`', ''];
+    let entry = 0;
+    perRelease.forEach((count, index) => {
+        lines.push(`<!-- shipped in 3.${50 - index}.0 -->`, '');
+        for (let i = 0; i < count; i++) lines.push(`### Entry ${++entry}`, '', body, '');
+    });
+    lines.push('## [3.20.0](https://example.invalid) (2026-01-01)', '', '* older history', '');
+    return lines.join('\n');
+}
 
-    test('markers are not entries: the cap still counts entries', () => {
-        const result = sliceForkChangelog(markedChangelog(100, 3));
+describe('slicing by release boundary', () => {
+    test('ships every entry back to the marker that serves a player two releases behind', () => {
+        // 3.50 shipped 8, 3.49 shipped 7: a player who last ran 3.48 has 15 to
+        // read, and the marker naming their build has to ship with them.
+        const result = sliceForkChangelog(markedChangelog([8, 7, 6, 5]));
+        expect(DEFAULT_RELEASES_BACK).toBe(2);
+        expect(result.shownEntries).toBe(15);
+        expect(result.markerVersions).toEqual(['3.50.0', '3.49.0', '3.48.0']);
+        expect(result.text).toContain('### Entry 15');
+        expect(result.text).not.toContain('### Entry 16');
+    });
+
+    test('a busy release ships more than a quiet one', () => {
+        const busy = sliceForkChangelog(markedChangelog([15, 8, 6, 6, 6]));
+        const quiet = sliceForkChangelog(markedChangelog([2, 1, 6, 6, 6]));
+        expect(busy.shownEntries).toBe(23);
+        expect(quiet.shownEntries).toBeLessThan(busy.shownEntries);
+        // Nothing forced a fixed twelve on either of them.
+        expect(busy.shownEntries).not.toBe(DEFAULT_MIN_ENTRIES);
+    });
+
+    test('the floor still applies when two releases hold almost nothing', () => {
+        const result = sliceForkChangelog(markedChangelog([1, 1, 4, 4, 4]));
+        expect(result.shownEntries).toBe(DEFAULT_MIN_ENTRIES);
+    });
+
+    test('the entry cap binds when one release is enormous', () => {
+        const result = sliceForkChangelog(markedChangelog([50, 20, 5]));
         expect(result.shownEntries).toBe(DEFAULT_MAX_ENTRIES);
-        expect(result.totalEntries).toBe(100);
-        expect(result.omittedEntries).toBe(100 - DEFAULT_MAX_ENTRIES);
+        expect(result.omittedEntries).toBe(45);
+        expect(result.text).toContain('45 more changes are not shown here');
+    });
+
+    test('the character cap binds when a release is enormous by the word', () => {
+        const result = sliceForkChangelog(markedChangelog([20, 20, 5], { body: 'w'.repeat(2000) }));
+        expect(result.shownEntries).toBeLessThan(20);
+        expect(result.text.length).toBeLessThanOrEqual(DEFAULT_MAX_CHARS + 200);
+    });
+
+    test('ships to the oldest marker there is when there are fewer than asked for', () => {
+        // The first marked release: one marker, stamped above everything, so no
+        // boundary can say where its predecessor ended. The floor answers.
+        const result = sliceForkChangelog(markedChangelog([30]));
+        expect(result.markerVersions).toEqual(['3.50.0']);
+        expect(result.shownEntries).toBe(DEFAULT_MIN_ENTRIES);
+    });
+
+    test('two markers cover one release, and the floor covers the rest', () => {
+        const result = sliceForkChangelog(markedChangelog([20, 20]));
+        expect(result.shownEntries).toBe(20);
+        expect(result.markerVersions).toEqual(['3.50.0', '3.49.0']);
+    });
+
+    test('unreleased entries above the newest marker always ship', () => {
+        const changelog = markedChangelog([8, 8, 8, 8]).replace(
+            '<!-- shipped in 3.50.0 -->',
+            '### Not released yet\n\nBody.\n\n<!-- shipped in 3.50.0 -->'
+        );
+        const result = sliceForkChangelog(changelog);
+        expect(result.text).toContain('### Not released yet');
+        expect(result.shownEntries).toBe(17);
+    });
+
+    test('markers are not entries: the caps count entries', () => {
+        const result = sliceForkChangelog(markedChangelog([40, 40, 40]));
+        expect(result.totalEntries).toBe(120);
+        expect(result.shownEntries).toBe(DEFAULT_MAX_ENTRIES);
     });
 
     test('markers ship, so the runtime has something to filter on', () => {
-        const result = sliceForkChangelog(markedChangelog(100, 3));
+        const result = sliceForkChangelog(markedChangelog([4, 4, 4, 4]));
         expect(result.markerVersions.length).toBeGreaterThan(0);
         for (const version of result.markerVersions) expect(result.text).toContain(`shipped in ${version}`);
     });
 
-    test('a marker under the heading ships with the head', () => {
-        const changelog = changelogWith(3).replace(
-            '## Unreleased — branch `main`\n',
-            '## Unreleased — branch `main`\n\n<!-- shipped in 3.47.0 -->\n'
-        );
-        const result = sliceForkChangelog(changelog);
-        expect(result.markerVersions).toEqual(['3.47.0']);
-        expect(result.totalEntries).toBe(3);
-    });
-
-    test('the character ceiling still binds with markers present', () => {
-        const plain = sliceForkChangelog(changelogWith(100), { maxChars: 600 });
-        const marked = sliceForkChangelog(markedChangelog(100, 2), { maxChars: 600 });
-        // Markers cost bytes like anything else, so a marked section fits no
-        // more entries than a plain one and stays inside the same ceiling —
-        // plus the omission line, which the ceiling has never counted.
-        expect(marked.shownEntries).toBeLessThanOrEqual(plain.shownEntries);
-        expect(marked.omittedEntries).toBeGreaterThan(0);
-        expect(marked.text.length).toBeLessThanOrEqual(600 + 120);
+    test('how many releases back is a knob, and it moves what ships', () => {
+        const changelog = markedChangelog([9, 9, 9, 9, 9]);
+        const one = sliceForkChangelog(changelog, { releasesBack: 1, minEntries: 0 });
+        const three = sliceForkChangelog(changelog, { releasesBack: 3, minEntries: 0 });
+        expect(one.shownEntries).toBe(9);
+        expect(three.shownEntries).toBe(27);
     });
 });

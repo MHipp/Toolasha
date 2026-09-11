@@ -8,11 +8,11 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ### The changelog now starts where you left off
 
-The What's New panel showed the same twelve entries to everyone, however long ago you last updated. Releases now stamp an invisible marker into the changelog, and the panel shows only the entries newer than the build you were running. Nothing changes until the first marked release goes out — until then the panel behaves exactly as it does today.
+The What's New panel showed the same twelve entries to everyone, however long ago you last updated — so a busy release could have more changes than the panel could show. Releases now stamp an invisible marker into the changelog, the build ships everything back through the last two of them, and the panel shows only the entries newer than the build you were running. Nothing changes until the first marked release goes out.
 
 ### What's new shows what's new
 
-The panel was showing 20,000 characters of a changelog that had grown to 400,000 — an arbitrary slice, cut off mid-sentence, spanning releases long past. It now shows only the changes since the version you were running, says how many earlier ones it left out, and older entries have been cut back to a couple of sentences each.
+The panel was showing 20,000 characters of a changelog that had grown to 400,000 — an arbitrary slice, cut off mid-sentence, spanning releases long past. It now shows only the changes since the version you were running, says how many it left out, and older entries have been cut back to a couple of sentences each.
 
 ### Refreshing twice quickly no longer breaks Toolasha in every tab
 

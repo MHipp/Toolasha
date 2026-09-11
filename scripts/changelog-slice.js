@@ -13,42 +13,72 @@
  * cuts mid-sentence and still shows many releases' worth of history under a
  * heading that claims one release.
  *
- * So the slice is counted in entries, not characters: the newest
- * {@link DEFAULT_MAX_ENTRIES} `###` entries, each one whole, with a character
- * ceiling kept only as a backstop against a body that grows in the other
- * direction. When entries are left out the slice says so in one line, so the
- * panel ends deliberately rather than just stopping.
+ * So the slice is counted in entries, not characters: whole `###` entries, as
+ * many as it takes to cover the last {@link DEFAULT_RELEASES_BACK} releases,
+ * with caps on both entries and characters kept as backstops. When entries are
+ * left out the slice says so in one line, so the panel ends deliberately rather
+ * than just stopping.
  *
- * Release boundaries ride along. A release stamps `<!-- shipped in x.y.z -->`
- * under the unreleased heading (`scripts/stamp-changelog-version.js`), and the
- * slice keeps those markers in what it ships so the panel can show a player
- * only the entries newer than the build they were running — a runtime question
- * the build cannot answer, since it does not know who is asking. Markers are
- * comments: they are not entries, they do not count against the entry cap, and
- * the panel strips them before drawing.
+ * Release boundaries are what makes "as many as it takes" answerable. A release
+ * stamps `<!-- shipped in x.y.z -->` under the unreleased heading
+ * (`scripts/stamp-changelog-version.js`), so the markers say where each release
+ * began and the slice can ship down to the one that serves a player some number
+ * of releases behind. The markers ride along in what ships, because the panel
+ * narrows the slice again at run time to the entries newer than the build the
+ * player was running — a question the build cannot answer, since it does not
+ * know who is asking. Markers are comments: they are not entries, they do not
+ * count against the entry cap, and the panel strips them before drawing.
  *
  * This lives outside `rollup.config.js` so it can be tested directly: it is the
  * only part of the plugin with any judgement in it.
  */
 
 /**
- * How many entries ship.
+ * How many releases back the slice tries to serve.
  *
- * The fork has published ~86 releases and accumulated ~615 unreleased entries,
- * so a release carries about seven changes. Twelve covers a typical release with
- * room for a busy one, and roughly two releases for someone who skipped one —
- * which is about as far back as a heading reading "Updated 3.46.0 → 3.47.0" can
- * honestly reach. It is also about as much as anyone reads in a popup that
- * stands between them and the game.
+ * Marker semantics decide the arithmetic: the marker for a version sits *above*
+ * the entries that shipped in it, so serving a player who last ran version V
+ * means shipping every entry above V's marker, and V's marker with them. Two
+ * releases back is therefore the marker at index 2, counting the release being
+ * built as 0 — it covers the player who updated normally and the player who
+ * skipped one.
+ *
+ * Why two and not more: over the last 29 releases the fork shipped a median of
+ * 8 entries per release, a 90th percentile of 26 and a worst case of 35, at
+ * roughly one release a day. Two releases is a median of 23 entries (~19 KB)
+ * and a 90th percentile of 42; three is a median of 35 and a 90th percentile of
+ * 59, which the caps below would cut most of the time — bundle weight without
+ * coverage to show for it. Someone further behind than this still sees the
+ * whole slice, with the omission line saying that there is more.
  */
-export const DEFAULT_MAX_ENTRIES = 12;
+export const DEFAULT_RELEASES_BACK = 2;
 
 /**
- * The backstop. Not the primary limit — the entry count is — but a long-winded
- * release must not be able to balloon the bundle, and entries are prose whose
- * length nobody enforces. Entries are dropped whole to stay under it.
+ * The floor, and the answer when there is nothing better.
+ *
+ * Also exactly what the slice shipped before it could read markers, which is
+ * the point: an unmarked changelog — every build until the first marked release
+ * merges, and any hand-built one after that — has no release boundary to slice
+ * on and falls back to this, unchanged. It doubles as the minimum for a quiet
+ * release, so two one-line releases in a row cannot leave a player who is
+ * further behind staring at a two-item list.
  */
-export const DEFAULT_MAX_CHARS = 20000;
+export const DEFAULT_MIN_ENTRIES = 12;
+
+/**
+ * The entry cap. A backstop, not the primary limit — the release boundary is —
+ * but one release genuinely ran to 35 entries and nothing stops the next from
+ * running to fifty, and neither the bundle nor the reader wants all of them.
+ */
+export const DEFAULT_MAX_ENTRIES = 30;
+
+/**
+ * The character cap. Entries are prose whose length nobody enforces, so the
+ * entry cap alone does not bound bytes. Entries are dropped whole to stay under
+ * it. Thirty recent entries run about 10 KB; this leaves room for wordier ones
+ * without letting a long-winded release balloon the bundle.
+ */
+export const DEFAULT_MAX_CHARS = 24000;
 
 /**
  * Cut the first `## Unreleased` section out of a changelog.
@@ -66,31 +96,43 @@ export function extractUnreleasedSection(changelog) {
 }
 
 /**
- * Release boundaries present in a piece of changelog, in document order.
+ * One stamped release boundary.
  *
  * Deliberately a copy of the reader in
  * `src/features/settings/changelog-markers.js` rather than an import of it:
  * this is build tooling and that is bundle code, and the shared thing is a
  * one-line comment format written down in both places.
+ */
+const MARKER_RE = /^<!--\s*shipped in\s+(\d+(?:\.\d+)*)\s*-->\s*$/;
+
+/**
+ * Release boundaries present in a piece of changelog, in document order.
  * @param {string} text - Changelog markdown
  * @returns {Array<string>} The versions marked, newest first
  */
 function markerVersionsIn(text) {
     return String(text ?? '')
         .split('\n')
-        .map((line) => /^<!--\s*shipped in\s+(\d+(?:\.\d+)*)\s*-->\s*$/.exec(line))
+        .map((line) => MARKER_RE.exec(line))
         .filter(Boolean)
         .map((match) => match[1]);
 }
 
 /**
  * The one line the panel shows in place of everything that did not fit.
+ *
+ * Deliberately neutral about *when* the missing entries happened. The build
+ * cannot know: "earlier changes" is only true for a player the slice reaches
+ * back to, and the player it does not reach is exactly the one whose missing
+ * entries are recent. The panel sharpens the wording at run time when it can
+ * tell (`omissionLine` in `changelog-markers.js`) — the same sentence shape, so
+ * it can find this line and rewrite it.
  * @param {number} omitted - How many entries were left out
  * @returns {string} A markdown paragraph
  */
 function omissionNote(omitted) {
-    const count = omitted === 1 ? 'One earlier change is' : `${omitted} earlier changes are`;
-    return `${count} not shown here — the full list is in CHANGELOG.md on GitHub.`;
+    const subject = omitted === 1 ? 'One more change is' : `${omitted} more changes are`;
+    return `${subject} not shown here — the full list is in CHANGELOG.md on GitHub.`;
 }
 
 /**
@@ -104,19 +146,43 @@ function omissionNote(omitted) {
  */
 
 /**
+ * How many entries it takes to cover `releasesBack` releases.
+ *
+ * The marker for a version sits above that version's entries, so the entries
+ * above marker number `releasesBack` are everything a player that far behind
+ * has not seen — and keeping them keeps that marker too, since it sits at the
+ * tail of the last entry kept, which is what lets the runtime filter recognise
+ * the player's build. Fewer markers than asked for means shipping to the oldest
+ * one there is; none at all means there is nothing to answer with.
+ * @param {Array<number>} entryStarts - Line numbers of the `###` entries
+ * @param {Array<number>} markerLines - Line numbers of the markers, in order
+ * @param {number} releasesBack - How many releases back to cover
+ * @returns {number} Entries needed, 0 when no marker can say
+ */
+function entriesToCover(entryStarts, markerLines, releasesBack) {
+    if (markerLines.length === 0) return 0;
+    const target = markerLines[Math.min(Math.max(0, releasesBack), markerLines.length - 1)];
+    return entryStarts.filter((start) => start < target).length;
+}
+
+/**
  * Choose what the what's-new popup ships.
  *
  * Keeps the newest entries whole — an entry that would not fit under the
- * character ceiling is dropped entirely rather than truncated, because a
+ * character cap is dropped entirely rather than truncated, because a
  * half-sentence is worse than a missing one — and appends a line naming how many
- * were left out. A section already inside both limits comes back unchanged.
+ * were left out. A section already inside every limit comes back unchanged.
  * @param {string} changelog - The whole `CHANGELOG.md`
  * @param {object} [options]
- * @param {number} [options.maxEntries] - Entry ceiling, the primary limit
- * @param {number} [options.maxChars] - Character ceiling, the backstop
+ * @param {number} [options.releasesBack] - Releases to cover, the primary limit
+ * @param {number} [options.minEntries] - Floor, and the unmarked fallback
+ * @param {number} [options.maxEntries] - Entry cap, a backstop
+ * @param {number} [options.maxChars] - Character cap, a backstop
  * @returns {ChangelogSlice}
  */
 export function sliceForkChangelog(changelog, options = {}) {
+    const releasesBack = options.releasesBack ?? DEFAULT_RELEASES_BACK;
+    const minEntries = options.minEntries ?? DEFAULT_MIN_ENTRIES;
     const maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
     const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
     const section = extractUnreleasedSection(changelog);
@@ -124,8 +190,10 @@ export function sliceForkChangelog(changelog, options = {}) {
 
     const lines = section.split('\n');
     const starts = [];
+    const markerLines = [];
     for (let i = 0; i < lines.length; i++) {
-        if (/^###\s/.test(lines[i])) starts.push(i);
+        if (MARKER_RE.test(lines[i])) markerLines.push(i);
+        else if (/^###\s/.test(lines[i])) starts.push(i);
     }
 
     // No entry headings at all: nothing to cut on, so fall back to the old
@@ -145,9 +213,15 @@ export function sliceForkChangelog(changelog, options = {}) {
             .replace(/\s+$/, '')
     );
 
+    // What the release boundaries ask for, floored so a quiet stretch still
+    // shows something and capped so a busy one cannot run away. The cap wins:
+    // it is the backstop, and a caller who sets a low one means it.
+    const wanted = entriesToCover(starts, markerLines, releasesBack);
+    const budget = Math.min(Math.max(0, maxEntries), Math.max(Math.max(0, minEntries), wanted));
+
     const kept = [];
     let size = head.length;
-    for (const entry of entries.slice(0, Math.max(0, maxEntries))) {
+    for (const entry of entries.slice(0, budget)) {
         const grown = size + 2 + entry.length;
         // Always keep the newest entry, however long: an empty panel under an
         // "Updated x → y" heading says less than one oversized entry does.

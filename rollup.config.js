@@ -384,8 +384,9 @@ const buildExternal = (globalsMap) => (id) => globalsMap.has(normalizeModuleId(i
  * that is already written — maintaining a second copy in code would drift by
  * the second release. The "## Unreleased" section is what a build's user is
  * actually receiving, but that heading is never rotated, so the section holds
- * every change since the fork diverged; only its newest entries ship, whole and
- * capped. `sliceForkChangelog` owns that choice and is tested directly.
+ * every change since the fork diverged; what ships is its newest entries, whole,
+ * as far back as the last few releases' markers reach and capped beyond that.
+ * `sliceForkChangelog` owns that choice and is tested directly.
  *
  * What ships is exactly what the panel shows, which is also what its "Copy
  * changelog" button copies — including the line naming what was left out, so a

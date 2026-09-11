@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
-import { filterChangelogSince, markerVersions, stripMarkers, markerFor } from './changelog-markers.js';
-import { sliceForkChangelog } from '../../../scripts/changelog-slice.js';
+import { filterChangelogSince, markerVersions, stripMarkers, markerFor, omissionLine } from './changelog-markers.js';
+import { sliceForkChangelog, DEFAULT_MIN_ENTRIES } from '../../../scripts/changelog-slice.js';
 
-const NOTE = '4 earlier changes are not shown here — the full list is in CHANGELOG.md on GitHub.';
+const NOTE = '4 more changes are not shown here — the full list is in CHANGELOG.md on GitHub.';
 
 /**
  * A shipped slice with three releases behind it. Entries are newest-first, and
@@ -58,6 +58,37 @@ describe('stripMarkers', () => {
     });
 });
 
+describe('omissionLine', () => {
+    it('says only that there is more when nothing is known about the reader', () => {
+        expect(omissionLine(4)).toBe(NOTE);
+        expect(omissionLine(1)).toBe('One more change is not shown here — the full list is in CHANGELOG.md on GitHub.');
+    });
+
+    it('says the missing entries are recent when the reader is further back than the slice', () => {
+        expect(omissionLine(4, { sinceUpdate: true })).toBe(
+            '4 more changes are not shown here, some of them newer than your last update — the full list is in CHANGELOG.md on GitHub.'
+        );
+        expect(omissionLine(1, { sinceUpdate: true })).toBe(
+            'One more change is not shown here, and it is newer than your last update — the full list is in CHANGELOG.md on GitHub.'
+        );
+    });
+
+    it('never calls the missing entries earlier ones, which is what was wrong before', () => {
+        expect(omissionLine(4)).not.toContain('earlier');
+        expect(omissionLine(4, { sinceUpdate: true })).not.toContain('earlier');
+    });
+
+    it('is the same sentence the build writes, so the panel can find and reword it', () => {
+        // Two copies of one wording — build tooling and bundle code do not share
+        // a module — so something has to hold them together.
+        const slice = sliceForkChangelog(
+            ['# Changelog', '', '## Unreleased — branch `main`', '', '### A\n\nBody.\n', '### B\n\nBody.\n'].join('\n'),
+            { maxEntries: 1 }
+        );
+        expect(slice.text.trim().endsWith(omissionLine(1))).toBe(true);
+    });
+});
+
 describe('filterChangelogSince', () => {
     it('never leaves a marker in what the panel draws', () => {
         for (const since of [null, '1.0.0', '3.9.0', '3.10.0', '99.0.0']) {
@@ -82,12 +113,30 @@ describe('filterChangelogSince', () => {
         }
     });
 
-    // Case 3 — older than everything shipped: all of it is new to them, and the
-    // slice's own omission line is still true, so it stays.
-    it('shows everything, note and all, for a build older than the oldest marker', () => {
+    // Case 3 — older than everything shipped: all of it is new to them, and so
+    // is some of what the slice left out, which the line now says.
+    it('shows everything for a build older than the oldest marker, and says the rest is recent', () => {
         const result = filterChangelogSince(SHIPPED, '3.1.0');
         expect(result.filtered).toBe(false);
-        expect(result.text).toContain(NOTE);
+        expect(result.text).toContain('### Went out in 3.8.0 or earlier');
+        expect(result.text).toContain(omissionLine(4, { sinceUpdate: true }));
+        expect(result.text).not.toContain(NOTE);
+    });
+
+    it('rewords the omission line in the singular too', () => {
+        const one = SHIPPED.replace(NOTE, omissionLine(1));
+        expect(filterChangelogSince(one, '3.1.0').text).toContain(omissionLine(1, { sinceUpdate: true }));
+    });
+
+    it('leaves one omission line, not two', () => {
+        const result = filterChangelogSince(SHIPPED, '3.1.0');
+        expect(result.text.match(/not shown here/g)).toHaveLength(1);
+    });
+
+    it('has nothing to reword when the slice left nothing out', () => {
+        const whole = SHIPPED.replace(`\n${NOTE}\n`, '');
+        const result = filterChangelogSince(whole, '3.1.0');
+        expect(result.text).not.toContain('not shown here');
         expect(result.text).toContain('### Went out in 3.8.0 or earlier');
     });
 
@@ -103,7 +152,7 @@ describe('filterChangelogSince', () => {
         expect(result.text).not.toContain('### Went out in 3.8.0');
         // The omission line names entries older than the slice, which are older
         // than the ones just hidden — noise once the list is "since your build".
-        expect(result.text).not.toContain(NOTE);
+        expect(result.text).not.toContain('not shown here');
         // The section heading always survives.
         expect(result.text.startsWith('## Unreleased')).toBe(true);
     });
@@ -143,12 +192,53 @@ describe('filterChangelogSince', () => {
     });
 });
 
+describe('build and run together', () => {
+    /** A changelog at build time: `perRelease[i]` entries in release 3.(50-i). */
+    function built(perRelease) {
+        const lines = ['# Changelog', '', '## Unreleased — branch `main`', ''];
+        let entry = 0;
+        perRelease.forEach((count, index) => {
+            lines.push(`<!-- shipped in 3.${50 - index}.0 -->`, '');
+            for (let i = 0; i < count; i++) lines.push(`### Entry ${++entry}`, '', 'A sentence about it.', '');
+        });
+        return lines.join('\n');
+    }
+
+    // The case that started this: a release with twenty changes in it, shown to
+    // the player who was running the release before it. All twenty are theirs.
+    it('shows all twenty changes when a release had twenty', () => {
+        const slice = sliceForkChangelog(built([20, 7, 7, 7]));
+        const result = filterChangelogSince(slice.text, '3.49.0');
+        expect(result.filtered).toBe(true);
+        expect(result.shownEntries).toBe(20);
+        expect(result.text).toContain('### Entry 20');
+        expect(result.text).not.toContain('### Entry 21');
+        expect(result.text).not.toContain('not shown here');
+    });
+
+    it('shows both releases to a player who skipped one', () => {
+        const slice = sliceForkChangelog(built([20, 7, 7, 7]));
+        const result = filterChangelogSince(slice.text, '3.48.0');
+        expect(result.shownEntries).toBe(27);
+        expect(result.text).toContain('### Entry 27');
+        expect(result.text).not.toContain('### Entry 28');
+    });
+
+    it('tells a player who has been away longer that the missing entries are recent', () => {
+        const slice = sliceForkChangelog(built([20, 7, 7, 7]));
+        const result = filterChangelogSince(slice.text, '3.40.0');
+        expect(result.filtered).toBe(false);
+        expect(result.text).toContain('some of them newer than your last update');
+    });
+});
+
 describe('against the real CHANGELOG.md, which has no markers yet', () => {
     const real = readFileSync(new URL('../../../CHANGELOG.md', import.meta.url), 'utf8');
     const slice = sliceForkChangelog(real);
 
-    it('ships no markers today', () => {
+    it('ships no markers today, and so ships the same entries it always did', () => {
         expect(slice.markerVersions).toEqual([]);
+        expect(slice.shownEntries).toBe(DEFAULT_MIN_ENTRIES);
     });
 
     it('draws exactly what it draws today, whatever version the player stored', () => {
