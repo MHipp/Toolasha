@@ -62,14 +62,15 @@ const { getCurrentAbilityTimingStats, calculateEffectiveAbilityTiming } =
 /**
  * A stand-in for the reconstructed Player, with the two lifecycle calls the
  * calculator makes.
- * @param {{abilityHaste?: number, castSpeed?: number, attackLevel?: number, drinks?: Array}} stats
+ * @param {{abilityHaste?: number, castSpeed?: number, attackLevel?: number, drinks?: Array,
+ *   drinkConcentration?: number}} stats
  * @returns {Object}
  */
-function fakePlayer({ abilityHaste = 0, castSpeed = 0, attackLevel = 1, drinks = [] } = {}) {
+function fakePlayer({ abilityHaste = 0, castSpeed = 0, attackLevel = 1, drinks = [], drinkConcentration = 0 } = {}) {
     return {
         attackLevel,
         drinks,
-        combatDetails: { combatStats: { abilityHaste, castSpeed } },
+        combatDetails: { combatStats: { abilityHaste, castSpeed, drinkConcentration } },
         generatePermanentBuffs() {
             mocks.extraBuffsSeen = this.extraBuffs;
         },
@@ -138,7 +139,14 @@ describe('getCurrentAbilityTimingStats', () => {
         mocks.playerFactory = () =>
             fakePlayer({
                 castSpeed: 0.1,
-                drinks: [{ buffs: [{ typeHrid: '/buff_types/cast_speed', flatBoost: 0.12 }] }, null, null],
+                drinks: [
+                    {
+                        catagoryHrid: '/item_categories/drink',
+                        buffs: [{ typeHrid: '/buff_types/cast_speed', flatBoost: 0.12 }],
+                    },
+                    null,
+                    null,
+                ],
             });
         mocks.characterData = {
             personalActionTypeBuffsMap: {
@@ -160,7 +168,14 @@ describe('getCurrentAbilityTimingStats', () => {
         mocks.playerFactory = () =>
             fakePlayer({
                 castSpeed: 0.1,
-                drinks: [{ buffs: [{ typeHrid: '/buff_types/cast_speed', flatBoost: 0.12 }] }, null, null],
+                drinks: [
+                    {
+                        catagoryHrid: '/item_categories/drink',
+                        buffs: [{ typeHrid: '/buff_types/cast_speed', flatBoost: 0.12 }],
+                    },
+                    null,
+                    null,
+                ],
             });
         mocks.characterData = {
             consumableActionTypeBuffsMap: {},
@@ -173,10 +188,76 @@ describe('getCurrentAbilityTimingStats', () => {
         mocks.playerFactory = () =>
             fakePlayer({
                 castSpeed: 0.1,
-                drinks: [{ buffs: [{ typeHrid: '/buff_types/accuracy', flatBoost: 0.1 }] }, null, null],
+                drinks: [
+                    {
+                        catagoryHrid: '/item_categories/drink',
+                        buffs: [{ typeHrid: '/buff_types/accuracy', flatBoost: 0.1 }],
+                    },
+                    null,
+                    null,
+                ],
             });
 
         expect(getCurrentAbilityTimingStats().castSpeed).toBeCloseTo(0.1, 10);
+    });
+
+    test('scales the equipped drink cast speed buff by drink concentration, like the sim engine does', () => {
+        // Live capture, 2026-09-12: Channeling Coffee's base cast speed buff is 0.12,
+        // but the fight's own buff map reported +14.4% on a character with a 20%
+        // drink-concentration bonus — 0.12 * 1.2 = 0.144. That is the same scaling
+        // CombatSimulator.tryUseConsumable applies to a drink buff's flatBoost when
+        // drinkConcentration > 0 (engine/combat-simulator.js).
+        mocks.playerFactory = () =>
+            fakePlayer({
+                castSpeed: 0,
+                drinkConcentration: 0.2,
+                drinks: [
+                    {
+                        catagoryHrid: '/item_categories/drink',
+                        buffs: [{ typeHrid: '/buff_types/cast_speed', flatBoost: 0.12 }],
+                    },
+                    null,
+                    null,
+                ],
+            });
+
+        expect(getCurrentAbilityTimingStats().castSpeed).toBeCloseTo(0.144, 10);
+    });
+
+    test('leaves the equipped drink cast speed buff alone with no concentration bonus', () => {
+        mocks.playerFactory = () =>
+            fakePlayer({
+                castSpeed: 0,
+                drinkConcentration: 0,
+                drinks: [
+                    {
+                        catagoryHrid: '/item_categories/drink',
+                        buffs: [{ typeHrid: '/buff_types/cast_speed', flatBoost: 0.12 }],
+                    },
+                    null,
+                    null,
+                ],
+            });
+
+        expect(getCurrentAbilityTimingStats().castSpeed).toBeCloseTo(0.12, 10);
+    });
+
+    test('does not scale a drink buff whose consumable is not a drink category', () => {
+        mocks.playerFactory = () =>
+            fakePlayer({
+                castSpeed: 0,
+                drinkConcentration: 0.2,
+                drinks: [
+                    {
+                        catagoryHrid: '/item_categories/food',
+                        buffs: [{ typeHrid: '/buff_types/cast_speed', flatBoost: 0.12 }],
+                    },
+                    null,
+                    null,
+                ],
+            });
+
+        expect(getCurrentAbilityTimingStats().castSpeed).toBeCloseTo(0, 10);
     });
 
     test('does not double-count the buff sources the player reconstruction already carries', () => {

@@ -78,17 +78,28 @@ function liveSealCastSpeedBoost(characterData) {
  * `player.drinks` already holds the equipped set for the reconstruction — the
  * same `actionTypeDrinkSlotsMap` combat slots, built moments earlier as
  * `Consumable`s — and each one's `.buffs` is that item's own static buff
- * definition, which is the only number that matters: combat consumables do
- * not scale by level the way abilities do.
+ * definition. That definition is the item's base value, not what actually
+ * lands on the unit: `CombatSimulator.tryUseConsumable`
+ * (`engine/combat-simulator.js`) scales a drink buff's `flatBoost`/`ratioBoost`
+ * by `1 + drinkConcentration` at the moment it applies the buff, for any
+ * consumable whose `catagoryHrid` includes `'drink'`. Skipping that scaling
+ * here understates the figure by exactly the character's drink-concentration
+ * bonus — confirmed live: a character with drink concentration active showed
+ * Channeling Coffee granting +14.4% cast speed in the fight's own buff map,
+ * against the item's base 0.12, and 0.12 × 1.2 = 0.144.
  *
- * @param {Array<{buffs?: Array<{typeHrid?: string, flatBoost?: number}>}|null>} drinks - `player.drinks`
- * @returns {number} Flat boost from the equipped combat drinks
+ * @param {Array<{catagoryHrid?: string, buffs?: Array<{typeHrid?: string, flatBoost?: number}>}|null>} drinks -
+ *   `player.drinks`
+ * @param {number} drinkConcentration - `player.combatDetails.combatStats.drinkConcentration`
+ * @returns {number} Flat boost from the equipped combat drinks, concentration-adjusted
  */
-function liveDrinkCastSpeedBoost(drinks) {
+function liveDrinkCastSpeedBoost(drinks, drinkConcentration) {
+    const multiplier = drinkConcentration > 0 ? 1 + drinkConcentration : 1;
     let total = 0;
     for (const drink of drinks ?? []) {
+        if (!drink?.catagoryHrid?.includes('drink')) continue;
         for (const buff of drink?.buffs ?? []) {
-            if (buff?.typeHrid === CAST_SPEED_BUFF_TYPE) total += buff.flatBoost || 0;
+            if (buff?.typeHrid === CAST_SPEED_BUFF_TYPE) total += (buff.flatBoost || 0) * multiplier;
         }
     }
     return total;
@@ -140,7 +151,7 @@ export function getCurrentAbilityTimingStats() {
             castSpeed:
                 player.combatDetails.combatStats.castSpeed +
                 liveSealCastSpeedBoost(dataManager.characterData) +
-                liveDrinkCastSpeedBoost(player.drinks),
+                liveDrinkCastSpeedBoost(player.drinks, player.combatDetails.combatStats.drinkConcentration),
             attackLevel: player.attackLevel,
         };
     } catch (error) {
