@@ -11,13 +11,14 @@
  * bespoke createCraftingPlanTabs the panel used to call.
  */
 
-import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const state = vi.hoisted(() => ({
     inventory: [],
     plan: null,
     missing: [],
     openMaterialsList: vi.fn(async () => true),
+    openBillOwner: null,
     settings: {},
 }));
 
@@ -28,6 +29,10 @@ vi.mock('../../core/data-manager.js', () => ({
                 '/actions/crafting/wooden_bow': {
                     type: '/action_types/crafting',
                     outputItems: [{ itemHrid: '/items/wooden_bow', count: 1 }],
+                },
+                '/actions/crafting/oak_bow': {
+                    type: '/action_types/crafting',
+                    outputItems: [{ itemHrid: '/items/oak_bow', count: 1 }],
                 },
             },
             itemDetailMap: {},
@@ -52,10 +57,17 @@ vi.mock('./crafting-plan-calculator.js', () => ({
 }));
 vi.mock('../actions/missing-materials-button.js', () => ({
     openMaterialsList: (...args) => state.openMaterialsList(...args),
+    openBillOwner: () => state.openBillOwner,
 }));
+const panels = vi.hoisted(() => ({ subscriber: null }));
 vi.mock('../../utils/action-panel-helper.js', () => ({
     findActionInput: () => ({ value: '2' }),
-    onDetailPanel: () => () => {},
+    onDetailPanel: (callback) => {
+        panels.subscriber = callback;
+        return () => {
+            panels.subscriber = null;
+        };
+    },
 }));
 vi.mock('../../utils/action-calculator.js', () => ({
     calculateActionStats: () => ({ actionTime: 0, totalEfficiency: 0 }),
@@ -79,6 +91,10 @@ const ledger = vi.hoisted(() => ({
     rowsCalls: [],
     reserveCalls: [],
     releaseCalls: [],
+    // A stand-in for the stored ledger, so a sweep can be asserted by what is
+    // left holding stock rather than only by the call that was made
+    owners: new Set(),
+    releaseMissingCalls: [],
     // Off by default so the existing Buy-button tests below (which never flip
     // `enabled`) keep recording every reserve() the way they always have — the
     // ledger's own gating is `utils/inventory-reservations.test.js`'s to own.
@@ -102,8 +118,22 @@ vi.mock('../../utils/inventory-reservations.js', () => ({
     },
     release: async (ownerId) => {
         ledger.releaseCalls.push(ownerId);
+        ledger.owners.delete(ownerId);
         return true;
     },
+    releaseMissing: async (prefix, liveIds) => {
+        const live = new Set(liveIds || []);
+        ledger.releaseMissingCalls.push({ prefix, live: [...live] });
+        let dropped = 0;
+        for (const id of [...ledger.owners]) {
+            if (!id.startsWith(prefix) || live.has(id)) continue;
+            ledger.owners.delete(id);
+            dropped += 1;
+        }
+        return dropped;
+    },
+    reservationNote: () =>
+        ledger.claimedElsewhere > 0 ? `${ledger.claimedElsewhere} reserved by "Goal: Cheese sword"` : '',
     shortfallNote: (short) =>
         ledger.claimedElsewhere > 0
             ? `${short} short — ${ledger.claimedElsewhere} reserved by "Goal: Cheese sword"`
@@ -117,7 +147,7 @@ vi.mock('../../utils/inventory-reservations.js', () => ({
  * steps, and the `onStepAboutToRun` hook it wires for shrinking the claim.
  */
 const walk = vi.hoisted(() => ({
-    instance: { start: vi.fn(() => true), stop: vi.fn(), onStepAboutToRun: null },
+    instance: { start: vi.fn(() => true), stop: vi.fn(), onStepAboutToRun: null, active: false },
     steps: [],
 }));
 vi.mock('./crafting-plan-walk.js', () => ({
@@ -126,7 +156,7 @@ vi.mock('./crafting-plan-walk.js', () => ({
     WALK_KEY_ATTRIBUTE: 'data-mwi-walk-key',
 }));
 
-const { buildPlanUI } = await import('./crafting-plan-display.js');
+const { buildPlanUI, default: craftingPlanDisplay } = await import('./crafting-plan-display.js');
 
 /** A craft-strategy plan whose one leaf is a market buy, so the shopping list
  *  (and its Buy button) renders. The root has no actionHrid, so no craft-step
@@ -264,22 +294,31 @@ describe('the crafting plan and the reservation ledger', () => {
         expect(section.querySelector('.mwi-crafting-plan-reserved')).toBeNull();
     });
 
-    test('a shortfall that is only somebody else’s claim is named', () => {
+    test('stock another plan has claimed is named, without a shortfall of its own', () => {
         ledger.enabled = true;
         ledger.held = 500;
         ledger.claimedElsewhere = 450;
         const section = buildPlanUI('/actions/crafting/wooden_bow');
+        // No "N short" here on purpose: this section's list is the ONE-unit
+        // plan, and the number it used to quote was a per-unit shortfall
+        // standing beside the marketplace strip's whole-run one.
         expect(section.querySelector('.mwi-crafting-plan-reserved').textContent).toBe(
-            'Wood: 50 short — 450 reserved by "Goal: Cheese sword"'
+            'Wood: 450 reserved by "Goal: Cheese sword"'
         );
     });
 
-    test('an ordinary shortfall — the bag simply has not got it — says nothing', () => {
+    test('an empty bag — nobody’s claim is why the plan is buying — says nothing', () => {
         ledger.enabled = true;
-        ledger.held = 10;
+        ledger.held = 0;
         ledger.claimedElsewhere = 450;
         const section = buildPlanUI('/actions/crafting/wooden_bow');
         expect(section.querySelector('.mwi-crafting-plan-reserved')).toBeNull();
+    });
+
+    test('the shopping list says what scale its quantities are at', () => {
+        const section = buildPlanUI('/actions/crafting/wooden_bow');
+        const headings = [...section.querySelectorAll('div')].map((d) => d.textContent);
+        expect(headings).toContain('Shopping List (per 1 wooden_bow)');
     });
 });
 
@@ -393,9 +432,10 @@ describe('starting the guided walk and the reservation ledger', () => {
         await Promise.resolve();
         expect(ledger.reserveCalls).toHaveLength(1);
 
-        // The strip's own Stop button calls this on the real module; the plan
-        // is still the user's plan afterwards; the crafting-plan owner's TTL
-        // is what eventually lets an abandoned claim go, not a Stop click.
+        // The strip's own Stop button calls this on the real module. A claim's
+        // lifetime is tied to the plan panel, not to the walk, so a Stop click
+        // releases nothing by itself — the next sweep does, once the walk is no
+        // longer running to keep the owner alive.
         walk.instance.stop('');
 
         expect(ledger.releaseCalls).toHaveLength(0);
@@ -444,5 +484,167 @@ describe('starting the guided walk and the reservation ledger', () => {
         walk.instance.onStepAboutToRun(walk.steps[2]); // previous (steps[1]) was a buy
         await Promise.resolve();
         expect(ledger.reserveCalls).toHaveLength(2);
+    });
+});
+
+/**
+ * A crafting plan's claim lasts exactly as long as the plan does.
+ *
+ * Nothing used to end one. A player who opened a plan, clicked Buy Missing
+ * Materials and walked away left `craftingPlan:<item>` holding that item's
+ * whole requirement for seven days, and every later plan — and the marketplace
+ * strip — read those materials as taken by a plan that no longer existed. That
+ * is the "nothing queued, but it says resources are reserved" report.
+ */
+describe('the lifetime of a plan’s claim', () => {
+    /** A detail panel in the document, of the shape `_attachToPanel` expects */
+    function mountPanel() {
+        const panel = document.createElement('div');
+        panel.className = 'SkillActionDetail_skillActionDetail__abc';
+        document.body.appendChild(panel);
+        return panel;
+    }
+
+    /** Let a MutationObserver's callback run */
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    beforeEach(() => {
+        document.body.innerHTML = '';
+        state.inventory = [];
+        state.settings = { actionPanel_bestCraftingPlan: true };
+        state.openBillOwner = null;
+        state.openMaterialsList.mockClear();
+        ledger.enabled = true;
+        ledger.held = 0;
+        ledger.claimedElsewhere = 0;
+        ledger.rowsCalls = [];
+        ledger.reserveCalls = [];
+        ledger.releaseCalls = [];
+        ledger.simulateGating = false;
+        walk.instance.active = false;
+        walk.instance.onStepAboutToRun = null;
+        walk.instance.start.mockClear();
+        panels.subscriber = null;
+        state.plan = craftPlanBuying('/items/wood', 'Wood', 100);
+        state.missing = [{ itemHrid: '/items/wood', itemName: 'Wood', missing: 160, required: 200, isTradeable: true }];
+        // A panel left over from a previous test would still count as live
+        craftingPlanDisplay.disable();
+        ledger.releaseMissingCalls = [];
+        ledger.owners = new Set();
+    });
+
+    afterEach(() => {
+        craftingPlanDisplay.disable();
+        document.body.innerHTML = '';
+    });
+
+    test('a session that starts with orphaned plan owners clears them', () => {
+        // What a player is carrying right now: plans from days ago, still
+        // holding their materials, with nothing of theirs on screen.
+        ledger.owners = new Set([
+            'craftingPlan:/items/holy_bulwark',
+            'craftingPlan:/items/holy_plate_legs',
+            'goal:cheese_sword',
+            'taskWalk:/items/holy_cheese',
+        ]);
+
+        craftingPlanDisplay.initialize();
+
+        expect(ledger.releaseMissingCalls[0]).toEqual({ prefix: 'craftingPlan:', live: [] });
+        // Only this feature's owners — a goal and a merged task walk claim under
+        // prefixes of their own and are none of the sweep's business
+        expect([...ledger.owners]).toEqual(['goal:cheese_sword', 'taskWalk:/items/holy_cheese']);
+    });
+
+    test('the plan on screen keeps its claim while every other plan’s is dropped', () => {
+        craftingPlanDisplay.initialize();
+        const panel = mountPanel();
+        ledger.owners = new Set(['craftingPlan:/items/wooden_bow', 'craftingPlan:/items/holy_bulwark']);
+
+        panels.subscriber({ panel, actionHrid: '/actions/crafting/wooden_bow' });
+
+        expect([...ledger.owners]).toEqual(['craftingPlan:/items/wooden_bow']);
+    });
+
+    test('moving to another item’s plan leaves no claim behind for the first', async () => {
+        craftingPlanDisplay.initialize();
+        const first = mountPanel();
+        panels.subscriber({ panel: first, actionHrid: '/actions/crafting/wooden_bow' });
+        ledger.owners = new Set(['craftingPlan:/items/wooden_bow']);
+
+        // The game swaps one detail panel for another
+        first.remove();
+        const second = mountPanel();
+        panels.subscriber({ panel: second, actionHrid: '/actions/crafting/oak_bow' });
+        await settle();
+
+        expect([...ledger.owners]).toEqual([]);
+    });
+
+    test('closing the panel releases its claim', async () => {
+        craftingPlanDisplay.initialize();
+        const panel = mountPanel();
+        panels.subscriber({ panel, actionHrid: '/actions/crafting/wooden_bow' });
+        ledger.owners = new Set(['craftingPlan:/items/wooden_bow']);
+
+        panel.remove();
+        await settle();
+
+        expect([...ledger.owners]).toEqual([]);
+    });
+
+    test('a running guided walk keeps its plan’s claim after the panel is gone', async () => {
+        state.settings.craftingPlan_guidedWalk = true;
+        state.plan = craftPlanWithWalk('/items/wood', 'Wood', 100);
+        walk.steps = [{ key: 'craft:x', kind: 'craft', actionHrid: '/actions/crafting/wooden_bow' }];
+        craftingPlanDisplay.initialize();
+        const panel = mountPanel();
+        panels.subscriber({ panel, actionHrid: '/actions/crafting/wooden_bow' });
+
+        findWalkButton(panel.querySelector('#mwi-crafting-plan')).click();
+        await Promise.resolve();
+        await Promise.resolve();
+        walk.instance.active = true;
+        ledger.owners = new Set(['craftingPlan:/items/wooden_bow']);
+
+        // The walk navigates away from the panel that started it on its first step
+        panel.remove();
+        await settle();
+        expect([...ledger.owners]).toEqual(['craftingPlan:/items/wooden_bow']);
+
+        // …and the claim goes as soon as the walk is no longer running
+        walk.instance.active = false;
+        panels.subscriber({ panel: mountPanel(), actionHrid: '/actions/crafting/oak_bow' });
+        expect([...ledger.owners]).toEqual([]);
+    });
+
+    test('an open marketplace bill keeps the plan’s claim while the trip lasts', async () => {
+        craftingPlanDisplay.initialize();
+        const panel = mountPanel();
+        panels.subscriber({ panel, actionHrid: '/actions/crafting/wooden_bow' });
+        ledger.owners = new Set(['craftingPlan:/items/wooden_bow']);
+
+        // Buy Missing Materials navigates to the marketplace, unmounting the panel
+        state.openBillOwner = 'craftingPlan:/items/wooden_bow';
+        panel.remove();
+        await settle();
+        expect([...ledger.owners]).toEqual(['craftingPlan:/items/wooden_bow']);
+
+        // Leaving the marketplace tears the bill down; the next sweep lets it go
+        state.openBillOwner = null;
+        panels.subscriber({ panel: mountPanel(), actionHrid: '/actions/crafting/oak_bow' });
+        expect([...ledger.owners]).toEqual([]);
+    });
+
+    test('tearing the feature down — a character switch, or the setting going off — releases every plan', () => {
+        craftingPlanDisplay.initialize();
+        const panel = mountPanel();
+        panels.subscriber({ panel, actionHrid: '/actions/crafting/wooden_bow' });
+        ledger.owners = new Set(['craftingPlan:/items/wooden_bow', 'craftingPlan:/items/holy_bulwark']);
+
+        craftingPlanDisplay.disable();
+
+        expect(ledger.releaseMissingCalls.at(-1)).toEqual({ prefix: 'craftingPlan:', live: [] });
+        expect([...ledger.owners]).toEqual([]);
     });
 });

@@ -6,7 +6,7 @@
 
 import config from '../../core/config.js';
 import dataManager from '../../core/data-manager.js';
-import { openMaterialsList } from '../actions/missing-materials-button.js';
+import { openBillOwner, openMaterialsList } from '../actions/missing-materials-button.js';
 import { computeBestCraftingPlan, collectMissingMaterials } from './crafting-plan-calculator.js';
 import craftingPlanWalk, { buildWalkSteps, WALK_KEY_ATTRIBUTE } from './crafting-plan-walk.js';
 import { createCollapsibleSection } from '../../utils/ui-components.js';
@@ -16,12 +16,12 @@ import { calculateActionStats } from '../../utils/action-calculator.js';
 import { calculateEfficiencyMultiplier } from '../../utils/efficiency.js';
 import { calculateExpPerHour } from '../../utils/experience-calculator.js';
 import {
-    effectiveInventory,
     effectiveInventoryRows,
     heldInInventory,
+    releaseMissing,
+    reservationNote,
     reserve,
     reservationsEnabled,
-    shortfallNote,
 } from '../../utils/inventory-reservations.js';
 
 const UI_ID = 'mwi-crafting-plan';
@@ -30,10 +30,14 @@ const UI_ID = 'mwi-crafting-plan';
  * Owner-id prefix for a crafting plan's claim on the bag.
  *
  * Keyed by the item the panel is planning, which is the only stable identity a
- * panel-borne plan has. Nothing announces that the player is finished with one,
- * so these claims are the ones the ledger's TTL exists for.
+ * panel-borne plan has. Its own prefix, matched by nothing else in the ledger —
+ * the merged task walk deliberately claims under `taskWalk:` — because the
+ * sweep below releases everything under it that is not currently on screen.
  */
 const RESERVATION_OWNER_PREFIX = 'craftingPlan:';
+
+/** Marks a rendered plan section with the owner id it plans under. */
+const PLAN_OWNER_ATTRIBUTE = 'data-mwi-plan-owner';
 
 /**
  * The owner id a panel's plan claims under.
@@ -42,6 +46,67 @@ const RESERVATION_OWNER_PREFIX = 'craftingPlan:';
  */
 function planOwner(itemHrid) {
     return `${RESERVATION_OWNER_PREFIX}${itemHrid}`;
+}
+
+/**
+ * The plan a guided walk is standing on, if one is running.
+ *
+ * A walk navigates away from the action panel that started it, so the panel is
+ * gone long before the plan is: without this the sweep would release the claim
+ * of the very plan being walked, on the first step.
+ */
+let walkingOwner = null;
+
+/**
+ * Every plan owner the player can still be said to hold.
+ *
+ * A plan section mounted on screen, the plan a walk is running, and the plan
+ * behind an open marketplace bill — clicking Buy Missing Materials unmounts the
+ * panel by navigating, and the shopping trip that click opened is the plan
+ * still being acted on.
+ *
+ * @returns {Array<string>} Owner ids that must survive a sweep
+ */
+function livePlanOwners() {
+    const live = new Set();
+    if (typeof document !== 'undefined') {
+        for (const section of document.querySelectorAll(`[${PLAN_OWNER_ATTRIBUTE}]`)) {
+            const owner = section.getAttribute(PLAN_OWNER_ATTRIBUTE);
+            if (owner) live.add(owner);
+        }
+    }
+    if (walkingOwner && craftingPlanWalk.active) live.add(walkingOwner);
+    const bill = openBillOwner?.();
+    if (typeof bill === 'string' && bill.startsWith(RESERVATION_OWNER_PREFIX)) live.add(bill);
+    return [...live];
+}
+
+/**
+ * Drop the claim of every plan that is no longer one of {@link livePlanOwners}.
+ *
+ * A crafting plan's claim lasts exactly as long as the plan does. Nothing used
+ * to end one — the panel closing, the player moving to another item and the
+ * script restarting all left the claim standing until the ledger's seven-day
+ * sweep — so a player who had merely looked at a few plans accumulated owners
+ * that held their bag back from every later plan, and the marketplace strip
+ * reported materials "reserved" by plans that no longer existed.
+ *
+ * `releaseMissing` rather than a local delete: a release has to be an
+ * observable deletion the sync carries (the ledger keeps tombstones for exactly
+ * this), or the next pull from another device resurrects every claim just
+ * dropped. It runs whether or not the ledger setting is on, as the ledger's own
+ * release paths do — it can only ever remove a claim.
+ *
+ * @param {Array<string>} [live] - Owners to keep; defaults to what is on screen
+ * @returns {Promise<number>} How many claims were dropped
+ */
+async function sweepPlanClaims(live = livePlanOwners()) {
+    try {
+        return await releaseMissing(RESERVATION_OWNER_PREFIX, live);
+    } catch (error) {
+        console.error('[CraftingPlan] Releasing stale plan claims failed:', error);
+        return 0;
+    }
 }
 
 /**
@@ -68,13 +133,19 @@ function missingMaterialLines(fullPlan, itemHrid) {
 }
 
 /**
- * One line naming who took the stock, when that is the only reason the plan is
- * buying something the bag could otherwise have covered.
+ * One line naming who took the stock the plan would otherwise have spent.
  *
- * Deliberately silent about an ordinary shortfall: a player who is simply short
- * of logs needs no explanation, and a line that fires either way explains
- * nothing. Empty string when the ledger is off or nothing is claimed, so the
- * caller can ask unconditionally.
+ * Deliberately silent when the bag holds none of the item anyway: a player who
+ * is simply short of logs needs no explanation, and a line that fires either
+ * way explains nothing. Empty string when the ledger is off or nothing is
+ * claimed, so the caller can ask unconditionally.
+ *
+ * It names the claim and no shortfall, because this section has no shortfall to
+ * name: the list it is drawn from is the plan for ONE unit of output, while the
+ * Buy button re-plans for the whole run the panel is set to. Quoting a "short"
+ * figure here put a per-unit number beside the marketplace strip's whole-run
+ * one — two different shortfalls on screen for the same materials, which is
+ * exactly the "random number" players reported.
  *
  * @param {Array<{itemHrid: string, itemName: string, quantity: number}>} items - The shopping list
  * @param {string} outputHrid - What this panel is planning, for its own owner id
@@ -86,13 +157,9 @@ function reservedShoppingNote(items, outputHrid) {
     const excludeOwner = planOwner(outputHrid);
     for (const item of items) {
         if (!item?.itemHrid) continue;
-        const wanted = Math.ceil(item.quantity);
-        const held = heldInInventory(item.itemHrid);
-        if (wanted > held) continue; // short whatever anybody else claims
-        const available = effectiveInventory(item.itemHrid, 0, { excludeOwner, held });
-        const short = wanted - available;
-        if (short <= 0) continue;
-        const note = shortfallNote(short, item.itemHrid, 0, { excludeOwner });
+        // Nothing of it in the bag means nobody's claim is what makes the plan buy it
+        if (heldInInventory(item.itemHrid) <= 0) continue;
+        const note = reservationNote(item.itemHrid, 0, { excludeOwner });
         if (note) return `${item.itemName}: ${note}`;
     }
     return '';
@@ -444,6 +511,11 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
         const section = createCollapsibleSection('', 'Best Crafting Plan', costText, content, defaultOpen, 0);
         section.id = UI_ID;
         section.className = 'mwi-crafting-plan-section';
+        // Marked even here, where no shopping list is drawn and so no claim can
+        // be made: the mark is what says "a plan for this item is on screen",
+        // and a plan the player is looking at must not have an older claim of
+        // its own swept out from under it by the next panel to appear.
+        section.setAttribute(PLAN_OWNER_ATTRIBUTE, planOwner(output.itemHrid));
         return section;
     }
 
@@ -495,7 +567,12 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
             color: var(--text-color-primary, #fff);
             margin-bottom: 4px;
         `;
-        shoppingHeader.textContent = 'Shopping List';
+        // Named with the scale it is at. These quantities are the ONE-unit plan
+        // this section renders; the Buy button below re-plans for the panel's
+        // own action count, so a player reading the list as the whole job
+        // bought a fraction of what the run needed.
+        const outputName = dataManager.getItemDetails(output.itemHrid)?.name || output.itemHrid.split('/').pop();
+        shoppingHeader.textContent = `Shopping List (per 1 ${outputName})`;
         content.appendChild(shoppingHeader);
 
         // Sort by total cost descending
@@ -705,6 +782,10 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
                     previousStep = step;
                 };
 
+                // The walk outlives the panel that started it — it navigates
+                // away from it on the first step — so the claim it just made
+                // has to survive the sweep that panel's removal triggers
+                walkingOwner = planOwner(output.itemHrid);
                 craftingPlanWalk.start(steps);
             });
             content.appendChild(walkButton);
@@ -715,6 +796,7 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
     const section = createCollapsibleSection('', 'Best Crafting Plan', costText, content, defaultOpen, 0);
     section.id = UI_ID;
     section.className = 'mwi-crafting-plan-section';
+    section.setAttribute(PLAN_OWNER_ATTRIBUTE, planOwner(output.itemHrid));
 
     return section;
 }
@@ -734,6 +816,13 @@ class CraftingPlanDisplay {
 
         this.isInitialized = true;
 
+        // Nothing is on screen yet, so this drops every plan owner in the
+        // ledger. That is the point: a claim lasts as long as the plan panel
+        // does, and a claim that survived into a new session (or a character
+        // switch, which re-runs this) belongs to a panel that closed long ago.
+        // It is also what clears the backlog players are already carrying.
+        sweepPlanClaims([]);
+
         const unregister = onDetailPanel((context) => this._processPanel(context));
         this.unregisterHandlers.push(unregister);
     }
@@ -748,6 +837,32 @@ class CraftingPlanDisplay {
 
         this.processedPanels.add(panel);
         this._attachToPanel(panel, actionHrid);
+        // A new panel means the last one is on its way out (the game shows one
+        // detail panel at a time), so the plan it held goes with it. Swept
+        // after the attach, so this panel's own section is already mounted and
+        // counts as live.
+        sweepPlanClaims();
+    }
+
+    /**
+     * Release the plan's claim once its panel has left the document.
+     *
+     * The panel's own subtree cannot report this — it is removed whole, and an
+     * observer inside it never fires — so the watch is on the parent it was
+     * removed from, childList only.
+     * @param {HTMLElement} panel - The action detail panel
+     */
+    _watchForPanelClose(panel) {
+        const parent = panel.parentNode;
+        if (!parent) return;
+        const obs = new MutationObserver(() => {
+            if (panel.isConnected) return;
+            obs.disconnect();
+            this.activeObservers.delete(obs);
+            sweepPlanClaims();
+        });
+        obs.observe(parent, { childList: true });
+        this.activeObservers.add(obs);
     }
 
     _attachToPanel(panel, actionHrid) {
@@ -806,6 +921,7 @@ class CraftingPlanDisplay {
         obs.observe(observeTarget, { childList: true, subtree: true });
         this.panelObservers.set(panel, obs);
         this.activeObservers.add(obs);
+        this._watchForPanelClose(panel);
     }
 
     disable() {
@@ -818,6 +934,14 @@ class CraftingPlanDisplay {
         this.isInitialized = false;
 
         document.querySelectorAll(`#${UI_ID}`).forEach((el) => el.remove());
+
+        // Every plan panel is gone by this route as surely as by its own, and
+        // the claims behind them go with it — including a walk's, because the
+        // walk is torn down alongside this feature. Runs on a character switch
+        // too, where it fires before the id moves, so it releases against the
+        // character whose bag the claims were on.
+        walkingOwner = null;
+        sweepPlanClaims([]);
 
         this.panelObservers = new WeakMap();
         this.processedPanels = new WeakSet();

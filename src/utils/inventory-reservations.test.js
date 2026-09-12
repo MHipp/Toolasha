@@ -82,6 +82,7 @@ const {
     effectiveInventory,
     effectiveInventoryRows,
     heldInInventory,
+    reservationNote,
     shortfallNote,
     mergeReservations,
     RELEASED_KEY,
@@ -244,6 +245,29 @@ describe('the visibility line', () => {
     test('is empty when nothing else has a claim, so a caller can append it blind', async () => {
         await reserve('goal:a', [{ itemHrid: LOGS, count: 300 }]);
         expect(shortfallNote(120, LOGS, 0, { excludeOwner: 'goal:a' })).toBe('');
+    });
+
+    test('names the claim on its own for a caller with no shortfall to quote', async () => {
+        // The crafting-plan panel's list is the plan for ONE unit of output while
+        // its Buy button re-plans for the whole run: it can say truthfully who
+        // holds the stock, and cannot say by how much the run is short.
+        await reserve('goal:a', [{ itemHrid: LOGS, count: 300 }], { label: 'Goal: Cheese sword' });
+        await reserve('goal:b', [{ itemHrid: LOGS, count: 100 }], { label: 'Goal: Holy sword' });
+        expect(reservationNote(LOGS, 0, { excludeOwner: 'goal:z' })).toBe(
+            '400 reserved by "Goal: Cheese sword" and "Goal: Holy sword"'
+        );
+    });
+
+    test('the claim line and the shortfall line name the same claimants', async () => {
+        await reserve('goal:a', [{ itemHrid: LOGS, count: 300 }], { label: 'Goal: Cheese sword' });
+        expect(shortfallNote(120, LOGS, 0, { excludeOwner: 'goal:b' })).toBe(
+            `120 short — ${reservationNote(LOGS, 0, { excludeOwner: 'goal:b' })}`
+        );
+    });
+
+    test('the claim line is empty when nothing else has a claim', async () => {
+        await reserve('goal:a', [{ itemHrid: LOGS, count: 300 }]);
+        expect(reservationNote(LOGS, 0, { excludeOwner: 'goal:a' })).toBe('');
     });
 
     test('detail is ordered largest claim first', async () => {

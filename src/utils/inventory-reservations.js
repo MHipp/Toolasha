@@ -790,6 +790,36 @@ export function effectiveInventoryRows(rows, { excludeOwner = null } = {}) {
 }
 
 /**
+ * One line naming who has claimed an item, and how much of it they hold.
+ *
+ * Empty string when nothing else has claimed it, so a caller can append it
+ * unconditionally. Says nothing about a shortfall: a caller whose requirement
+ * is at a different scale from the bag (a per-unit plan beside a whole-run
+ * bill) can state the claim honestly without inventing a figure to put beside
+ * it. {@link shortfallNote} is this line with such a figure, for the callers
+ * that genuinely have one.
+ *
+ * @param {string} itemHrid - The item
+ * @param {number} [enhancementLevel] - Which copy
+ * @param {Object} [options]
+ * @param {string|null} [options.excludeOwner] - The asking owner
+ * @returns {string} e.g. `300 reserved by "Goal: Cheese sword"`
+ */
+export function reservationNote(itemHrid, enhancementLevel = 0, { excludeOwner = null } = {}) {
+    const { total, byOwner } = reservationDetail(itemHrid, enhancementLevel, { excludeOwner });
+    if (!(total > 0) || !byOwner.length) return '';
+
+    const [largest, ...rest] = byOwner;
+    // Named individually up to two claimants; past that the list is longer than
+    // the fact it is explaining
+    let who = `"${largest.label}"`;
+    if (rest.length === 1) who += ` and "${rest[0].label}"`;
+    else if (rest.length > 1) who += ` and ${rest.length} other plans`;
+
+    return `${total.toLocaleString()} reserved by ${who}`;
+}
+
+/**
  * One line saying why a shortfall exists that the bag does not explain.
  *
  * Empty string when nothing else has claimed the item, so a caller can append
@@ -803,20 +833,9 @@ export function effectiveInventoryRows(rows, { excludeOwner = null } = {}) {
  * @returns {string} e.g. `120 short — 300 reserved by "Goal: Cheese sword"`
  */
 export function shortfallNote(short, itemHrid, enhancementLevel = 0, { excludeOwner = null } = {}) {
-    const { total, byOwner } = reservationDetail(itemHrid, enhancementLevel, { excludeOwner });
-    if (!(total > 0) || !byOwner.length) return '';
-
-    const [largest, ...rest] = byOwner;
-    // Named individually up to two claimants; past that the list is longer than
-    // the fact it is explaining
-    let who = `"${largest.label}"`;
-    if (rest.length === 1) who += ` and "${rest[0].label}"`;
-    else if (rest.length > 1) who += ` and ${rest.length} other plans`;
-
-    return (
-        `${Math.max(0, Math.floor(Number(short) || 0)).toLocaleString()} short — ` +
-        `${total.toLocaleString()} reserved by ${who}`
-    );
+    const note = reservationNote(itemHrid, enhancementLevel, { excludeOwner });
+    if (!note) return '';
+    return `${Math.max(0, Math.floor(Number(short) || 0)).toLocaleString()} short — ${note}`;
 }
 
 /**
@@ -896,6 +915,7 @@ export default {
     reservedElsewhere,
     effectiveInventory,
     effectiveInventoryRows,
+    reservationNote,
     shortfallNote,
     mergeReservations,
 };

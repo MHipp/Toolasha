@@ -122,7 +122,8 @@ vi.mock('../../utils/inventory-reservations.js', () => ({
     },
 }));
 
-const { materialsFromList, openMaterialsList, openMissingMaterials } = await import('./missing-materials-button.js');
+const { materialsFromList, openBillOwner, openMaterialsList, openMissingMaterials } =
+    await import('./missing-materials-button.js');
 
 describe('a bill of materials against the inventory', () => {
     test('each line is what is needed less the unenhanced copies held', () => {
@@ -621,6 +622,27 @@ describe('the open bill and the reservation ledger', () => {
         handler({ type: 'items_updated' });
 
         expect(ledger.reserved.map((entry) => entry.ownerId)).not.toContain('missingMats');
+    });
+
+    test('the open bill names the caller whose claim it is, and stops naming it when the trip ends', async () => {
+        const { container } = buildMarketplaceDom();
+        await openMaterialsList([{ itemHrid: '/items/cedar_lumber', count: 100 }], {
+            ownerId: 'craftingPlan:/items/chair',
+        });
+        // What lets a crafting plan keep its claim while the player shops: the
+        // click that opened this bill navigated away from the plan's own panel
+        expect(openBillOwner()).toBe('craftingPlan:/items/chair');
+
+        container
+            .querySelector('[data-mwi-clear-all-tab="true"]')
+            .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        expect(openBillOwner()).toBeNull();
+    });
+
+    test('a bill the tabs claimed themselves names no caller', async () => {
+        buildMarketplaceDom();
+        await openMaterialsList([{ itemHrid: '/items/cedar_lumber', count: 100 }]);
+        expect(openBillOwner()).toBeNull();
     });
 });
 

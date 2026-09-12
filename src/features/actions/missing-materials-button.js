@@ -1621,6 +1621,26 @@ export async function openMaterialsList(lines, { ownerId = null } = {}) {
 }
 
 /**
+ * The reservation owner behind the bill of materials currently on screen, when
+ * that bill was opened by a caller holding a claim of its own.
+ *
+ * The seam a caller needs to answer "is my shopping trip still open?". A
+ * crafting plan's claim is supposed to live exactly as long as the player can
+ * see the plan, and clicking Buy Missing Materials navigates away from the
+ * action panel — so without this the claim behind the very trip the player is
+ * on would be swept the moment the panel unmounted.
+ *
+ * Null once the tabs are gone (leaving the marketplace, the × All control) or
+ * for a bill the tabs claimed themselves.
+ *
+ * @returns {string|null} The caller's owner id, or null
+ */
+export function openBillOwner() {
+    if (!currentMaterialsTabs.length) return null;
+    return storedMaterialList?.ownerId || null;
+}
+
+/**
  * Open the marketplace on the materials an action is short of.
  *
  * The same thing the button in the action panel does, reachable from anywhere.
@@ -1646,5 +1666,6 @@ export default {
     cleanup,
     openMissingMaterials,
     openMaterialsList,
+    openBillOwner,
     openTesterShopPage,
 };
