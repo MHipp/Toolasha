@@ -74,6 +74,12 @@
  * Days no recording covers are counted and reported rather than left to look
  * like days of no combat, and what they were worth stays in the residual.
  *
+ * What combat COST is reconciled the same way, from two recordings rather than
+ * three: the live record of every combat food and drink whose count fell while
+ * the game was open (`item-flow-recorder.js`), and the same twenty archived
+ * runs, each carrying its own estimate of what it consumed. A run counts the
+ * most either saw, never their sum — see {@link combatConsumablesByDay}.
+ *
  * ## Days are local
  *
  * A day here means the day the user experienced, midnight to midnight in
@@ -214,8 +220,14 @@ export const SOURCE_META = {
     consumables: {
         label: 'Consumables',
         measured: true,
-        source: 'Combat session history',
-        note: 'Food and drinks consumed in recorded combat runs. Only the twenty most recent runs are kept.',
+        source: 'Item flow recorder, with the archived runs for what it missed',
+        note:
+            'Food and drinks burned in combat, priced at today’s market. Each one is counted live as its own ' +
+            'count falls by one while a combat action runs and the game is open, and the archived runs (the ' +
+            'twenty most recent, each with its own estimate of what it consumed) fill in what the live record ' +
+            'did not see. A run counts the most either of them saw, never two added together. What you ate ' +
+            'while offline is in the offline row. The live record is forward-only — it starts the day it was ' +
+            'installed.',
     },
     dungeonKeys: {
         label: 'Dungeon keys',
@@ -1253,23 +1265,59 @@ export function gatheringByDay({ liveDays = [], entries = [], offline = [], pric
                 if (!Number.isFinite(stretch?.from)) continue;
                 const to = Number.isFinite(stretch.to) && stretch.to > stretch.from ? stretch.to : stretch.from;
                 const { value } = lootCountsValue(stretch.gained, price);
-                live.push({ actionHrid: held.a, from: stretch.from, to, value });
+                live.push({ tag: held.a, from: stretch.from, to, value });
                 add(row.d, value);
                 if (liveSince === null || stretch.from < liveSince) liveSince = stretch.from;
             }
         }
     }
 
+    addSpanExcess({
+        live,
+        entries: (entries || []).map((entry) => ({ ...entry, tag: entry?.actionHrid })),
+        offline,
+        add,
+    });
+
+    return { byDay, liveSince };
+}
+
+/**
+ * Add what a span recording saw BEYOND the live stretches inside its span, and
+ * nothing else — the rule that keeps two recordings of one stretch of time from
+ * being added together.
+ *
+ * The two shapes it reconciles are the ones every pair here comes in: a live
+ * record of what each watched stretch gained, which is a measurement and counts
+ * whole on its own day, and a recording of a running total over a whole span (a
+ * loot log entry, an archived combat run), which can only add the part of its
+ * total the live stretches did not already account for. Over the span that is
+ * the most either recording saw, never their sum — the same rule
+ * {@link combatRunDayValues} applies to combat's three readings of one total.
+ *
+ * `tag` is what makes two recordings recordings of the SAME thing: the action
+ * hrid for gathering, one constant for combat consumables (one character fights
+ * one run at a time, so any combat consumption inside a run's span is that
+ * run's). A live stretch is credited to the span by the share of its time inside
+ * it; one with no length is its instant. Slack of `SAME_RUN_SLACK_MS` past the
+ * end takes a stretch as inside, because the two are stamped by different
+ * clocks and a misjudged edge must cost an undercount, never a double count.
+ *
+ * @param {Object} input
+ * @param {Array<{tag: string, from: number, to: number, value: number}>} [input.live] - Live stretches
+ * @param {Array<{tag: string, start: number, end: number, value: number}>} [input.entries] - Span recordings
+ * @param {Array<Array<number>>} [input.offline] - Offline windows, left to the offline row
+ * @param {Function} input.add - `(day, value) => void`, called only with the excess
+ */
+export function addSpanExcess({ live = [], entries = [], offline = [], add }) {
     for (const entry of entries || []) {
         if (!Number.isFinite(entry?.start)) continue;
         const start = entry.start;
         const end = Number.isFinite(entry.end) && entry.end > start ? entry.end : start;
         const reach = end + SAME_RUN_SLACK_MS;
 
-        // What the live record saw of this action inside the entry's span. A
-        // stretch is credited to the span by the share of its time inside it;
-        // one with no length is its instant
-        const mine = live.filter((stretch) => stretch.actionHrid === entry.actionHrid);
+        // What the live record saw of this tag inside the entry's span
+        const mine = (live || []).filter((stretch) => stretch.tag === entry.tag);
         let watched = 0;
         for (const stretch of mine) {
             if (stretch.to === stretch.from) {
@@ -1297,7 +1345,79 @@ export function gatheringByDay({ liveDays = [], entries = [], offline = [], pric
         }
         for (const [a, b] of unwatched) spreadOnline(extra * ((b - a) / length), a, b, offline, add);
     }
+}
 
+/** One character fights one run at a time, so every combat consumable recording is of the same thing */
+const COMBAT_CONSUMABLE_TAG = 'combat';
+
+/**
+ * What combat food and drink cost on each day, from both recordings, each swig
+ * and each bite counted once.
+ *
+ * - the **live record** (`item-flow-recorder.js`): every combat food or drink
+ *   whose count fell by one while the game was open, kept as what each unbroken
+ *   watched stretch used up;
+ * - the **archived runs**, the twenty most recent, each carrying its own
+ *   estimate of what every player consumed over the run.
+ *
+ * They are combined by {@link addSpanExcess}: a live stretch counts whole on its
+ * day, and a run adds only what its own figure saw beyond the live stretches
+ * inside its span, spread across the part of that span nobody watched. Over a
+ * run that is the most either recording saw, never both added — so a run that
+ * is BOTH archived and watched live is counted once, at the larger figure.
+ *
+ * Time spent offline is left to the offline row, which counts the food eaten
+ * then from the Welcome Back summary's own signed item delta. The live record
+ * cannot see offline consumption at all: its inventory mirror is re-seeded at
+ * login, so the fall that happened while away is never a delta.
+ *
+ * @param {Object} input
+ * @param {Array<Object>} [input.liveDays] - Item flow recorder rows
+ * @param {Array<Object>} [input.sessions] - Archived combat runs, and the live one
+ * @param {Array<Array<number>>} [input.offline] - Offline windows
+ * @param {Function} input.price - `(itemHrid, enhancementLevel) => number|null`
+ * @returns {{byDay: Map<string, number>, liveSince: number|null}} What was burned each
+ *   day as a POSITIVE cost, and where the live record starts
+ */
+export function combatConsumablesByDay({ liveDays = [], sessions = [], offline = [], price = () => null } = {}) {
+    const byDay = new Map();
+    const add = (day, value) => {
+        if (Number.isFinite(value) && value !== 0) byDay.set(day, (byDay.get(day) || 0) + value);
+    };
+
+    const live = [];
+    let liveSince = null;
+    for (const row of liveDays || []) {
+        for (const stretch of row?.combatConsumables?.stretches || []) {
+            if (!Number.isFinite(stretch?.from)) continue;
+            const to = Number.isFinite(stretch.to) && stretch.to > stretch.from ? stretch.to : stretch.from;
+            const { value } = lootCountsValue(stretch.used, price);
+            live.push({ tag: COMBAT_CONSUMABLE_TAG, from: stretch.from, to, value });
+            add(row.d, value);
+            if (liveSince === null || stretch.from < liveSince) liveSince = stretch.from;
+        }
+    }
+
+    const entries = [];
+    for (const session of sessions || []) {
+        const start = Date.parse(session?.combatStartTime);
+        if (!Number.isFinite(start)) continue;
+        let value = 0;
+        for (const consumable of ownCombatPlayer(session)?.consumables || []) {
+            const consumed = num(consumable?.consumed);
+            if (consumed <= 0 || !consumable?.itemHrid) continue;
+            value += consumed * dropUnitValue(price, consumable.itemHrid, 0);
+        }
+        if (value <= 0) continue;
+        entries.push({
+            tag: COMBAT_CONSUMABLE_TAG,
+            start,
+            end: start + Math.max(0, num(session?.durationSeconds)) * 1000,
+            value,
+        });
+    }
+
+    addSpanExcess({ live, entries, offline, add });
     return { byDay, liveSince };
 }
 
@@ -1317,7 +1437,8 @@ export function gatheringByDay({ liveDays = [], entries = [], offline = [], pric
  * @param {Array<Object>} [input.tradeFills] - Trade ledger fill records
  * @param {Array<Object>} [input.combatSessions] - Archived combat runs
  * @param {Array<Object>} [input.combatLootDays] - Combat loot recorder rows `{d, runs, offline}`
- * @param {Array<Object>} [input.itemFlowDays] - Item flow recorder rows `{d, gathering, keys, drinks}`
+ * @param {Array<Object>} [input.itemFlowDays] - Item flow recorder rows
+ *   `{d, gathering, keys, drinks, combatConsumables}`
  * @param {Array<Object>} [input.taskCompletions] - Claimed task records `{completedAt, coins, tokens, items}`
  * @param {Array<Object>} [input.taskRerolls] - Retired-task reroll records `{retiredAt, goldSpent, cowbellsSpent}`
  * @param {Array<Object>} [input.chestDays] - Chest opening recorder rows `{d, openings}`
@@ -1549,34 +1670,31 @@ export function attributeGoldSources(input) {
         if (inWindow.has(day)) unpricedMarketFills += figures.unpriced;
     }
 
-    // The archived runs pay for the consumables row: the food and drinks each
-    // burned, SPREAD across the days it ran by time, because booking a
-    // twelve-day AFK grind to its start day put it outside every window. Food
-    // eaten while offline is in the Welcome Back summary's item delta, and so
-    // already in the offline row; that stretch of a run is left to it.
+    // What combat burned, from the live record and the archived runs together —
+    // see `combatConsumablesByDay` for which one answers for which run. An
+    // archived run's own figure is SPREAD across the days it ran by time,
+    // because booking a twelve-day AFK grind to its start day put it outside
+    // every window. Food eaten while offline is in the Welcome Back summary's
+    // item delta, and so already in the offline row; that stretch is left to it.
+    const consumables = combatConsumablesByDay({
+        liveDays: itemFlowDays,
+        sessions: combatSessions,
+        offline: offlineWindows,
+        price: dropPrice,
+    });
+    for (const [day, cost] of consumables.byDay) add(day, 'consumables', -cost);
+
     let sessionsInWindow = 0;
     let emptyLootSessions = 0;
-    let consumablesAttributed = false;
     let earliestSession = null;
     for (const session of combatSessions || []) {
         const t = Date.parse(session?.combatStartTime);
         if (!Number.isFinite(t)) continue;
         if (earliestSession === null || t < earliestSession) earliestSession = t;
 
-        const me = ownCombatPlayer(session);
-        let cost = 0;
-        for (const consumable of me?.consumables || []) {
-            const consumed = num(consumable?.consumed);
-            if (consumed <= 0) continue;
-            cost += consumed * num(price(consumable.itemHrid, 0));
-        }
-
         const spanEnd = t + Math.max(0, num(session?.durationSeconds)) * 1000;
-        spreadOnline(-cost, t, spanEnd, offlineWindows, (day, value) => add(day, 'consumables', value));
-
         if (!daySharesOfSpan(t, spanEnd).some(({ day }) => inWindow.has(day))) continue;
         sessionsInWindow += 1;
-        if (cost > 0) consumablesAttributed = true;
         if (combatSessionLootValue(session, price).items === 0) emptyLootSessions += 1;
     }
 
@@ -1610,8 +1728,7 @@ export function attributeGoldSources(input) {
     let archiveCombatDays = 0;
     let uncoveredCombatDays = 0;
     let offlineCombat = 0;
-    const combatRan =
-        sessionsInWindow > 0 || consumablesAttributed || days.some((day) => combatLoot.watchedDays.has(day));
+    const combatRan = sessionsInWindow > 0 || days.some((day) => combatLoot.watchedDays.has(day));
     for (const day of days) {
         const part = combatLoot.byDay.get(day);
         if (part && part.value !== 0) {
@@ -1750,7 +1867,12 @@ export function attributeGoldSources(input) {
             enhancement: earliest(enhancementSessions, (session) => num(session?.startTime) || NaN),
             marketplace: earliest(tradeFills, (fill) => num(fill?.t) || NaN),
             marketTax: earliest(tradeFills, (fill) => num(fill?.t) || NaN),
-            consumables: earliest(combatSessions, (session) => Date.parse(session?.combatStartTime)),
+            // Two recordings here as well, so the earlier of them: a character
+            // whose archive has rolled over is still covered by the live record
+            consumables: earlierOf(
+                earliest(combatSessions, (session) => Date.parse(session?.combatStartTime)),
+                consumables.liveSince
+            ),
             dungeonKeys: earliest(itemFlowDays, (row) => dayStart(row?.d)),
             skillingDrinks: earliest(itemFlowDays, (row) => dayStart(row?.d)),
         },

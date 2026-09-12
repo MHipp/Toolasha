@@ -47,12 +47,28 @@
  * one when it is. The same guards apply, with the drink's slot in place of the
  * dungeon: a fall of exactly one, of a drink sitting in an active drink slot of
  * the running non-combat action's type (now or within `CONFIRM_MS`), with no
- * listing of it alongside. Two more keep other consumption out:
+ * listing of it alongside. One more keeps other consumption out: a fall inside
+ * the completed action's own message, of an item that action takes as an input,
+ * is the recipe's (the production recorder's), not a drink.
  *
- * - nothing is held while a combat action runs; combat drinks are the combat
- *   consumables row's, from the archived runs;
- * - a fall inside the completed action's own message, of an item that action
- *   takes as an input, is the recipe's (the production recorder's), not a drink.
+ * ## Combat food and drink
+ *
+ * The same fall, under a combat action: food and drinks go one at a time and
+ * arrive as a plain `items_updated` with no completed action at all. Every
+ * guard above is reused unchanged — a fall of exactly one, unenhanced, of an
+ * item in an ACTIVE COMBAT food or drink slot while a combat action is running
+ * (now or within `CONFIRM_MS`), with no listing of it alongside and no recipe
+ * of the completed action taking it as an input. Which tally a fall books to is
+ * decided once, by the slot it sits in and the action that is running, so no
+ * fall can be counted as both a skilling drink and a combat consumable.
+ *
+ * Unlike the two tallies above, this one keeps the TIME of what it saw, as the
+ * gathering record does: each unbroken watched stretch and what it used up. The
+ * archived runs record the same consumption (`combat-session-history.js`, the
+ * twenty most recent), and the attribution lays the two beside each other and
+ * takes, per run, the most either saw rather than their sum — see
+ * `combatConsumablesByDay` in `gold-sources.js`. A stretch is broken by silence
+ * and by the run changing, so one stretch never straddles two runs.
  *
  * ## Storage
  *
@@ -107,6 +123,10 @@ const rowChunkId = (row) => timeChunkId(dayStart(row?.d), 'day');
  *   the action hrid, and what each unbroken watched stretch gained, as drop key → count
  * @property {Object<string, number>} [keys] - Dungeon entry keys spent, item hrid → count
  * @property {Object<string, number>} [drinks] - Drinks used up while skilling, item hrid → count
+ * @property {{stretches: Array<{from: number, to: number, r: string|null,
+ *   used: Object<string, number>}>}} [combatConsumables] - Food and drinks burned in combat:
+ *   what each unbroken watched stretch used up, as item hrid → count, with the run it
+ *   watched (`r`, the server's `combatStartTime`) so a stretch never straddles two runs
  */
 
 /**
@@ -213,6 +233,45 @@ export function foldConsumed(row, kind, itemHrid, count) {
 }
 
 /**
+ * Fold one combat food or drink into its day's row, in place.
+ *
+ * A use within `GAP_MS` of the stretch's last, under the same run, extends it;
+ * a later one, or one under a different run, opens a new stretch — so a stretch
+ * is always one run's, and the time between two stretches is known to be time
+ * this recorder did not watch.
+ *
+ * @param {ItemFlowDay} row - The day's row, mutated
+ * @param {number} t - When it was used, epoch ms
+ * @param {string} itemHrid - What was used
+ * @param {string|null} [run] - The run it was used in, the server's `combatStartTime`
+ * @returns {ItemFlowDay} The same row
+ */
+export function foldCombatConsumable(row, t, itemHrid, run = null) {
+    if (!row || !itemHrid || !Number.isFinite(t)) return row;
+    if (!row.combatConsumables) row.combatConsumables = { stretches: [] };
+    const stretches = row.combatConsumables.stretches;
+
+    let current = stretches[stretches.length - 1];
+    if (!current || t - current.to > GAP_MS || t < current.to || current.r !== (run || null)) {
+        current = { from: t, to: t, r: run || null, used: {} };
+        stretches.push(current);
+    }
+    current.to = t;
+    current.used[itemHrid] = (current.used[itemHrid] || 0) + 1;
+    return row;
+}
+
+/**
+ * Whether an item sits in one of a set of consumable slots, and that slot is on.
+ * @param {Array<Object>|null} slots - A food or drink slot list
+ * @param {string} itemHrid
+ * @returns {boolean}
+ */
+function slotted(slots, itemHrid) {
+    return (slots || []).some((slot) => slot?.itemHrid === itemHrid && slot.isActive !== false);
+}
+
+/**
  * Whether an item could be a dungeon's entry key, so that a fall of it is worth
  * holding while the dungeon that takes it has not yet become the running action.
  * @param {string} itemHrid
@@ -222,8 +281,12 @@ function isEntryKeyCandidate(itemHrid) {
     return /^\/items\/[a-z_]+_entry_key$/.test(String(itemHrid || ''));
 }
 
-/** Combat drinks are the consumables row's */
+/** Combat food and drink are the consumables row's, not the skilling drinks row's */
 const COMBAT_TYPE = '/action_types/combat';
+
+/** The two categories a consumable slot can hold */
+const DRINK_CATEGORY = '/item_categories/drink';
+const FOOD_CATEGORY = '/item_categories/food';
 
 /**
  * Whether the action a message completed takes this item as an input, so that a
@@ -272,6 +335,12 @@ class ItemFlowRecorder {
         this._pending = new Set();
         /** Item hrid → when a listing of it was last seen */
         this._listedAt = new Map();
+        /**
+         * The combat food slots, which the data manager does not keep: taken
+         * from the login payload and refreshed whenever the slots change, so a
+         * food swapped mid-session is not read against the login loadout
+         */
+        this._combatFoodSlots = [];
         this._handlers = null;
         this.isActive = false;
     }
@@ -290,20 +359,26 @@ class ItemFlowRecorder {
 
         this._handlers = {
             itemsUpdated: (data) => this._onItemsUpdated(data),
-            characterInitialized: (data) => this._seed(data?.characterItems),
+            characterInitialized: (data) => {
+                this._seed(data?.characterItems);
+                this._seedFoodSlots(data);
+            },
             characterSwitching: () => this._forget(),
             marketListings: (data) => this._onMarketListings(data),
+            consumablesUpdated: (data) => this._seedFoodSlots(data),
         };
 
         dataManager.on('items_updated', this._handlers.itemsUpdated);
         dataManager.on('character_initialized', this._handlers.characterInitialized);
         dataManager.on('character_switching', this._handlers.characterSwitching);
         dataManager.on('market_listings_updated', this._handlers.marketListings);
+        dataManager.on('consumables_updated', this._handlers.consumablesUpdated);
 
         this.isActive = true;
         // The data manager has already applied every message up to now, so its
         // inventory is exactly the state the next message changes
         this._seed();
+        this._seedFoodSlots(dataManager.characterData);
         await this.load();
     }
 
@@ -314,8 +389,10 @@ class ItemFlowRecorder {
         dataManager.off('character_initialized', this._handlers.characterInitialized);
         dataManager.off('character_switching', this._handlers.characterSwitching);
         dataManager.off('market_listings_updated', this._handlers.marketListings);
+        dataManager.off('consumables_updated', this._handlers.consumablesUpdated);
         this._handlers = null;
         this._inventory = null;
+        this._combatFoodSlots = [];
         this._dropPending();
         this.isActive = false;
     }
@@ -335,6 +412,20 @@ class ItemFlowRecorder {
         this._inventory = seedInventory(Array.isArray(items) ? items : dataManager.characterItems);
     }
 
+    /**
+     * Take the combat food slots from a payload that carries them.
+     *
+     * The login payload and every slot change carry the whole map; a payload
+     * without one changes nothing, because "absent from this message" is not
+     * "no food equipped" (the same reading `data-manager.js` gives the drink
+     * map it does keep).
+     * @param {Object} [payload] - `init_character_data` or `consumables_updated`
+     */
+    _seedFoodSlots(payload) {
+        const slots = payload?.actionTypeFoodSlotsMap?.[COMBAT_TYPE];
+        if (Array.isArray(slots)) this._combatFoodSlots = slots;
+    }
+
     /** Forget the departing character's rows, so they are never written under the arriving one's key. */
     _forget() {
         this._generation += 1;
@@ -343,6 +434,7 @@ class ItemFlowRecorder {
         this._charId = null;
         this._loading = null;
         this._inventory = null;
+        this._combatFoodSlots = [];
         this._dropPending();
         this._store.forget();
     }
@@ -425,21 +517,31 @@ class ItemFlowRecorder {
     /**
      * Hold a fall of one in a consumed item's count until it is known what it was.
      *
-     * @param {string} kind - Which tally it books to
+     * One pending per fall, whatever it turns out to be: `resolve` names the
+     * tally, so a fall can never be booked to two of them.
+     *
      * @param {string} itemHrid - The item that fell
-     * @param {Function} qualifies - `() => boolean`, whether the running action
-     *   consumes this item; asked now and again when the wait is over
+     * @param {Function} resolve - `() => string|null`, which tally the running
+     *   action makes this fall, or null for none; asked now and again when the
+     *   wait is over, because the action that consumed it can become the
+     *   running one a message later
      */
-    _hold(kind, itemHrid, qualifies) {
+    _hold(itemHrid, resolve) {
         const t = Date.now();
         // A listing of this item just now is what lowered the count
         if (t - (this._listedAt.get(itemHrid) ?? -Infinity) < CONFIRM_MS) return;
 
-        const pending = { kind, itemHrid, t, qualifiedAtFall: qualifies(), generation: this._generation };
+        const run = this._runningCombatRun();
+        const pending = { itemHrid, t, kindAtFall: resolve(), generation: this._generation };
         pending.timer = setTimeout(() => {
             this._pending.delete(pending);
-            if (!pending.qualifiedAtFall && !qualifies()) return;
-            this._record((row) => foldConsumed(row, kind, itemHrid, 1), pending.t, pending.generation).catch((error) =>
+            const kind = pending.kindAtFall || resolve();
+            if (!kind) return;
+            const mutate =
+                kind === 'combatConsumables'
+                    ? (row) => foldCombatConsumable(row, pending.t, itemHrid, run)
+                    : (row) => foldConsumed(row, kind, itemHrid, 1);
+            this._record(mutate, pending.t, pending.generation).catch((error) =>
                 console.error('[ItemFlow] Recording a consumed item failed:', error)
             );
         }, CONFIRM_MS);
@@ -482,8 +584,34 @@ class ItemFlowRecorder {
     _drinkingNow(itemHrid) {
         const type = this._runningType();
         if (!type || type === COMBAT_TYPE) return false;
-        const slots = dataManager.getActionDrinkSlots?.(type) || [];
-        return slots.some((slot) => slot?.itemHrid === itemHrid && slot.isActive !== false);
+        return slotted(dataManager.getActionDrinkSlots?.(type), itemHrid);
+    }
+
+    /**
+     * Which tally a fall of a food or drink books to, from what is running now:
+     * `combatConsumables` while a combat action runs and the item is in one of
+     * its slots, `drinks` while a skill runs and it is in that skill's, and null
+     * when neither — an item nothing is drinking fell for some other reason.
+     * @param {string} itemHrid
+     * @returns {string|null}
+     */
+    _consumedKind(itemHrid) {
+        if (this._runningType() === COMBAT_TYPE) {
+            const inSlot =
+                slotted(dataManager.getActionDrinkSlots?.(COMBAT_TYPE), itemHrid) ||
+                slotted(this._combatFoodSlots, itemHrid);
+            return inSlot ? 'combatConsumables' : null;
+        }
+        return this._drinkingNow(itemHrid) ? 'drinks' : null;
+    }
+
+    /**
+     * Which run is being fought, as the server stamps it — the key the archived
+     * runs are kept under, so a live stretch is one run's and one run's only.
+     * @returns {string|null}
+     */
+    _runningCombatRun() {
+        return dataManager.battleData?.combatStartTime || null;
     }
 
     /**
@@ -521,13 +649,13 @@ class ItemFlowRecorder {
             for (const { itemHrid, enhancementLevel, delta } of moved) {
                 if (delta !== -1 || enhancementLevel > 0) continue;
                 if (this._runningDungeonKey() === itemHrid || isEntryKeyCandidate(itemHrid)) {
-                    this._hold('keys', itemHrid, () => this._runningDungeonKey() === itemHrid);
+                    this._hold(itemHrid, () => (this._runningDungeonKey() === itemHrid ? 'keys' : null));
                     continue;
                 }
-                if (dataManager.getItemDetails?.(itemHrid)?.categoryHrid !== '/item_categories/drink') continue;
-                if (this._runningType() === COMBAT_TYPE) continue;
+                const category = dataManager.getItemDetails?.(itemHrid)?.categoryHrid;
+                if (category !== DRINK_CATEGORY && category !== FOOD_CATEGORY) continue;
                 if (consumedByAction(action, completed, itemHrid)) continue;
-                this._hold('drinks', itemHrid, () => this._drinkingNow(itemHrid));
+                this._hold(itemHrid, () => this._consumedKind(itemHrid));
             }
 
             if (!action?.actionHrid) return;

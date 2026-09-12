@@ -12,6 +12,7 @@ import {
     applyInventoryChanges,
     foldGathering,
     foldConsumed,
+    foldCombatConsumable,
     consumedByAction,
     CONFIRM_MS,
     default as recorder,
@@ -28,6 +29,8 @@ const hoisted = vi.hoisted(() => ({
         actions: [],
         drinkSlots: {},
         itemDetails: {},
+        characterData: null,
+        battleData: null,
     },
 }));
 
@@ -61,6 +64,12 @@ vi.mock('../../core/data-manager.js', () => ({
         getItemDetails: (hrid) => hoisted.game.itemDetails[hrid] ?? null,
         get characterItems() {
             return hoisted.game.items;
+        },
+        get characterData() {
+            return hoisted.game.characterData;
+        },
+        get battleData() {
+            return hoisted.game.battleData;
         },
     },
 }));
@@ -423,5 +432,192 @@ describe('drinks used up while skilling', () => {
         expect(consumedByAction({ primaryItemHash: `me::/item_locations/inventory::${TEA}::0` }, {}, TEA)).toBe(true);
         expect(consumedByAction(null, { inputItems: [{ itemHrid: TEA }] }, TEA)).toBe(false);
         expect(consumedByAction({}, {}, TEA)).toBe(false);
+    });
+});
+
+describe('food and drink burned in combat', () => {
+    const COMBAT = '/actions/combat/cow';
+    const FORAGING = '/actions/foraging/farmland';
+    const COOKING = '/actions/cooking/cheese';
+    const COFFEE = '/items/wisdom_coffee';
+    const CAKE = '/items/spaceberry_cake';
+    const CHEESE = '/items/cheese';
+    const RUN = '2026-08-20T10:00:00.000Z';
+    const DRINK = { categoryHrid: '/item_categories/drink' };
+    const FOOD = { categoryHrid: '/item_categories/food' };
+
+    beforeEach(async () => {
+        vi.useFakeTimers();
+        hoisted.saved = [];
+        hoisted.listeners.clear();
+        hoisted.game.charId = 'me';
+        hoisted.game.items = [row(COFFEE, 10), row(CAKE, 53744), row(CHEESE, 10)];
+        hoisted.game.details = {
+            [COMBAT]: { type: '/action_types/combat' },
+            [FORAGING]: { type: '/action_types/foraging' },
+            [COOKING]: { type: '/action_types/cooking', inputItems: [{ itemHrid: CHEESE, count: 1 }] },
+        };
+        hoisted.game.itemDetails = { [COFFEE]: DRINK, [CAKE]: FOOD, [CHEESE]: FOOD };
+        hoisted.game.drinkSlots = {
+            '/action_types/combat': [{ itemHrid: COFFEE, isActive: true, slotIndex: 0 }, null],
+            '/action_types/foraging': [],
+        };
+        hoisted.game.characterData = {
+            actionTypeFoodSlotsMap: { '/action_types/combat': [{ itemHrid: CAKE }, null] },
+        };
+        hoisted.game.battleData = { combatStartTime: RUN };
+        hoisted.game.actions = [];
+        recorder.cleanup();
+        recorder._rows = [];
+        recorder._charId = null;
+        recorder._loading = null;
+        await recorder.initialize();
+    });
+
+    afterEach(() => {
+        recorder.cleanup();
+        hoisted.game.characterData = null;
+        hoisted.game.battleData = null;
+        vi.useRealTimers();
+    });
+
+    const items = (data) => hoisted.listeners.get('items_updated')(data);
+    const running = (actionHrid) => {
+        hoisted.game.actions = [{ id: 1, actionHrid, isDone: false, ordinal: 1 }];
+    };
+    const stretches = () => recorder._rows.flatMap((day) => day.combatConsumables?.stretches || []);
+    const used = (itemHrid) => stretches().reduce((sum, stretch) => sum + (stretch.used?.[itemHrid] || 0), 0);
+    const drunkSkilling = (itemHrid) => recorder._rows.reduce((sum, day) => sum + (day.drinks?.[itemHrid] || 0), 0);
+    const wait = async () => {
+        await vi.advanceTimersByTimeAsync(CONFIRM_MS);
+        await vi.advanceTimersByTimeAsync(0);
+    };
+
+    test('a slotted combat drink falling by one while fighting is a combat consumable', async () => {
+        running(COMBAT);
+        items({ endCharacterItems: [row(COFFEE, 9)] });
+        await wait();
+        expect(used(COFFEE)).toBe(1);
+        expect(drunkSkilling(COFFEE)).toBe(0);
+    });
+
+    test('food falls one at a time and each one counts, in one stretch of the run', async () => {
+        running(COMBAT);
+        items({ endCharacterItems: [row(CAKE, 53743)] });
+        await wait();
+        items({ endCharacterItems: [row(CAKE, 53742)] });
+        await wait();
+        expect(used(CAKE)).toBe(2);
+        expect(stretches()).toHaveLength(1);
+    });
+
+    test('the first bite of a run counts, though combat became the running action after', async () => {
+        items({ endCharacterItems: [row(CAKE, 53743)] });
+        running(COMBAT);
+        await wait();
+        expect(used(CAKE)).toBe(1);
+    });
+
+    test('a food swapped into the slots mid-session is read from the new slots, not the login ones', async () => {
+        hoisted.listeners.get('consumables_updated')({
+            actionTypeFoodSlotsMap: { '/action_types/combat': [{ itemHrid: CHEESE }] },
+        });
+        running(COMBAT);
+        items({ endCharacterItems: [row(CHEESE, 9)] });
+        await wait();
+        items({ endCharacterItems: [row(CAKE, 53743)] });
+        await wait();
+        expect(used(CHEESE)).toBe(1);
+        // The cake is no longer slotted, so its fall is something else
+        expect(used(CAKE)).toBe(0);
+    });
+
+    test('a food nothing has slotted is not being eaten', async () => {
+        running(COMBAT);
+        items({ endCharacterItems: [row(CHEESE, 9)] });
+        await wait();
+        expect(used(CHEESE)).toBe(0);
+    });
+
+    test('a listing of the item explains the fall, so nothing is burned', async () => {
+        running(COMBAT);
+        items({ endCharacterItems: [row(CAKE, 53743)] });
+        hoisted.listeners.get('market_listings_updated')({ endMarketListings: [{ itemHrid: CAKE }] });
+        await wait();
+        expect(used(CAKE)).toBe(0);
+    });
+
+    test('a food the completed recipe took as an input is the recipe’s, not a bite', async () => {
+        running(COMBAT);
+        items({
+            endCharacterAction: { id: 1, characterID: 'me', actionHrid: COOKING },
+            endCharacterItems: [row(CHEESE, 9)],
+        });
+        await wait();
+        expect(used(CHEESE)).toBe(0);
+    });
+
+    test('a drink slotted for both is the skilling row’s while a skill runs', async () => {
+        hoisted.game.drinkSlots['/action_types/foraging'] = [{ itemHrid: COFFEE, isActive: true }];
+        running(FORAGING);
+        items({ endCharacterItems: [row(COFFEE, 9)] });
+        await wait();
+        expect(used(COFFEE)).toBe(0);
+        expect(drunkSkilling(COFFEE)).toBe(1);
+    });
+
+    test('two of the same drink gone at once is not one swig', async () => {
+        running(COMBAT);
+        items({ endCharacterItems: [row(COFFEE, 8)] });
+        await wait();
+        expect(used(COFFEE)).toBe(0);
+    });
+
+    test('a switch before the wait is over books nothing under the arriving character', async () => {
+        running(COMBAT);
+        items({ endCharacterItems: [row(CAKE, 53743)] });
+        hoisted.listeners.get('character_switching')();
+        await wait();
+        expect(stretches()).toEqual([]);
+        expect(hoisted.saved).toEqual([]);
+    });
+
+    test('a switch forgets the departing character’s food slots and inventory', () => {
+        hoisted.listeners.get('character_switching')();
+        expect(recorder._combatFoodSlots).toEqual([]);
+        expect(recorder._inventory).toBeNull();
+    });
+});
+
+describe('foldCombatConsumable', () => {
+    const MINUTE = 60_000;
+    const RUN = '2026-08-20T10:00:00.000Z';
+    const NEXT = '2026-08-20T11:00:00.000Z';
+
+    test('uses close together under one run add into one stretch', () => {
+        const day = { d: '2026-08-20' };
+        foldCombatConsumable(day, 1000, '/items/cake', RUN);
+        foldCombatConsumable(day, 9000, '/items/cake', RUN);
+        foldCombatConsumable(day, 9500, '/items/coffee', RUN);
+        expect(day.combatConsumables.stretches).toEqual([
+            { from: 1000, to: 9500, r: RUN, used: { '/items/cake': 2, '/items/coffee': 1 } },
+        ]);
+    });
+
+    test('a silence opens a new stretch, so the unwatched time between is known', () => {
+        const day = { d: '2026-08-20' };
+        foldCombatConsumable(day, 0, '/items/cake', RUN);
+        foldCombatConsumable(day, 60 * MINUTE, '/items/cake', RUN);
+        expect(day.combatConsumables.stretches.map(({ from, to }) => [from, to])).toEqual([
+            [0, 0],
+            [60 * MINUTE, 60 * MINUTE],
+        ]);
+    });
+
+    test('a new run opens a new stretch, so no stretch straddles two runs', () => {
+        const day = { d: '2026-08-20' };
+        foldCombatConsumable(day, 1000, '/items/cake', RUN);
+        foldCombatConsumable(day, 2000, '/items/cake', NEXT);
+        expect(day.combatConsumables.stretches.map(({ r }) => r)).toEqual([RUN, NEXT]);
     });
 });

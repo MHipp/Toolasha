@@ -1257,6 +1257,109 @@ describe('skilling drinks', () => {
     });
 });
 
+describe('combat consumables recorded live beside the archived runs', () => {
+    const HOUR = 3600_000;
+    const MIDNIGHT = dayStart('2026-08-20');
+    const COFFEE = '/items/coffee';
+    const base = { from: D19, to: D20 + HOUR, price };
+
+    /** A live stretch of the recorder, on the day it was watched */
+    const live = (d, from, to, used) => ({
+        d,
+        combatConsumables: { stretches: [{ from, to, r: String(from), used }] },
+    });
+    /** An archived run and its own estimate of what it burned */
+    const archived = (t, seconds, consumed) => ({
+        combatStartTime: new Date(t).toISOString(),
+        durationSeconds: seconds,
+        players: [{ isCurrentPlayer: true, loot: {}, consumables: [{ itemHrid: COFFEE, consumed }] }],
+    });
+    const perDay = (result) => Object.fromEntries(result.days.map((row) => [row.day, row.sources.consumables]));
+
+    test('a drink recorded live is a cost on the day it was drunk, with no archived run at all', () => {
+        const result = attributeGoldSources({
+            ...base,
+            itemFlowDays: [live('2026-08-20', MIDNIGHT + HOUR, MIDNIGHT + 2 * HOUR, { [COFFEE]: 8 })],
+        });
+        expect(perDay(result)['2026-08-20']).toBe(-200);
+        expect(result.coverage.consumables).toBe(MIDNIGHT + HOUR);
+    });
+
+    test('a run both recordings saw counts once, at the larger figure, never added together', () => {
+        // The same hour: the live record counted 8 coffees, the run's own
+        // estimate says 8 as well. One of them answers for it, not both
+        const result = attributeGoldSources({
+            ...base,
+            itemFlowDays: [live('2026-08-20', MIDNIGHT + HOUR, MIDNIGHT + 2 * HOUR, { [COFFEE]: 8 })],
+            combatSessions: [archived(MIDNIGHT + HOUR, 3600, 8)],
+        });
+        expect(result.totals.sources.consumables).toBeCloseTo(-200, 6);
+    });
+
+    test('the run adds only what the live record did not see', () => {
+        // The tab watched 5 of the run's 8 coffees; the missing 3 are the
+        // archive's to add, and nothing more
+        const result = attributeGoldSources({
+            ...base,
+            itemFlowDays: [live('2026-08-20', MIDNIGHT + HOUR, MIDNIGHT + 2 * HOUR, { [COFFEE]: 5 })],
+            combatSessions: [archived(MIDNIGHT + HOUR, 3600, 8)],
+        });
+        expect(result.totals.sources.consumables).toBeCloseTo(-200, 6);
+    });
+
+    test('a live record larger than the run’s estimate is not trimmed down to it', () => {
+        const result = attributeGoldSources({
+            ...base,
+            itemFlowDays: [live('2026-08-20', MIDNIGHT + HOUR, MIDNIGHT + 2 * HOUR, { [COFFEE]: 12 })],
+            combatSessions: [archived(MIDNIGHT + HOUR, 3600, 8)],
+        });
+        expect(result.totals.sources.consumables).toBeCloseTo(-300, 6);
+    });
+
+    test('a run the archive has rolled over still counts, from the live record alone', () => {
+        // Yesterday's grind is off the end of the twenty-run archive; the live
+        // record is all that is left of it, and it is enough
+        const result = attributeGoldSources({
+            ...base,
+            itemFlowDays: [
+                live('2026-08-19', dayStart('2026-08-19') + HOUR, dayStart('2026-08-19') + 2 * HOUR, { [COFFEE]: 4 }),
+                live('2026-08-20', MIDNIGHT + HOUR, MIDNIGHT + 2 * HOUR, { [COFFEE]: 8 }),
+            ],
+            combatSessions: [archived(MIDNIGHT + HOUR, 3600, 8)],
+        });
+        expect(perDay(result)['2026-08-19']).toBe(-100);
+        expect(perDay(result)['2026-08-20']).toBeCloseTo(-200, 6);
+    });
+
+    test('what was eaten while offline stays with the offline row', () => {
+        // An eight-hour run, half of it offline: the live record saw nothing
+        // then, and the archive's share of the offline window is left alone
+        const start = MIDNIGHT + HOUR;
+        const result = attributeGoldSources({
+            ...base,
+            to: dayStart('2026-08-21'),
+            combatSessions: [archived(start, 8 * 3600, 8)],
+            combatLootDays: [{ d: '2026-08-20', runs: {}, offline: [[start + 4 * HOUR, start + 8 * HOUR]] }],
+        });
+        expect(result.totals.sources.consumables).toBeCloseTo(-100, 6);
+    });
+
+    test('an offline stretch the live record cannot see is not charged twice', () => {
+        // The tab watched the run's first four hours and counted 4 coffees;
+        // the next four were offline and are the offline row's. The archive's
+        // 8 has nothing left to add: 4 watched plus 4 ceded to offline
+        const start = MIDNIGHT + HOUR;
+        const result = attributeGoldSources({
+            ...base,
+            to: dayStart('2026-08-21'),
+            itemFlowDays: [live('2026-08-20', start, start + 4 * HOUR, { [COFFEE]: 4 })],
+            combatSessions: [archived(start, 8 * 3600, 8)],
+            combatLootDays: [{ d: '2026-08-20', runs: {}, offline: [[start + 4 * HOUR, start + 8 * HOUR]] }],
+        });
+        expect(result.totals.sources.consumables).toBeCloseTo(-100, 6);
+    });
+});
+
 describe('the marketplace row at today’s valuation', () => {
     const base = { from: D19, to: D20 + 3600_000, price, marketTax: 0.05 };
 
