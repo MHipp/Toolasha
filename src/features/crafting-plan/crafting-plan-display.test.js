@@ -52,22 +52,49 @@ vi.mock('../../core/config.js', () => ({
     },
 }));
 vi.mock('./crafting-plan-calculator.js', () => ({
-    computeBestCraftingPlan: () => state.plan,
+    // `planFor`, when a test sets it, builds a plan from the quantity the
+    // display actually asked for — the seam the count-scaling tests need.
+    // Every other test leaves it unset and gets the fixed `state.plan`, as
+    // before.
+    computeBestCraftingPlan: (itemHrid, quantity) => (state.planFor ? state.planFor(quantity) : state.plan),
     collectMissingMaterials: () => state.missing,
 }));
 vi.mock('../actions/missing-materials-button.js', () => ({
     openMaterialsList: (...args) => state.openMaterialsList(...args),
     openBillOwner: () => state.openBillOwner,
 }));
-const panels = vi.hoisted(() => ({ subscriber: null }));
+const panels = vi.hoisted(() => ({
+    subscriber: null,
+    refreshSubscriber: null,
+    inputValue: '2',
+    // When set, overrides what `resolveDetailPanel` reports — the seam the
+    // "panel reused for a different action" tests drive.
+    resolvedActionHrid: null,
+    attachCalls: [],
+}));
 vi.mock('../../utils/action-panel-helper.js', () => ({
-    findActionInput: () => ({ value: '2' }),
+    findActionInput: () => (panels.inputValue === null ? null : { value: panels.inputValue }),
+    attachInputListeners: (panel, input, callback) => {
+        const record = { panel, input, callback };
+        panels.attachCalls.push(record);
+        return () => {
+            const index = panels.attachCalls.indexOf(record);
+            if (index > -1) panels.attachCalls.splice(index, 1);
+        };
+    },
     onDetailPanel: (callback) => {
         panels.subscriber = callback;
         return () => {
             panels.subscriber = null;
         };
     },
+    onActionPanelsRefresh: (callback) => {
+        panels.refreshSubscriber = callback;
+        return () => {
+            panels.refreshSubscriber = null;
+        };
+    },
+    resolveDetailPanel: () => ({ actionHrid: panels.resolvedActionHrid }),
 }));
 vi.mock('../../utils/action-calculator.js', () => ({
     calculateActionStats: () => ({ actionTime: 0, totalEfficiency: 0 }),
@@ -157,6 +184,17 @@ vi.mock('./crafting-plan-walk.js', () => ({
 }));
 
 const { buildPlanUI, default: craftingPlanDisplay } = await import('./crafting-plan-display.js');
+
+// Reset the shared doubles that are new to this file (the count-listener and
+// hrid-resolution seams) before every test, root-level so it runs ahead of
+// each describe's own beforeEach. The pre-existing doubles (state, ledger,
+// walk) keep their own per-describe resets below, unchanged.
+beforeEach(() => {
+    panels.inputValue = '2';
+    panels.resolvedActionHrid = null;
+    panels.attachCalls = [];
+    state.planFor = undefined;
+});
 
 /** A craft-strategy plan whose one leaf is a market buy, so the shopping list
  *  (and its Buy button) renders. The root has no actionHrid, so no craft-step
@@ -315,10 +353,99 @@ describe('the crafting plan and the reservation ledger', () => {
         expect(section.querySelector('.mwi-crafting-plan-reserved')).toBeNull();
     });
 
-    test('the shopping list says what scale its quantities are at', () => {
+    test('the shopping list carries no per-unit qualifier once it is sized to the run', () => {
+        const panel = document.createElement('div');
+        panels.inputValue = '5';
+        const section = buildPlanUI('/actions/crafting/wooden_bow', undefined, false, panel);
+        const headings = [...section.querySelectorAll('div')].map((d) => d.textContent);
+        expect(headings).toContain('Shopping List');
+        expect(headings.some((h) => h.includes('per 1'))).toBe(false);
+    });
+
+    test('without a count to read, the heading says so and the plan quietly falls back to one unit', () => {
+        // No panel at all — the shape a section built before it is attached
+        // would be in, and also what an unreadable input looks like.
         const section = buildPlanUI('/actions/crafting/wooden_bow');
         const headings = [...section.querySelectorAll('div')].map((d) => d.textContent);
-        expect(headings).toContain('Shopping List (per 1 wooden_bow)');
+        expect(headings).toContain('Shopping List (count unreadable — showing 1 wooden_bow)');
+    });
+});
+
+describe('the panel is sized to the run, not one unit', () => {
+    beforeEach(() => {
+        state.inventory = [];
+        state.settings = {};
+        state.openMaterialsList.mockClear();
+        ledger.enabled = false;
+        ledger.claimedElsewhere = 0;
+        // A plan built from the quantity the display actually asks for, so the
+        // rendered totals can be checked against the count that produced them.
+        state.planFor = (quantity) => craftPlanBuying('/items/wood', 'Wood', quantity);
+        state.missing = [];
+    });
+
+    function shoppingRow(section) {
+        return [...section.querySelectorAll('div')].find((d) => /^Wood x/.test(d.textContent))?.textContent;
+    }
+
+    test('the shopping list, cost, time and XP scale with the entered count', () => {
+        const panel = document.createElement('div');
+        panels.inputValue = '4';
+        const section = buildPlanUI('/actions/crafting/wooden_bow', undefined, false, panel);
+        // quantity = actions(4) × outputCount(1) = 4, so the one buy leaf reads
+        // 4 units at 20 total (5/ea)
+        expect(shoppingRow(section)).toBe('Wood x420 (5/ea)');
+    });
+
+    test('a larger count produces a proportionally larger list', () => {
+        const panel = document.createElement('div');
+        panels.inputValue = '4';
+        const four = shoppingRow(buildPlanUI('/actions/crafting/wooden_bow', undefined, false, panel));
+        panels.inputValue = '8';
+        const eight = shoppingRow(buildPlanUI('/actions/crafting/wooden_bow', undefined, false, panel));
+        expect(four).toBe('Wood x420 (5/ea)');
+        expect(eight).toBe('Wood x840 (5/ea)');
+    });
+
+    test('an unreadable count is not treated as a request for that many units', () => {
+        const panel = document.createElement('div');
+        panels.inputValue = 'not a number';
+        const section = buildPlanUI('/actions/crafting/wooden_bow', undefined, false, panel);
+        // Falls back to 1 × outputCount, not NaN or 0
+        expect(shoppingRow(section)).toBe('Wood x15 (5/ea)');
+    });
+
+    test('a zero count is not treated as a request for zero units', () => {
+        const panel = document.createElement('div');
+        panels.inputValue = '0';
+        const section = buildPlanUI('/actions/crafting/wooden_bow', undefined, false, panel);
+        expect(shoppingRow(section)).toBe('Wood x15 (5/ea)');
+    });
+
+    test('the Buy Missing Materials button commits to exactly the plan the section renders', async () => {
+        const panel = document.createElement('div');
+        panels.inputValue = '4';
+        const calls = [];
+        const originalPlanFor = state.planFor;
+        state.planFor = (quantity) => {
+            calls.push(quantity);
+            return originalPlanFor(quantity);
+        };
+        state.missing = [{ itemHrid: '/items/wood', itemName: 'Wood', missing: 4, required: 4, isTradeable: true }];
+        const section = buildPlanUI('/actions/crafting/wooden_bow', undefined, false, panel);
+        expect(calls).toEqual([4]);
+
+        findBuyButton(section).click();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        // No second computeBestCraftingPlan call at click time — the button
+        // buys for the plan already on screen, not a freshly re-planned one
+        // that could disagree with it.
+        expect(calls).toEqual([4]);
+        expect(state.openMaterialsList).toHaveBeenCalledWith([{ itemHrid: '/items/wood', count: 4 }], {
+            ownerId: 'craftingPlan:/items/wooden_bow',
+        });
     });
 });
 
@@ -646,5 +773,153 @@ describe('the lifetime of a plan’s claim', () => {
 
         expect(ledger.releaseMissingCalls.at(-1)).toEqual({ prefix: 'craftingPlan:', live: [] });
         expect([...ledger.owners]).toEqual([]);
+    });
+
+    /**
+     * `resolveDetailPanel`'s own docs say it exists "for input handlers that
+     * run after the title may have changed" — the game can reuse a persisting
+     * detail-panel node for a different action. A panel that trusted the hrid
+     * it was first attached under forever would keep showing (and claiming
+     * materials for) an item the panel no longer names.
+     */
+    test('a panel reused for a different action shows the new item’s plan and drops the old claim', () => {
+        craftingPlanDisplay.initialize();
+        const panel = mountPanel();
+        panels.resolvedActionHrid = '/actions/crafting/wooden_bow';
+        panels.subscriber({ panel, actionHrid: '/actions/crafting/wooden_bow' });
+        ledger.owners = new Set(['craftingPlan:/items/wooden_bow']);
+        expect(panel.querySelector('[data-mwi-plan-owner]').getAttribute('data-mwi-plan-owner')).toBe(
+            'craftingPlan:/items/wooden_bow'
+        );
+
+        // The game reuses this exact node for a different action — no removal,
+        // no new `onDetailPanel` dispatch, just the title changing under it.
+        // The shared actions_updated refresh is what notices, the same way
+        // `missing-materials-button.js` does for its own button.
+        panels.resolvedActionHrid = '/actions/crafting/oak_bow';
+        panels.refreshSubscriber(panel);
+
+        expect(panel.querySelector('[data-mwi-plan-owner]').getAttribute('data-mwi-plan-owner')).toBe(
+            'craftingPlan:/items/oak_bow'
+        );
+        // The old item's claim is not on screen anywhere any more
+        expect([...ledger.owners]).toEqual([]);
+    });
+
+    test('a panel reused for the same action’s node changes nothing and sweeps no claim', () => {
+        craftingPlanDisplay.initialize();
+        const panel = mountPanel();
+        panels.resolvedActionHrid = '/actions/crafting/wooden_bow';
+        panels.subscriber({ panel, actionHrid: '/actions/crafting/wooden_bow' });
+        ledger.owners = new Set(['craftingPlan:/items/wooden_bow']);
+        ledger.releaseMissingCalls = [];
+
+        // A refresh with nothing having changed — the common case, most
+        // actions_updated events are not an action swap
+        panels.refreshSubscriber(panel);
+
+        expect(ledger.releaseMissingCalls).toEqual([]);
+        expect([...ledger.owners]).toEqual(['craftingPlan:/items/wooden_bow']);
+    });
+});
+
+/**
+ * There was no listener on the Produce/count input at all — only the toggles
+ * called `rebuild`. Typing a new count did nothing until some other click
+ * happened to fire it. `attachInputListeners` is the same helper
+ * `missing-materials-button.js` and `quick-input-buttons.js` already use to
+ * watch this exact field.
+ */
+describe('the count-input listener', () => {
+    function mountPanel() {
+        const panel = document.createElement('div');
+        panel.className = 'SkillActionDetail_skillActionDetail__abc';
+        document.body.appendChild(panel);
+        return panel;
+    }
+
+    /** Let a MutationObserver's callback run */
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    beforeEach(() => {
+        document.body.innerHTML = '';
+        state.inventory = [];
+        state.settings = { actionPanel_bestCraftingPlan: true };
+        state.plan = craftPlanBuying('/items/wood', 'Wood', 100);
+        state.missing = [];
+        ledger.enabled = false;
+        ledger.owners = new Set();
+        ledger.releaseMissingCalls = [];
+        panels.subscriber = null;
+        panels.refreshSubscriber = null;
+        panels.attachCalls = [];
+        // A panel left over from a previous test would still count as attached
+        craftingPlanDisplay.disable();
+    });
+
+    afterEach(() => {
+        craftingPlanDisplay.disable();
+        document.body.innerHTML = '';
+        vi.useRealTimers();
+    });
+
+    test('attaches to the panel’s own count input when the panel appears', () => {
+        craftingPlanDisplay.initialize();
+        const panel = mountPanel();
+        panels.subscriber({ panel, actionHrid: '/actions/crafting/wooden_bow' });
+
+        expect(panels.attachCalls).toHaveLength(1);
+        expect(panels.attachCalls[0].panel).toBe(panel);
+    });
+
+    test('a burst of count changes rebuilds once, after the debounce window — not per keystroke', () => {
+        vi.useFakeTimers();
+        craftingPlanDisplay.initialize();
+        const panel = mountPanel();
+        panels.subscriber({ panel, actionHrid: '/actions/crafting/wooden_bow' });
+
+        let rebuilds = 0;
+        state.planFor = (quantity) => {
+            rebuilds += 1;
+            return craftPlanBuying('/items/wood', 'Wood', quantity);
+        };
+
+        // Three events for one intent — typing "1", then "10", then "100"
+        const onCountEvent = panels.attachCalls[0].callback;
+        onCountEvent();
+        onCountEvent();
+        onCountEvent();
+
+        // The debounce window itself (350ms) is an implementation detail; what
+        // matters here is that it exists at all — nothing fires immediately,
+        // and the whole burst still collapses to one rebuild.
+        vi.advanceTimersByTime(300);
+        expect(rebuilds).toBe(0);
+
+        vi.advanceTimersByTime(400);
+        expect(rebuilds).toBe(1);
+    });
+
+    test('the listener is removed when the panel closes', async () => {
+        craftingPlanDisplay.initialize();
+        const panel = mountPanel();
+        panels.subscriber({ panel, actionHrid: '/actions/crafting/wooden_bow' });
+        expect(panels.attachCalls).toHaveLength(1);
+
+        panel.remove();
+        await settle();
+
+        expect(panels.attachCalls).toHaveLength(0);
+    });
+
+    test('every listener is removed on a full teardown', () => {
+        craftingPlanDisplay.initialize();
+        const panel = mountPanel();
+        panels.subscriber({ panel, actionHrid: '/actions/crafting/wooden_bow' });
+        expect(panels.attachCalls).toHaveLength(1);
+
+        craftingPlanDisplay.disable();
+
+        expect(panels.attachCalls).toHaveLength(0);
     });
 });

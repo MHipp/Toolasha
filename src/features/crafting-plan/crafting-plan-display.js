@@ -11,7 +11,13 @@ import { computeBestCraftingPlan, collectMissingMaterials } from './crafting-pla
 import craftingPlanWalk, { buildWalkSteps, WALK_KEY_ATTRIBUTE } from './crafting-plan-walk.js';
 import { createCollapsibleSection } from '../../utils/ui-components.js';
 import { formatKMB, formatWithSeparator, timeReadable } from '../../utils/formatters.js';
-import { findActionInput, onDetailPanel } from '../../utils/action-panel-helper.js';
+import {
+    findActionInput,
+    attachInputListeners,
+    onActionPanelsRefresh,
+    onDetailPanel,
+    resolveDetailPanel,
+} from '../../utils/action-panel-helper.js';
 import { calculateActionStats } from '../../utils/action-calculator.js';
 import { calculateEfficiencyMultiplier } from '../../utils/efficiency.js';
 import { calculateExpPerHour } from '../../utils/experience-calculator.js';
@@ -25,6 +31,13 @@ import {
 } from '../../utils/inventory-reservations.js';
 
 const UI_ID = 'mwi-crafting-plan';
+
+/**
+ * How long after the last count-input event a debounced rebuild fires.
+ * Typing "150" is three keystrokes; without this the plan (and its shopping
+ * list, cost, time and XP) would be recomputed three times for one intent.
+ */
+const COUNT_REBUILD_DEBOUNCE_MS = 350;
 
 /**
  * Owner-id prefix for a crafting plan's claim on the bag.
@@ -199,6 +212,30 @@ function getPricingMode() {
 }
 
 /**
+ * The run size the panel's plan should be computed for.
+ *
+ * Reads the game's own Produce/count input, not a value cached from an
+ * earlier render — the panel is meant to match the job Buy Missing Materials
+ * would actually buy for, and that job is whatever the field says right now.
+ * Missing, unreadable, zero or negative counts fall back to a single unit
+ * rather than a plan for an amount the player never asked for; the caller
+ * says so in the heading rather than pretending the run size is known.
+ *
+ * @param {HTMLElement|null} panel - The action detail panel, when already attached
+ * @param {{itemHrid: string, count: number}} output - The action's primary output
+ * @returns {{units: number, isFallback: boolean}} Total output units to plan for
+ */
+function resolveRunCount(panel, output) {
+    const outputCount = output.count || 1;
+    const inputField = panel ? findActionInput(panel) : null;
+    const parsed = inputField ? parseInt(inputField.value, 10) : NaN;
+    if (!inputField || !Number.isFinite(parsed) || parsed <= 0) {
+        return { units: outputCount, isFallback: true };
+    }
+    return { units: parsed * outputCount, isFallback: false };
+}
+
+/**
  * Collect all leaf "buy" items from the plan tree into a flat shopping list.
  * Aggregates quantities for the same item across branches.
  * @param {Object} node - CraftingPlanNode
@@ -287,9 +324,11 @@ function createRow(leftText, rightText, options = {}) {
  * @param {string} actionHrid
  * @param {Function} [onToggle] - Callback when buy-intermediates toggle changes
  * @param {boolean} [defaultOpen=false] - Whether the section should be open
+ * @param {HTMLElement|null} [panel=null] - The action detail panel, so the plan can be
+ *   sized to the run the player has actually entered rather than a single unit
  * @returns {HTMLElement|null}
  */
-export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
+export function buildPlanUI(actionHrid, onToggle, defaultOpen = false, panel = null) {
     const gameData = dataManager.getInitClientData();
     const actionDetail = gameData?.actionDetailMap?.[actionHrid];
     if (!actionDetail) return null;
@@ -307,11 +346,12 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
     const timeCostEnabled = config.getSetting('actionPanel_craftingPlanTimeCost');
     const goldPerHour = config.getSetting('actionPanel_craftingPlanGoldPerHour') || 0;
     const thinMarket = config.getSetting('actionPanel_craftingPlanThinMarket');
+    const runCount = resolveRunCount(panel, output);
     let plan;
     try {
         plan = computeBestCraftingPlan(
             output.itemHrid,
-            1,
+            runCount.units,
             mode,
             new Set(),
             new Map(),
@@ -519,39 +559,6 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
         return section;
     }
 
-    /**
-     * Re-plan for the whole run the panel is set to, not the single unit the
-     * section renders. The rendered plan's counts are already a whole action's
-     * worth, rounded up, so scaling them overcounts a multi-output recipe by its
-     * outputCount and compounds every per-unit round-up beneath it.
-     * @param {HTMLElement} anchor - Any element inside the action panel
-     * @returns {Object|null} The plan for the panel's own total, or null
-     */
-    const fullPlanForPanel = (anchor) => {
-        const panel = anchor.closest('[class*="SkillActionDetail_skillActionDetail"]');
-        const inputField = findActionInput(panel);
-        const numActions = parseInt(inputField?.value) || 1;
-        try {
-            return computeBestCraftingPlan(
-                output.itemHrid,
-                numActions * (output.count || 1),
-                mode,
-                new Set(),
-                new Map(),
-                0,
-                undefined,
-                buyIntermediates,
-                taskMode,
-                timeCostEnabled ? goldPerHour : 0,
-                noProcessing,
-                thinMarket
-            );
-        } catch (e) {
-            console.error('[CraftingPlan] computeBestCraftingPlan error:', e);
-            return null;
-        }
-    };
-
     // === Shopping List (what to buy) ===
     const buyItems = new Map();
     collectBuyItems(plan, buyItems);
@@ -567,12 +574,15 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
             color: var(--text-color-primary, #fff);
             margin-bottom: 4px;
         `;
-        // Named with the scale it is at. These quantities are the ONE-unit plan
-        // this section renders; the Buy button below re-plans for the panel's
-        // own action count, so a player reading the list as the whole job
-        // bought a fraction of what the run needed.
+        // The list below is already sized to the whole run (see resolveRunCount)
+        // — the same job the Buy button buys for — so no per-unit qualifier is
+        // needed here. The one case that still needs a word said is the
+        // fallback: the count could not be read, so this is quietly a plan for
+        // one unit rather than the run the player actually asked for.
         const outputName = dataManager.getItemDetails(output.itemHrid)?.name || output.itemHrid.split('/').pop();
-        shoppingHeader.textContent = `Shopping List (per 1 ${outputName})`;
+        shoppingHeader.textContent = runCount.isFallback
+            ? `Shopping List (count unreadable — showing 1 ${outputName})`
+            : 'Shopping List';
         content.appendChild(shoppingHeader);
 
         // Sort by total cost descending
@@ -611,10 +621,11 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
             color: white; cursor: pointer; font-size: 0.85em;
         `;
         buyButton.addEventListener('click', async () => {
-            const fullPlan = fullPlanForPanel(buyButton);
-            if (!fullPlan) return;
-
-            const lines = missingMaterialLines(fullPlan, output.itemHrid);
+            // The plan this button buys for is exactly the one the section
+            // above is rendering — no separate re-plan at click time, or the
+            // two could disagree about what "this run" means the moment a
+            // market price moved between render and click.
+            const lines = missingMaterialLines(plan, output.itemHrid);
             if (lines.length === 0) return;
 
             // The click is the commitment: from here the plan holds what it
@@ -743,11 +754,9 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
                 color: var(--text-color-primary, #fff); cursor: pointer; font-size: 0.85em;
             `;
             walkButton.addEventListener('click', async () => {
-                // The walk steps the real run, not the single unit this section
-                // renders, so it plans against the panel's own count first.
-                const fullPlan = fullPlanForPanel(walkButton);
-                if (!fullPlan) return;
-                const steps = buildWalkSteps(fullPlan);
+                // The walk steps the same plan the section above is showing —
+                // already sized to the run — not a separate re-plan.
+                const steps = buildWalkSteps(plan);
                 if (steps.length === 0) return;
 
                 // Starting the walk is at least as much a commitment to the
@@ -757,7 +766,7 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
                 // only once the player manually buys them. A no-op while the
                 // ledger setting is off — `reserve()` itself gates on it.
                 const reserveClaim = () =>
-                    reserve(planOwner(output.itemHrid), missingMaterialLines(fullPlan, output.itemHrid), {
+                    reserve(planOwner(output.itemHrid), missingMaterialLines(plan, output.itemHrid), {
                         label: `Crafting plan: ${dataManager.getItemDetails(output.itemHrid)?.name || output.itemHrid}`,
                     });
                 await reserveClaim();
@@ -765,7 +774,7 @@ export function buildPlanUI(actionHrid, onToggle, defaultOpen = false) {
                 // Shrink the claim as the walk consumes it. `missingMaterialLines`
                 // is inventory-driven, not step-driven: `collectMissingMaterials`
                 // credits a craft node against whatever of its item the bag
-                // currently holds, so re-running it against `fullPlan` after a
+                // currently holds, so re-running it against `plan` after a
                 // craft step has actually landed in the game (the intermediate
                 // now held, the raw materials it took now gone) yields exactly
                 // the requirement for what is left, with no separate
@@ -808,6 +817,15 @@ class CraftingPlanDisplay {
         this.processedPanels = new WeakSet();
         this.panelObservers = new WeakMap();
         this.activeObservers = new Set();
+        // The live rebuild function for each attached panel, so the shared
+        // actions_updated refresh (which only has the panel element) can ask
+        // for a re-render without keeping its own parallel bookkeeping.
+        this.rebuildFns = new WeakMap();
+        // Cleanup for the count-input listener attached to each panel. Kept in
+        // both a WeakMap (to find one panel's on close) and a Set (to sweep
+        // every one of them on a full teardown, which a WeakMap cannot iterate).
+        this.inputListenerCleanups = new WeakMap();
+        this.activeInputCleanups = new Set();
     }
 
     initialize() {
@@ -825,6 +843,17 @@ class CraftingPlanDisplay {
 
         const unregister = onDetailPanel((context) => this._processPanel(context));
         this.unregisterHandlers.push(unregister);
+
+        // The count field has its own listener (below, in `_attachToPanel`) for
+        // the common case of the player typing. This shared refresh catches
+        // the rest: the action queue changing underneath an open panel, and —
+        // together with the re-resolve in `rebuild` — a panel node the game
+        // reuses for a different action without any click landing inside it.
+        const unregisterRefresh = onActionPanelsRefresh((panel) => {
+            const rebuild = this.rebuildFns.get(panel);
+            if (rebuild) rebuild();
+        });
+        this.unregisterHandlers.push(unregisterRefresh);
     }
 
     /**
@@ -859,6 +888,12 @@ class CraftingPlanDisplay {
             if (panel.isConnected) return;
             obs.disconnect();
             this.activeObservers.delete(obs);
+            this.rebuildFns.delete(panel);
+            const cleanup = this.inputListenerCleanups.get(panel);
+            if (cleanup) {
+                cleanup();
+                this.inputListenerCleanups.delete(panel);
+            }
             sweepPlanClaims();
         });
         obs.observe(parent, { childList: true });
@@ -866,24 +901,66 @@ class CraftingPlanDisplay {
     }
 
     _attachToPanel(panel, actionHrid) {
+        // The hrid this panel was last built for. Re-read on every rebuild
+        // rather than trusted forever: the game can reuse this exact node for
+        // a different action (see `resolveDetailPanel`'s own docs), and a
+        // panel that only ever rebuilt for the hrid it was first attached
+        // under would keep showing a previous item's plan — and holding that
+        // item's claim — under a title that no longer names it.
+        let currentActionHrid = actionHrid;
+
         const rebuild = () => {
+            const resolved = resolveDetailPanel(panel).actionHrid || currentActionHrid;
+            const hridChanged = resolved !== currentActionHrid;
+            currentActionHrid = resolved;
+
             const existing = panel.querySelector(`#${UI_ID}`);
-            const wasOpen = existing?.querySelector('.mwi-section-header span')?.textContent === '▼';
+            const wasOpen = !hridChanged && existing?.querySelector('.mwi-section-header span')?.textContent === '▼';
             if (existing) existing.remove();
 
-            const newUI = buildPlanUI(actionHrid, rebuild, wasOpen);
-            if (!newUI) return;
-
-            const profitSection = panel.querySelector('[data-mwi-profit-display]');
-            if (profitSection) {
-                profitSection.parentNode.insertBefore(newUI, profitSection);
-            } else {
-                panel.appendChild(newUI);
+            const newUI = buildPlanUI(currentActionHrid, rebuild, wasOpen, panel);
+            if (newUI) {
+                const profitSection = panel.querySelector('[data-mwi-profit-display]');
+                if (profitSection) {
+                    profitSection.parentNode.insertBefore(newUI, profitSection);
+                } else {
+                    panel.appendChild(newUI);
+                }
             }
-        };
 
-        const ui = buildPlanUI(actionHrid, rebuild);
+            // The section just rebuilt (if any) is the only one now marked for
+            // this panel; if the item changed, the old item's claim is no
+            // longer live anywhere and would otherwise sit until some other
+            // panel's own sweep happened to catch it.
+            if (hridChanged) sweepPlanClaims();
+        };
+        this.rebuildFns.set(panel, rebuild);
+
+        const ui = buildPlanUI(currentActionHrid, rebuild, false, panel);
         if (!ui) return;
+
+        // The Produce/count field has no listener of its own — only the
+        // toggles above call `rebuild`. Debounce it so a typed multi-digit
+        // count rebuilds once, not once per keystroke.
+        const inputField = findActionInput(panel);
+        if (inputField) {
+            let debounceTimer = null;
+            const debouncedRebuild = () => {
+                if (debounceTimer) clearTimeout(debounceTimer);
+                debounceTimer = setTimeout(() => {
+                    debounceTimer = null;
+                    rebuild();
+                }, COUNT_REBUILD_DEBOUNCE_MS);
+            };
+            const removeListeners = attachInputListeners(panel, inputField, debouncedRebuild);
+            const cleanupInputListener = () => {
+                if (debounceTimer) clearTimeout(debounceTimer);
+                removeListeners();
+                this.activeInputCleanups.delete(cleanupInputListener);
+            };
+            this.inputListenerCleanups.set(panel, cleanupInputListener);
+            this.activeInputCleanups.add(cleanupInputListener);
+        }
 
         const position = () => {
             if (!this.isInitialized) return;
@@ -945,6 +1022,15 @@ class CraftingPlanDisplay {
 
         this.panelObservers = new WeakMap();
         this.processedPanels = new WeakSet();
+        this.rebuildFns = new WeakMap();
+
+        // Every count-input listener this feature attached, gone with it —
+        // a character switch re-runs initialize() against a different bag,
+        // and a listener left standing would keep rebuilding a panel this
+        // instance no longer owns.
+        this.activeInputCleanups.forEach((cleanup) => cleanup());
+        this.activeInputCleanups.clear();
+        this.inputListenerCleanups = new WeakMap();
     }
 }
 
