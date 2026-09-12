@@ -61,10 +61,13 @@ function resolveUnitValue(itemHrid, enhancementLevel, side, itemDetails) {
  *   - Signed offline item deltas: positive offlineCount = gained, negative = consumed
  * @param {string} params.currentTimestamp - ISO timestamp from the init_character_data payload
  * @param {string} params.lastOfflineTime - ISO timestamp the character went offline
+ * @param {number|null} [params.offlineHourCap] - The character's server-resolved offline-progress
+ *   hour cap (characterInfo.offlineHourCap), or null/undefined when not known
  * @returns {Object} { revenue, cost, profit, revenuePerDay, costPerDay, profitPerDay,
- *   durationSeconds, isPartial, unvaluedItems, lines }
+ *   durationSeconds, isPartial, unvaluedItems, lines, awayHours, offlineHourCap, overrunHours,
+ *   overrunValue }
  */
-export function calculateOfflineEconomics({ offlineItems, currentTimestamp, lastOfflineTime }) {
+export function calculateOfflineEconomics({ offlineItems, currentTimestamp, lastOfflineTime, offlineHourCap }) {
     let revenue = 0;
     let cost = 0;
     let isPartial = false;
@@ -113,6 +116,18 @@ export function calculateOfflineEconomics({ offlineItems, currentTimestamp, last
     const durationSeconds = durationMs > 0 ? durationMs / 1000 : 0;
     const perDay = (value) => (durationSeconds > 0 ? (value * SECONDS_PER_DAY) / durationSeconds : null);
 
+    // The game only ever rewards up to offlineHourCap hours; anything past that earned nothing.
+    // A missing/zero cap or an unreadable window (durationSeconds falls back to 0 above) leaves
+    // this whole picture unknown rather than guessed at.
+    const awayHours = durationSeconds / 3600;
+    const hasKnownCap = typeof offlineHourCap === 'number' && offlineHourCap > 0;
+    const overrunHours = hasKnownCap && awayHours > offlineHourCap ? awayHours - offlineHourCap : 0;
+    // Same rate this very haul's own profitPerDay is built from — profit earned over the hours
+    // that actually counted — just anchored to the capped hours instead of the full clock time,
+    // so the overrun is costed at what this session actually earned per credited hour rather
+    // than a second, invented rate.
+    const overrunValue = overrunHours > 0 ? (profit / offlineHourCap) * overrunHours : null;
+
     return {
         revenue,
         cost,
@@ -124,5 +139,9 @@ export function calculateOfflineEconomics({ offlineItems, currentTimestamp, last
         isPartial,
         unvaluedItems,
         lines,
+        awayHours,
+        offlineHourCap: hasKnownCap ? offlineHourCap : null,
+        overrunHours,
+        overrunValue,
     };
 }

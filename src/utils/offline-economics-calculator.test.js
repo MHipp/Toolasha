@@ -245,3 +245,98 @@ describe('calculateOfflineEconomics', () => {
         expect(result.isPartial).toBe(false);
     });
 });
+
+describe('calculateOfflineEconomics - offline cap overrun', () => {
+    const TWO_DAYS_AGO = '2026-08-17T12:00:00.000Z'; // 48h away
+
+    beforeEach(() => {
+        mockResolveSellSideValue.mockReset().mockReturnValue({ value: 100, source: 'market', needsTax: false });
+        mockResolveBuySideValue.mockReset();
+        mockCalculateTaskTokenValue.mockReset().mockReturnValue({ error: 'Market data not loaded' });
+    });
+
+    test('away time within the cap reports no overrun', () => {
+        const result = calculateOfflineEconomics({
+            offlineItems: [{ itemHrid: '/items/cheese', enhancementLevel: 0, offlineCount: 10 }],
+            currentTimestamp: NOW,
+            lastOfflineTime: EIGHT_HOURS_AGO, // 8h away
+            offlineHourCap: 24,
+        });
+
+        expect(result.awayHours).toBeCloseTo(8);
+        expect(result.offlineHourCap).toBe(24);
+        expect(result.overrunHours).toBe(0);
+        expect(result.overrunValue).toBeNull();
+    });
+
+    test('away time past the cap reports the overrun hours and costs it at profit ÷ capped hours', () => {
+        const result = calculateOfflineEconomics({
+            offlineItems: [{ itemHrid: '/items/cheese', enhancementLevel: 0, offlineCount: 10 }],
+            currentTimestamp: NOW,
+            lastOfflineTime: TWO_DAYS_AGO, // 48h away
+            offlineHourCap: 20,
+        });
+
+        // profit = 10 * 100 = 1000, over 48h away with a 20h cap => 28h overrun
+        expect(result.awayHours).toBeCloseTo(48);
+        expect(result.overrunHours).toBeCloseTo(28);
+        expect(result.overrunValue).toBeCloseTo((1000 / 20) * 28);
+    });
+
+    test('away time exactly at the cap reports no overrun (not a hair past it)', () => {
+        const result = calculateOfflineEconomics({
+            offlineItems: [{ itemHrid: '/items/cheese', enhancementLevel: 0, offlineCount: 10 }],
+            currentTimestamp: NOW,
+            lastOfflineTime: EIGHT_HOURS_AGO, // 8h away
+            offlineHourCap: 8,
+        });
+
+        expect(result.overrunHours).toBe(0);
+        expect(result.overrunValue).toBeNull();
+    });
+
+    test('a missing cap reports no overrun even when the away time is very long', () => {
+        const result = calculateOfflineEconomics({
+            offlineItems: [{ itemHrid: '/items/cheese', enhancementLevel: 0, offlineCount: 10 }],
+            currentTimestamp: NOW,
+            lastOfflineTime: TWO_DAYS_AGO,
+        });
+
+        expect(result.offlineHourCap).toBeNull();
+        expect(result.overrunHours).toBe(0);
+        expect(result.overrunValue).toBeNull();
+    });
+
+    test('a zero cap reports no overrun rather than treating it as "always over"', () => {
+        const result = calculateOfflineEconomics({
+            offlineItems: [{ itemHrid: '/items/cheese', enhancementLevel: 0, offlineCount: 10 }],
+            currentTimestamp: NOW,
+            lastOfflineTime: TWO_DAYS_AGO,
+            offlineHourCap: 0,
+        });
+
+        expect(result.offlineHourCap).toBeNull();
+        expect(result.overrunHours).toBe(0);
+        expect(result.overrunValue).toBeNull();
+    });
+
+    test('an unreadable (zero-length or backwards) window reports no overrun even with a known cap', () => {
+        const zeroLength = calculateOfflineEconomics({
+            offlineItems: [{ itemHrid: '/items/cheese', enhancementLevel: 0, offlineCount: 10 }],
+            currentTimestamp: NOW,
+            lastOfflineTime: NOW,
+            offlineHourCap: 20,
+        });
+        const backwards = calculateOfflineEconomics({
+            offlineItems: [{ itemHrid: '/items/cheese', enhancementLevel: 0, offlineCount: 10 }],
+            currentTimestamp: EIGHT_HOURS_AGO,
+            lastOfflineTime: NOW,
+            offlineHourCap: 20,
+        });
+
+        expect(zeroLength.overrunHours).toBe(0);
+        expect(zeroLength.overrunValue).toBeNull();
+        expect(backwards.overrunHours).toBe(0);
+        expect(backwards.overrunValue).toBeNull();
+    });
+});

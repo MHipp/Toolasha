@@ -112,6 +112,7 @@ class OfflineProgressEconomics {
             offlineItems,
             currentTimestamp: data.currentTimestamp,
             lastOfflineTime: data.character?.lastOfflineTime,
+            offlineHourCap: dataManager.getOfflineHourCap(),
         };
     }
 
@@ -335,7 +336,52 @@ export function buildBlock(economics) {
     );
     container.appendChild(renderRow('Profit', economics.profit, economics.profitPerDay, null, null, null));
 
+    const overrunRow = buildOverrunRow(economics);
+    if (overrunRow) container.appendChild(overrunRow);
+
     return container;
+}
+
+/**
+ * Build the "away past the offline cap" line — the game rewards at most `offlineHourCap` hours
+ * of offline progress, and never says so when a longer absence ran past it. Shown only when this
+ * haul actually did: within the cap there is nothing extra to report, so no line is built at all.
+ *
+ * The overrun is costed at this same haul's own rate — profit earned over the hours that
+ * actually counted (`economics.overrunValue`, from `calculateOfflineEconomics`) — not a second,
+ * invented rate, and is always presented as an estimate since the game never confirms what the
+ * missed hours would actually have produced.
+ * @param {Object} economics - calculateOfflineEconomics result
+ * @returns {Element|null} Row element, or null when the offline window did not exceed the cap
+ */
+function buildOverrunRow(economics) {
+    if (!(economics.overrunHours > 0)) return null;
+
+    const row = document.createElement('div');
+    row.style.cssText = `
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        line-height: 1.5;
+        margin-top: 4px;
+        padding-top: 4px;
+        border-top: 1px solid rgba(255, 255, 255, 0.15);
+    `;
+    row.title =
+        "Estimated at this haul's own rate (profit ÷ capped hours) — the game does not report what the time past the offline cap would have earned.";
+
+    const label = document.createElement('span');
+    label.textContent = `Away ${economics.awayHours.toFixed(1)}h (cap ${economics.offlineHourCap}h)`;
+    label.style.color = '#cbd5e1';
+
+    const value = document.createElement('span');
+    value.textContent = `${economics.overrunHours.toFixed(1)}h over, ~${formatPrice(economics.overrunValue, { decimals: 1 })} missed`;
+    value.style.color = config.COLOR_WARNING;
+    value.style.fontVariantNumeric = 'tabular-nums';
+
+    row.appendChild(label);
+    row.appendChild(value);
+    return row;
 }
 
 /**

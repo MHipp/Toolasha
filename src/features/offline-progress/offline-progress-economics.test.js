@@ -7,6 +7,7 @@ const {
     mockOnClass,
     mockCalculateOfflineEconomics,
     mockGetItemDetails,
+    mockGetOfflineHourCap,
     settingValues,
     settingChangeCallbacks,
 } = vi.hoisted(() => {
@@ -15,6 +16,7 @@ const {
         settingValues: { offlineProgressEconomics: true, profitCalc_pricingMode: 'hybrid' },
         settingChangeCallbacks: new Map(),
         mockGetItemDetails: vi.fn(() => null),
+        mockGetOfflineHourCap: vi.fn(() => null),
         mockCalculateOfflineEconomics: vi.fn(),
         mockOnClass: vi.fn(),
         fakeDataManager: {
@@ -35,7 +37,10 @@ const {
 });
 
 vi.mock('../../core/data-manager.js', () => ({
-    default: Object.assign(fakeDataManager, { getItemDetails: mockGetItemDetails }),
+    default: Object.assign(fakeDataManager, {
+        getItemDetails: mockGetItemDetails,
+        getOfflineHourCap: mockGetOfflineHourCap,
+    }),
 }));
 vi.mock('../../core/config.js', () => ({
     default: {
@@ -122,6 +127,7 @@ describe('offline-progress-economics', () => {
         settingValues.profitCalc_pricingMode = 'hybrid';
         mockCalculateOfflineEconomics.mockReset().mockReturnValue(SAMPLE_ECONOMICS);
         mockGetItemDetails.mockReset().mockReturnValue(null);
+        mockGetOfflineHourCap.mockReset().mockReturnValue(null);
         mockOnClass.mockClear();
         fakeDataManager.characterData = null;
         capturedCleanupCallback = null;
@@ -144,6 +150,17 @@ describe('offline-progress-economics', () => {
         const block = document.querySelector('#mwi-offline-economics');
         expect(block).not.toBeNull();
         expect(block.previousElementSibling.className).toContain('OfflineProgressModal_itemList');
+    });
+
+    test('reads the offline hour cap from dataManager and threads it into calculateOfflineEconomics', () => {
+        mockGetOfflineHourCap.mockReturnValue(82);
+        offlineProgressEconomics.initialize();
+        triggerCharacterInitialized();
+
+        const modalNode = buildModalNode();
+        mockOnClass.mock.calls[0][2](modalNode);
+
+        expect(mockCalculateOfflineEconomics).toHaveBeenCalledWith(expect.objectContaining({ offlineHourCap: 82 }));
     });
 
     test('catches up on offline data cached before initialize() ran (the real-world boot order)', () => {
@@ -468,5 +485,46 @@ describe('buildBlock - expandable Revenue/Cost details', () => {
         const block = buildBlock(RICH_ECONOMICS);
         expect(block.style.alignSelf).toBe('stretch');
         expect(block.style.width).toBe('100%');
+    });
+});
+
+describe('buildBlock - offline cap overrun line', () => {
+    test('away time within the cap renders no overrun line at all', () => {
+        const economics = {
+            ...SAMPLE_ECONOMICS,
+            awayHours: 8,
+            offlineHourCap: 24,
+            overrunHours: 0,
+            overrunValue: null,
+        };
+
+        const block = buildBlock(economics);
+
+        expect(block.textContent).not.toContain('over');
+        expect(block.textContent).not.toContain('missed');
+    });
+
+    test('away time past the cap renders the hours over and the estimated value', () => {
+        const economics = {
+            ...SAMPLE_ECONOMICS,
+            awayHours: 48,
+            offlineHourCap: 20,
+            overrunHours: 28,
+            overrunValue: 1400,
+        };
+
+        const block = buildBlock(economics);
+        const text = block.textContent;
+
+        expect(text).toContain('Away 48.0h (cap 20h)');
+        expect(text).toContain('28.0h over');
+        expect(text).toContain('missed');
+        expect(text).toContain('1400'); // formatPrice is mocked to Math.round in this file
+    });
+
+    test('an economics result with no overrun fields (e.g. an older/mocked shape) renders no line rather than crashing', () => {
+        const block = buildBlock(SAMPLE_ECONOMICS);
+
+        expect(block.textContent).not.toContain('missed');
     });
 });
