@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The phone toolbar folds away, and three figures stop lying
+
+- On a phone, Sort, Mode and Craft fold behind one toggle beside the filter box, so the action list starts a row down instead of three. Desktop is unchanged, and whether it is open is remembered per device rather than synced.
+- The ability tooltip's cast speed now counts your drink concentration: Channeling Coffee added 12% where the fight actually applies 14.4%.
+- The buff board prints `+3.6` instead of `+3.5999999999999996`, and a profit the market caps to nothing now reads `~0` with the uncapped figure in its tooltip, rather than a bare `0` run together with its marker.
+
 ### The gold panel counts what combat eats, and four boards answer a new question
 
 - Combat food and drink are recorded as they are used, instead of only from the last twenty archived runs, so a long grind's consumable cost — and the net gold from combat — are no longer understated. A run both recordings saw counts once, at the larger figure.
