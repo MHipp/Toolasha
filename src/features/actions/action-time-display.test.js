@@ -91,6 +91,7 @@ const actionTimeDisplayModule = await import('./action-time-display.js');
 const actionTimeDisplay = actionTimeDisplayModule.default;
 const { partialProgressNote, parseInventoryCountFromActionName } = actionTimeDisplayModule;
 const { _resetGameNumberSeparators } = await import('../../utils/number-parser.js');
+const { formatDateTime } = await import('../../utils/formatters.js');
 
 const CHEESE = '/items/cheese';
 const COIN = '/items/coin';
@@ -407,6 +408,163 @@ describe('updateRunSoFar — "so far this run"', () => {
         actionTimeDisplay.clearRunSoFar();
 
         expect(actionTimeDisplay.runElement.innerHTML).toBe('');
+    });
+});
+
+describe('updateRunSoFar — whole-run count vs. a partially recorded run', () => {
+    const gatheringDetails = { hrid: '/actions/milking/cow', type: '/action_types/milking' };
+
+    beforeEach(() => {
+        game.settings.actionBar_showProfit = true;
+        actionTimeDisplay.runElement = { innerHTML: '' };
+        game.prices['/items/milk'] = 10;
+    });
+
+    afterEach(() => {
+        actionTimeDisplay.runElement = null;
+    });
+
+    test('recording that started at or before the run pairs the whole-run count with the value, as always', () => {
+        const runStart = Date.parse('2026-09-03T18:25:36Z');
+        game.runGathering = { gained: { '/items/milk': 100 }, from: runStart, to: runStart + 60_000 };
+
+        actionTimeDisplay.updateRunSoFar(
+            { id: 1, currentCount: 258632, createdAt: '2026-09-03T18:25:36Z' },
+            gatheringDetails
+        );
+
+        expect(actionTimeDisplay.runElement.innerHTML).toContain('This run:');
+        expect(actionTimeDisplay.runElement.innerHTML).toContain('258,632 actions');
+        expect(actionTimeDisplay.runElement.innerHTML).toContain('1,000');
+    });
+
+    test('a short gap (reload, feature just turned on) still counts as full coverage', () => {
+        const runStart = Date.parse('2026-09-03T18:25:36Z');
+        // 90 seconds late — well under the tolerance for an ordinary reload.
+        game.runGathering = { gained: { '/items/milk': 100 }, from: runStart + 90_000, to: runStart + 120_000 };
+
+        actionTimeDisplay.updateRunSoFar(
+            { id: 1, currentCount: 500, createdAt: '2026-09-03T18:25:36Z' },
+            gatheringDetails
+        );
+
+        expect(actionTimeDisplay.runElement.innerHTML).toContain('500 actions');
+    });
+
+    test('a run recording began materially after shows the recorded window, not the whole-run count', () => {
+        // The live bug this covers: a run that began nine days before recording did, paired a
+        // 258,632-action whole-run count with a value covering only the last few minutes.
+        const runStart = Date.parse('2026-08-25T18:25:36Z');
+        const recordedFrom = Date.parse('2026-09-03T21:25:26Z');
+        game.runGathering = { gained: { '/items/milk': 100 }, from: recordedFrom, to: recordedFrom + 43_000 };
+
+        actionTimeDisplay.updateRunSoFar(
+            { id: 23002282, currentCount: 258632, createdAt: new Date(runStart).toISOString() },
+            gatheringDetails
+        );
+
+        const html = actionTimeDisplay.runElement.innerHTML;
+        // No whole-run action count anywhere near the value — that pairing is the bug.
+        expect(html).not.toContain('258,632');
+        expect(html).not.toContain('actions');
+        expect(html).toContain('1,000');
+        const expectedTime = formatDateTime(new Date(recordedFrom), { includeDate: false, includeSeconds: false });
+        expect(html).toContain(`Since ${expectedTime}:`);
+    });
+
+    test('an unparsable createdAt falls back to the whole-run pairing rather than guessing partial', () => {
+        game.runGathering = { gained: { '/items/milk': 100 }, from: 999_999_999_999_999, to: 999_999_999_999_999 };
+
+        actionTimeDisplay.updateRunSoFar({ id: 1, currentCount: 50, createdAt: undefined }, gatheringDetails);
+
+        expect(actionTimeDisplay.runElement.innerHTML).toContain('50 actions');
+    });
+
+    test('nothing recorded at all still reads "started before recording", not "Since ..."', () => {
+        game.runGathering = null;
+
+        actionTimeDisplay.updateRunSoFar(
+            { id: 1, currentCount: 50, createdAt: '2026-09-03T18:25:36Z' },
+            gatheringDetails
+        );
+
+        expect(actionTimeDisplay.runElement.innerHTML).toContain('started before recording');
+    });
+});
+
+describe('the "so far this run" row redraws when the recorder catches up', () => {
+    const gatheringDetails = { hrid: '/actions/milking/cow', type: '/action_types/milking' };
+    const action = { id: 1, currentCount: 100, createdAt: '2026-09-03T18:25:36Z' };
+
+    beforeEach(() => {
+        game.settings.actionBar_showProfit = true;
+        actionTimeDisplay.runElement = { innerHTML: '' };
+        game.prices['/items/milk'] = 10;
+    });
+
+    afterEach(() => {
+        actionTimeDisplay.runElement = null;
+        actionTimeDisplay._lastRunAction = null;
+        actionTimeDisplay._lastRunActionDetails = null;
+        if (actionTimeDisplay._runSoFarRedrawTimer) {
+            clearTimeout(actionTimeDisplay._runSoFarRedrawTimer);
+            actionTimeDisplay._runSoFarRedrawTimer = null;
+        }
+        actionTimeDisplay._runSoFarRedrawPending = false;
+    });
+
+    test('a row drawn while the recorder had nothing repaints once it does, with no header change', () => {
+        // The row is drawn once, before item-flow-recorder's background init has landed —
+        // exactly what happens on a fresh page load, an infinite gathering action whose header
+        // never changes to prompt a second look on its own.
+        game.runGathering = null;
+        actionTimeDisplay.updateRunSoFar(action, gatheringDetails);
+        expect(actionTimeDisplay.runElement.innerHTML).toContain('started before recording');
+
+        // The recorder's data lands — nothing about the action or its header changed.
+        game.runGathering = { gained: { '/items/milk': 100 }, from: 0, to: 1000 };
+        actionTimeDisplay.redrawRunSoFar();
+
+        expect(actionTimeDisplay.runElement.innerHTML).not.toContain('started before recording');
+        expect(actionTimeDisplay.runElement.innerHTML).toContain('1,000');
+    });
+
+    test('redrawRunSoFar is a no-op once nothing is running (clearRunSoFar dropped the cached pair)', () => {
+        actionTimeDisplay.updateRunSoFar(action, gatheringDetails);
+        actionTimeDisplay.clearRunSoFar();
+
+        game.runGathering = { gained: { '/items/milk': 100 }, from: 0, to: 1000 };
+        actionTimeDisplay.redrawRunSoFar();
+
+        // clearRunSoFar's blank must not be overwritten by a stale run's redraw.
+        expect(actionTimeDisplay.runElement.innerHTML).toBe('');
+    });
+
+    test('scheduleRunSoFarRedraw redraws immediately, then collapses a burst into one trailing redraw', () => {
+        vi.useFakeTimers();
+        try {
+            game.runGathering = null;
+            actionTimeDisplay.updateRunSoFar(action, gatheringDetails);
+
+            // First notification: leading-edge redraw, immediate.
+            game.runGathering = { gained: { '/items/milk': 100 }, from: 0, to: 1000 };
+            actionTimeDisplay.scheduleRunSoFarRedraw();
+            expect(actionTimeDisplay.runElement.innerHTML).toContain('1,000');
+
+            // A burst of further notifications inside the throttle window must not each redraw —
+            // only collapse into one trailing redraw once the window closes.
+            game.runGathering = { gained: { '/items/milk': 500 }, from: 0, to: 1000 };
+            actionTimeDisplay.scheduleRunSoFarRedraw();
+            actionTimeDisplay.scheduleRunSoFarRedraw();
+            // Still the first value — the trailing redraw has not fired yet.
+            expect(actionTimeDisplay.runElement.innerHTML).toContain('1,000');
+            expect(actionTimeDisplay.runElement.innerHTML).not.toContain('5,000');
+
+            vi.runAllTimers();
+            expect(actionTimeDisplay.runElement.innerHTML).toContain('5,000');
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });
 

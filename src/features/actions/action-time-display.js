@@ -70,6 +70,17 @@ const PHILOSOPHERS_MIRROR_HRID = '/items/philosophers_mirror';
 const QUEUE_EDIT_MENU_MARKER_CLASS = 'toolasha-queue-edit-menu-enhanced';
 const QUEUE_EDIT_MENU_STYLE_ID = 'toolasha-queue-edit-menu-width-styles';
 
+// How often item-flow-recorder's change notifications may repaint the "so far this run" row.
+// A gathering loop can complete every few seconds, each one a notification; without this a
+// fast loop would thrash the row every completion for no visible benefit.
+const RUN_SO_FAR_REDRAW_THROTTLE_MS = 2000;
+
+// How much later than the run itself the recorder's first stretch may start and still count as
+// full coverage. A reload, the feature being toggled on, or storage recovering from a quota all
+// cost the recorder a handful of seconds before it is watching again; a gap past this is a run
+// that was already under way, not a slow start.
+const RUN_COVERAGE_TOLERANCE_MS = 2 * 60 * 1000;
+
 // The native popup declares no width, so it sizes to its intrinsic content and Toolasha's own
 // injected timing/profit rows drive it: measured 164px with short rows and 338px once a row
 // carries a "Complete at ..." suffix. 414px is the preferred desktop inner width; on constrained
@@ -178,6 +189,14 @@ class ActionTimeDisplay {
         this.waitForPanelTimeout = null;
         this.retryUpdateTimeout = null;
         this.cleanupRegistry = createCleanupRegistry();
+        // The action/actionDetails pair updateRunSoFar last drew for, so an
+        // item-flow-recorder change notification can redraw the same row
+        // without waiting for the header to move (see initializeItemFlowRedraw)
+        this._lastRunAction = null;
+        this._lastRunActionDetails = null;
+        this._runSoFarRedrawTimer = null;
+        this._runSoFarRedrawPending = false;
+        this._unsubscribeItemFlowChange = null;
     }
 
     /**
@@ -251,6 +270,28 @@ class ActionTimeDisplay {
                 }
             });
         }
+
+        // The recorder initializes in a background task well after this feature does, and an
+        // infinite gathering action's header never changes — nothing else would prompt the
+        // "so far this run" row to look again once the recorder has something to say. Subscribe
+        // once; the handler itself is idempotent to re-registration guards below.
+        if (!this._unsubscribeItemFlowChange) {
+            this._unsubscribeItemFlowChange = itemFlowRecorder.onChange(() => this.scheduleRunSoFarRedraw());
+            this.cleanupRegistry.registerCleanup(() => {
+                if (this._unsubscribeItemFlowChange) {
+                    this._unsubscribeItemFlowChange();
+                    this._unsubscribeItemFlowChange = null;
+                }
+            });
+        }
+
+        this.cleanupRegistry.registerCleanup(() => {
+            if (this._runSoFarRedrawTimer) {
+                clearTimeout(this._runSoFarRedrawTimer);
+                this._runSoFarRedrawTimer = null;
+                this._runSoFarRedrawPending = false;
+            }
+        });
 
         this.cleanupRegistry.registerCleanup(() => {
             const actionNameElement = document.querySelector('div[class*="Header_actionName"]');
@@ -3482,6 +3523,44 @@ class ActionTimeDisplay {
      */
     clearRunSoFar() {
         if (this.runElement) this.runElement.innerHTML = '';
+        // Nothing is running for this row any more, so a change notification
+        // that arrives before the header moves on must not repaint over this
+        // blank with a pair from whatever ran before it.
+        this._lastRunAction = null;
+        this._lastRunActionDetails = null;
+    }
+
+    /**
+     * Ask for a repaint of the "so far this run" row the next time
+     * `item-flow-recorder.js` reports a change — a load landing, a completion
+     * folding in, or rows clearing on a character switch.
+     *
+     * Leading-edge with a trailing catch-up: the first notification in a quiet
+     * period redraws immediately (so the very first "recorder is ready" signal
+     * shows up without delay), and any that arrive before the throttle window
+     * closes are collapsed into one trailing redraw at the end of it, so a fast
+     * gathering loop's stream of completions repaints the row a couple of times
+     * a second rather than once per completion.
+     */
+    scheduleRunSoFarRedraw() {
+        if (this._runSoFarRedrawTimer) {
+            this._runSoFarRedrawPending = true;
+            return;
+        }
+        this.redrawRunSoFar();
+        this._runSoFarRedrawTimer = setTimeout(() => {
+            this._runSoFarRedrawTimer = null;
+            if (this._runSoFarRedrawPending) {
+                this._runSoFarRedrawPending = false;
+                this.redrawRunSoFar();
+            }
+        }, RUN_SO_FAR_REDRAW_THROTTLE_MS);
+    }
+
+    /** Repaint the run row for whatever it was last drawn for, if anything is still running. */
+    redrawRunSoFar() {
+        if (!this._lastRunAction || !this._lastRunActionDetails) return;
+        this.updateRunSoFar(this._lastRunAction, this._lastRunActionDetails);
     }
 
     /**
@@ -3504,15 +3583,23 @@ class ActionTimeDisplay {
      * ordinary, and the row stays blank until it has something to show.
      *
      * A run only partly covered — recording started partway through it rather
-     * than not at all — is not distinguished from full coverage: `currentCount`
-     * says only whether the run had *any* history before recording, not how
-     * much. That is an accepted understatement, not a silent zero.
+     * than not at all, past `RUN_COVERAGE_TOLERANCE_MS` — is not shown beside
+     * the game's whole-run `currentCount`: that pairing reads as if the whole
+     * run earned a partial run's value. Instead the row names the recorded
+     * window itself ("Since HH:MM: +value") with no action count, since the
+     * recorder does not store how many completions its window covers either.
      *
      * @param {Object} action - The running action
      * @param {Object} actionDetails - Its action details
      */
     updateRunSoFar(action, actionDetails) {
         if (!this.runElement) return;
+        // Cached regardless of what follows, so a later item-flow-recorder change
+        // notification (scheduleRunSoFarRedraw) can redraw exactly this call —
+        // including the "nothing recorded yet" case below, which is the one a
+        // redraw exists to correct.
+        this._lastRunAction = action;
+        this._lastRunActionDetails = actionDetails;
         if (!config.getSetting('actionBar_showProfit')) {
             this.runElement.innerHTML = '';
             return;
@@ -3547,9 +3634,30 @@ class ActionTimeDisplay {
                 ? config.getSettingValue('color_profit', '#4ade80')
                 : config.getSettingValue('color_loss', '#f87171');
         const sign = value >= 0 ? '+' : '';
-        this.runElement.innerHTML =
-            `<span style="color:#888;">This run:</span> ${completed.toLocaleString()} actions · ` +
-            `<span style="color:${color}; font-weight:600;">${sign}${this.formatLargeNumber(Math.abs(Math.round(value)))}</span>`;
+        const valueHtml = `<span style="color:${color}; font-weight:600;">${sign}${this.formatLargeNumber(Math.abs(Math.round(value)))}</span>`;
+
+        // `currentCount` is the game's whole-run figure; `totals` only ever covers what the
+        // recorder actually watched. Pairing them is only honest when recording began at or
+        // before the run did — otherwise a run that started long before the recorder was
+        // watching reads as if a full run's worth of actions produced a partial run's value.
+        // A gap within the tolerance is treated as full coverage: a reload, the feature being
+        // turned on, or storage recovering from a quota all cost a few seconds, not minutes, so
+        // this only distinguishes a run genuinely older than its first recorded stretch.
+        const runStart = Date.parse(action.createdAt);
+        const coversWholeRun = !Number.isFinite(runStart) || totals.from - runStart <= RUN_COVERAGE_TOLERANCE_MS;
+
+        if (coversWholeRun) {
+            this.runElement.innerHTML =
+                `<span style="color:#888;">This run:</span> ${completed.toLocaleString()} actions · ` + valueHtml;
+            return;
+        }
+
+        // Partial coverage: show the recorded window's own value, honestly, with no action
+        // count — the recorder does not store how many completions its window covers, and
+        // pairing the game's whole-run count with this partial value is exactly the misreading
+        // this branch exists to avoid.
+        const sinceTime = formatDateTime(new Date(totals.from), { includeDate: false, includeSeconds: false });
+        this.runElement.innerHTML = `<span style="color:#888;">Since ${sinceTime}:</span> ${valueHtml}`;
     }
 
     async updateActionBarProfit(action, remainingActions) {

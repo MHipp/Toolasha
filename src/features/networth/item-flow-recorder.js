@@ -377,6 +377,12 @@ class ItemFlowRecorder {
         /** Item hrid → when a listing of it was last seen */
         this._listedAt = new Map();
         /**
+         * Subscribers told whenever a load lands, a completion folds in, or a
+         * character switch clears the rows — anything `getCachedRunGathering`
+         * would answer differently after. See `onChange`.
+         */
+        this._changeListeners = new Set();
+        /**
          * The combat food slots, which the data manager does not keep: taken
          * from the login payload and refreshed whenever the slots change, so a
          * food swapped mid-session is not read against the login loadout
@@ -389,6 +395,38 @@ class ItemFlowRecorder {
     /** @returns {string|null} Whose record, or null before login */
     _currentCharId() {
         return dataManager.getCurrentCharacterId?.() || null;
+    }
+
+    /**
+     * Be told whenever a load lands, a completion folds into the rows, or a
+     * character switch clears them — in short, whenever `getCachedRunGathering`
+     * or `getRunGathering` might answer differently than they just did.
+     *
+     * Fired with no arguments: what changed is per-run and cheap enough to
+     * re-derive that handing it over would only invite a caller to trust a
+     * payload instead of asking the recorder again. Exists so a synchronous
+     * reader drawn before the first load lands — the action panel's "so far
+     * this run" row — has a way to redraw once the answer stops being null,
+     * rather than being drawn once, before the recorder is ready, and never
+     * again (its own header never changes on an infinite action, so nothing
+     * else would prompt a second look).
+     * @param {Function} listener
+     * @returns {Function} Unsubscribe
+     */
+    onChange(listener) {
+        this._changeListeners.add(listener);
+        return () => this._changeListeners.delete(listener);
+    }
+
+    /** Tell every subscriber, one bad listener isolated from the rest. */
+    _notifyChange() {
+        for (const listener of this._changeListeners) {
+            try {
+                listener();
+            } catch (error) {
+                console.error('[ItemFlow] A change listener failed:', error);
+            }
+        }
     }
 
     /**
@@ -478,6 +516,7 @@ class ItemFlowRecorder {
         this._combatFoodSlots = [];
         this._dropPending();
         this._store.forget();
+        this._notifyChange();
     }
 
     /**
@@ -497,6 +536,10 @@ class ItemFlowRecorder {
                 const rows = await this._store.load(charId);
                 if (this._generation !== generation) return;
                 this._rows = rows;
+                // The first load landing is exactly the moment a synchronous
+                // reader drawn earlier (a null answer, before this resolved)
+                // stops being right without anything else telling it so.
+                this._notifyChange();
             })();
         }
 
@@ -582,6 +625,7 @@ class ItemFlowRecorder {
         if (this._generation !== generation || this._charId !== charId) return;
         mutate(this._rowFor(localDayId(t)));
         this._save();
+        this._notifyChange();
     }
 
     /**

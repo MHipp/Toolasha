@@ -325,6 +325,97 @@ describe('reading one run’s gathering for a caller pairing it with a forecast'
     });
 });
 
+describe('onChange notifications', () => {
+    beforeEach(async () => {
+        hoisted.saved = [];
+        hoisted.listeners.clear();
+        hoisted.game.charId = 'me';
+        hoisted.game.items = [row('/items/sugar', 100)];
+        hoisted.game.actionTypes = { '/actions/foraging/farmland': '/action_types/foraging' };
+        recorder.cleanup();
+        recorder._rows = [];
+        recorder._charId = null;
+        recorder._loading = null;
+        recorder._generation = 0;
+    });
+
+    afterEach(() => recorder.cleanup());
+
+    const items = (data) => hoisted.listeners.get('items_updated')(data);
+
+    test('a load landing tells subscribers, so a reader drawn before it can look again', async () => {
+        const heard = vi.fn();
+        const unsubscribe = recorder.onChange(heard);
+
+        await recorder.initialize();
+
+        expect(heard).toHaveBeenCalled();
+        unsubscribe();
+    });
+
+    test('a completion folding into the rows tells subscribers', async () => {
+        await recorder.initialize();
+        const heard = vi.fn();
+        const unsubscribe = recorder.onChange(heard);
+
+        items({
+            endCharacterAction: { id: 42, characterID: 'me', actionHrid: '/actions/foraging/farmland' },
+            endCharacterItems: [row('/items/sugar', 113)],
+        });
+        await settle();
+
+        expect(heard).toHaveBeenCalled();
+        unsubscribe();
+    });
+
+    test('a character switch clearing the rows tells subscribers too', async () => {
+        await recorder.initialize();
+        const heard = vi.fn();
+        const unsubscribe = recorder.onChange(heard);
+
+        hoisted.listeners.get('character_switching')();
+
+        expect(heard).toHaveBeenCalled();
+        unsubscribe();
+    });
+
+    test('unsubscribing stops further notifications', async () => {
+        await recorder.initialize();
+        const heard = vi.fn();
+        const unsubscribe = recorder.onChange(heard);
+        unsubscribe();
+
+        items({
+            endCharacterAction: { id: 42, characterID: 'me', actionHrid: '/actions/foraging/farmland' },
+            endCharacterItems: [row('/items/sugar', 113)],
+        });
+        await settle();
+
+        expect(heard).not.toHaveBeenCalled();
+    });
+
+    test('a listener that throws does not stop the rest from being told', async () => {
+        await recorder.initialize();
+        const broken = vi.fn(() => {
+            throw new Error('boom');
+        });
+        const fine = vi.fn();
+        const unsubBroken = recorder.onChange(broken);
+        const unsubFine = recorder.onChange(fine);
+
+        items({
+            endCharacterAction: { id: 42, characterID: 'me', actionHrid: '/actions/foraging/farmland' },
+            endCharacterItems: [row('/items/sugar', 113)],
+        });
+        await settle();
+
+        expect(broken).toHaveBeenCalled();
+        expect(fine).toHaveBeenCalled();
+        unsubBroken();
+        unsubFine();
+    });
+});
+
 describe('dungeon keys', () => {
     const DUNGEON = '/actions/combat/pirate_cove';
     const KEY = '/items/pirate_entry_key';
