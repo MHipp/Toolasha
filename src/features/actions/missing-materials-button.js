@@ -47,6 +47,7 @@ import { findTesterTab, setShopFilter, openTesterShopPage } from '../../utils/te
 import { runningAction } from '../../utils/combat-actions.js';
 import {
     effectiveInventory,
+    INVENTORY_LOCATION,
     release,
     reserve,
     reservedElsewhere,
@@ -1552,10 +1553,22 @@ export function materialsFromList(lines, ownerId = null) {
         // Bought-but-unclaimed units on the player's own buy orders count as
         // held — it is what makes the Missing figure fall while the order
         // fills instead of only after a trip to My Listings
+        //
+        // Only a copy actually sitting in the bag counts as stock, matching
+        // `heldInInventory` — `getInventory()` mixes inventory, equipped and
+        // listed copies into one array, and a recipe cannot spend an equipped
+        // piece or one on the auction. A row with no location at all (a test
+        // fixture, or a source that never carried the field) is kept, so this
+        // stays the same for every caller that predates location mattering.
         const have =
             (level > 0 ? 0 : unclaimedBoughtCount(line.itemHrid)) +
             inventory
-                .filter((i) => i.itemHrid === line.itemHrid && (i.enhancementLevel || 0) === level)
+                .filter(
+                    (i) =>
+                        i.itemHrid === line.itemHrid &&
+                        (i.enhancementLevel || 0) === level &&
+                        (!i.itemLocationHrid || i.itemLocationHrid === INVENTORY_LOCATION)
+                )
                 .reduce((sum, i) => sum + (i.count || 0), 0);
         // Stock another plan has claimed is not this bill's to spend
         const available = ownerId

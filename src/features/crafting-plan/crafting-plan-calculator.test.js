@@ -466,6 +466,29 @@ describe('collectMissingMaterials', () => {
             { itemHrid: COWHIDE, itemName: 'Cowhide', missing: 5, required: 8, isTradeable: true },
         ]);
     });
+
+    test('a copy equipped or listed on the market does not count as stock', () => {
+        // Before this fix, `collectMissingMaterials` summed every row's count
+        // regardless of where the item sat, so 8 cowhide worn in a slot (or
+        // sitting on a market listing) read exactly like 8 cowhide in the bag:
+        // needed 8, "held" 8, nothing missing. The recipe cannot spend either —
+        // only a row actually in `/item_locations/inventory` may be credited.
+        const plan = {
+            strategy: 'craft',
+            children: [{ strategy: 'buy', itemHrid: COWHIDE, itemName: 'Cowhide', quantity: 8, children: [] }],
+        };
+
+        const missing = collectMissingMaterials(plan, [
+            { itemHrid: COWHIDE, count: 5, itemLocationHrid: '/item_locations/inventory' },
+            { itemHrid: COWHIDE, count: 8, itemLocationHrid: '/item_locations/main_hand' },
+            { itemHrid: COWHIDE, count: 8, itemLocationHrid: '/item_locations/marketplace' },
+        ]);
+
+        // Only the 5 in the bag counts; needed 8, so 3 are missing — not zero
+        expect(missing).toEqual([
+            { itemHrid: COWHIDE, itemName: 'Cowhide', missing: 3, required: 8, isTradeable: true },
+        ]);
+    });
 });
 
 describe('collectMissingMaterials — owned intermediates', () => {

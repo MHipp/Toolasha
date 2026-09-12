@@ -80,8 +80,15 @@ export const RESERVATIONS_SETTING = 'inventoryReservations';
 /** Object store the ledger lives in */
 const STORE = 'settings';
 
-/** Only stock sitting in the bag can be claimed; equipped and listed copies cannot */
-const INVENTORY_LOCATION = '/item_locations/inventory';
+/**
+ * Only stock sitting in the bag can be claimed; equipped and listed copies cannot.
+ *
+ * Exported so every other "how much do I have" consumer in the script counts
+ * a copy the same way this ledger does — an equipped or listed copy is not
+ * spendable on a craft, and `getInventory()` returns all three kinds mixed
+ * into one array with only this field telling them apart.
+ */
+export const INVENTORY_LOCATION = '/item_locations/inventory';
 
 /**
  * How long a reservation nobody has restamped survives.

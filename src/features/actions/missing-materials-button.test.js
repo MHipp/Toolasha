@@ -95,6 +95,7 @@ vi.mock('../../utils/react-input.js', () => ({ setReactInputValue: () => {} }));
  */
 const ledger = vi.hoisted(() => ({ claims: {}, reserved: [], released: [] }));
 vi.mock('../../utils/inventory-reservations.js', () => ({
+    INVENTORY_LOCATION: '/item_locations/inventory',
     reservedElsewhere: (itemHrid, level, { excludeOwner } = {}) => {
         let total = 0;
         for (const [owner, byKey] of Object.entries(ledger.claims)) {
@@ -167,6 +168,34 @@ describe('a bill of materials against the inventory', () => {
                 isUpgradeItem: false,
             },
         ]);
+    });
+
+    test('a copy equipped or listed on the market does not count as stock', () => {
+        // Before this fix, `materialsFromList` summed every inventory row by
+        // itemHrid and level alone, so an equipped shield read exactly like a
+        // spare one in the bag — "have" 2, nothing missing from a bill for 2.
+        // A recipe cannot spend a piece of gear that is worn, so only the bag
+        // copy may count.
+        state.items = { '/items/manticore_shield': { name: 'Manticore Shield', isTradable: true } };
+        state.inventory = [
+            {
+                itemHrid: '/items/manticore_shield',
+                enhancementLevel: 0,
+                count: 1,
+                itemLocationHrid: '/item_locations/inventory',
+            },
+            {
+                itemHrid: '/items/manticore_shield',
+                enhancementLevel: 0,
+                count: 1,
+                itemLocationHrid: '/item_locations/main_hand',
+            },
+        ];
+
+        const [line] = materialsFromList([{ itemHrid: '/items/manticore_shield', count: 2 }]);
+
+        expect(line.have).toBe(1);
+        expect(line.missing).toBe(1);
     });
 
     test('items bought but not yet claimed off a buy order count as held', () => {

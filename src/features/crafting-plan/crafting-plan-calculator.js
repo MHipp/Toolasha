@@ -12,6 +12,7 @@ import { findProducingAction } from '../../utils/production-index.js';
 import { parseArtisanBonus, getDrinkConcentration } from '../../utils/tea-parser.js';
 import { calculateActionStats } from '../../utils/action-calculator.js';
 import { calculateEfficiencyMultiplier } from '../../utils/efficiency.js';
+import { INVENTORY_LOCATION } from '../../utils/inventory-reservations.js';
 
 const MAX_DEPTH = 15;
 
@@ -519,7 +520,9 @@ export function computeBestCraftingPlan(
  * reported with `isTradeable: false` so the caller can leave them off the tabs.
  *
  * @param {Object} plan - A node from {@link computeBestCraftingPlan}
- * @param {Array<Object>} inventory - Inventory rows ({itemHrid, count, enhancementLevel})
+ * @param {Array<Object>} inventory - Inventory rows ({itemHrid, count, enhancementLevel,
+ *   itemLocationHrid}); a row naming a location other than `/item_locations/inventory` is
+ *   not credited, since a recipe cannot spend an equipped or listed copy
  * @returns {Array<{itemHrid: string, itemName: string, missing: number, required: number, isTradeable: boolean}>}
  *   One line per buy item still short, aggregated across branches
  */
@@ -528,10 +531,16 @@ export function collectMissingMaterials(plan, inventory) {
     const rows = Array.isArray(inventory) ? inventory : [];
 
     // One shared, mutable ledger. Only unenhanced copies count — an enhanced
-    // piece is not a material.
+    // piece is not a material — and only a copy actually sitting in the bag:
+    // `getInventory()` mixes inventory, equipped and listed copies into one
+    // array with `itemLocationHrid` the only thing telling them apart, and a
+    // recipe consumes the bag, never a slot a piece of gear is worn in. A row
+    // with no location at all (a hand-built plan in a test) is kept, matching
+    // this function's behaviour before location was ever considered.
     const stock = new Map();
     for (const row of rows) {
         if (row.enhancementLevel) continue;
+        if (row.itemLocationHrid && row.itemLocationHrid !== INVENTORY_LOCATION) continue;
         stock.set(row.itemHrid, (stock.get(row.itemHrid) || 0) + (row.count || 0));
     }
     const creditedToCrafts = new Map(); // itemHrid → units the tree's craft nodes took
