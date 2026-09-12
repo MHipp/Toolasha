@@ -6,6 +6,15 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### A buff board, a stale-capital view, and the gold panel joins the rest
+
+- New buff board: every buff on the action you are running, by source and size, with a picker for the other action types. Combat drink buffs are read from the live fight, and tea supply is shown as the drink timer's estimate — the game states no expiry for a buff, so nothing pretends to be a countdown.
+- New Stale tab beside the Ledger: sell listings and buy orders that are not filling, ranked by the coins they tie up, with each one's age and how its price sits against the book.
+- The gold panel now drags, resizes, remembers where you left it, closes with Escape and opens from the command palette. The 💰 button still opens it.
+- Loot & XP Analytics gains a palette entry and a CSV export, Party Luck and Build Score gain copy buttons, the Notice Log gains category filters, and the watchlist gains a CSV export.
+- A dungeon run whose key-count line lands between runs keeps its run number and average instead of falling back to a bare time — and the runs already labelled that way are repaired.
+- Two readings were wrong: the low-drink warning could judge a queued skill instead of the one running, and the ability tooltip added nothing at all for combat drinks, so Channeling Coffee's cast speed never reached it.
+
 <!-- shipped in 3.50.0 -->
 
 ### Leftovers: one button walks the sell queue, and the gold panel owns up to what it could not value
