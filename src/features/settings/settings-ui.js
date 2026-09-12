@@ -23,6 +23,7 @@ import { getDetectedGearSettings, getEnhancingParams } from '../../utils/enhance
 import pformancePanel from '../dev/pformance-panel.js';
 import treasureTracker from '../inventory/treasure-tracker.js';
 import overlayPanel from '../ui/overlay-panel.js';
+import overlayTabButton from '../ui/overlay-tab-button.js';
 import commandPalette from '../ui/command-palette.js';
 import syncManager from '../sync/sync-manager.js';
 import { copySyncSetupToOtherCharacters } from '../sync/sync-setup-copy.js';
@@ -1962,7 +1963,68 @@ class SettingsUI {
             buttonsDiv.appendChild(paletteBtn);
         }
 
+        this.addOverlayLauncherRecovery(buttonsDiv);
+
         container.appendChild(buttonsDiv);
+    }
+
+    /**
+     * "Show the overlay button" — brings back the phone launcher if it was
+     * dragged onto the drop zone and dismissed.
+     *
+     * Mobile-only: the launcher (`overlay-tab-button.js`) only exists in mobile
+     * mode, so the control has nothing to recover on desktop.
+     *
+     * Deliberately not a `settings-schema.js` entry: whether the launcher is
+     * hidden is device-local state (`toolasha_local_overlayLauncherHidden`,
+     * excluded from sync by `DEVICE_LOCAL_KEY_PREFIXES` in
+     * `core/settings-storage.js`) so that a phone which dismissed its launcher
+     * and a desktop that never had one do not fight over one synced switch, and
+     * a freshly-set-up phone gets its own launcher rather than inheriting
+     * whatever the last phone decided. This button reads and clears that flag
+     * only through `overlay-tab-button.js`'s own small API
+     * (`isLauncherHidden()` / `showLauncher()`) — it never touches the storage
+     * key itself, so there is exactly one place that owns that key's shape.
+     *
+     * A control that only appears once the launcher is already gone is the
+     * thing that got this raised in the first place — nobody could find a way
+     * back once it was dismissed — so with the flag unset this still shows,
+     * just reporting that the button is already up.
+     *
+     * @param {HTMLElement} buttonsDiv - The utility-button row to add it to
+     */
+    addOverlayLauncherRecovery(buttonsDiv) {
+        if (!isMobileMode()) return;
+
+        const launcherBtn = document.createElement('button');
+        launcherBtn.className = 'toolasha-utility-button';
+
+        const syncLabel = async () => {
+            try {
+                const hidden = await overlayTabButton.isLauncherHidden();
+                launcherBtn.textContent = hidden ? 'Show the overlay button' : 'Overlay button is already shown';
+                launcherBtn.disabled = !hidden;
+            } catch (error) {
+                console.error('[SettingsUI] Checking the overlay launcher flag failed:', error);
+                launcherBtn.textContent = 'Show the overlay button';
+                launcherBtn.disabled = false;
+            }
+        };
+
+        launcherBtn.title =
+            'Brings back the round ⧉ overlay launcher if it was dragged onto its drop zone and dismissed. ' +
+            'Device-local — each phone remembers this on its own, separately from any synced setting.';
+        launcherBtn.addEventListener('click', async () => {
+            try {
+                await overlayTabButton.showLauncher();
+            } catch (error) {
+                console.error('[SettingsUI] Bringing back the overlay launcher failed:', error);
+            }
+            await syncLabel();
+        });
+
+        syncLabel();
+        buttonsDiv.appendChild(launcherBtn);
     }
 
     /**

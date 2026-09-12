@@ -44,6 +44,10 @@ const mocks = vi.hoisted(() => ({
     cacheClears: 0,
     /** Times the command palette's own `open()` was called */
     paletteOpened: 0,
+    /** What `overlayTabButton.isLauncherHidden()` currently answers */
+    launcherHidden: false,
+    /** Times `overlayTabButton.showLauncher()` was called */
+    launcherShowCalls: 0,
 }));
 
 /** Controllable stand-in for the census singleton the export button drives. */
@@ -287,6 +291,15 @@ vi.mock('../ui/command-palette.js', () => ({
         },
     },
 }));
+vi.mock('../ui/overlay-tab-button.js', () => ({
+    default: {
+        isLauncherHidden: async () => mocks.launcherHidden,
+        showLauncher: async () => {
+            mocks.launcherHidden = false;
+            mocks.launcherShowCalls += 1;
+        },
+    },
+}));
 vi.mock('../sync/sync-manager.js', () => ({
     default: { initialize: async () => {}, describeStatus: async () => 'Not linked.' },
 }));
@@ -380,6 +393,8 @@ beforeEach(() => {
     mocks.loadGate = null;
     mocks.cacheClears = 0;
     mocks.paletteOpened = 0;
+    mocks.launcherHidden = false;
+    mocks.launcherShowCalls = 0;
     mocks.settingsMap = {};
     censusMock.initialized = true;
     censusMock.rosterSize = 0;
@@ -720,6 +735,85 @@ describe('opening the command palette on a phone', () => {
         button.click();
 
         expect(mocks.paletteOpened).toBe(1);
+    });
+});
+
+describe('getting the overlay button back', () => {
+    /** @returns {HTMLElement|undefined} The recovery button, once drawn */
+    function launcherButton() {
+        return [...document.querySelectorAll('.toolasha-utility-button')].find(
+            (b) => b.textContent === 'Show the overlay button' || b.textContent === 'Overlay button is already shown'
+        );
+    }
+
+    test('is absent on desktop — there is no launcher there to recover', () => {
+        mocks.coarsePointer = false;
+        drawPanel();
+
+        expect(launcherButton()).toBeUndefined();
+    });
+
+    test('on a phone with the launcher hidden, offers to bring it back', async () => {
+        mocks.coarsePointer = true;
+        mocks.launcherHidden = true;
+        drawPanel();
+        await settle();
+
+        const button = launcherButton();
+        expect(button.textContent).toBe('Show the overlay button');
+        expect(button.disabled).toBe(false);
+    });
+
+    test('clicking it clears the flag, asks the launcher back, and relabels itself', async () => {
+        mocks.coarsePointer = true;
+        mocks.launcherHidden = true;
+        drawPanel();
+        await settle();
+
+        launcherButton().click();
+        await settle();
+
+        expect(mocks.launcherShowCalls).toBe(1);
+        const button = launcherButton();
+        expect(button.textContent).toBe('Overlay button is already shown');
+        expect(button.disabled).toBe(true);
+    });
+
+    test('with the flag unset, reports the button as already shown rather than being missing', async () => {
+        mocks.coarsePointer = true;
+        mocks.launcherHidden = false;
+        drawPanel();
+        await settle();
+
+        const button = launcherButton();
+        expect(button).toBeTruthy();
+        expect(button.textContent).toBe('Overlay button is already shown');
+        expect(button.disabled).toBe(true);
+    });
+
+    test("never writes a synced setting — only calls overlay-tab-button.js's own API", async () => {
+        mocks.coarsePointer = true;
+        mocks.launcherHidden = true;
+        drawPanel();
+        await settle();
+
+        launcherButton().click();
+        await settle();
+
+        expect(mocks.written).toEqual([]);
+        expect(mocks.store.size).toBe(0);
+    });
+
+    test('tearing the panel down removes the control along with everything else', async () => {
+        mocks.coarsePointer = true;
+        mocks.launcherHidden = true;
+        drawPanel();
+        await settle();
+        expect(launcherButton()).toBeTruthy();
+
+        settingsUI.cleanup();
+
+        expect(launcherButton()).toBeUndefined();
     });
 });
 
