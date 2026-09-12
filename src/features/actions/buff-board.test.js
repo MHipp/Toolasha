@@ -385,6 +385,18 @@ describe('sizes are printed as the game states them', () => {
         expect(formatBuffSize(buff('/buff_uniques/x', '/buff_types/action_level', { flatBoost: 5 }))).toBe('+5');
     });
 
+    test('a level buff cleans up the server float noise instead of printing it raw', () => {
+        // Seen live: "Magic Level +3.5999999999999996 flat · +0.264 ratio".
+        expect(
+            formatBuffSize(
+                buff('/buff_uniques/x', '/buff_types/magic_level', {
+                    flatBoost: 3.5999999999999996,
+                    ratioBoost: 0.264,
+                })
+            )
+        ).toBe('+3.6 flat · +0.264 ratio');
+    });
+
     test('both boosts are shown when both are set', () => {
         expect(
             formatBuffSize(buff('/buff_uniques/x', '/buff_types/efficiency', { flatBoost: 0.1, ratioBoost: 0.2 }))

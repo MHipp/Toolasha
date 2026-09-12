@@ -52,7 +52,7 @@
 
 import dataManager from '../../core/data-manager.js';
 import webSocketHook from '../../core/websocket.js';
-import { formatPercentage, timeReadable } from '../../utils/formatters.js';
+import { formatPercentage, formatWithSeparator, timeReadable } from '../../utils/formatters.js';
 import { runningAction } from '../../utils/combat-actions.js';
 import { calculateDrinkRemainingSeconds } from '../../utils/drink-calculator.js';
 import { createPanel, panelCard, panelNote } from '../../utils/simple-panel.js';
@@ -183,6 +183,12 @@ function consumableFor(uniqueHrid) {
  * collapsing them here would hide half of a figure. In practice the server sets
  * one.
  *
+ * A count buff's raw value is the server's float arithmetic showing through —
+ * `3.5999999999999996` for what is meant to be `3.6` — so it gets the same
+ * `Intl.NumberFormat` pass `formatWithSeparator` gives every other plain number
+ * in the script, which rounds off that noise and still prints a whole count
+ * (`5`, not `5.0`).
+ *
  * @param {Object} buff - `{typeHrid, ratioBoost, flatBoost}`
  * @returns {string} e.g. `+14.4%`, `+5`, or `—` when the buff states no size
  */
@@ -192,7 +198,7 @@ export function formatBuffSize(buff) {
     const ratio = Number(buff?.ratioBoost) || 0;
     const show = (value) => {
         const sign = value < 0 ? '' : '+';
-        return count ? `${sign}${value}` : `${sign}${formatPercentage(value, 1)}`;
+        return count ? `${sign}${formatWithSeparator(value)}` : `${sign}${formatPercentage(value, 1)}`;
     };
 
     if (flat && ratio) return `${show(flat)} flat · ${show(ratio)} ratio`;
