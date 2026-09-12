@@ -2841,6 +2841,74 @@ The marketplace layout change gave the price row its own "Max" button and put it
 
 The simulator valued every drop at its gross market price, so profit ignored the sale tax entirely — which is why the rise to 5% never moved it. Every drop-revenue path now nets the tax off each non-coin drop, cowbell bags at their own 18%: the Results summary, the Drops table's Gold columns, and the comparison and upgrade rows. Coin drops stay whole.
 
+## [3.51.0](https://github.com/Millennium44/Toolasha/compare/v3.50.0...v3.51.0) (2026-09-12)
+
+
+### Features
+
+* action panel shows what the current gathering run has paid so far ([b0213f9](https://github.com/Millennium44/Toolasha/commit/b0213f944229ee9c817c29f46aa2bf44248bf369))
+* add a Stale Capital tab ranking unfilled listings by coins tied up ([988b617](https://github.com/Millennium44/Toolasha/commit/988b617c2733d44299b4cdce5554eb11c0a9c494))
+* add an Automatic time format that follows each device's own clock ([2461874](https://github.com/Millennium44/Toolasha/commit/24618749692695f137e356b2485ecba2d3b4fe38))
+* bring back a dismissed overlay launcher from settings ([65ed853](https://github.com/Millennium44/Toolasha/commit/65ed853bec9223932bddacb63211bf9117b82ef5))
+* buff board shows every buff on the running action and where it came from ([9288eda](https://github.com/Millennium44/Toolasha/commit/9288edaad1407cd50af8858d8108c9e491e0a147))
+* build score panel gets a copy button ([99c89b2](https://github.com/Millennium44/Toolasha/commit/99c89b2185f1279faacb3c2be2aa063afc3e9802))
+* calibration keeps measuring gathering runs the loot log never saw ([a5412ea](https://github.com/Millennium44/Toolasha/commit/a5412ea6ebc2bfe85004bd7f232efb04870c00fa))
+* confirm the Upgrade tab's budget basket together, opt-in ([7be905f](https://github.com/Millennium44/Toolasha/commit/7be905f4f85023bb7b62b689c02585091a612d3a))
+* drag the mobile overlay launcher onto a drop zone to dismiss it ([3a6d586](https://github.com/Millennium44/Toolasha/commit/3a6d58650ac6e50747e9837f91c997b33f66c0b8))
+* enhancement lab board adds a profit/hr column ([dbddae2](https://github.com/Millennium44/Toolasha/commit/dbddae2aebcba442ab9435c16be001887db631bd))
+* gold panel records combat food and drink as it is eaten ([a2f0574](https://github.com/Millennium44/Toolasha/commit/a2f05744be1f861da6462b221218d1746788fc2e))
+* gold sources panel moves onto the shared floating-panel shell ([9500bbf](https://github.com/Millennium44/Toolasha/commit/9500bbffe2d7ef2c3cca377bccdd93e4c69f5a4b))
+* item tooltips name the saved loadouts an item is slotted in ([06767f1](https://github.com/Millennium44/Toolasha/commit/06767f1ce99450458a63cc6e7d324528013460a2))
+* loot & XP analytics panel gets a palette entry and CSV export ([6ceda6e](https://github.com/Millennium44/Toolasha/commit/6ceda6eaffa5e8384190e470065749e774f2de61))
+* mobile action toolbar collapses sort/mode/craft behind one toggle ([93fe72c](https://github.com/Millennium44/Toolasha/commit/93fe72c2ee4c6bb8cadcef67a6e2665119be7318))
+* notice log gets a category filter ([1701579](https://github.com/Millennium44/Toolasha/commit/170157912a6b834e5ab424417a06a0313254cd86))
+* offline progress summary costs the hours lost past the offline cap ([91d2dc6](https://github.com/Millennium44/Toolasha/commit/91d2dc6b9edeb1e43cc0210f80731873c750466d))
+* party luck panel gets a copy button ([88c0ae8](https://github.com/Millennium44/Toolasha/commit/88c0ae85630e02c8b4801ff1eea4542d523540da))
+* rank house rooms by what the next level is worth for skilling ([ea58674](https://github.com/Millennium44/Toolasha/commit/ea58674a5d23d5a2fbd80f87a88cd5e1f1de59b5))
+* reach the command palette from a phone with no keyboard ([f3c37c2](https://github.com/Millennium44/Toolasha/commit/f3c37c24bc972603bf464f567d2992586a410d25))
+* score a skill against house room levels you have not bought yet ([8a61169](https://github.com/Millennium44/Toolasha/commit/8a6116961ca6d60cbc2c3c8ab31abc7e202b7bf3))
+* watchlist gets a CSV export ([8097aa1](https://github.com/Millennium44/Toolasha/commit/8097aa1d033197af3b5a522579798cd274029684))
+
+
+### Bug Fixes
+
+* a bill of materials no longer counts an equipped or listed copy as stock ([75a0eeb](https://github.com/Millennium44/Toolasha/commit/75a0eeb4c60fc6a29ded3d3a033aecb14a9e57ce))
+* a crafting plan's claim on the bag dies with the plan panel ([872cfe9](https://github.com/Millennium44/Toolasha/commit/872cfe980fdcd19171ba3e8cd395043978b22dfb))
+* ability timing tooltip reads combat drink cast speed off the equipped item, not a live map ([000aa1a](https://github.com/Millennium44/Toolasha/commit/000aa1aecf922c9f641fad4f044552f166f5c1ac))
+* ability timing tooltip scales equipped drink buffs by drink concentration ([f738ce2](https://github.com/Millennium44/Toolasha/commit/f738ce25e6f2707980e3f0a4101276009667cbd0))
+* action bar run row redraws when the recorder catches up and states partial coverage honestly ([5c98217](https://github.com/Millennium44/Toolasha/commit/5c9821711c75a826471d37a2ec10c7d87a80476b))
+* buff board rounds a count buff's flat/ratio instead of printing raw float noise ([3cd4dfa](https://github.com/Millennium44/Toolasha/commit/3cd4dfaac065de79f873e0bc0a1ac5d35e120024))
+* character select starts on the Automatic clock too, and the changelog says so ([e0c8916](https://github.com/Millennium44/Toolasha/commit/e0c89162f228343b7bfbbc62adc7c015510db5a3))
+* crafting plan panel sizes its shopping list to the run, not one unit ([1d50381](https://github.com/Millennium44/Toolasha/commit/1d50381aec699f4ab2ca816d86b938720f399f29))
+* drink timer reads the running action by ordinal, not array position ([8294613](https://github.com/Millennium44/Toolasha/commit/8294613f011363dbf6f47a14986d227e227e6850))
+* dungeon tracker chat labels no longer go bare in the between-runs gap ([e60fb2a](https://github.com/Millennium44/Toolasha/commit/e60fb2a2548d71e2882a43d94c5e4b724174806b))
+* item-flow-recorder is shared across bundles instead of duplicated ([f4a2dad](https://github.com/Millennium44/Toolasha/commit/f4a2dadd2b9aae5083888b87efadfebb84acdd23))
+* loadout marks default on like the ability-book version, and say what they do ([ef42b83](https://github.com/Millennium44/Toolasha/commit/ef42b83d0cbe309e9a569db4d62ce14d82c0d82a))
+* merged task-crafting walk releases its claim when it ends ([2380e34](https://github.com/Millennium44/Toolasha/commit/2380e3403fc4e0c2c210d294bca3dca04fe660f3))
+* pinned page paints immediately instead of freezing on the first open ([f065281](https://github.com/Millennium44/Toolasha/commit/f06528194ce229c84691ee7bfe31bd8a27b6c2bf))
+* the run line names the day when its recorded window began before today ([3582e62](https://github.com/Millennium44/Toolasha/commit/3582e62f2c09635159d3cf8644e3b2b7cd40ddb9))
+* the settings control calls the launcher API that actually exists ([787cb41](https://github.com/Millennium44/Toolasha/commit/787cb41772b8ff7a266deae8206f88b74395c0d3))
+* xph calculator separates a capped profit figure from its marker and names a zero-out cap ([2e70717](https://github.com/Millennium44/Toolasha/commit/2e70717484f3d607f7301c497d91b8dd419ada27))
+
+
+### Performance Improvements
+
+* fetch liquidity volumes concurrently instead of one item at a time ([6153d20](https://github.com/Millennium44/Toolasha/commit/6153d202b577cb20db04c7225b63a82b48d39f75))
+* planner and alchemy rankings check market volume concurrently ([7ac8dd9](https://github.com/Millennium44/Toolasha/commit/7ac8dd95770b61ee6e6531824a3e31caf793e01b))
+
+
+### Documentation
+
+* changelog for concurrent volume checks and loadout marks on item tooltips ([6111147](https://github.com/Millennium44/Toolasha/commit/6111147d806bf9492b09cf72477d2cb4ed3ec8f9))
+* changelog for the buff board, stale capital and the panel consistency pass ([33e02b4](https://github.com/Millennium44/Toolasha/commit/33e02b491ddb92b051f8b752680e2736e56fa767))
+* changelog for the combat consumables recorder and the four new boards ([d81b084](https://github.com/Millennium44/Toolasha/commit/d81b08448737f308f0b58057aadd0ca666ee7f09))
+* changelog for the mobile toolbar fold and the three smoke-test fixes ([2fbb538](https://github.com/Millennium44/Toolasha/commit/2fbb53897f59e9f066320cb6055cc740306fcee0))
+* changelog for the pinned page paint, the launcher dismiss and the mobile palette ([40bf716](https://github.com/Millennium44/Toolasha/commit/40bf7167ee1213db2ba436bf3e4867bf34f131a3))
+* changelog for the reported crafting plan claim and shopping list bugs ([0d00cad](https://github.com/Millennium44/Toolasha/commit/0d00cad48ec37a6c10764cd8a1d8e69b1feab4d9))
+* changelog for the run line that claimed a recorded run was not ([0e0d329](https://github.com/Millennium44/Toolasha/commit/0e0d3293a807e2a823bdbf3ebc0cc3773cfc31b3))
+* changelog for the task walk claim and worn or listed stock ([82846c5](https://github.com/Millennium44/Toolasha/commit/82846c5508b8df9fbd491af39866afdf91323b5c))
+* cut the four newest changelog entries back to the length the rule asks for ([a003fc6](https://github.com/Millennium44/Toolasha/commit/a003fc6a629c94862e2a1069c8eaaba6d9af34e3))
+
 ## [3.50.0](https://github.com/Millennium44/Toolasha/compare/v3.49.0...v3.50.0) (2026-09-11)
 
 ### Features
