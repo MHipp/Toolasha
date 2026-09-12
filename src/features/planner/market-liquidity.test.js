@@ -14,12 +14,30 @@
 
 import { describe, test, expect, beforeEach, vi } from 'vitest';
 
-const history = vi.hoisted(() => ({ rows: {}, calls: [], hasVolume: true }));
+const history = vi.hoisted(() => ({
+    rows: {},
+    calls: [],
+    hasVolume: true,
+    // A request that must not settle until the test releases it, so a test can
+    // observe several in-flight at once instead of only ever seeing them one at
+    // a time (the mock has no real network delay to make that visible otherwise).
+    hang: false,
+    pending: [],
+    // An item whose fetch throws, to check that one failure does not take the
+    // rest of a concurrent sweep down with it.
+    failFor: null,
+}));
 
 vi.mock('../market/mooket/market-history-api.js', () => ({
     default: {
         fetchHistory: async (itemHrid, level, days) => {
             history.calls.push({ itemHrid, level, days });
+            if (history.failFor === itemHrid) throw new Error('the pool did not answer in time');
+            if (history.hang) {
+                return new Promise((resolve) => {
+                    history.pending.push({ itemHrid, resolve: () => resolve(history.rows[itemHrid] ?? null) });
+                });
+            }
             return history.rows[itemHrid] ?? null;
         },
         currentSource: () => ({ key: history.hasVolume ? 'mooket2' : 'mooket1', hasVolume: history.hasVolume }),
@@ -30,6 +48,7 @@ const {
     dailyVolume,
     absorbablePerHour,
     describeVelocity,
+    sellThrottle,
     applySellLimit,
     applyInputNote,
     applyLiquidityLimits,
@@ -60,6 +79,9 @@ beforeEach(() => {
     history.rows = {};
     history.calls = [];
     history.hasVolume = true;
+    history.hang = false;
+    history.pending = [];
+    history.failFor = null;
 });
 
 describe('measuring how fast an item sells', () => {
@@ -248,6 +270,82 @@ describe('bounding a rate by its slowest-selling output', () => {
     test('a rate that names nothing it sells is left alone rather than guessed at', async () => {
         const rate = { label: 'Fly Zone T2', goldPerHour: 2_100_000 };
         expect(await applySellLimit(rate)).toBe(rate);
+    });
+});
+
+describe('measuring several outputs without serializing the network', () => {
+    test('fetches outputs concurrently, bounded rather than all at once', async () => {
+        // Sized past the concurrency bound so the fan-out has to prove it is
+        // bounded, not just that it overlaps at all.
+        const items = ['/items/a', '/items/b', '/items/c', '/items/d', '/items/e', '/items/f'];
+        for (const item of items) history.rows[item] = tradedAt(10);
+        history.hang = true;
+
+        const throttlePromise = sellThrottle(items.map((itemHrid) => ({ itemHrid, unitsPerHour: 1 })));
+
+        // Let the synchronous fan-out finish starting its first wave before we look.
+        await Promise.resolve();
+        await Promise.resolve();
+
+        // Overlapping in-flight calls, not a wall-clock measurement: more than one
+        // request is outstanding at once, and it stops well short of firing all six.
+        expect(history.pending.length).toBeGreaterThan(1);
+        expect(history.pending.length).toBeLessThan(items.length);
+        expect(history.calls.length).toBe(history.pending.length);
+
+        // Release what is waiting, and let anything the pool still has queued
+        // resolve immediately from here rather than tick-counting a refill chain.
+        history.pending.forEach((entry) => entry.resolve());
+        history.pending = [];
+        history.hang = false;
+        await throttlePromise;
+    });
+
+    test('two concurrent asks for the same item fold onto one fetch', async () => {
+        history.rows['/items/log'] = tradedAt(240);
+
+        const [a, b] = await Promise.all([dailyVolume('/items/log'), dailyVolume('/items/log')]);
+
+        expect(history.calls).toHaveLength(1);
+        expect(a).toEqual(b);
+        expect(a.known).toBe(true);
+        expect(a.unitsPerDay).toBeCloseTo(240, 6);
+    });
+
+    test('a failing item is settled as unknown volume and does not affect the others', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        history.failFor = '/items/broken';
+        history.rows['/items/log'] = tradedAt(1 / 7);
+
+        const { throttle, binding } = await sellThrottle([
+            { itemHrid: '/items/broken', unitsPerHour: 10 },
+            { itemHrid: '/items/log', unitsPerHour: 500 },
+        ]);
+
+        // The healthy, slow-selling output still binds and throttles normally —
+        // the broken one reads as "no volume known" (Infinity allowed), so it
+        // never competes to bind and never rejects the pool it shares with others.
+        expect(binding.itemHrid).toBe('/items/log');
+        expect(throttle).toBeCloseTo((LIQUIDITY_SHARE * (1 / 7)) / 24 / 500, 9);
+
+        const broken = await dailyVolume('/items/broken');
+        expect(broken.known).toBe(false);
+
+        vi.restoreAllMocks();
+    });
+
+    test('the figures come out identical to a serial measurement — this is about when, not what', async () => {
+        history.rows['/items/fast'] = tradedAt(100_000);
+        history.rows['/items/slow'] = tradedAt(24);
+
+        const { throttle, binding } = await sellThrottle([
+            { itemHrid: '/items/fast', unitsPerHour: 10 },
+            { itemHrid: '/items/slow', unitsPerHour: 10 },
+        ]);
+
+        // Same figures the pre-existing "slowest output binds" case pins.
+        expect(throttle).toBeCloseTo(0.25 / 10, 6);
+        expect(binding.itemHrid).toBe('/items/slow');
     });
 });
 

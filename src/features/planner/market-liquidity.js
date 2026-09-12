@@ -60,6 +60,7 @@
 
 import marketHistoryAPI from '../market/mooket/market-history-api.js';
 import { buildHistorySeries } from '../market/mooket/market-history-data.js';
+import { runPool } from '../../utils/async-pool.js';
 
 /** How much history to average over. Long enough that a quiet week is not a verdict. */
 export const LIQUIDITY_WINDOW_DAYS = 30;
@@ -83,27 +84,34 @@ const COIN_HRID = '/items/coin';
  */
 const cache = new Map();
 
+/**
+ * In-flight lookups, keyed the same way as {@link cache}. The planner, the
+ * alchemy sort and every other profit surface can all ask about the same item
+ * in the same instant — a shared method's output, say — and each used to pay
+ * its own round trip. Caching the *promise* here, before it settles, folds
+ * concurrent askers onto the one request, the same trick `marketAPI.fetch()`
+ * already plays for the market-data load (see `feature-registry.js`).
+ * @type {Map<string, Promise<Object>>}
+ */
+const pending = new Map();
+
 /** Forget everything measured, for tests and for a hard refresh */
 export function resetLiquidityCache() {
     cache.clear();
+    pending.clear();
 }
 
 /**
- * How many units of an item change hands in a day.
+ * The measurement behind {@link dailyVolume}, split out so its promise can be
+ * handed to `pending` before it resolves rather than after.
  *
  * @param {string} itemHrid - The item
- * @param {number} [enhancementLevel=0] - Which variant
+ * @param {number} enhancementLevel - Which variant
+ * @param {string} key - The cache key for both maps
  * @returns {Promise<{itemHrid: string, unitsPerDay: number, days: number, known: boolean}>}
- *   `known` is false when nothing could be measured — no setting, no server, no
- *   rows — which is different from a measured zero and must not be treated as one.
  */
-export async function dailyVolume(itemHrid, enhancementLevel = 0) {
-    const key = `${itemHrid}:${enhancementLevel}`;
-    const cached = cache.get(key);
-    if (cached) return cached;
-
+async function measureDailyVolume(itemHrid, enhancementLevel, key) {
     const unknown = { itemHrid, unitsPerDay: 0, days: 0, known: false };
-    let answer = unknown;
 
     // A source that carries no volume (mooket I) tells us nothing about how much
     // trades — which is a different thing from a source that watched and saw
@@ -114,6 +122,7 @@ export async function dailyVolume(itemHrid, enhancementLevel = 0) {
         return unknown;
     }
 
+    let answer = unknown;
     try {
         const rows = await marketHistoryAPI.fetchHistory(itemHrid, enhancementLevel, LIQUIDITY_WINDOW_DAYS);
         if (Array.isArray(rows) && rows.length) {
@@ -137,6 +146,32 @@ export async function dailyVolume(itemHrid, enhancementLevel = 0) {
 
     cache.set(key, answer);
     return answer;
+}
+
+/**
+ * How many units of an item change hands in a day.
+ *
+ * @param {string} itemHrid - The item
+ * @param {number} [enhancementLevel=0] - Which variant
+ * @returns {Promise<{itemHrid: string, unitsPerDay: number, days: number, known: boolean}>}
+ *   `known` is false when nothing could be measured — no setting, no server, no
+ *   rows — which is different from a measured zero and must not be treated as one.
+ */
+export async function dailyVolume(itemHrid, enhancementLevel = 0) {
+    const key = `${itemHrid}:${enhancementLevel}`;
+    const cached = cache.get(key);
+    if (cached) return cached;
+
+    const inFlight = pending.get(key);
+    if (inFlight) return inFlight;
+
+    const lookup = measureDailyVolume(itemHrid, enhancementLevel, key);
+    pending.set(key, lookup);
+    try {
+        return await lookup;
+    } finally {
+        pending.delete(key);
+    }
 }
 
 /**
@@ -170,29 +205,59 @@ export function describeVelocity(volume) {
 }
 
 /**
+ * Kept low so a method with many sale outputs — an alchemy drop table, a full
+ * gathering method with its rare finds — does not burst the third-party history
+ * server. Matches `MOOKET_CONCURRENCY` in `market-undercut-alerts.js` and
+ * `price-target-alerts.js`, which bound the same server for the same reason;
+ * this is a network round trip, not the CPU sweep `xph-calculator.js` batches
+ * at 24, so it stays well under that.
+ */
+const VOLUME_CONCURRENCY = 4;
+
+/**
  * What the market lets a method actually run at.
  *
  * The binding output is the slowest-selling one: running the action faster than
  * its worst product can be sold does not make coins, it makes a pile. So the
  * throttle is the minimum over everything the method has to sell.
  *
+ * The volumes are fetched concurrently (bounded by {@link VOLUME_CONCURRENCY})
+ * rather than one at a time — a method with several outputs used to pay a
+ * network round trip per item, serially. The reduce below still walks the
+ * outputs in their original order, so a tie between two equally-slow outputs
+ * still resolves to whichever came first, exactly as it did serially.
+ *
  * @param {Array<{itemHrid: string, unitsPerHour: number}>} sells - What one hour produces
  * @returns {Promise<{throttle: number, binding: Object|null}>} A multiplier in [0, 1],
  *   and the output that set it
  */
 export async function sellThrottle(sells) {
+    const wanted = (sells || [])
+        .map((sold, index) => ({ sold, index }))
+        .filter(({ sold }) => sold?.itemHrid && sold.itemHrid !== COIN_HRID && (Number(sold?.unitsPerHour) || 0) > 0);
+
+    const volumes = new Array(wanted.length);
+    await runPool(wanted, VOLUME_CONCURRENCY, async ({ sold, index }) => {
+        try {
+            volumes[index] = await dailyVolume(sold.itemHrid, sold.enhancementLevel || 0);
+        } catch (error) {
+            // dailyVolume already settles its own failures as "unknown"; this is
+            // a second net so one bad item can never take the others down with it.
+            console.error(`[MarketLiquidity] Measuring volume for ${sold.itemHrid} failed:`, error);
+            volumes[index] = { itemHrid: sold.itemHrid, unitsPerDay: 0, days: 0, known: false };
+        }
+    });
+
     let throttle = 1;
     let binding = null;
 
-    for (const sold of sells || []) {
-        const wanted = Number(sold?.unitsPerHour) || 0;
-        if (!sold?.itemHrid || sold.itemHrid === COIN_HRID || wanted <= 0) continue;
-
-        const volume = await dailyVolume(sold.itemHrid, sold.enhancementLevel || 0);
+    for (const { sold, index } of wanted) {
+        const volume = volumes[index];
+        const wantedRate = Number(sold.unitsPerHour) || 0;
         const allowed = absorbablePerHour(volume);
         if (!Number.isFinite(allowed)) continue;
 
-        const share = Math.min(1, allowed / wanted);
+        const share = Math.min(1, allowed / wantedRate);
         if (share < throttle) {
             throttle = share;
             binding = { ...sold, volume };
