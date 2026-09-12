@@ -20,6 +20,10 @@ import {
     buildEnhancementTooltipHTML,
 } from './tooltip-enhancement.js';
 import { registerCommand, unregisterCommand } from '../../utils/command-registry.js';
+import { getItemPrices } from '../../utils/market-data.js';
+import { calculatePriceAfterTax } from '../../utils/profit-helpers.js';
+import { capProfitRate, liquidityMarkerHtml } from '../../utils/liquidity-cap.js';
+import { yieldToEventLoop } from '../../utils/background-work.js';
 
 const PANEL_ID = 'mwi-xph-calc-panel';
 const BTN_CLASS = 'mwi-xph-calc-btn';
@@ -31,9 +35,10 @@ const BTN_CLASS = 'mwi-xph-calc-btn';
  * @param {number} maxLevel
  * @param {number} protectFrom
  * @param {Object} params - from enhancementParamsFor()
- * @returns {{itemHrid, name, xph, goldPerXP, costPerHour, costPartial}|null}
+ * @returns {{itemHrid, name, xph, goldPerXP, costPerHour, costPartial, itemsPerHour, profitPerHour,
+ *   profitUnavailableReason, liquidityLimit}|null}
  */
-function calculateItemXPH(itemHrid, itemDetails, maxLevel, protectFrom, params) {
+export function calculateItemXPH(itemHrid, itemDetails, maxLevel, protectFrom, params) {
     const itemLevel = itemDetails.itemLevel || 0;
 
     let calc;
@@ -70,6 +75,9 @@ function calculateItemXPH(itemHrid, itemDetails, maxLevel, protectFrom, params) 
     if (totalXP <= 0) return null;
 
     const xph = Math.round((totalXP / calc.totalTime) * 3600);
+    // How many finished (level maxLevel) items this run produces per hour — the same
+    // throughput costPerHour below is already priced against, just named for revenue too.
+    const itemsPerHour = 3600 / calc.totalTime;
 
     // Material cost calculation — shared pricing rules: coins at face value, untradeable
     // trainee charms at their fixed price, and a one-sided market quote filled in from the
@@ -97,6 +105,30 @@ function calculateItemXPH(itemHrid, itemDetails, maxLevel, protectFrom, params) 
         }
     }
 
+    // Profit/hr: what the finished item sells for at the row's own target level, net of
+    // marketplace tax, against the same per-hour cost above (materials, protection — time is
+    // already what both figures are "per hour" of). An item whose enhanced form has no market
+    // quote, or whose run cost is entirely unknown, is never reported as free or break-even —
+    // it says so instead, via `profitUnavailableReason`, and the panel sorts it last.
+    let profitPerHour = null;
+    let profitUnavailableReason = null;
+    const enhancedPrice = getItemPrices(itemHrid, maxLevel);
+    const sellPrice = enhancedPrice
+        ? enhancedPrice.bid > 0
+            ? enhancedPrice.bid
+            : enhancedPrice.ask > 0
+              ? enhancedPrice.ask
+              : null
+        : null;
+
+    if (sellPrice === null) {
+        profitUnavailableReason = 'unpriced';
+    } else if (costPerHour === null) {
+        profitUnavailableReason = 'no-cost';
+    } else {
+        profitPerHour = calculatePriceAfterTax(sellPrice) * itemsPerHour - costPerHour;
+    }
+
     return {
         itemHrid,
         name: itemDetails.name,
@@ -105,7 +137,44 @@ function calculateItemXPH(itemHrid, itemDetails, maxLevel, protectFrom, params) 
         goldPerXP,
         costPerHour,
         costPartial: hasCost && costPartial,
+        itemsPerHour,
+        profitPerHour,
+        profitUnavailableReason,
+        // Filled in by capXPHRowProfit() once the sweep knows what the market can absorb;
+        // null here means "not checked yet", not "unbound".
+        liquidityLimit: null,
     };
+}
+
+/**
+ * Bound one row's profit/hr by how fast the finished item actually sells, using the shared
+ * liquidity cap (`utils/liquidity-cap.js`) — the same bound the goal planner and the production
+ * arbitrage board apply. A thin market gets its rate throttled and a marker instead of a fat
+ * number nobody could realise; the row is copied, never edited in place, so `uncappedProfitPerHour`
+ * survives for anything that wants the raw figure.
+ *
+ * @param {Object} row - From {@link calculateItemXPH}
+ * @returns {Promise<Object>} The row, bounded where the market binds
+ */
+export async function capXPHRowProfit(row) {
+    if (!(row.profitPerHour > 0)) return row;
+
+    try {
+        const capped = await capProfitRate({
+            goldPerHour: row.profitPerHour,
+            sells: [{ itemHrid: row.itemHrid, unitsPerHour: row.itemsPerHour }],
+        });
+        if (!capped.capped) return row;
+        return {
+            ...row,
+            profitPerHour: capped.goldPerHour,
+            uncappedProfitPerHour: row.profitPerHour,
+            liquidityLimit: capped.limit,
+        };
+    } catch (error) {
+        console.error('[XPHCalculator] Bounding profit by market volume failed:', error);
+        return row;
+    }
 }
 
 class XPHCalculator {
@@ -288,6 +357,7 @@ class XPHCalculator {
                         <th id="mwi-xph-th-xph"  style="${thBase} text-align:right;">XP/hr ▼</th>
                         <th id="mwi-xph-th-gpx"  style="${thBase} text-align:right;">Gold/XP</th>
                         <th id="mwi-xph-th-cphr" style="${thBase} text-align:right;">Cost/hr</th>
+                        <th id="mwi-xph-th-profit" style="${thBase} text-align:right;">Profit/hr</th>
                     </tr>
                 </thead>
                 <tbody id="mwi-xph-tbody"></tbody>
@@ -326,7 +396,7 @@ class XPHCalculator {
         this.panel.querySelector('#mwi-xph-run').addEventListener('click', () => this._run());
         this.panel.addEventListener('mousedown', () => bringPanelToFront(this.panel));
 
-        ['name', 'xph', 'gpx', 'cphr'].forEach((col) => {
+        ['name', 'xph', 'gpx', 'cphr', 'profit'].forEach((col) => {
             this.panel.querySelector(`#mwi-xph-th-${col}`)?.addEventListener('click', () => this._sort(col));
         });
 
@@ -437,9 +507,9 @@ class XPHCalculator {
         status.textContent = 'Calculating…';
         this.tableBody.innerHTML = '';
 
-        const t = setTimeout(() => {
+        const t = setTimeout(async () => {
             try {
-                this._compute(maxLevel, protectFrom);
+                await this._compute(maxLevel, protectFrom);
             } catch (err) {
                 console.error('[XPHCalculator] Error:', err);
                 status.textContent = 'Error during calculation.';
@@ -448,7 +518,7 @@ class XPHCalculator {
         this.timerRegistry.registerTimeout(t);
     }
 
-    _compute(maxLevel, protectFrom) {
+    async _compute(maxLevel, protectFrom) {
         const gameData = dataManager.getInitClientData();
         const status = this.panel.querySelector('#mwi-xph-status');
         if (!gameData) {
@@ -467,6 +537,16 @@ class XPHCalculator {
             if (result) results.push(result);
         }
 
+        // Bound every priced row's profit by what the market can actually absorb, in slices
+        // so a full-game sweep doesn't freeze the panel while the volume lookups run.
+        const CAP_BATCH_SIZE = 24;
+        for (let i = 0; i < results.length; i += CAP_BATCH_SIZE) {
+            const slice = results.slice(i, i + CAP_BATCH_SIZE);
+            const bounded = await Promise.all(slice.map((row) => capXPHRowProfit(row)));
+            results.splice(i, bounded.length, ...bounded);
+            await yieldToEventLoop();
+        }
+
         this.lastResults = results;
         this.sortColumn = 'xph';
         this.sortAsc = false;
@@ -474,6 +554,7 @@ class XPHCalculator {
         this._updateSortIndicators();
 
         const withCost = results.filter((r) => r.costPerHour !== null).length;
+        const withProfit = results.filter((r) => r.profitPerHour !== null).length;
         const partialNote = results.some((r) => r.costPartial) ? ' * = partial price data.' : '';
         // Say so when the ranking was built on somebody else's bench — hand-entered
         // stats or the Pro kit — instead of this character's. Pro especially: the
@@ -481,12 +562,12 @@ class XPHCalculator {
         // professional's bench in silence next to it read as this character's own.
         const sourceNote = benchNote(params);
         status.textContent =
-            `${results.length} items · ${withCost} with cost data.${partialNote}` +
+            `${results.length} items · ${withCost} with cost data · ${withProfit} priced for profit.${partialNote}` +
             (sourceNote ? ` · ${sourceNote}` : '');
     }
 
     _sort(col) {
-        const colMap = { name: 'name', xph: 'xph', gpx: 'goldPerXP', cphr: 'costPerHour' };
+        const colMap = { name: 'name', xph: 'xph', gpx: 'goldPerXP', cphr: 'costPerHour', profit: 'profitPerHour' };
         const key = colMap[col];
         if (this.sortColumn === key) {
             this.sortAsc = !this.sortAsc;
@@ -499,9 +580,9 @@ class XPHCalculator {
     }
 
     _updateSortIndicators() {
-        const colMap = { name: 'name', xph: 'xph', goldPerXP: 'gpx', costPerHour: 'cphr' };
+        const colMap = { name: 'name', xph: 'xph', goldPerXP: 'gpx', costPerHour: 'cphr', profitPerHour: 'profit' };
         const activeId = colMap[this.sortColumn];
-        ['name', 'xph', 'gpx', 'cphr'].forEach((col) => {
+        ['name', 'xph', 'gpx', 'cphr', 'profit'].forEach((col) => {
             const th = this.panel.querySelector(`#mwi-xph-th-${col}`);
             if (!th) return;
             const base = th.textContent.replace(/\s*[▲▼]$/, '').trimEnd();
@@ -537,9 +618,32 @@ class XPHCalculator {
                 <td style="${tdR}${r.costPerHour === null ? ' color:#444;' : ''}">
                     ${r.costPerHour !== null ? `${formatKMB(Math.round(r.costPerHour))}${r.costPartial ? '*' : ''}` : '—'}
                 </td>
+                <td style="${tdR}">${this._profitCellHTML(r)}</td>
             </tr>`
             )
             .join('');
+    }
+
+    /**
+     * Profit/hr cell contents: the coloured figure with its liquidity marker when the market
+     * bounds it, or a label — never a bare dash — when the row could not be priced at all.
+     * @param {Object} r - A row from {@link calculateItemXPH} / {@link capXPHRowProfit}
+     * @returns {string} Inner HTML for the cell
+     * @private
+     */
+    _profitCellHTML(r) {
+        if (r.profitPerHour === null) {
+            const label = r.profitUnavailableReason === 'unpriced' ? 'unpriced' : 'no cost data';
+            const title =
+                r.profitUnavailableReason === 'unpriced'
+                    ? 'No market price for the enhanced item at this level'
+                    : 'No cost data available for this item';
+            return `<span style="color:#444;" title="${title}">${label}</span>`;
+        }
+
+        const color = r.profitPerHour < 0 ? '#ff6b6b' : '#00c896';
+        const marker = r.liquidityLimit ? liquidityMarkerHtml(r.liquidityLimit, { compact: true }) : '';
+        return `<span style="color:${color};">${formatKMB(Math.round(r.profitPerHour))}${r.costPartial ? '*' : ''}</span>${marker}`;
     }
 
     disable() {
