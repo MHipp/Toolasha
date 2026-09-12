@@ -42,6 +42,8 @@ const mocks = vi.hoisted(() => ({
     importResult: { restored: {}, expected: {}, failed: [], complete: true },
     /** How many times the panel emptied config's settings map */
     cacheClears: 0,
+    /** Times the command palette's own `open()` was called */
+    paletteOpened: 0,
 }));
 
 /** Controllable stand-in for the census singleton the export button drives. */
@@ -278,6 +280,13 @@ vi.mock('../inventory/treasure-tracker.js', () => ({
     default: { show: () => {}, toggle: () => mocks.toggled.push('treasure') },
 }));
 vi.mock('../ui/overlay-panel.js', () => ({ default: { toggle: () => {} } }));
+vi.mock('../ui/command-palette.js', () => ({
+    default: {
+        open: () => {
+            mocks.paletteOpened += 1;
+        },
+    },
+}));
 vi.mock('../sync/sync-manager.js', () => ({
     default: { initialize: async () => {}, describeStatus: async () => 'Not linked.' },
 }));
@@ -370,6 +379,7 @@ beforeEach(() => {
     mocks.coarsePointer = false;
     mocks.loadGate = null;
     mocks.cacheClears = 0;
+    mocks.paletteOpened = 0;
     mocks.settingsMap = {};
     censusMock.initialized = true;
     censusMock.rosterSize = 0;
@@ -685,6 +695,31 @@ describe('the buttons that open a panel', () => {
         utilityButton('PFormance').click();
 
         expect(mocks.toggled).toEqual(['pformance']);
+    });
+});
+
+describe('opening the command palette on a phone', () => {
+    test('the button is absent on desktop, where Ctrl/Cmd+K already works', () => {
+        mocks.coarsePointer = false;
+        drawPanel();
+
+        expect(
+            [...document.querySelectorAll('.toolasha-utility-button')].find((b) => b.textContent === 'Command Palette')
+        ).toBeUndefined();
+    });
+
+    test('on a phone, the button opens the palette', () => {
+        mocks.coarsePointer = true;
+        drawPanel();
+
+        const button = [...document.querySelectorAll('.toolasha-utility-button')].find(
+            (b) => b.textContent === 'Command Palette'
+        );
+        expect(button).toBeTruthy();
+
+        button.click();
+
+        expect(mocks.paletteOpened).toBe(1);
     });
 });
 

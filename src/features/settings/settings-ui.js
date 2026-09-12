@@ -14,7 +14,7 @@ import marketAPI from '../../api/marketplace.js';
 import { createMutationWatcher } from '../../utils/dom-observer-helpers.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { PANEL_Z_CAP } from '../../utils/panel-z-index.js';
-import { detectedModeLabel } from '../../utils/mobile.js';
+import { detectedModeLabel, isMobileMode } from '../../utils/mobile.js';
 import scrollSimulatorUI from '../combat/scroll-simulator-ui.js';
 import spawnCensus from '../combat/spawn-census.js';
 import whatsNew from './whats-new.js';
@@ -23,6 +23,7 @@ import { getDetectedGearSettings, getEnhancingParams } from '../../utils/enhance
 import pformancePanel from '../dev/pformance-panel.js';
 import treasureTracker from '../inventory/treasure-tracker.js';
 import overlayPanel from '../ui/overlay-panel.js';
+import commandPalette from '../ui/command-palette.js';
 import syncManager from '../sync/sync-manager.js';
 import { copySyncSetupToOtherCharacters } from '../sync/sync-setup-copy.js';
 import {
@@ -1942,6 +1943,24 @@ class SettingsUI {
         pformanceBtn.className = 'toolasha-utility-button';
         pformanceBtn.addEventListener('click', () => pformancePanel.toggle());
         buttonsDiv.appendChild(pformanceBtn);
+
+        // Mobile-only: a phone has no Ctrl/Cmd to press, so the palette's
+        // hotkey is unreachable there. This tab is the one place Toolasha's
+        // own UI is guaranteed to be on screen on a phone (it rides beside the
+        // game's own Inventory tab, which is always present), so it is where
+        // the palette's one other opener belongs. Desktop keeps the hotkey as
+        // the only way in — a second button there would just be a slower
+        // version of it sitting in a row of panel toggles.
+        if (isMobileMode()) {
+            const paletteBtn = document.createElement('button');
+            paletteBtn.textContent = 'Command Palette';
+            paletteBtn.className = 'toolasha-utility-button';
+            paletteBtn.title =
+                'Search every panel, overlay row, saved layout and setting by name — the same list Ctrl/Cmd+K ' +
+                'opens on desktop, reachable here because a phone has no keyboard to press that with.';
+            paletteBtn.addEventListener('click', () => commandPalette.open());
+            buttonsDiv.appendChild(paletteBtn);
+        }
 
         container.appendChild(buttonsDiv);
     }
