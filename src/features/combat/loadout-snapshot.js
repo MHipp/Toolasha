@@ -20,6 +20,14 @@ import config from '../../core/config.js';
 import storage from '../../core/storage.js';
 import { webSocketHook as sharedWebSocketHook } from '../../utils/bundle-bridge.js';
 import { captureOwner, stillOurs, noteTeardown } from '../../utils/init-ownership.js';
+import { parseWearable, highestOwnedEnhancements, resolveEnhancementLevel } from '../../utils/loadout-equipment.js';
+
+// Re-exported for this module's own existing callers and tests. New code
+// wanting these pure helpers (e.g. a market-bundle tooltip) should import
+// them from '../../utils/loadout-equipment.js' directly, rather than reaching
+// into this module and pulling in its snapshot store and WebSocket
+// subscription across a bundle boundary.
+export { highestOwnedEnhancements, resolveEnhancementLevel };
 
 const STORAGE_KEY_PREFIX = 'loadout_snapshots';
 
@@ -52,78 +60,6 @@ function getWebSocketHook() {
 function getStorageKey() {
     const charId = dataManager.getCurrentCharacterId() || 'default';
     return `${STORAGE_KEY_PREFIX}_${charId}`;
-}
-
-/**
- * Parse a wearable hash string into itemLocationHrid, itemHrid, and enhancementLevel.
- * Format: "characterId::/item_locations/location::/items/item_hrid::enhancementLevel"
- * Empty string means no item in that slot.
- * @param {string} itemLocationHrid - The equipment slot key (e.g. "/item_locations/body")
- * @param {string} wearableHash - The wearable hash value
- * @returns {{ itemLocationHrid: string, itemHrid: string, enhancementLevel: number }|null}
- */
-function parseWearable(itemLocationHrid, wearableHash) {
-    if (!wearableHash) return null;
-
-    const parts = wearableHash.split('::');
-    const itemHrid = parts.find((p) => p.startsWith('/items/'));
-    if (!itemHrid) return null;
-
-    const lastPart = parts[parts.length - 1];
-    const enhancementLevel = !lastPart.startsWith('/') ? parseInt(lastPart, 10) || 0 : 0;
-
-    return { itemLocationHrid, itemHrid, enhancementLevel };
-}
-
-/**
- * The best enhancement level owned of every item, from the inventory.
- *
- * Equipped pieces are in `characterItems` alongside the loose ones, so this
- * covers what is worn as well as what is in the bag — which is what "highest
- * owned" means to the game.
- *
- * @param {Array<Object>} [items] - Defaults to the live inventory
- * @returns {Map<string, number>} Item hrid → highest enhancement level owned
- */
-export function highestOwnedEnhancements(items) {
-    const inventory = items || dataManager.characterItems || dataManager.characterData?.characterItems || [];
-    const highest = new Map();
-    for (const item of inventory) {
-        // Equipped items don't reliably carry a count field the way stacked inventory
-        // items do — requiring count > 0 dropped them, letting a lower-enhancement
-        // duplicate in the bag outrank the actually-equipped higher copy. Skip only an
-        // explicit zero (a stack that was consumed), matching loadout-enhancement-display.
-        if (!item?.itemHrid || item.count === 0) continue;
-        const level = item.enhancementLevel || 0;
-        if (!highest.has(item.itemHrid) || level > highest.get(item.itemHrid)) {
-            highest.set(item.itemHrid, level);
-        }
-    }
-    return highest;
-}
-
-/**
- * What one slot of a loadout is really wearing.
- *
- * A loadout pinned with "use exact enhancement" wears what it says. Every other
- * loadout wears the best copy owned, so a stored level is a stale reading of
- * that rather than a fact — it is the level at the moment the loadout was last
- * saved, and enhancing the item since does not rewrite it.
- *
- * Never lower than what is stored: an inventory that has not arrived yet is an
- * empty map, and dropping a known +10 to 0 on the strength of it would be worse
- * than the staleness this is here to fix.
- *
- * @param {Object} snapshot - The loadout
- * @param {Object} equip - One entry of `snapshot.equipment`
- * @param {Map<string, number>} owned - From `highestOwnedEnhancements`
- * @returns {number} Enhancement level
- */
-export function resolveEnhancementLevel(snapshot, equip, owned) {
-    const stored = equip?.enhancementLevel || 0;
-    if (snapshot?.useExactEnhancement) return stored;
-    const highest = owned?.get(equip?.itemHrid);
-    return highest === undefined ? stored : Math.max(stored, highest);
 }
 
 /**

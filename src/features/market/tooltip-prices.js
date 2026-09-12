@@ -38,6 +38,7 @@ import { getKeyUnitCost } from '../../utils/key-cost.js';
 import { calculateArtisanBonus } from '../../utils/material-calculator.js';
 import { getActionHridFromName } from '../../utils/game-lookups.js';
 import { findProducingAction } from '../../utils/production-index.js';
+import { parseWearable, highestOwnedEnhancements, resolveEnhancementLevel } from '../../utils/loadout-equipment.js';
 
 // Compiled regex patterns (created once, reused for performance)
 const REGEX_ENHANCEMENT_STRIP = /\s*\+\d+$/;
@@ -65,6 +66,7 @@ const TOOLTIP_FEATURE_SETTINGS = [
     'itemTooltip_abilityFreshCost',
     'itemTooltip_enhancementPath',
     'itemTooltip_enhancementMilestones',
+    'itemTooltip_loadoutMarks',
 ];
 
 /** Whether any tooltip-injection feature is enabled. */
@@ -239,6 +241,72 @@ export function ownUseLine(comparison) {
     };
 }
 
+/**
+ * Whether one saved loadout would actually equip a specific item stack —
+ * equipment at a specific enhancement level, or a food/drink at any level.
+ *
+ * `useExactEnhancement: false` does not mean "any level of this item" — it
+ * means the game equips the HIGHEST level of that item currently owned, no
+ * matter what level `wearableMap`'s hash happens to record from whenever the
+ * loadout was last saved (which can be stale by many enhancements). The stack
+ * that is genuinely "in this loadout" is the one `resolveEnhancementLevel`
+ * (shared with `loadout-snapshot.js`, which every other loadout-aware feature
+ * already resolves through) says it would wear — the exact stored level when
+ * the loadout is pinned, otherwise the highest level owned. A lower stack of
+ * the same hrid is not a match either way.
+ *
+ * Food and drink slots (`foodItemHrids` / `drinkItemHrids`) are plain hrid
+ * arrays with empty-string holes for unset slots and carry no enhancement
+ * level at all, since consumables don't have one.
+ *
+ * @param {Object} loadout - One entry of `characterLoadoutMap` (carries
+ *   `useExactEnhancement`, same field `resolveEnhancementLevel` reads)
+ * @param {string} itemHrid - Item to look for
+ * @param {number} enhancementLevel - The hovered stack's enhancement level
+ * @param {Map<string, number>} owned - From `highestOwnedEnhancements`
+ * @returns {boolean}
+ */
+export function loadoutSlotsItem(loadout, itemHrid, enhancementLevel, owned) {
+    // An empty string is how these arrays spell an unset slot, never a real
+    // item — matching it against itself would mark "nothing equipped here" as
+    // if it were the item being asked about.
+    if (!itemHrid) return false;
+    if ((loadout.foodItemHrids || []).includes(itemHrid)) return true;
+    if ((loadout.drinkItemHrids || []).includes(itemHrid)) return true;
+
+    for (const [locationHrid, hash] of Object.entries(loadout.wearableMap || {})) {
+        const parsed = parseWearable(locationHrid, hash);
+        if (!parsed || parsed.itemHrid !== itemHrid) continue;
+        if (resolveEnhancementLevel(loadout, parsed, owned) === enhancementLevel) return true;
+    }
+    return false;
+}
+
+/**
+ * Which saved loadouts an item stack is slotted in, and whether the character
+ * has any saved loadouts at all.
+ *
+ * The second part is the whole reason this returns an object instead of just
+ * the array: an item matching nothing must read differently depending on
+ * whether there was anything for it to match. "Not in any saved loadout" is an
+ * answer about the item; an empty/missing map is a character with nothing
+ * saved yet, and showing the first line for that would report knowledge this
+ * does not have.
+ *
+ * @param {Object|undefined|null} loadoutMap - `characterData.characterLoadoutMap`
+ * @param {string} itemHrid - Item to look for
+ * @param {number} enhancementLevel - The hovered stack's enhancement level
+ * @param {Map<string, number>} owned - From `highestOwnedEnhancements`
+ * @returns {{hasLoadouts: boolean, loadouts: string[]}}
+ */
+export function loadoutsContainingItem(loadoutMap, itemHrid, enhancementLevel, owned) {
+    const named = Object.values(loadoutMap || {}).filter((loadout) => loadout?.name);
+    const loadouts = named
+        .filter((loadout) => loadoutSlotsItem(loadout, itemHrid, enhancementLevel, owned))
+        .map((loadout) => loadout.name);
+    return { hasLoadouts: named.length > 0, loadouts };
+}
+
 class TooltipPrices {
     constructor() {
         this.unregisterObserver = null;
@@ -273,11 +341,13 @@ class TooltipPrices {
 
         this.isInitialized = true;
 
-        // Every section except pin-to-top and ability-book status reads market
-        // prices (prices, profit, expected value, enhancement costs, gathering
-        // value), so load market data unless those two are the only things on.
+        // Every section except pin-to-top, ability-book status and loadout marks
+        // reads market prices (prices, profit, expected value, enhancement costs,
+        // gathering value), so load market data unless those three are the only
+        // things on. Loadout marks reads characterLoadoutMap, not the market.
         const needsMarketData = TOOLTIP_FEATURE_SETTINGS.filter(
-            (id) => id !== 'itemTooltip_pinTop' && id !== 'itemTooltip_abilityStatus'
+            (id) =>
+                id !== 'itemTooltip_pinTop' && id !== 'itemTooltip_abilityStatus' && id !== 'itemTooltip_loadoutMarks'
         ).some((id) => config.getSetting(id));
 
         if (needsMarketData && !marketAPI.isLoaded()) {
@@ -480,6 +550,7 @@ class TooltipPrices {
                     '.market-enhancement-injected',
                     '.mwi-enhancement-milestones',
                     '.mwi-ability-status',
+                    '.mwi-loadout-marks',
                 ];
                 for (const sel of staleSelectors) {
                     tooltipText.querySelector(sel)?.remove();
@@ -576,6 +647,20 @@ class TooltipPrices {
             const abilityStatus = this.getAbilityStatus(itemHrid);
             if (abilityStatus) {
                 this.injectAbilityStatusDisplay(tooltipElement, abilityStatus, isCollectionTooltip);
+            }
+        }
+
+        // Which saved loadouts this item is slotted in — equipment (at this
+        // enhancement level) or a food/drink. Only items that could ever be in
+        // a loadout are checked, both to keep noise off plain materials'
+        // tooltips and because a loadout has nowhere else to put anything else.
+        if (
+            config.getSetting('itemTooltip_loadoutMarks') &&
+            (itemDetails.equipmentDetail || itemDetails.consumableDetail)
+        ) {
+            const loadoutMarks = this.getLoadoutMarks(itemHrid, enhancementLevel);
+            if (loadoutMarks) {
+                this.injectLoadoutMarksDisplay(tooltipElement, loadoutMarks, isCollectionTooltip);
             }
         }
 
@@ -1667,6 +1752,75 @@ class TooltipPrices {
 
         statusDiv.innerHTML = html;
         tooltipText.appendChild(statusDiv);
+    }
+
+    /**
+     * Which saved loadouts a hovered item stack is slotted in.
+     *
+     * Reads `characterData.characterLoadoutMap` directly — the same field
+     * `getAbilityStatus` above reads for ability books — rather than the
+     * separate `loadout-snapshot.js` cache, which only fills in behind its own
+     * feature switch. This is available whenever a character is loaded.
+     * `highestOwnedEnhancements`/`resolveEnhancementLevel` are the same pure
+     * helpers `loadout-snapshot.js` resolves equipment through everywhere else
+     * (lifted to `utils/loadout-equipment.js` so this market-bundle module can
+     * use them without importing that combat-bundle module's snapshot store).
+     *
+     * @param {string} itemHrid - Item HRID
+     * @param {number} enhancementLevel - The hovered stack's enhancement level
+     * @returns {{hasLoadouts: boolean, loadouts: string[]}|null} Null with no
+     *   character data loaded yet at all
+     */
+    getLoadoutMarks(itemHrid, enhancementLevel) {
+        const characterData = dataManager.characterData;
+        if (!characterData) return null;
+        // Freshly read on every hover, not cached: the same pattern
+        // `resolveEquipment` in loadout-snapshot.js uses, so a copy just
+        // enhanced past a loadout's stale wearableMap level is reflected the
+        // next time this item is hovered, not until some invalidation fires.
+        const owned = highestOwnedEnhancements();
+        return loadoutsContainingItem(characterData.characterLoadoutMap, itemHrid, enhancementLevel, owned);
+    }
+
+    /**
+     * Inject the "In loadouts" section into an item tooltip.
+     *
+     * Three readings, never collapsed into each other: named loadouts when the
+     * item matches any, "not in any saved loadout" when the character has
+     * loadouts but none slot this item/level, and "no loadouts saved" when the
+     * character has not saved any loadout at all — that last one must never
+     * read as the second, or a player who has simply never opened the
+     * Loadouts tab would be told their gear is not equipped anywhere, which is
+     * not something this can know.
+     *
+     * @param {Element} tooltipElement - Tooltip element
+     * @param {{hasLoadouts: boolean, loadouts: string[]}} marks - From `getLoadoutMarks`
+     * @param {boolean} isCollectionTooltip - Whether this is a collection tooltip
+     */
+    injectLoadoutMarksDisplay(tooltipElement, marks, isCollectionTooltip) {
+        const tooltipText = isCollectionTooltip
+            ? tooltipElement.querySelector('div[class*="Collection_tooltipContent"]')
+            : tooltipElement.querySelector('div[class*="ItemTooltipText_itemTooltipText"]');
+
+        if (!tooltipText || tooltipText.querySelector('.mwi-loadout-marks')) {
+            return;
+        }
+
+        const div = document.createElement('div');
+        div.className = 'mwi-loadout-marks';
+        div.style.cssText = 'margin-top: 8px; font-size: 0.9em;';
+
+        // Named rather than counted: "in 2 loadouts" still makes you open the
+        // loadouts tab to find out which two (same reasoning as ability status).
+        if (marks.loadouts.length) {
+            div.innerHTML = `<div style="color: ${config.COLOR_TOOLTIP_INFO};">In loadouts: ${marks.loadouts.join(', ')}</div>`;
+        } else if (marks.hasLoadouts) {
+            div.innerHTML = `<div style="color: ${config.COLOR_TEXT_SECONDARY};">Not in any saved loadout</div>`;
+        } else {
+            div.innerHTML = `<div style="color: ${config.COLOR_TEXT_SECONDARY};">No loadouts saved</div>`;
+        }
+
+        tooltipText.appendChild(div);
     }
 
     /**

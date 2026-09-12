@@ -826,6 +826,13 @@ export const settingsGroups = {
                 default: true,
                 help: 'Shows whether ability is learned and current level/progress on ability book tooltips',
             },
+            itemTooltip_loadoutMarks: {
+                id: 'itemTooltip_loadoutMarks',
+                label: 'Show which saved loadouts an item is in',
+                type: 'checkbox',
+                default: false,
+                help: "Names the saved loadouts an item's tooltip is slotted into — equipment at its exact enhancement level (or any level, for a loadout not pinned to one), plus food and drinks. Says so when it is in none, and says so separately when you have not saved any loadout at all.",
+            },
             itemTooltip_abilityFreshCost: {
                 id: 'itemTooltip_abilityFreshCost',
                 label: 'Show fresh-to-level cost on ability hovers',

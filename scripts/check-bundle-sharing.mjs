@@ -199,6 +199,22 @@ const ALLOWLIST = new Map([
         // the market bundle (net worth's gold-source attribution).
         'stateless player-attribution selector; no module state to share',
     ],
+    [
+        'src/utils/loadout-equipment.js',
+        // Three pure functions lifted out of features/combat/loadout-snapshot.js
+        // (which re-exports two of them for its own existing callers): a
+        // string parser, a Map built fresh from whatever inventory it is
+        // handed (or the live one, read through the already-external
+        // dataManager singleton) each call, and a resolver over its
+        // arguments. None keep state of their own, so every inlined copy
+        // answers the same question the same way. Reached from the combat
+        // bundle (loadout-snapshot.js's own equipment resolution) and the
+        // market bundle (tooltip-prices.js's loadout marks, which needs the
+        // same "what would this loadout actually equip" answer without
+        // importing that module's stateful snapshot store and WebSocket
+        // subscription).
+        'stateless loadout-equipment resolvers; no module state to share',
+    ],
 ]);
 
 /**

@@ -9,11 +9,16 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { _resetGameNumberSeparators } from '../../utils/number-parser.js';
 
 const observerState = vi.hoisted(() => ({ handler: null }));
-const settings = vi.hoisted(() => ({ hideInEnhanceSelector: false }));
+const settings = vi.hoisted(() => ({ hideInEnhanceSelector: false, loadoutMarksEnabled: true }));
+const characterState = vi.hoisted(() => ({ data: null }));
 
 vi.mock('../../core/config.js', () => ({
     default: {
-        getSetting: (id) => (id === 'itemTooltip_hideInEnhanceSelector' ? settings.hideInEnhanceSelector : true),
+        getSetting: (id) => {
+            if (id === 'itemTooltip_hideInEnhanceSelector') return settings.hideInEnhanceSelector;
+            if (id === 'itemTooltip_loadoutMarks') return settings.loadoutMarksEnabled;
+            return true;
+        },
         getSettingValue: (_id, fallback) => fallback,
         COLOR_TOOLTIP_INFO: '#abc',
         COLOR_TEXT_SECONDARY: '#999',
@@ -33,7 +38,8 @@ vi.mock('../../core/dom-observer.js', () => ({
 vi.mock('../../core/data-manager.js', () => {
     const itemDetailMap = {
         '/items/cheese': { name: 'Cheese' },
-        '/items/griffin_bulwark': { name: 'Griffin Bulwark' },
+        '/items/griffin_bulwark': { name: 'Griffin Bulwark', equipmentDetail: {} },
+        '/items/wisdom_tea': { name: 'Wisdom Tea', consumableDetail: {} },
     };
     return {
         default: {
@@ -42,6 +48,12 @@ vi.mock('../../core/data-manager.js', () => {
                 abilityDetailMap: { '/abilities/berserk': { name: 'Berserk' } },
             }),
             getItemDetails: (hrid) => itemDetailMap[hrid] || null,
+            get characterData() {
+                return characterState.data;
+            },
+            get characterItems() {
+                return characterState.data?.characterItems;
+            },
         },
     };
 });
@@ -85,7 +97,13 @@ vi.mock('../../utils/dom.js', () => ({
     },
 }));
 
-const { default: tooltipPrices, ownUseCompare, ownUseLine } = await import('./tooltip-prices.js');
+const {
+    default: tooltipPrices,
+    ownUseCompare,
+    ownUseLine,
+    loadoutSlotsItem,
+    loadoutsContainingItem,
+} = await import('./tooltip-prices.js');
 const { default: tooltipObserver } = await import('../../core/tooltip-observer.js');
 
 /**
@@ -118,6 +136,8 @@ const settle = async () => {
 beforeEach(async () => {
     document.body.innerHTML = '';
     settings.hideInEnhanceSelector = false;
+    settings.loadoutMarksEnabled = true;
+    characterState.data = null;
     await tooltipPrices.initialize();
 });
 
@@ -398,5 +418,256 @@ describe('own-use make vs buy', () => {
         const buyWins = ownUseLine(ownUseCompare(data({ pricingMode: 'optimistic', materialCostPerHour: 7_500_000 })));
         expect(buyWins.text).toBe('Own use: make ≈80.0K vs buy 45.0K (bid) — buy saves 35.0K (44%)');
         expect(buyWins.color).toBe('#f00');
+    });
+});
+
+describe('loadout marks — matching a stack to a loadout', () => {
+    test('a loadout pinned to an exact enhancement only matches that level', () => {
+        const pinned = {
+            name: 'Boss Gear',
+            useExactEnhancement: true,
+            wearableMap: { '/item_locations/body': 'c::/item_locations/body::/items/griffin_bulwark::5' },
+        };
+        // The +5 stack matches...
+        expect(loadoutSlotsItem(pinned, '/items/griffin_bulwark', 5, new Map())).toBe(true);
+        // ...but the +0 stack of the same item does not, even with a +12 owned —
+        // a pinned loadout is frozen at what it says, not at what is highest.
+        const owned = new Map([['/items/griffin_bulwark', 12]]);
+        expect(loadoutSlotsItem(pinned, '/items/griffin_bulwark', 0, owned)).toBe(false);
+        expect(loadoutSlotsItem(pinned, '/items/griffin_bulwark', 12, owned)).toBe(false);
+        // And the mirror image: a loadout pinned to +0 does not match a +5 stack.
+        const pinnedToZero = {
+            name: 'Fresh Gear',
+            useExactEnhancement: true,
+            wearableMap: { '/item_locations/body': 'c::/item_locations/body::/items/griffin_bulwark::0' },
+        };
+        expect(loadoutSlotsItem(pinnedToZero, '/items/griffin_bulwark', 5, owned)).toBe(false);
+    });
+
+    test('a loadout not pinned wears the HIGHEST level owned, not any level and not the stale stored one', () => {
+        // useExactEnhancement:false does NOT mean "any level of this item" —
+        // the game equips whichever copy is highest-owned, so only that
+        // level's stack is the one genuinely in this loadout.
+        const flexible = {
+            name: 'Everyday',
+            useExactEnhancement: false,
+            // wearableMap still says +0, stale from whenever this was last saved
+            wearableMap: { '/item_locations/body': 'c::/item_locations/body::/items/griffin_bulwark::0' },
+        };
+        const owned = new Map([['/items/griffin_bulwark', 12]]);
+        // The +12 stack — the level actually worn — matches...
+        expect(loadoutSlotsItem(flexible, '/items/griffin_bulwark', 12, owned)).toBe(true);
+        // ...but a lower stack of the very same item does not, stale
+        // wearableMap level included
+        expect(loadoutSlotsItem(flexible, '/items/griffin_bulwark', 0, owned)).toBe(false);
+        expect(loadoutSlotsItem(flexible, '/items/griffin_bulwark', 5, owned)).toBe(false);
+        expect(loadoutSlotsItem(flexible, '/items/some_other_sword', 0, owned)).toBe(false);
+    });
+
+    test('with nothing owned yet, a non-pinned loadout falls back to the stored level', () => {
+        // An inventory read that has not arrived yet is an empty map, not a
+        // signal to drop a known level to 0
+        const flexible = {
+            name: 'Everyday',
+            useExactEnhancement: false,
+            wearableMap: { '/item_locations/body': 'c::/item_locations/body::/items/griffin_bulwark::7' },
+        };
+        expect(loadoutSlotsItem(flexible, '/items/griffin_bulwark', 7, new Map())).toBe(true);
+        expect(loadoutSlotsItem(flexible, '/items/griffin_bulwark', 0, new Map())).toBe(false);
+    });
+
+    test('the mark follows a loadout when a higher-level copy is acquired', () => {
+        const flexible = {
+            name: 'Everyday',
+            useExactEnhancement: false,
+            wearableMap: { '/item_locations/body': 'c::/item_locations/body::/items/griffin_bulwark::0' },
+        };
+        // Before the upgrade, the +0 stack is the one worn...
+        const before = new Map([['/items/griffin_bulwark', 0]]);
+        expect(loadoutSlotsItem(flexible, '/items/griffin_bulwark', 0, before)).toBe(true);
+        // ...owning a +8 moves the mark to the +8 stack and off the +0 one —
+        // the same thing loadout-snapshot.js's updateEnhancementLevel keeps in
+        // sync for its own snapshot store.
+        const afterUpgrade = new Map([['/items/griffin_bulwark', 8]]);
+        expect(loadoutSlotsItem(flexible, '/items/griffin_bulwark', 0, afterUpgrade)).toBe(false);
+        expect(loadoutSlotsItem(flexible, '/items/griffin_bulwark', 8, afterUpgrade)).toBe(true);
+    });
+
+    test('food and drinks match on hrid alone — consumables carry no enhancement level', () => {
+        const loadout = {
+            name: 'Milking Loadout',
+            foodItemHrids: ['/items/blueberry_cake', '', ''],
+            drinkItemHrids: ['', '/items/wisdom_tea', ''],
+        };
+        expect(loadoutSlotsItem(loadout, '/items/blueberry_cake', 0, new Map())).toBe(true);
+        expect(loadoutSlotsItem(loadout, '/items/wisdom_tea', 7, new Map())).toBe(true);
+        expect(loadoutSlotsItem(loadout, '/items/coffee', 0, new Map())).toBe(false);
+    });
+
+    test('an empty-string slot in food/drink arrays never matches', () => {
+        const loadout = { name: 'Sparse', foodItemHrids: ['', ''], drinkItemHrids: ['', ''] };
+        expect(loadoutSlotsItem(loadout, '', 0, new Map())).toBe(false);
+    });
+});
+
+describe('loadout marks — the three readings across every loadout', () => {
+    test('an item in two loadouts names both', () => {
+        const owned = new Map([['/items/sword', 12]]);
+        const map = {
+            a: { name: 'Alpha', useExactEnhancement: false, wearableMap: { x: 'c::x::/items/sword::0' } },
+            b: { name: 'Beta', useExactEnhancement: false, wearableMap: { y: 'c::y::/items/sword::0' } },
+            c: { name: 'Gamma', wearableMap: { z: 'c::z::/items/shield::0' } },
+        };
+        // Queried at the level actually owned/worn — both are non-exact, so
+        // resolveEnhancementLevel resolves both to +12 and both match.
+        const marks = loadoutsContainingItem(map, '/items/sword', 12, owned);
+        expect(marks.hasLoadouts).toBe(true);
+        expect([...marks.loadouts].sort()).toEqual(['Alpha', 'Beta']);
+    });
+
+    test('an item in no loadout still says the character has saved loadouts', () => {
+        const map = { a: { name: 'Alpha', wearableMap: { z: 'c::z::/items/shield::0' } } };
+        expect(loadoutsContainingItem(map, '/items/sword', 0, new Map())).toEqual({
+            hasLoadouts: true,
+            loadouts: [],
+        });
+    });
+
+    test('no saved loadouts at all reads apart from "in no loadout"', () => {
+        expect(loadoutsContainingItem({}, '/items/sword', 0, new Map())).toEqual({ hasLoadouts: false, loadouts: [] });
+        expect(loadoutsContainingItem(undefined, '/items/sword', 0, new Map())).toEqual({
+            hasLoadouts: false,
+            loadouts: [],
+        });
+        expect(loadoutsContainingItem(null, '/items/sword', 0, new Map())).toEqual({
+            hasLoadouts: false,
+            loadouts: [],
+        });
+        // An unnamed entry (a loadout mid-delete, or a malformed map) is not a
+        // saved loadout either
+        expect(loadoutsContainingItem({ a: {} }, '/items/sword', 0, new Map())).toEqual({
+            hasLoadouts: false,
+            loadouts: [],
+        });
+    });
+});
+
+describe('loadout marks — on the tooltip itself', () => {
+    test('names the loadouts an equipped item is slotted in, at its exact enhancement level', async () => {
+        characterState.data = {
+            characterLoadoutMap: {
+                a: {
+                    name: 'Boss Gear',
+                    useExactEnhancement: true,
+                    wearableMap: { '/item_locations/body': 'c::/item_locations/body::/items/griffin_bulwark::5' },
+                },
+            },
+        };
+        const el = itemTooltip('Griffin Bulwark +5');
+        observerState.handler(el);
+        await settle();
+        expect(el.querySelector('.mwi-loadout-marks')?.textContent).toBe('In loadouts: Boss Gear');
+    });
+
+    test('a different enhancement level of the same pinned item is not marked as in that loadout', async () => {
+        characterState.data = {
+            characterLoadoutMap: {
+                a: {
+                    name: 'Boss Gear',
+                    useExactEnhancement: true,
+                    wearableMap: { '/item_locations/body': 'c::/item_locations/body::/items/griffin_bulwark::5' },
+                },
+            },
+        };
+        const el = itemTooltip('Griffin Bulwark');
+        observerState.handler(el);
+        await settle();
+        expect(el.querySelector('.mwi-loadout-marks')?.textContent).toBe('Not in any saved loadout');
+    });
+
+    test('a non-pinned loadout marks only the highest-owned stack, not the stale stored level', async () => {
+        characterState.data = {
+            characterLoadoutMap: {
+                a: {
+                    name: 'Everyday',
+                    useExactEnhancement: false,
+                    wearableMap: { '/item_locations/body': 'c::/item_locations/body::/items/griffin_bulwark::0' },
+                },
+            },
+            // The highest owned copy is +8, even though wearableMap still says +0
+            characterItems: [{ itemHrid: '/items/griffin_bulwark', enhancementLevel: 8, count: 1 }],
+        };
+        const zeroStack = itemTooltip('Griffin Bulwark');
+        observerState.handler(zeroStack);
+        await settle();
+        expect(zeroStack.querySelector('.mwi-loadout-marks')?.textContent).toBe('Not in any saved loadout');
+
+        const eightStack = itemTooltip('Griffin Bulwark +8');
+        observerState.handler(eightStack);
+        await settle();
+        expect(eightStack.querySelector('.mwi-loadout-marks')?.textContent).toBe('In loadouts: Everyday');
+    });
+
+    test('an item in no saved loadout says so, distinct from having none saved', async () => {
+        characterState.data = {
+            characterLoadoutMap: { a: { name: 'Boss Gear', wearableMap: {} } },
+        };
+        const el = itemTooltip('Griffin Bulwark');
+        observerState.handler(el);
+        await settle();
+        expect(el.querySelector('.mwi-loadout-marks')?.textContent).toBe('Not in any saved loadout');
+    });
+
+    test('no saved loadouts at all reads as unknown, never as "not in any loadout"', async () => {
+        characterState.data = { characterLoadoutMap: {} };
+        const el = itemTooltip('Griffin Bulwark');
+        observerState.handler(el);
+        await settle();
+        expect(el.querySelector('.mwi-loadout-marks')?.textContent).toBe('No loadouts saved');
+    });
+
+    test('covers food and drinks as well as equipment', async () => {
+        characterState.data = {
+            characterLoadoutMap: {
+                a: { name: 'Milking', drinkItemHrids: ['/items/wisdom_tea'] },
+            },
+        };
+        const el = itemTooltip('Wisdom Tea');
+        observerState.handler(el);
+        await settle();
+        expect(el.querySelector('.mwi-loadout-marks')?.textContent).toBe('In loadouts: Milking');
+    });
+
+    test('a plain material is never checked — a loadout has nowhere to put it', async () => {
+        // Cheese carries neither equipmentDetail nor consumableDetail in the
+        // mocked item map, so even a (contrived) matching loadout is not read.
+        characterState.data = {
+            characterLoadoutMap: { a: { name: 'Somehow', foodItemHrids: ['/items/cheese'] } },
+        };
+        const el = itemTooltip('Cheese');
+        observerState.handler(el);
+        await settle();
+        expect(el.querySelector('.mwi-loadout-marks')).toBeNull();
+    });
+
+    test('the setting off adds nothing at all', async () => {
+        settings.loadoutMarksEnabled = false;
+        characterState.data = {
+            characterLoadoutMap: {
+                a: { name: 'Boss Gear', wearableMap: { x: 'c::x::/items/griffin_bulwark::0' } },
+            },
+        };
+        const el = itemTooltip('Griffin Bulwark');
+        observerState.handler(el);
+        await settle();
+        expect(el.querySelector('.mwi-loadout-marks')).toBeNull();
+    });
+
+    test('no character data loaded yet leaves the tooltip untouched rather than guessing', async () => {
+        characterState.data = null;
+        const el = itemTooltip('Griffin Bulwark');
+        observerState.handler(el);
+        await settle();
+        expect(el.querySelector('.mwi-loadout-marks')).toBeNull();
     });
 });
