@@ -314,11 +314,28 @@ class PinnedActionsPage {
     }
 
     /**
-     * Load action data (async), then render
+     * Load action data, painting immediately and filling in figures as they resolve.
+     *
+     * The pinned-action figures a cold session has to compute can genuinely be
+     * slow: a fresh liquidity check (`computeStats` → `capProfitRate`) is a real
+     * network round trip to a pooled-history server nobody has asked yet this
+     * session (see `capProfitRate` in ../../utils/liquidity-cap.js and
+     * `dailyVolume`/`sellThrottle` in ../planner/market-liquidity.js), and it pays
+     * that cost in full the first time — nothing warms it at startup. With several
+     * pinned actions, awaiting each one before building the next row used to queue
+     * their costs one after another; a page with a single slow row could leave
+     * every other row unpainted behind it for as long as that one took.
+     *
+     * So the rows themselves are built synchronously from whatever is already
+     * known (a cached stat, or the pin itself) and painted before anything is
+     * awaited. Whichever rows still need `computeStats` are marked `pending` and
+     * resolved concurrently in the background; each one repaints only its own row
+     * when it lands, without blocking or reordering the rest.
      */
     async loadActions() {
         const pinnedActions = actionPanelSort.getPinnedActions();
         this.allActions = [];
+        const pendingResolutions = [];
 
         for (const pinnedKey of pinnedActions) {
             let actionHrid = pinnedKey;
@@ -340,12 +357,10 @@ class PinnedActionsPage {
                 }
             }
 
-            let stats = actionPanelSort.getCachedStats(pinnedKey);
-            if (!stats || stats.profitPerHour === undefined) {
-                stats = await this.computeStats(actionHrid, details, pinnedItemHrid);
-            }
+            const cachedStats = actionPanelSort.getCachedStats(pinnedKey);
+            const isWarm = cachedStats && cachedStats.profitPerHour !== undefined;
 
-            this.allActions.push({
+            const row = {
                 actionHrid: pinnedKey,
                 baseActionHrid: actionHrid,
                 name: displayName,
@@ -353,19 +368,90 @@ class PinnedActionsPage {
                 type: details.type,
                 outputItemHrid: pinnedItemHrid || details.outputItems?.[0]?.itemHrid || null,
                 level: details.levelRequirement?.level ?? 0,
-                profitPerHour: stats?.profitPerHour ?? null,
-                expPerHour: stats?.expPerHour ?? null,
-                liquidityLimit: stats?.liquidityLimit ?? null,
-            });
+                profitPerHour: isWarm ? (cachedStats.profitPerHour ?? null) : null,
+                expPerHour: isWarm ? (cachedStats.expPerHour ?? null) : null,
+                liquidityLimit: isWarm ? (cachedStats.liquidityLimit ?? null) : null,
+                // Distinct from a resolved `null` (computed, nothing to report):
+                // this row hasn't been computed yet, and must say so rather than
+                // read as a method that simply makes nothing.
+                pending: !isWarm,
+            };
+
+            this.allActions.push(row);
+
+            if (!isWarm) {
+                pendingResolutions.push(this._resolveRowStats(row, actionHrid, details, pinnedItemHrid));
+            }
         }
 
-        await this.loadSimulatedCombatZones();
-
-        if (!this.itemsSpriteUrl) {
-            this.itemsSpriteUrl = await assetManifest.getSpriteUrl('items');
-        }
-
+        // Everything known so far — cached rows in full, the rest marked pending —
+        // paints now. Combat zones and the item sprite lag a little further behind
+        // (both already fast, see the class doc measurements) rather than holding
+        // up the first paint too.
         this.renderTable();
+
+        pendingResolutions.push(this._resolveCombatZones());
+        pendingResolutions.push(this._resolveItemsSprite());
+
+        await Promise.all(pendingResolutions);
+    }
+
+    /**
+     * Compute one pinned row's stats and repaint it in place once they land.
+     * Never throws: `computeStats` already catches internally, and if a rejection
+     * still reaches here the row settles as unpriced (`pending: false`, no figure)
+     * rather than being stuck showing "measuring…" forever.
+     * @param {Object} row - The row object pushed into `this.allActions`, mutated in place
+     * @param {string} actionHrid - Action HRID
+     * @param {Object} details - Action details from dataManager
+     * @param {string|null} pinnedItemHrid - Pinned alchemy item, if any
+     */
+    async _resolveRowStats(row, actionHrid, details, pinnedItemHrid) {
+        try {
+            const stats = await this.computeStats(actionHrid, details, pinnedItemHrid);
+            row.profitPerHour = stats?.profitPerHour ?? null;
+            row.expPerHour = stats?.expPerHour ?? null;
+            row.liquidityLimit = stats?.liquidityLimit ?? null;
+        } catch (error) {
+            // computeStats already catches everything itself; this is a second net
+            // so a row can never be left pending forever (or take the rest of the
+            // page's rows down with it via Promise.all) over a future regression.
+            console.error('[PinnedActionsPage] Resolving stats failed for', actionHrid, error);
+            row.profitPerHour = null;
+            row.expPerHour = null;
+        } finally {
+            row.pending = false;
+            this.repaintIfActive();
+        }
+    }
+
+    /**
+     * Load the simulated combat zones and repaint once they're in.
+     */
+    async _resolveCombatZones() {
+        await this.loadSimulatedCombatZones();
+        this.repaintIfActive();
+    }
+
+    /**
+     * Fetch the items sprite (once) and repaint once it's in.
+     */
+    async _resolveItemsSprite() {
+        if (this.itemsSpriteUrl) return;
+        this.itemsSpriteUrl = await assetManifest.getSpriteUrl('items');
+        this.repaintIfActive();
+    }
+
+    /**
+     * Repaint the current tab, but only while this page is still the one on
+     * screen. A row can resolve well after the user closed the page (or closed
+     * and reopened it, starting a new `this.allActions`) — in either case the
+     * resolved row is no longer part of what would be drawn, and rebuilding a
+     * torn-down or superseded page would be either wasted work or a bug.
+     */
+    repaintIfActive() {
+        if (!this.isActive || !this.contentArea) return;
+        this.renderContent();
     }
 
     /**
@@ -644,6 +730,12 @@ class PinnedActionsPage {
                       : config.COLOR_LOSS || '#ff6b6b';
             const profitPrefix = action.profitPerHour !== null && action.profitPerHour > 0 ? '+' : '';
             const rowBg = ri % 2 === 1 ? 'rgba(255, 255, 255, 0.03)' : 'transparent';
+            // A row still being computed (the profit figure is a real network
+            // round trip the first time — see loadActions' doc comment) says so
+            // rather than showing '-', which reads as "there is nothing here"
+            // instead of "this hasn't arrived yet".
+            const profitText = action.pending ? 'measuring…' : `${profitPrefix}${formatCompact(action.profitPerHour)}`;
+            const expText = action.pending ? 'measuring…' : formatCompact(action.expPerHour);
 
             const row = document.createElement('div');
             row.className = 'mwi-pinned-row';
@@ -672,11 +764,11 @@ class PinnedActionsPage {
                 <span style="font-weight: 500; text-align: left;">${action.name}${this.provenanceHtml(action)}</span>
                 <span style="color: #aaa; font-size: 0.9em; text-align: left;">${action.skill}</span>
                 <span style="color: #aaa; text-align: left;">${action.level ?? '—'}</span>
-                <span style="text-align: right; color: ${profitColor};">
-                    ${profitPrefix}${formatCompact(action.profitPerHour)}${liquidityMarkerHtml(action.liquidityLimit, { compact: true })}
+                <span style="text-align: right; color: ${action.pending ? '#888' : profitColor}; ${action.pending ? 'font-style: italic;' : ''}">
+                    ${profitText}${action.pending ? '' : liquidityMarkerHtml(action.liquidityLimit, { compact: true })}
                 </span>
-                <span style="text-align: right; color: #7ec8e3;">
-                    ${formatCompact(action.expPerHour)}
+                <span style="text-align: right; color: ${action.pending ? '#888' : '#7ec8e3'}; ${action.pending ? 'font-style: italic;' : ''}">
+                    ${expText}
                 </span>
             `;
 
