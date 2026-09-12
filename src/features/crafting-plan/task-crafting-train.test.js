@@ -6,9 +6,16 @@ const mocks = vi.hoisted(() => ({
     inventory: [],
     itemDetails: new Map(),
     reserved: [],
+    released: [],
+    releaseMissingCalls: [],
+    // A stand-in for the stored ledger's owners, so a release or a sweep can
+    // be asserted by what is left holding stock rather than only by the call
+    // that was made
+    owners: new Set(),
     characterId: 'char1',
     started: null,
     walkInitialized: 0,
+    walkActive: false,
 }));
 
 vi.mock('../../core/config.js', () => ({
@@ -33,11 +40,29 @@ vi.mock('../tasks/task-card-quest.js', () => ({
 }));
 
 vi.mock('../../utils/inventory-reservations.js', () => ({
+    INVENTORY_LOCATION: '/item_locations/inventory',
     effectiveInventoryRows: (rows) => rows,
     reserve: async (ownerId, lines, options) => {
         mocks.reserved.push({ ownerId, lines, options });
+        mocks.owners.add(ownerId);
         await mocks.onReserve?.();
         return true;
+    },
+    release: async (ownerId) => {
+        mocks.released.push(ownerId);
+        mocks.owners.delete(ownerId);
+        return true;
+    },
+    releaseMissing: async (prefix, liveIds) => {
+        const live = new Set(liveIds || []);
+        mocks.releaseMissingCalls.push({ prefix, live: [...live] });
+        let dropped = 0;
+        for (const id of [...mocks.owners]) {
+            if (!id.startsWith(prefix) || live.has(id)) continue;
+            mocks.owners.delete(id);
+            dropped += 1;
+        }
+        return dropped;
     },
 }));
 
@@ -51,9 +76,16 @@ vi.mock('./crafting-plan-walk.js', async () => {
             },
             start: (steps) => {
                 mocks.started = steps;
+                mocks.walkActive = true;
                 return true;
             },
             onStepAboutToRun: null,
+            get active() {
+                return mocks.walkActive;
+            },
+            set active(value) {
+                mocks.walkActive = value;
+            },
         },
     };
 });
@@ -67,6 +99,7 @@ const {
     groupTasksBySharedChain,
     mergedMissingRoot,
     mergedWalkOwner,
+    LIVE_CHECK_INTERVAL_MS,
 } = await import('./task-crafting-train.js');
 
 /** A craft node, sized for the whole run. */
@@ -124,10 +157,15 @@ beforeEach(() => {
     mocks.inventory = [];
     mocks.itemDetails = new Map();
     mocks.reserved = [];
+    mocks.released = [];
+    mocks.releaseMissingCalls = [];
+    mocks.owners = new Set();
     mocks.characterId = 'char1';
     mocks.onReserve = null;
     mocks.started = null;
     mocks.walkInitialized = 0;
+    mocks.walkActive = false;
+    craftingPlanWalk.onStepAboutToRun = null;
     document.body.innerHTML = '';
 });
 
@@ -424,5 +462,117 @@ describe('disable', () => {
         taskCraftingTrain.disable();
         expect(craftingPlanWalk.onStepAboutToRun).toBe(panelHook);
         craftingPlanWalk.onStepAboutToRun = null;
+    });
+});
+
+/**
+ * A merged walk's claim used to live until the ledger's seven-day TTL — the
+ * same bug the crafting plan panel had (see `crafting-plan-display.js`'s own
+ * "the lifetime of a plan's claim" tests). Nothing ended it: not the walk
+ * completing, not Stop, not the idle timeout, not a character switch.
+ *
+ * "Live" here means the walk this module claimed for is the one
+ * `craftingPlanWalk` is currently running — its own hook still the one
+ * installed. The walk never announces that it stopped, so a short poll
+ * notices instead; see `_checkWalkLive` and `LIVE_CHECK_INTERVAL_MS`.
+ */
+describe('the lifetime of a walk’s claim', () => {
+    /** The hat+boots merge every test above already builds. */
+    const hatAndBoots = () =>
+        groupTasksBySharedChain(
+            planTaskTargets(
+                [
+                    { actionHrid: '/actions/tailoring/hat', quantity: 1, label: 'Hat' },
+                    { actionHrid: '/actions/tailoring/boots', quantity: 1, label: 'Boots' },
+                ],
+                { planFor: (actionHrid) => (actionHrid === '/actions/tailoring/hat' ? hatPlan() : bootsPlan()) }
+            )
+        )[0];
+
+    beforeEach(() => {
+        taskCraftingTrain.disable();
+        mocks.owners = new Set();
+        mocks.released = [];
+        mocks.releaseMissingCalls = [];
+        vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+        taskCraftingTrain.disable();
+        vi.useRealTimers();
+    });
+
+    test('a running walk holds its claim across a liveness check', async () => {
+        taskCraftingTrain.initialize();
+        await taskCraftingTrain.startMergedWalk(hatAndBoots());
+        const owner = mocks.reserved.at(-1).ownerId;
+        expect(mocks.owners.has(owner)).toBe(true);
+
+        vi.advanceTimersByTime(LIVE_CHECK_INTERVAL_MS);
+        await Promise.resolve();
+
+        expect(mocks.owners.has(owner)).toBe(true);
+        expect(mocks.released).not.toContain(owner);
+    });
+
+    test('ending the walk releases its claim on the next liveness check', async () => {
+        taskCraftingTrain.initialize();
+        await taskCraftingTrain.startMergedWalk(hatAndBoots());
+        const owner = mocks.reserved.at(-1).ownerId;
+
+        // The walk ends itself — completion, Stop, the idle timeout, a
+        // character switch — by clearing `active` and dropping whatever hook
+        // was installed, exactly as the real `crafting-plan-walk.js`'s own
+        // `stop()` does
+        craftingPlanWalk.active = false;
+        craftingPlanWalk.onStepAboutToRun = null;
+
+        vi.advanceTimersByTime(LIVE_CHECK_INTERVAL_MS);
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(mocks.released).toContain(owner);
+        expect(mocks.owners.has(owner)).toBe(false);
+    });
+
+    test('a walk superseded by a differently-owned one is released as soon as the new one starts', async () => {
+        taskCraftingTrain.initialize();
+        await taskCraftingTrain.startMergedWalk(hatAndBoots());
+        const firstOwner = mocks.reserved.at(-1).ownerId;
+
+        // Cheese shares nothing with hat/boots, so this is its own single-task
+        // group — a different owner id — enough to exercise a second walk
+        // superseding the first without the merge machinery mattering here
+        const cheeseGroup = { tasks: [{ target: { label: 'Cheese' }, plan: cheesePlan() }], steps: [{ key: 'x' }] };
+
+        await taskCraftingTrain.startMergedWalk(cheeseGroup);
+        const secondOwner = mocks.reserved.at(-1).ownerId;
+
+        expect(secondOwner).not.toBe(firstOwner);
+        expect(mocks.owners.has(firstOwner)).toBe(false);
+        expect(mocks.owners.has(secondOwner)).toBe(true);
+    });
+
+    test('tearing the feature down releases the walk it was tracking', async () => {
+        taskCraftingTrain.initialize();
+        await taskCraftingTrain.startMergedWalk(hatAndBoots());
+        const owner = mocks.reserved.at(-1).ownerId;
+
+        taskCraftingTrain.disable();
+
+        expect(mocks.releaseMissingCalls.at(-1)).toEqual({ prefix: 'taskWalk:', live: [] });
+        expect(mocks.owners.has(owner)).toBe(false);
+    });
+
+    test('orphaned taskWalk: owners from a previous session are swept on initialize', () => {
+        mocks.owners = new Set(['taskWalk:/items/holy_bulwark', 'craftingPlan:/items/holy_plate_legs']);
+        mocks.releaseMissingCalls = [];
+
+        taskCraftingTrain.initialize();
+
+        expect(mocks.releaseMissingCalls[0]).toEqual({ prefix: 'taskWalk:', live: [] });
+        // A crafting-plan owner is none of this sweep's business — its own
+        // prefix is disjoint from this one's
+        expect([...mocks.owners]).toEqual(['craftingPlan:/items/holy_plate_legs']);
     });
 });

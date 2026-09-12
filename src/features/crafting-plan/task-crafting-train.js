@@ -26,8 +26,9 @@ import domObserver from '../../core/dom-observer.js';
 import { computeBestCraftingPlan, collectMissingMaterials } from './crafting-plan-calculator.js';
 import craftingPlanWalk, { buildWalkSteps, walkStepFor } from './crafting-plan-walk.js';
 import { questForTaskCard } from '../tasks/task-card-quest.js';
-import { effectiveInventoryRows, reserve } from '../../utils/inventory-reservations.js';
+import { effectiveInventoryRows, release, releaseMissing, reserve } from '../../utils/inventory-reservations.js';
 import { formatWithSeparator } from '../../utils/formatters.js';
+import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { GAME } from '../../utils/selectors.js';
 
 /** Action types whose tasks have a crafting chain worth walking */
@@ -42,6 +43,20 @@ const PRODUCTION_TYPES = [
 const BUTTON_ID = 'mwi-task-train-button';
 const PANEL_ID = 'mwi-task-train-panel';
 const PROGRESS_PATTERN = /(\d+)\s*\/\s*(\d+)/;
+
+/**
+ * How often to check whether the walk this module is tracking is still the
+ * one running.
+ *
+ * `craftingPlanWalk` never announces that it stopped — completion, Stop, the
+ * idle timeout and a character switch all end it the same way, by clearing
+ * `active` and dropping whatever hook was installed — so nothing calls this
+ * module back when that happens. A short poll is what notices instead; it is
+ * a handful of property reads, not a replan, so a five-second grain costs
+ * nothing and still drops a finished walk's claim well within the TTL that
+ * used to be the only thing that ever did.
+ */
+export const LIVE_CHECK_INTERVAL_MS = 5000;
 
 /**
  * Owner-id prefix for a merged walk's claim on the bag.
@@ -392,6 +407,13 @@ class TaskCraftingTrain {
          * installed after it — the walk holds exactly one.
          */
         this.stepHook = null;
+        /**
+         * The `taskWalk:` owner this module is currently claiming for, or null.
+         * What {@link _releaseCurrentWalk} releases and what the liveness check
+         * below decides whether to keep.
+         */
+        this.currentOwnerId = null;
+        this.timerRegistry = createTimerRegistry();
     }
 
     /** Put the button on the task panel header, and make sure the walk is listening. */
@@ -404,9 +426,57 @@ class TaskCraftingTrain {
         // board may well be the only surface that wants it running.
         craftingPlanWalk.initialize();
 
+        // Nothing of this module's is walking yet — this drops every
+        // `taskWalk:` owner in the ledger, which is what clears the backlog a
+        // player is already carrying from a walk that ended (finished,
+        // abandoned, the browser closed on it) without this module having had
+        // a chance to notice and release it itself.
+        releaseMissing(RESERVATION_OWNER_PREFIX, []).catch((error) =>
+            console.error('[TaskTrain] Releasing stale walk claims failed:', error)
+        );
+
         this.unregisterObserver = domObserver.onClass('TaskCraftingTrain', 'TasksPanel_taskSlotCount', (header) =>
             this._addButton(header)
         );
+
+        this.timerRegistry.registerInterval(
+            setInterval(() => this._checkWalkLive(), LIVE_CHECK_INTERVAL_MS),
+            'TaskCraftingTrain.checkWalkLive'
+        );
+    }
+
+    /**
+     * Whether the walk this module claimed for is the one currently running.
+     *
+     * `craftingPlanWalk` is a singleton three surfaces share, and
+     * `onStepAboutToRun` holds exactly one hook at a time — installed
+     * immediately before `start()` and dropped by `stop()`, whatever ends the
+     * walk. So this module's hook is still installed if and only if its walk
+     * is still the one in progress: superseded by another walk, or the walk
+     * simply ending, clears it, and this stops matching.
+     * @returns {boolean}
+     * @private
+     */
+    _walkIsLive() {
+        return Boolean(
+            this.currentOwnerId &&
+            this.stepHook &&
+            craftingPlanWalk.active &&
+            craftingPlanWalk.onStepAboutToRun === this.stepHook
+        );
+    }
+
+    /** Drop the tracked claim once its walk is no longer the one running. @private */
+    _checkWalkLive() {
+        if (this.currentOwnerId && !this._walkIsLive()) this._releaseCurrentWalk();
+    }
+
+    /** Release whatever this module is currently claiming for, if anything. @private */
+    _releaseCurrentWalk() {
+        const owner = this.currentOwnerId;
+        this.currentOwnerId = null;
+        if (!owner) return;
+        release(owner).catch((error) => console.error('[TaskTrain] Releasing the walk claim failed:', error));
     }
 
     /** @private */
@@ -520,6 +590,12 @@ class TaskCraftingTrain {
         const label = `Task walk: ${group.tasks.map((task) => task.target.label).join(', ')}`;
         const claim = () => reserve(ownerId, mergedMissingLines(plans, ownerId), { label });
 
+        // The walk is a singleton, so only one merged campaign ever runs at
+        // once: whatever this module was tracking before is finished — its own
+        // walk already ended, superseded by the one about to start — and its
+        // claim goes now rather than waiting for the next liveness check.
+        if (this.currentOwnerId && this.currentOwnerId !== ownerId) this._releaseCurrentWalk();
+
         // Whoever is walking is fixed before the write, and re-checked after it:
         // the plans, the steps and the inventory they were sized against all
         // belong to this character, and a switch landing inside the claim would
@@ -529,6 +605,10 @@ class TaskCraftingTrain {
         const walker = dataManager.getCurrentCharacterId?.() || null;
         await claim();
         if ((dataManager.getCurrentCharacterId?.() || null) !== walker) return false;
+
+        // The claim just landed under this owner; tracked from here so the
+        // liveness check and a future switch or teardown know to let it go.
+        this.currentOwnerId = ownerId;
 
         let previousStep = null;
         this.stepHook = (step) => {
@@ -546,12 +626,21 @@ class TaskCraftingTrain {
     disable() {
         this.unregisterObserver?.();
         this.unregisterObserver = null;
+        this.timerRegistry.clearAll();
         // The walk is shared and outlives this feature, so leaving the hook on
         // it would go on re-reserving under a merged walk that is gone.
         if (this.stepHook && craftingPlanWalk.onStepAboutToRun === this.stepHook) {
             craftingPlanWalk.onStepAboutToRun = null;
         }
         this.stepHook = null;
+        // Every walk this module could still be claiming for is done by this
+        // route as surely as by ending on its own — including a character
+        // switch, where this fires before the id moves (see
+        // `feature-registry.js`), releasing against the bag the claim was on.
+        releaseMissing(RESERVATION_OWNER_PREFIX, []).catch((error) =>
+            console.error('[TaskTrain] Releasing walk claims on disable failed:', error)
+        );
+        this.currentOwnerId = null;
         if (typeof document !== 'undefined') {
             document.getElementById(BUTTON_ID)?.remove();
             document.getElementById(PANEL_ID)?.remove();
