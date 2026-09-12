@@ -9,7 +9,7 @@
  */
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
-const state = vi.hoisted(() => ({ gameData: null, skills: [] }));
+const state = vi.hoisted(() => ({ gameData: null, skills: [], houseRooms: new Map() }));
 const prices = vi.hoisted(() => ({ byHrid: {}, estimated: new Set() }));
 
 vi.mock('../core/data-manager.js', () => ({
@@ -17,7 +17,7 @@ vi.mock('../core/data-manager.js', () => ({
         getInitClientData: () => state.gameData,
         getSkills: () => state.skills,
         getEquipment: () => new Map(),
-        getHouseRooms: () => new Map(),
+        getHouseRooms: () => state.houseRooms,
         getCommunityBuffLevel: () => 0,
         getAchievementBuffFlatBoost: () => 0,
         getPersonalBuffFlatBoost: () => 0,
@@ -83,6 +83,7 @@ const knownItems = [
 beforeEach(() => {
     state.gameData = { itemDetailMap: Object.fromEntries(knownItems.map((hrid) => [hrid, {}])) };
     state.skills = [];
+    state.houseRooms = new Map();
     prices.byHrid = {};
     prices.estimated = new Set();
     alchemyCalc.decompose = null;
@@ -550,5 +551,92 @@ describe('getSkillActionsForDisplay — game order', () => {
         const actions = getSkillActionsForDisplay('Foraging', 5);
         expect(actions.find((a) => a.name === 'Blueberry')).toMatchObject({ requiredLevel: 20, available: false });
         expect(actions.find((a) => a.name === 'Apple')).toMatchObject({ requiredLevel: 1, available: true });
+    });
+});
+
+describe('calculateSkillPerformance — the house override', () => {
+    // The panel that ranks house rooms has to ask "what would this skill earn with
+    // the Dairy Barn a level higher", and the scorer could only ever read the rooms
+    // the character already owns. The option below is that seam; these tests pin
+    // both halves of its contract — that it moves the figure, and that a caller who
+    // does not pass it gets exactly what it always got.
+    const DAIRY_BARN = '/house_rooms/dairy_barn';
+
+    /**
+     * The efficiency buff a skilling room grants, as the game ships it.
+     * @param {string} actionType - The action type it covers
+     * @returns {Object} A houseRoomDetailMap entry
+     */
+    const roomDetail = (actionType) => ({
+        usableInActionTypeMap: { [actionType]: true },
+        actionBuffs: [
+            {
+                typeHrid: '/buff_types/efficiency',
+                usableInActionTypeMap: { [actionType]: true },
+                flatBoost: 0.015,
+                flatBoostLevelBonus: 0.015,
+            },
+        ],
+    });
+
+    beforeEach(() => {
+        state.gameData.houseRoomDetailMap = { [DAIRY_BARN]: roomDetail('/action_types/milking') };
+        state.gameData.actionDetailMap = {
+            '/actions/milking/cow': {
+                type: '/action_types/milking',
+                name: 'Cow',
+                levelRequirement: { level: 1 },
+                baseTimeCost: 10e9,
+                experienceGain: { skillHrid: '/skills/milking', value: 100 },
+                dropTable: [{ itemHrid: '/items/milk', dropRate: 1, minCount: 1, maxCount: 1 }],
+            },
+        };
+        state.gameData.itemDetailMap['/items/milk'] = {};
+        state.skills = [{ skillHrid: '/skills/milking', level: 50 }];
+        prices.byHrid = { '/items/milk': 500 };
+        state.houseRooms = new Map([[DAIRY_BARN, { houseRoomHrid: DAIRY_BARN, level: 4 }]]);
+    });
+
+    test('passing the levels the character already has changes nothing', () => {
+        const live = calculateSkillPerformance('milking', new Map(), [], 50);
+        const pinned = calculateSkillPerformance('milking', new Map(), [], 50, null, {
+            houseRoomLevels: { [DAIRY_BARN]: 4 },
+        });
+
+        // The default path's shorthand (level × 1.5) and the buff model agree for an
+        // ordinary skilling room, which is what makes a baseline scored either way
+        // comparable with an upgrade scored by the model.
+        expect(pinned.xpPerHour).toBeCloseTo(live.xpPerHour, 6);
+        expect(pinned.goldPerHour).toBeCloseTo(live.goldPerHour, 6);
+    });
+
+    test('one more room level raises both figures', () => {
+        const before = calculateSkillPerformance('milking', new Map(), [], 50, null, {
+            houseRoomLevels: { [DAIRY_BARN]: 4 },
+        });
+        const after = calculateSkillPerformance('milking', new Map(), [], 50, null, {
+            houseRoomLevels: { [DAIRY_BARN]: 5 },
+        });
+
+        expect(after.xpPerHour).toBeGreaterThan(before.xpPerHour);
+        expect(after.goldPerHour).toBeGreaterThan(before.goldPerHour);
+    });
+
+    test('the default path is untouched by an override taken beside it', () => {
+        const first = calculateSkillPerformance('milking', new Map(), [], 50);
+        calculateSkillPerformance('milking', new Map(), [], 50, null, { houseRoomLevels: { [DAIRY_BARN]: 8 } });
+        const second = calculateSkillPerformance('milking', new Map(), [], 50);
+
+        expect(second).toEqual(first);
+    });
+
+    test('a room the character does not own at all scores as the level it would be', () => {
+        state.houseRooms = new Map();
+        const none = calculateSkillPerformance('milking', new Map(), [], 50, null, { houseRoomLevels: {} });
+        const one = calculateSkillPerformance('milking', new Map(), [], 50, null, {
+            houseRoomLevels: { [DAIRY_BARN]: 1 },
+        });
+
+        expect(one.xpPerHour).toBeGreaterThan(none.xpPerHour);
     });
 });

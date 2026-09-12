@@ -78,6 +78,117 @@ function sumHouseBuff(actionTypeHrid, buffTypeHrid, gameData) {
     return total;
 }
 
+/** The buff a room grants when it makes actions worth *more experience*. */
+const WISDOM_BUFF = '/buff_types/wisdom';
+
+/**
+ * The buff types the skilling maths downstream can actually put a number on.
+ *
+ * Efficiency grants free repeats, action speed shortens the action, wisdom
+ * multiplies the experience: all three land in a gold/hr or XP/hr figure. Every
+ * other type a room can carry — rare find above all, which every room grants
+ * globally — is real in the game and invisible to those two numbers, so a room
+ * whose only buff for a skill is one of them can only ever be ranked at a
+ * fictitious zero. Callers ranking rooms exclude those and say why.
+ */
+export const MODELLED_ROOM_BUFF_TYPES = new Set([EFFICIENCY_BUFF, ACTION_SPEED_BUFF, WISDOM_BUFF]);
+
+/** Buff type hrid → the key it accumulates into in {@link houseBuffTotalsForLevels}. */
+const BUFF_TOTAL_KEYS = {
+    [EFFICIENCY_BUFF]: 'efficiency',
+    [ACTION_SPEED_BUFF]: 'actionSpeed',
+    [WISDOM_BUFF]: 'wisdom',
+};
+
+/**
+ * One room level's worth of a buff, by the game's own scaling.
+ * @param {Object} buff - A room's `actionBuffs`/`globalBuffs` entry
+ * @param {number} level - The room's level
+ * @returns {number} Ratio (0.12 for 12%)
+ */
+function buffValueAtLevel(buff, level) {
+    return (buff?.flatBoost || 0) + (level - 1) * (buff?.flatBoostLevelBonus || 0);
+}
+
+/**
+ * Read one room's level out of whichever shape the caller keeps them in.
+ * @param {Map<string, number>|Object<string, number>|null} roomLevels - Levels by room hrid
+ * @param {string} houseRoomHrid - The room
+ * @returns {number} Level, 0 when absent or nonsense
+ */
+function levelOf(roomLevels, houseRoomHrid) {
+    if (!roomLevels) return 0;
+    const raw = roomLevels instanceof Map ? roomLevels.get(houseRoomHrid) : roomLevels[houseRoomHrid];
+    const level = Math.floor(Number(raw));
+    return Number.isFinite(level) && level > 0 ? level : 0;
+}
+
+/**
+ * The buff types one room grants *to one action type*, from its own action buffs.
+ *
+ * This is what "does this room serve this skill" means in the data: the room's
+ * global buffs are granted for owning the room at all and say nothing about
+ * which skill it is for. Empty means the room does nothing for that action type
+ * beyond what every room does.
+ *
+ * @param {Object} roomDetail - Entry from `houseRoomDetailMap`
+ * @param {string} actionTypeHrid - Action type being asked about
+ * @returns {Set<string>} Buff type hrids
+ */
+export function roomActionBuffTypes(roomDetail, actionTypeHrid) {
+    const types = new Set();
+    for (const buff of roomDetail?.actionBuffs || []) {
+        if (!buff?.typeHrid) continue;
+        if (!buffCoversActionType(buff, roomDetail, actionTypeHrid)) continue;
+        types.add(buff.typeHrid);
+    }
+    return types;
+}
+
+/**
+ * What a hypothetical set of house room levels is worth to one action type.
+ *
+ * The question {@link calculateHouseEfficiency} cannot answer: it reads the
+ * levels the character has, and ranking an upgrade needs "what would this be at
+ * one level higher". Both answers come from the same per-buff arithmetic, so a
+ * baseline computed here and a target computed here differ by exactly the level
+ * that was bought and nothing else.
+ *
+ * Global buffs are summed unscoped, because that is what the game grants them
+ * for — owning the room, not doing a particular action. That is where a room's
+ * wisdom comes from, and it is why building *any* room is worth a little XP on
+ * everything you do.
+ *
+ * @param {Map<string, number>|Object<string, number>} roomLevels - Level per room hrid
+ * @param {string} actionTypeHrid - Action type HRID
+ * @param {Object} houseRoomDetailMap - From game data
+ * @returns {{efficiency: number, actionSpeed: number, wisdom: number}} Ratios (0.12 for 12%)
+ */
+export function houseBuffTotalsForLevels(roomLevels, actionTypeHrid, houseRoomDetailMap) {
+    const totals = { efficiency: 0, actionSpeed: 0, wisdom: 0 };
+    if (!houseRoomDetailMap || !actionTypeHrid) return totals;
+
+    for (const [roomHrid, detail] of Object.entries(houseRoomDetailMap)) {
+        const level = levelOf(roomLevels, roomHrid);
+        if (level <= 0) continue;
+
+        for (const buff of detail?.actionBuffs || []) {
+            const key = BUFF_TOTAL_KEYS[buff?.typeHrid];
+            if (!key) continue;
+            if (!buffCoversActionType(buff, detail, actionTypeHrid)) continue;
+            totals[key] += buffValueAtLevel(buff, level);
+        }
+
+        for (const buff of detail?.globalBuffs || []) {
+            const key = BUFF_TOTAL_KEYS[buff?.typeHrid];
+            if (!key) continue;
+            totals[key] += buffValueAtLevel(buff, level);
+        }
+    }
+
+    return totals;
+}
+
 /**
  * Calculate house efficiency bonus for an action type.
  *
@@ -174,6 +285,8 @@ export function calculateHouseRareFind() {
 export default {
     calculateHouseEfficiency,
     calculateHouseActionSpeed,
+    houseBuffTotalsForLevels,
+    roomActionBuffTypes,
     getHouseRoomName,
     calculateHouseRareFind,
 };

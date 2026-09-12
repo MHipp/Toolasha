@@ -6,6 +6,7 @@
 import dataManager from '../core/data-manager.js';
 import { calculateEfficiencyBreakdown, calculateEfficiencyMultiplier } from './efficiency.js';
 import { calculateExperienceMultiplier } from './experience-parser.js';
+import { houseBuffTotalsForLevels } from './house-efficiency.js';
 import { getDrinkConcentration } from './tea-parser.js';
 import {
     parseEquipmentSpeedBonuses,
@@ -18,8 +19,14 @@ import { calculateBonusRevenue } from './bonus-revenue-calculator.js';
 import { MARKET_TAX } from './profit-constants.js';
 import alchemyProfitCalculator from '../features/market/alchemy-profit-calculator.js';
 
-// Skill name to action type mapping
-const SKILL_TO_ACTION_TYPE = {
+/**
+ * Skill name to action type mapping.
+ *
+ * Exported because callers that reason about *which* skill a buff or a house
+ * room serves need the same map, and a second copy of it is a second thing to
+ * forget when the game adds a skill.
+ */
+export const SKILL_TO_ACTION_TYPE = {
     milking: '/action_types/milking',
     foraging: '/action_types/foraging',
     woodcutting: '/action_types/woodcutting',
@@ -265,7 +272,7 @@ function calculateXpPerHour(actionDetails, buffs, playerLevel, otherEfficiency, 
 
     // Calculate actions per hour with equipment speed bonus
     const baseTime = (actionDetails.baseTimeCost || 3e9) / 1e9;
-    const actionTime = baseTime / (1 + equipmentSpeedBonus);
+    const actionTime = baseTime / (1 + equipmentSpeedBonus + (otherEfficiency.houseSpeed || 0));
     const baseActionsPerHour = calculateActionsPerHour(actionTime);
     const actionsPerHour = calculateEffectiveActionsPerHour(baseActionsPerHour, efficiencyMultiplier);
 
@@ -276,7 +283,7 @@ function calculateXpPerHour(actionDetails, buffs, playerLevel, otherEfficiency, 
     // Replace current tea wisdom with our calculated tea wisdom
     const currentTeaWisdom = currentXpData.breakdown?.consumableWisdom || 0;
     const baseWisdomWithoutTea = currentXpData.totalWisdom - currentTeaWisdom;
-    const totalWisdomWithOurTea = baseWisdomWithoutTea + buffs.wisdom;
+    const totalWisdomWithOurTea = baseWisdomWithoutTea + buffs.wisdom + (otherEfficiency.houseWisdomDelta || 0);
     const charmExperience = currentXpData.charmExperience || 0;
     const xpMultiplier = 1 + totalWisdomWithOurTea / 100 + charmExperience / 100;
 
@@ -327,7 +334,7 @@ function calculateGatheringGoldPerHour(actionDetails, buffs, playerLevel, otherE
 
     // Calculate actions per hour (with speed bonus, WITHOUT efficiency - efficiency applied to outputs)
     const baseTime = (actionDetails.baseTimeCost || 3e9) / 1e9;
-    const actionTime = baseTime / (1 + equipmentSpeedBonus);
+    const actionTime = baseTime / (1 + equipmentSpeedBonus + (otherEfficiency.houseSpeed || 0));
     const actionsPerHour = calculateActionsPerHour(actionTime);
 
     // Calculate revenue from drops
@@ -433,7 +440,7 @@ function calculateProductionGoldPerHour(actionDetails, buffs, playerLevel, other
 
     // Calculate actions per hour (with speed bonus, WITHOUT efficiency - efficiency applied to outputs)
     const baseTime = (actionDetails.baseTimeCost || 3e9) / 1e9;
-    const actionTime = baseTime / (1 + equipmentSpeedBonus);
+    const actionTime = baseTime / (1 + equipmentSpeedBonus + (otherEfficiency.houseSpeed || 0));
     const actionsPerHour = calculateActionsPerHour(actionTime);
 
     // Calculate input costs (with artisan reduction for regular inputs)
@@ -582,7 +589,7 @@ function calculateAlchemyXpPerHour(alchemyContext, buffs, playerLevel, otherEffi
     const xpData = calculateExperienceMultiplier('/skills/alchemy', '/action_types/alchemy');
     const currentTeaWisdom = xpData.breakdown?.consumableWisdom || 0;
     const baseWisdomWithoutTea = xpData.totalWisdom - currentTeaWisdom;
-    const totalWisdomWithOurTea = baseWisdomWithoutTea + buffs.wisdom;
+    const totalWisdomWithOurTea = baseWisdomWithoutTea + buffs.wisdom + (otherEfficiency.houseWisdomDelta || 0);
     const charmExperience = xpData.charmExperience || 0;
     const wisdomMultiplier = 1 + totalWisdomWithOurTea / 100 + charmExperience / 100;
 
@@ -610,7 +617,7 @@ function calculateAlchemyXpPerHour(alchemyContext, buffs, playerLevel, otherEffi
 
     const efficiencyMultiplier = calculateEfficiencyMultiplier(efficiencyData.totalEfficiency);
     const baseTime = (actionDetails.baseTimeCost || 20e9) / 1e9;
-    const actionTime = baseTime / (1 + equipmentSpeedBonus);
+    const actionTime = baseTime / (1 + equipmentSpeedBonus + (otherEfficiency.houseSpeed || 0));
     const baseActionsPerHour = calculateActionsPerHour(actionTime);
     const actionsPerHour = calculateEffectiveActionsPerHour(baseActionsPerHour, efficiencyMultiplier);
 
@@ -839,10 +846,28 @@ function calculateTeaCostPerHour(teaHrids, drinkConcentration) {
 
 /**
  * Get other efficiency sources (non-tea)
+ *
+ * ## The house override
+ *
+ * With no `houseRoomLevels` this reads the character's own rooms and is the
+ * path every existing caller takes, unchanged. Passed a level map, it answers
+ * the question the live reader cannot — "what would this be with the Kitchen a
+ * level higher" — and answers it from each room's own `actionBuffs` and
+ * `globalBuffs` rather than the `level × 1.5` shorthand below. That matters
+ * twice over: the shorthand credits *every* buff a room tagged for the action
+ * type has as efficiency (the Observatory's action speed included), and an
+ * override only means anything when it is differenced against a baseline
+ * computed the same way. Callers ranking an upgrade should therefore pass the
+ * character's current levels for the baseline too, not omit the option.
+ *
  * @param {string} actionType - Action type HRID
- * @returns {Object} Other efficiency values
+ * @param {Map<string, number>|Object<string, number>|null} [houseRoomLevels] - House room
+ *   levels to model instead of the character's own
+ * @returns {Object} Other efficiency values. `houseSpeed` is a ratio and
+ *   `houseWisdomDelta` a percentage *difference* from what the character's real
+ *   rooms already grant — both are 0 unless an override is in play.
  */
-function getOtherEfficiencySources(actionType) {
+function getOtherEfficiencySources(actionType, houseRoomLevels = null) {
     const _equipment = dataManager.getEquipment();
     const houseRoomsMap = dataManager.getHouseRooms();
     const houseRooms = houseRoomsMap ? Array.from(houseRoomsMap.values()) : [];
@@ -850,6 +875,8 @@ function getOtherEfficiencySources(actionType) {
 
     const result = {
         house: 0,
+        houseSpeed: 0,
+        houseWisdomDelta: 0,
         equipment: 0,
         community: 0,
         achievement: 0,
@@ -860,7 +887,21 @@ function getOtherEfficiencySources(actionType) {
     if (!gameData) return result;
 
     // House efficiency
-    if (houseRooms) {
+    if (houseRoomLevels) {
+        // Hypothetical rooms: the buff model, per the doc comment above.
+        const detailMap = gameData.houseRoomDetailMap;
+        const asked = houseBuffTotalsForLevels(houseRoomLevels, actionType, detailMap);
+        // Wisdom is already in the character's experience multiplier from their
+        // real rooms, so only the difference may be applied on top — adding the
+        // whole hypothetical total would count the rooms they already own twice.
+        const actual = new Map();
+        for (const [hrid, room] of houseRoomsMap || []) actual.set(room.houseRoomHrid || hrid, room.level || 0);
+        const owned = houseBuffTotalsForLevels(actual, actionType, detailMap);
+
+        result.house = asked.efficiency * 100;
+        result.houseSpeed = asked.actionSpeed;
+        result.houseWisdomDelta = (asked.wisdom - owned.wisdom) * 100;
+    } else if (houseRooms) {
         for (const room of houseRooms) {
             const roomDetail = gameData.houseRoomDetailMap?.[room.houseRoomHrid];
             if (roomDetail?.usableInActionTypeMap?.[actionType]) {
@@ -1442,9 +1483,20 @@ function formatBuffWithDC(scaledValue, dcBonus, suffix, isPercent) {
  * @param {string[]} teaHrids - Tea item HRIDs (null/empty entries are filtered)
  * @param {number} playerLevel
  * @param {Set<string>|null} selectedActionHrids
+ * @param {Object} [options]
+ * @param {Map<string, number>|Object<string, number>|null} [options.houseRoomLevels] - Model
+ *   these house room levels instead of the character's own, so an upgrade can be scored
+ *   before it is bought. Omitted, nothing about this call changes.
  * @returns {{ xpPerHour: number, goldPerHour: number, teaCostPerHour: number }}
  */
-export function calculateSkillPerformance(skillName, equipment, teaHrids, playerLevel, selectedActionHrids = null) {
+export function calculateSkillPerformance(
+    skillName,
+    equipment,
+    teaHrids,
+    playerLevel,
+    selectedActionHrids = null,
+    { houseRoomLevels = null } = {}
+) {
     const normalizedSkill = skillName.toLowerCase();
     const isGathering = GATHERING_SKILLS.includes(normalizedSkill);
     const isProduction = PRODUCTION_SKILLS.includes(normalizedSkill);
@@ -1466,7 +1518,7 @@ export function calculateSkillPerformance(skillName, equipment, teaHrids, player
     const drinkConcentration = getDrinkConcentration(equipment, gameData.itemDetailMap);
     const buffs = parseTeaBuffs(filteredTeas, gameData.itemDetailMap, drinkConcentration);
 
-    const otherEfficiency = getOtherEfficiencySources(actionType);
+    const otherEfficiency = getOtherEfficiencySources(actionType, houseRoomLevels);
     if (isGathering) {
         const equipGathering = parseGatheringQuantityBonus(equipment, gameData.itemDetailMap);
         if (equipGathering > 0) otherEfficiency.gathering = (otherEfficiency.gathering || 0) + equipGathering;
