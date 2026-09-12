@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The pinned page opens at once, and the overlay button can be put away
+
+- Opening Pinned sat blank for up to half a minute the first time in a session: every row waited its turn on a price-history request for its item, and nothing had warmed that data. The page now paints immediately and each row fills in as its figures arrive, reading "measuring…" until then. A row still waiting sorts last rather than as a zero.
+- On a phone, the round ⧉ overlay button can be dragged onto a "Drop here to hide" zone to dismiss it. Toolasha's settings brings it back, and the choice stays on that device instead of syncing to your others.
+- The command palette — every panel, overlay row, saved layout and setting by name — is now reachable on a phone, from a button in Toolasha's settings tab. It was Ctrl+K only, so phones could not open it at all.
+
 ### The phone toolbar folds away, and three figures stop lying
 
 - On a phone, Sort, Mode and Craft fold behind one toggle beside the filter box, so the action list starts a row down instead of three. Desktop is unchanged, and whether it is open is remembered per device rather than synced.
