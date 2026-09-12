@@ -23,10 +23,13 @@ const SCHEMA_VERSION = 1;
  */
 export const MAX_RECORD_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
+// Mirrors the schema default: a fresh install's character select follows the device's own clock,
+// like every screen after it, rather than starting on 24-hour before any character has shared its
+// preferences.
 const DEFAULT_ACCOUNT_PREFS = Object.freeze({
     enabled: true,
     dateFormat: 'MM-DD',
-    timeFormat: '24hour',
+    timeFormat: 'auto',
 });
 
 /**

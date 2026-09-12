@@ -6,6 +6,11 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Times follow your device's clock
+
+- A new Automatic time format follows each device's own clock, so Toolasha's times read "4:58 PM" wherever the game shows AM/PM, and 24-hour where the device uses that. It is the default for new installs; an existing character keeps its choice, so pick Automatic under "Time format for date/time display" to switch. Because it resolves on each device, a phone and a desktop set to Automatic can each follow their own clock.
+- That setting's help used to say it only covered listings and completion times. It covers every date and time Toolasha shows, and now says so.
+
 ### The action bar's run line stops claiming a run was never recorded
 
 - The "This run" line under a gathering action was worked out once, as the page loaded, before the recorder had started — and an endless action's header never changes, so nothing redrew it. It read "started before recording" all session while the run was being recorded underneath. It now redraws when the recorder catches up and as it records.

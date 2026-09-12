@@ -92,17 +92,18 @@ describe('character record round-trip', () => {
 
 describe('account preference mirror', () => {
     test('never-saved preferences come back complete', async () => {
-        expect(await loadAccountPreferences()).toEqual({ enabled: true, dateFormat: 'MM-DD', timeFormat: '24hour' });
+        expect(await loadAccountPreferences()).toEqual({ enabled: true, dateFormat: 'MM-DD', timeFormat: 'auto' });
     });
 
     test('a partial save merges onto what is already there', async () => {
         await saveAccountPreferences({ dateFormat: 'DD-MM' });
         await saveAccountPreferences({ enabled: false });
 
+        // timeFormat was never saved, so it is the fresh-install fallback
         expect(await loadAccountPreferences()).toEqual({
             enabled: false,
             dateFormat: 'DD-MM',
-            timeFormat: '24hour',
+            timeFormat: 'auto',
         });
     });
 });
