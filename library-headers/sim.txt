@@ -1,7 +1,7 @@
 /**
  * Toolasha Combat Simulator Library
  * The battle engine, shared by every feature that simulates a fight
- * Version: 3.50.0
+ * Version: 3.51.0
  * License: CC-BY-NC-SA-4.0
  * @license CC-BY-NC-SA-4.0
  */
