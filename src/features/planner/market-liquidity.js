@@ -364,6 +364,56 @@ export async function applyInputNote(rate) {
 }
 
 /**
+ * Warm the shared volume cache for every item a batch of rates could ask
+ * about, before bounding them one at a time.
+ *
+ * `applySellLimit` and `applyInputNote` already ask {@link dailyVolume} for
+ * exactly these items, in the loop below — this changes nothing about what
+ * gets asked, only when. Without it, a ranking of a few hundred rates paid the
+ * {@link VOLUME_CONCURRENCY} bound per *rate* rather than once for the whole
+ * sweep: a rate with a single output used one of four allowed slots and the
+ * other three sat idle until that rate's own `await` returned, because the
+ * next rate did not get a turn until this one finished completely. Fetching
+ * the union of every rate's items up front lets all of them compete for the
+ * same four slots continuously instead of a handful at a time between rates.
+ *
+ * A rate whose own fields throw when read (the loop below already has to
+ * survive that) is skipped here rather than allowed to abort the prefetch —
+ * the existing per-rate handling still runs into the same throw afterwards
+ * and is where it is actually reported.
+ *
+ * @param {Array<Object>} rates - Gold rates, read for `sells` and `itemHrid`
+ * @returns {Promise<void>}
+ */
+async function prefetchVolumes(rates) {
+    const wanted = new Map();
+    for (const rate of rates) {
+        try {
+            for (const sold of rate?.sells || []) {
+                if (!sold?.itemHrid || sold.itemHrid === COIN_HRID) continue;
+                const enhancementLevel = sold.enhancementLevel || 0;
+                wanted.set(`${sold.itemHrid}:${enhancementLevel}`, { itemHrid: sold.itemHrid, enhancementLevel });
+            }
+            if (rate?.itemHrid) {
+                wanted.set(`${rate.itemHrid}:0`, { itemHrid: rate.itemHrid, enhancementLevel: 0 });
+            }
+        } catch (error) {
+            console.error('[MarketLiquidity] Reading a rate to prefetch its volumes failed:', error);
+        }
+    }
+
+    await runPool([...wanted.values()], VOLUME_CONCURRENCY, async ({ itemHrid, enhancementLevel }) => {
+        try {
+            await dailyVolume(itemHrid, enhancementLevel);
+        } catch (error) {
+            // dailyVolume already settles its own failures as "unknown"; this is
+            // a second net, the same one sellThrottle keeps below.
+            console.error(`[MarketLiquidity] Prefetching volume for ${itemHrid} failed:`, error);
+        }
+    });
+}
+
+/**
  * Bound every rate in a ranking, and say whether the bounding could happen at all.
  *
  * @param {Array<Object>} rates - Gold rates
@@ -373,8 +423,10 @@ export async function applyInputNote(rate) {
  */
 export async function applyLiquidityLimits(rates) {
     const list = Array.isArray(rates) ? rates : [];
-    const bounded = [];
 
+    await prefetchVolumes(list);
+
+    const bounded = [];
     for (const rate of list) {
         try {
             bounded.push(await applyInputNote(await applySellLimit(rate)));

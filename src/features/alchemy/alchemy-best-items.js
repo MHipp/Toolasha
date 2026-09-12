@@ -16,7 +16,12 @@ import { formatKMB, formatWithSeparator, formatPercentage } from '../../utils/fo
 import assetManifest from '../../utils/asset-manifest.js';
 import { createMutationWatcher } from '../../utils/dom-observer-helpers.js';
 import { navigateToMarketplace } from '../../utils/marketplace-tabs.js';
-import { capProfitRate, sellsFromProfitData, liquidityMarkerHtml } from '../../utils/liquidity-cap.js';
+import {
+    capProfitRate,
+    sellsFromProfitData,
+    liquidityMarkerHtml,
+    prefetchLiquidity,
+} from '../../utils/liquidity-cap.js';
 import { appendCalibrationBadge } from '../../utils/calibration-badge.js';
 import { appendMeasuredRate } from './alchemy-measured-rate.js';
 import { ALCHEMY_TYPES, rankAlchemyType, getAlchemyBaseXP, calcXpPerAction } from './alchemy-rankings.js';
@@ -204,33 +209,96 @@ class AlchemyBestItems {
      * figure on `uncappedProfitPerHour` and the marker payload on
      * `liquidityLimit`, which `renderTable` must always draw.
      *
+     * Every row's outputs are warmed into the shared volume cache
+     * ({@link prefetchLiquidity}, one bounded queue) before any row is capped,
+     * so a hundred rows asking about one item apiece queue onto the same
+     * handful of concurrent slots instead of one row's fetch alone occupying a
+     * slot while ninety-nine more wait their turn behind it. Every row is then
+     * capped off that now-warm cache — no further network wait — so the order
+     * work resolves in has no bearing on the order it is returned in: `bounded`
+     * is written by index, matching the ranking `rankings` came in as.
+     *
      * @param {Array<Object>} rankings - From {@link calculateRankings}
      * @returns {Promise<Array<Object>>} The rows, bounded where the market binds
      */
     async withLiquidityCaps(rankings) {
-        const bounded = [];
-        for (const entry of rankings || []) {
-            try {
-                const capped = await capProfitRate({
-                    goldPerHour: entry.profitPerHour,
-                    sells: sellsFromProfitData(entry.profitData),
-                });
-                bounded.push(
-                    capped.capped
+        const list = rankings || [];
+        const bounded = new Array(list.length);
+
+        const items = [];
+        for (const entry of list) {
+            for (const sold of sellsFromProfitData(entry.profitData)) {
+                items.push({ itemHrid: sold.itemHrid, enhancementLevel: sold.enhancementLevel || 0 });
+            }
+        }
+        await prefetchLiquidity(items);
+
+        await Promise.all(
+            list.map(async (entry, index) => {
+                try {
+                    const capped = await capProfitRate({
+                        goldPerHour: entry.profitPerHour,
+                        sells: sellsFromProfitData(entry.profitData),
+                    });
+                    bounded[index] = capped.capped
                         ? {
                               ...entry,
                               profitPerHour: capped.goldPerHour,
                               uncappedProfitPerHour: entry.profitPerHour,
                               liquidityLimit: capped.limit,
                           }
-                        : entry
-                );
-            } catch (error) {
-                console.error('[AlchemyBestItems] Bounding a row by market volume failed:', error);
-                bounded.push(entry);
-            }
-        }
+                        : entry;
+                } catch (error) {
+                    console.error('[AlchemyBestItems] Bounding a row by market volume failed:', error);
+                    bounded[index] = entry;
+                }
+            })
+        );
+
         return bounded;
+    }
+
+    /**
+     * Rank a type and paint it immediately, then bound it by market volume in
+     * the background and repaint once that lands.
+     *
+     * `calculateRankings` is synchronous — nothing about it touches the
+     * network — so there was never a reason the table had to sit blank until
+     * every row's liquidity check had also answered. Rows paint now, each
+     * carrying its true uncapped figure (never a zero standing in for "not
+     * known yet") and `capPending: true`; {@link withLiquidityCaps} then runs
+     * in the background, and the table is redrawn once with the bounded
+     * figures when it settles.
+     *
+     * @param {string} alchemyType - 'coinify', 'decompose', or 'transmute'
+     * @returns {Promise<void>} Resolves once the background sweep has settled
+     *   and repainted — callers are not required to await it, since the whole
+     *   point is that the raw ranking is already on screen by the time this
+     *   returns
+     */
+    loadRankings(alchemyType) {
+        const raw = this.calculateRankings(alchemyType);
+        const pending = raw.map((entry) => ({ ...entry, capPending: true }));
+        this.cachedRankings[alchemyType] = pending;
+        this.renderTable();
+
+        return this.withLiquidityCaps(raw)
+            .then((bounded) => {
+                // A tab switch, or a reopen, since this sweep started would have
+                // replaced the cached array already — a sweep landing late has
+                // nothing current left to write into.
+                if (this.cachedRankings[alchemyType] !== pending) return;
+                this.cachedRankings[alchemyType] = bounded;
+                if (this.modal && this.modal.style.display !== 'none' && this.currentType === alchemyType) {
+                    this.renderTable();
+                }
+            })
+            .catch((error) => {
+                // withLiquidityCaps already catches every row's own failure;
+                // this is a second net so a rejection cannot leave the type
+                // stuck showing "checking…" forever.
+                console.error('[AlchemyBestItems] Bounding rankings by market volume failed:', error);
+            });
     }
 
     /**
@@ -244,15 +312,14 @@ class AlchemyBestItems {
             this.itemsSpriteUrl = await assetManifest.getSpriteUrl('items');
         }
 
-        // Always recalculate on open so tea/gear changes are reflected
-        this.cachedRankings[this.currentType] = await this.withLiquidityCaps(this.calculateRankings(this.currentType));
-
         if (!this.modal) {
             this.createModal();
         }
 
         this.modal.style.display = 'flex';
-        this.renderTable();
+
+        // Always recalculate on open so tea/gear changes are reflected
+        this.loadRankings(this.currentType);
     }
 
     closeModal() {
@@ -331,10 +398,9 @@ class AlchemyBestItems {
                 padding: 4px 12px; border-radius: 4px; cursor: pointer;
                 border: 1px solid #555; font-size: 0.8rem; color: #fff;
             `;
-            tab.addEventListener('click', async () => {
+            tab.addEventListener('click', () => {
                 this.currentType = type;
-                this.cachedRankings[type] = await this.withLiquidityCaps(this.calculateRankings(type));
-                this.renderTable();
+                this.loadRankings(type);
             });
             controls.appendChild(tab);
         }
@@ -623,12 +689,20 @@ class AlchemyBestItems {
             }
             row.appendChild(catTd);
 
-            // Profit/hr — a volume-bounded figure always says so
+            // Profit/hr — the raw figure, always; a volume-bounded one always
+            // says so, and one still awaiting its liquidity check says that too,
+            // rather than silently showing a number that might still drop
             const profitTd = document.createElement('td');
             const profitVal = Math.round(item.profitPerHour);
             profitTd.textContent = formatKMB(profitVal);
             profitTd.style.cssText = `padding: 4px 8px; text-align: right; color: ${profitVal >= 0 ? '#4ade80' : '#f87171'};`;
-            if (item.liquidityLimit) {
+            if (item.capPending) {
+                profitTd.insertAdjacentHTML(
+                    'beforeend',
+                    '<span title="Checking how fast this sells before trusting this figure" ' +
+                        'style="font-size:0.85em; margin-left:4px; color:#888;">checking…</span>'
+                );
+            } else if (item.liquidityLimit) {
                 profitTd.insertAdjacentHTML('beforeend', liquidityMarkerHtml(item.liquidityLimit, { compact: true }));
             }
             row.appendChild(profitTd);

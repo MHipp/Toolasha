@@ -84,7 +84,39 @@ vi.mock('../../utils/marketplace-tabs.js', () => ({
  * is the wiring — a capped figure reaches the ranking and the drawn cell, and
  * the marker is never dropped.
  */
-const liquidity = vi.hoisted(() => ({ throttleByItem: {} }));
+const liquidity = vi.hoisted(() => ({
+    throttleByItem: {},
+    calls: [],
+    // A call that must not settle until the test releases it, so a test can
+    // observe several rows' checks in flight at once instead of only ever one
+    // at a time (the mock has no real network delay to make that visible
+    // otherwise).
+    hang: false,
+    pending: [],
+    // An item whose check throws, to prove one bad row does not sink the rest
+    // of a concurrent sweep.
+    failFor: null,
+}));
+
+function computeCapResult(goldPerHour, sells) {
+    for (const sold of sells || []) {
+        const throttle = liquidity.throttleByItem[sold.itemHrid];
+        if (throttle !== undefined && throttle < 1) {
+            return {
+                goldPerHour: goldPerHour * throttle,
+                capped: true,
+                limit: {
+                    kind: 'volume',
+                    note: 'limited by market volume (~1/week)',
+                    detail: `${sold.name || sold.itemHrid} trades ~1/week, and you are not the only seller.`,
+                    itemHrid: sold.itemHrid,
+                    throttle,
+                },
+            };
+        }
+    }
+    return { goldPerHour, capped: false, limit: null };
+}
 
 vi.mock('../../utils/liquidity-cap.js', () => ({
     sellsFromProfitData: (profitData) =>
@@ -95,24 +127,20 @@ vi.mock('../../utils/liquidity-cap.js', () => ({
                 name: drop.itemName || null,
                 unitsPerHour: drop.dropsPerHour || 0,
             })),
+    // The real prefetch just warms market-liquidity.js's own cache, which
+    // this mock's capProfitRate never consults (it answers straight out of
+    // liquidity.throttleByItem) — a no-op here is faithful to that.
+    prefetchLiquidity: async () => {},
     capProfitRate: async ({ goldPerHour, sells }) => {
-        for (const sold of sells || []) {
-            const throttle = liquidity.throttleByItem[sold.itemHrid];
-            if (throttle !== undefined && throttle < 1) {
-                return {
-                    goldPerHour: goldPerHour * throttle,
-                    capped: true,
-                    limit: {
-                        kind: 'volume',
-                        note: 'limited by market volume (~1/week)',
-                        detail: `${sold.name || sold.itemHrid} trades ~1/week, and you are not the only seller.`,
-                        itemHrid: sold.itemHrid,
-                        throttle,
-                    },
-                };
-            }
+        liquidity.calls.push({ goldPerHour, sells });
+        const itemHrid = sells?.[0]?.itemHrid;
+        if (itemHrid && liquidity.failFor === itemHrid) throw new Error('the pool did not answer in time');
+        if (liquidity.hang) {
+            return new Promise((resolve) => {
+                liquidity.pending.push({ sells, resolve: () => resolve(computeCapResult(goldPerHour, sells)) });
+            });
         }
-        return { goldPerHour, capped: false, limit: null };
+        return computeCapResult(goldPerHour, sells);
     },
     liquidityMarkerHtml: (limit, { compact = false } = {}) =>
         limit ? `<span title="${limit.note} — ${limit.detail}">${compact ? 'vol-capped' : limit.note}</span>` : '',
@@ -142,6 +170,10 @@ beforeEach(() => {
     market.prices = {};
     experience.totalMultiplier = 1;
     liquidity.throttleByItem = {};
+    liquidity.calls = [];
+    liquidity.hang = false;
+    liquidity.pending = [];
+    liquidity.failFor = null;
     calculator.coinify.mockReset().mockReturnValue(profit());
     calculator.decompose.mockReset().mockReturnValue(profit());
     calculator.transmute.mockReset().mockReturnValue(profit());
@@ -634,6 +666,135 @@ describe('the market-volume cap on the ranking', () => {
         await bestItems.withLiquidityCaps(raw);
 
         expect(raw.find((row) => row.itemHrid === '/items/charm').profitPerHour).toBe(1_000_000_000);
+    });
+});
+
+describe('loadRankings — painting early, resolving the caps in the background', () => {
+    beforeEach(() => {
+        game.initClientData = {
+            itemDetailMap: {
+                '/items/charm': { name: 'Charm', itemLevel: 10, alchemyDetail: { isCoinifiable: true } },
+                '/items/cheese': { name: 'Cheese', itemLevel: 10, alchemyDetail: { isCoinifiable: true } },
+            },
+        };
+        calculator.coinify.mockImplementation((hrid) =>
+            hrid === '/items/charm'
+                ? profit({
+                      profitPerHour: 1_000_000_000,
+                      dropRevenues: [{ itemHrid: '/items/essence', itemName: 'Tailoring Essence', dropsPerHour: 500 }],
+                  })
+                : profit({
+                      profitPerHour: 500_000,
+                      dropRevenues: [{ itemHrid: '/items/milk', itemName: 'Milk', dropsPerHour: 400 }],
+                  })
+        );
+    });
+
+    /** Open the modal the way openModal does, without the async sprite lookup */
+    function openOn(type) {
+        bestItems.createModal();
+        bestItems.modal.style.display = 'flex';
+        bestItems.currentType = type;
+    }
+
+    test('the raw ranking paints immediately, every row marked pending rather than blank', () => {
+        openOn('coinify');
+
+        bestItems.loadRankings('coinify');
+
+        // Nothing has been awaited yet — this is what is on screen the instant
+        // loadRankings returns, before any liquidity check has answered
+        const rows = bestItems.cachedRankings.coinify;
+        expect(rows).toHaveLength(2);
+        expect(rows.every((row) => row.capPending)).toBe(true);
+        // The true uncapped figure, never a zero standing in for "not known yet"
+        expect(rows.find((row) => row.itemHrid === '/items/charm').profitPerHour).toBe(1_000_000_000);
+
+        expect(bestItems.modal.querySelector('[data-mwi-best-table]').textContent).toContain('checking…');
+        expect(bestItems.modal.querySelector('[data-mwi-best-table]').innerHTML).not.toContain('vol-capped');
+    });
+
+    test('a pending row settles to its capped figure once the check resolves, and the table repaints', async () => {
+        liquidity.throttleByItem['/items/essence'] = 0.0001;
+        openOn('coinify');
+
+        await bestItems.loadRankings('coinify');
+
+        const charm = bestItems.cachedRankings.coinify.find((row) => row.itemHrid === '/items/charm');
+        expect(charm.capPending).toBeUndefined();
+        expect(charm.profitPerHour).toBeCloseTo(100_000, 6);
+        expect(charm.liquidityLimit.itemHrid).toBe('/items/essence');
+
+        const cell = Array.from(bestItems.modal.querySelectorAll('tbody tr')).find((tr) =>
+            tr.textContent.includes('Charm')
+        ).children[4];
+        expect(cell.innerHTML).toContain('vol-capped');
+        expect(cell.innerHTML).not.toContain('checking…');
+    });
+
+    test('every row’s check is outstanding at once, not one row blocking the next', async () => {
+        liquidity.hang = true;
+        openOn('coinify');
+
+        const loadPromise = bestItems.loadRankings('coinify');
+
+        // Let the synchronous fan-out finish starting its first wave before we look.
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(liquidity.pending.length).toBe(2);
+
+        liquidity.pending.forEach((entry) => entry.resolve());
+        liquidity.pending = [];
+        liquidity.hang = false;
+        await loadPromise;
+    });
+
+    test('one row’s check failing does not stop the other from settling', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        liquidity.failFor = '/items/essence';
+        openOn('coinify');
+
+        await bestItems.loadRankings('coinify');
+
+        const rows = bestItems.cachedRankings.coinify;
+        const charm = rows.find((row) => row.itemHrid === '/items/charm');
+        const cheese = rows.find((row) => row.itemHrid === '/items/cheese');
+
+        // The failing row keeps its raw, unbounded figure rather than the whole
+        // sweep aborting
+        expect(charm.profitPerHour).toBe(1_000_000_000);
+        expect(charm.capPending).toBeUndefined();
+        expect(cheese.profitPerHour).toBe(500_000);
+
+        vi.restoreAllMocks();
+    });
+
+    test('a stale sweep for the same type settling late does not clobber a newer one', async () => {
+        openOn('coinify');
+
+        let resolveFirst;
+        const withCapsSpy = vi
+            .spyOn(bestItems, 'withLiquidityCaps')
+            .mockImplementationOnce(() => new Promise((resolve) => (resolveFirst = resolve)));
+
+        // A first sweep starts and hangs (the modal was opened, say)
+        const firstLoad = bestItems.loadRankings('coinify');
+
+        // The type is reopened before the first sweep answers — the second
+        // sweep replaces the cached array and finishes first
+        withCapsSpy.mockImplementationOnce(async () => [{ itemHrid: '/items/second', profitPerHour: 999 }]);
+        await bestItems.loadRankings('coinify');
+        const settled = bestItems.cachedRankings.coinify;
+        expect(settled).toEqual([{ itemHrid: '/items/second', profitPerHour: 999 }]);
+
+        // The first, now-stale sweep finally resolves — it must not overwrite
+        // the second sweep's already-settled result
+        resolveFirst([{ itemHrid: '/items/stale', profitPerHour: 1 }]);
+        await firstLoad;
+
+        expect(bestItems.cachedRankings.coinify).toBe(settled);
+        withCapsSpy.mockRestore();
     });
 });
 

@@ -50,9 +50,18 @@
 import config from '../core/config.js';
 import bundledMarketLiquidity from '../features/planner/market-liquidity.js';
 import { marketLiquidity as sharedMarketLiquidity } from './bundle-bridge.js';
+import { runPool } from './async-pool.js';
 
 /** The one checkbox that turns display-wide capping off */
 export const LIQUIDITY_CAP_SETTING = 'profitCalc_liquidityCap';
+
+/**
+ * Matches `VOLUME_CONCURRENCY` in `market-liquidity.js` (itself matching
+ * `MOOKET_CONCURRENCY` in `market-undercut-alerts.js` and
+ * `price-target-alerts.js`) — the same politeness bound for the same
+ * third-party pooled-history server, wherever it is asked from.
+ */
+const PREFETCH_CONCURRENCY = 4;
 
 /**
  * The market-liquidity module that actually holds the volume cache.
@@ -120,6 +129,42 @@ export function sellsFromProfitData(profitData) {
     }
 
     return [...sells.values()];
+}
+
+/**
+ * Warm the shared volume cache for a batch of items, before bounding a lot of
+ * rows one at a time.
+ *
+ * Mirrors `market-liquidity.js`'s own internal prefetch, for a caller that
+ * does not hold that module directly — this file is already the one place
+ * that resolves which copy of it (shared or bundled) is live, see
+ * {@link liquidity}. A table with a hundred rows asking `capProfitRate` for
+ * one item apiece used to let only one row's fetch occupy a network slot
+ * while the other three sat idle until that row finished; letting every row's
+ * item queue onto the same four slots keeps the bound continuously busy
+ * instead of mostly idle between rows, without asking for more of it at once.
+ *
+ * @param {Array<{itemHrid: string, enhancementLevel?: number}>} items - Items to warm
+ * @returns {Promise<void>}
+ */
+export async function prefetchLiquidity(items) {
+    const { dailyVolume } = liquidity();
+    const wanted = new Map();
+    for (const item of items || []) {
+        if (!item?.itemHrid) continue;
+        const enhancementLevel = item.enhancementLevel || 0;
+        wanted.set(`${item.itemHrid}:${enhancementLevel}`, { itemHrid: item.itemHrid, enhancementLevel });
+    }
+
+    await runPool([...wanted.values()], PREFETCH_CONCURRENCY, async ({ itemHrid, enhancementLevel }) => {
+        try {
+            await dailyVolume(itemHrid, enhancementLevel);
+        } catch (error) {
+            // dailyVolume already settles its own failures as "unknown"; this
+            // is a second net, not the one doing the real work.
+            console.error(`[LiquidityCap] Prefetching volume for ${itemHrid} failed:`, error);
+        }
+    });
 }
 
 /**
@@ -237,6 +282,7 @@ export default {
     LIQUIDITY_CAP_SETTING,
     liquidityCapEnabled,
     sellsFromProfitData,
+    prefetchLiquidity,
     capProfitRate,
     capProfitData,
     liquidityMarkerHtml,

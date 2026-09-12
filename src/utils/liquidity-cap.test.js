@@ -23,11 +23,30 @@ vi.mock('../core/config.js', () => ({
     },
 }));
 
-const history = vi.hoisted(() => ({ rows: {} }));
+const history = vi.hoisted(() => ({
+    rows: {},
+    calls: [],
+    // A request that must not settle until the test releases it, so a
+    // concurrency test can observe several in flight at once.
+    hang: false,
+    pending: [],
+    // An item whose fetch throws, to check that one failure does not stop
+    // the rest of a prefetch batch from warming.
+    failFor: null,
+}));
 
 vi.mock('../features/market/mooket/market-history-api.js', () => ({
     default: {
-        fetchHistory: async (itemHrid) => history.rows[itemHrid] ?? null,
+        fetchHistory: async (itemHrid, level, days) => {
+            history.calls.push({ itemHrid, level, days });
+            if (history.failFor === itemHrid) throw new Error('the pool did not answer in time');
+            if (history.hang) {
+                return new Promise((resolve) => {
+                    history.pending.push({ itemHrid, resolve: () => resolve(history.rows[itemHrid] ?? null) });
+                });
+            }
+            return history.rows[itemHrid] ?? null;
+        },
         currentSource: () => ({ key: 'mooket2', hasVolume: true }),
     },
 }));
@@ -37,6 +56,7 @@ const {
     LIQUIDITY_CAP_SETTING,
     liquidityCapEnabled,
     sellsFromProfitData,
+    prefetchLiquidity,
     capProfitRate,
     capProfitData,
     liquidityMarkerHtml,
@@ -62,6 +82,10 @@ function tradedAt(perDay) {
 beforeEach(() => {
     resetLiquidityCache();
     history.rows = {};
+    history.calls = [];
+    history.hang = false;
+    history.pending = [];
+    history.failFor = null;
     settings.map = {};
 });
 
@@ -164,6 +188,71 @@ describe('capProfitRate', () => {
         expect((await capProfitRate({ goldPerHour: 1_000_000, sells: [] })).capped).toBe(false);
         expect((await capProfitRate({ goldPerHour: 1_000_000 })).capped).toBe(false);
         expect((await capProfitRate()).capped).toBe(false);
+    });
+});
+
+describe('prefetchLiquidity', () => {
+    test('warms the cache so a later capProfitRate call costs no new fetch', async () => {
+        history.rows['/items/essence'] = tradedAt(24);
+
+        await prefetchLiquidity([{ itemHrid: '/items/essence' }]);
+        expect(history.calls).toHaveLength(1);
+
+        await capProfitRate({ goldPerHour: 1_000_000, sells: [{ itemHrid: '/items/essence', unitsPerHour: 500 }] });
+        expect(history.calls).toHaveLength(1);
+    });
+
+    test('duplicate items in the batch collapse to one fetch', async () => {
+        history.rows['/items/essence'] = tradedAt(24);
+
+        await prefetchLiquidity([
+            { itemHrid: '/items/essence' },
+            { itemHrid: '/items/essence' },
+            { itemHrid: '/items/essence', enhancementLevel: 0 },
+        ]);
+
+        expect(history.calls).toHaveLength(1);
+    });
+
+    test('fetches several items concurrently, bounded rather than all at once', async () => {
+        // Sized past the concurrency bound so the fan-out has to prove it is
+        // bounded, not just that it overlaps at all.
+        const items = ['/items/a', '/items/b', '/items/c', '/items/d', '/items/e', '/items/f'];
+        for (const item of items) history.rows[item] = tradedAt(10);
+        history.hang = true;
+
+        const prefetchPromise = prefetchLiquidity(items.map((itemHrid) => ({ itemHrid })));
+
+        // Let the synchronous fan-out finish starting its first wave before we look.
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(history.pending.length).toBeGreaterThan(1);
+        expect(history.pending.length).toBeLessThan(items.length);
+        expect(history.calls.length).toBe(history.pending.length);
+
+        history.pending.forEach((entry) => entry.resolve());
+        history.pending = [];
+        history.hang = false;
+        await prefetchPromise;
+    });
+
+    test('one item failing does not stop the rest of the batch from warming', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        history.failFor = '/items/broken';
+        history.rows['/items/essence'] = tradedAt(24);
+
+        await prefetchLiquidity([{ itemHrid: '/items/broken' }, { itemHrid: '/items/essence' }]);
+
+        // The broken item settles as unknown volume rather than aborting the batch
+        const broken = await capProfitRate({
+            goldPerHour: 1_000_000,
+            sells: [{ itemHrid: '/items/broken', unitsPerHour: 1 }],
+        });
+        expect(broken.capped).toBe(false);
+        expect(history.calls.filter((call) => call.itemHrid === '/items/essence')).toHaveLength(1);
+
+        vi.restoreAllMocks();
     });
 });
 

@@ -430,4 +430,55 @@ describe('bounding a whole ranking', () => {
         expect(rates.map((rate) => rate.label)).toEqual(['Milk a Cow', 'Broken']);
         vi.restoreAllMocks();
     });
+
+    test('every rate’s items compete for the same bound, instead of one rate finishing before the next starts', async () => {
+        // One output apiece: the old code let only one of these occupy a slot at
+        // a time (the next rate did not get a turn until this one's await
+        // returned), even with room in the pool for four.
+        const rates = ['/items/a', '/items/b', '/items/c', '/items/d', '/items/e', '/items/f'].map(
+            (itemHrid, index) => ({
+                label: `Rate ${index}`,
+                goldPerHour: 1_000,
+                sells: [{ itemHrid, unitsPerHour: 1 }],
+            })
+        );
+        for (const rate of rates) history.rows[rate.sells[0].itemHrid] = tradedAt(10);
+        history.hang = true;
+
+        const boundedPromise = applyLiquidityLimits(rates);
+
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(history.pending.length).toBeGreaterThan(1);
+        expect(history.pending.length).toBeLessThan(rates.length);
+        expect(history.calls.length).toBe(history.pending.length);
+
+        history.pending.forEach((entry) => entry.resolve());
+        history.pending = [];
+        history.hang = false;
+        await boundedPromise;
+    });
+
+    test('a rate whose fields throw when read does not stop the others from being prefetched', async () => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        history.rows['/items/milk'] = tradedAt(50_000);
+
+        const { rates } = await applyLiquidityLimits([
+            {
+                label: 'Broken',
+                goldPerHour: 1,
+                get sells() {
+                    throw new Error('nope');
+                },
+            },
+            { label: 'Milk a Cow', goldPerHour: 12_400_000, sells: [{ itemHrid: '/items/milk', unitsPerHour: 400 }] },
+        ]);
+
+        // The milk item still gets measured — one bad rate did not abort the
+        // whole prefetch pass before it reached the healthy ones
+        expect(history.calls.map((call) => call.itemHrid)).toContain('/items/milk');
+        expect(rates.map((rate) => rate.label)).toEqual(['Milk a Cow', 'Broken']);
+        vi.restoreAllMocks();
+    });
 });
