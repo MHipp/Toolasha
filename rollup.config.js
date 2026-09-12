@@ -377,6 +377,14 @@ const marketExternalGlobals = new Map([
     // overlay's 'treasure' row — so the tile and the panel it opened were blank
     // while the real ledger sat in the market bundle.
     [normalize(join(__dirname, 'src/features/inventory/treasure-tracker.js')), 'Toolasha.Market.treasureTracker'],
+    // A stateful singleton that mirrors the inventory and folds in gathering/key/drink
+    // movements as they happen, initialized once by networth/index.js. The actions bundle's
+    // action-time-display.js reads it synchronously for the "so far this run" row and the ui
+    // bundle's prediction-calibration.js awaits it for a live fallback; left inline, either
+    // copy sits with isActive false forever and answers null, which is indistinguishable from
+    // "nothing recorded" (the row read "started before recording" though the owner copy was
+    // actively recording).
+    [normalize(join(__dirname, 'src/features/networth/item-flow-recorder.js')), 'Toolasha.Market.itemFlowRecorder'],
 ]);
 
 const buildGlobals = (globalsMap) => Object.fromEntries(globalsMap.entries());

@@ -54,6 +54,11 @@ import * as productionProfit from '../features/actions/production-profit.js';
 // Networth/Economy features
 import networthFeature from '../features/networth/index.js';
 import * as networthCalculator from '../features/networth/networth-calculator.js';
+// Initialized by networthFeature above, but read directly by the actions bundle's "so far this
+// run" row and the ui bundle's prediction calibration — both load after market, so exporting it
+// here (see marketExternalGlobals in rollup.config.js) is what keeps every reader on the one
+// recorder instead of each carrying its own never-initialized copy.
+import itemFlowRecorder from '../features/networth/item-flow-recorder.js';
 // Side-effect import: registers the coins, listings, inventory and books overlay rows
 import '../features/networth/networth-rows.js';
 import { abilityBookPanel } from '../features/abilities/ability-book-panel.js';
@@ -131,6 +136,7 @@ toolashaRoot.Market = {
     alchemyProfitCalculator,
     networthFeature,
     networthCalculator,
+    itemFlowRecorder,
     offlineProgressEconomics,
     inventoryBadgeManager,
     inventorySort,

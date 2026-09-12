@@ -92,6 +92,13 @@ const SINGLE_COPY_FEATURES = new Set([
     // bundle's copy backs the panel. Cross-bundle callers use the bridge.
     'src/features/inventory/watchlist.js',
     'src/features/inventory/equipment-savings-row.js',
+    // Mirrors the inventory and folds gathering/key/drink movements into it as they
+    // happen; initialized once by networth/index.js. A second, never-initialized copy
+    // in the actions or ui bundle sits with isActive false and answers null forever,
+    // indistinguishable from "nothing recorded" — which is exactly how the action
+    // bar's "so far this run" row read "started before recording" on a run the owner
+    // copy was actively recording.
+    'src/features/networth/item-flow-recorder.js',
 ]);
 
 const ALLOWLIST = new Map([
