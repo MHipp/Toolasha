@@ -468,8 +468,55 @@ describe('updateRunSoFar — whole-run count vs. a partially recorded run', () =
         expect(html).not.toContain('258,632');
         expect(html).not.toContain('actions');
         expect(html).toContain('1,000');
-        const expectedTime = formatDateTime(new Date(recordedFrom), { includeDate: false, includeSeconds: false });
+        // Recorded days before the real clock's today, so the day is named.
+        const expectedTime = formatDateTime(new Date(recordedFrom), { includeDate: true, includeSeconds: false });
         expect(html).toContain(`Since ${expectedTime}:`);
+    });
+
+    describe('the recorded window names its day only when that day is not today', () => {
+        const runStart = Date.parse('2026-09-01T08:00:00');
+
+        afterEach(() => {
+            vi.useRealTimers();
+        });
+
+        test('a window that began today shows the time alone', () => {
+            vi.useFakeTimers();
+            vi.setSystemTime(new Date('2026-09-12T13:00:00'));
+            const recordedFrom = new Date('2026-09-12T09:30:00').getTime();
+            game.runGathering = { gained: { '/items/milk': 100 }, from: recordedFrom, to: recordedFrom + 60_000 };
+
+            actionTimeDisplay.updateRunSoFar(
+                { id: 7, currentCount: 900, createdAt: new Date(runStart).toISOString() },
+                gatheringDetails
+            );
+
+            const bare = formatDateTime(new Date(recordedFrom), { includeDate: false, includeSeconds: false });
+            const dated = formatDateTime(new Date(recordedFrom), { includeDate: true, includeSeconds: false });
+            const html = actionTimeDisplay.runElement.innerHTML;
+            expect(html).toContain(`Since ${bare}:`);
+            expect(html).not.toContain(`Since ${dated}:`);
+        });
+
+        test('a window that began yesterday names the day, so it cannot read as today', () => {
+            // The live case: an endless Farmland run recorded since 16:58 the previous afternoon
+            // read "Since 16:58", which looks like earlier the same day.
+            vi.useFakeTimers();
+            vi.setSystemTime(new Date('2026-09-12T16:30:00'));
+            const recordedFrom = new Date('2026-09-11T16:58:49').getTime();
+            game.runGathering = { gained: { '/items/milk': 100 }, from: recordedFrom, to: recordedFrom + 60_000 };
+
+            actionTimeDisplay.updateRunSoFar(
+                { id: 23002282, currentCount: 258632, createdAt: new Date(runStart).toISOString() },
+                gatheringDetails
+            );
+
+            const dated = formatDateTime(new Date(recordedFrom), { includeDate: true, includeSeconds: false });
+            const bare = formatDateTime(new Date(recordedFrom), { includeDate: false, includeSeconds: false });
+            const html = actionTimeDisplay.runElement.innerHTML;
+            expect(html).toContain(`Since ${dated}:`);
+            expect(dated).not.toBe(bare);
+        });
     });
 
     test('an unparsable createdAt falls back to the whole-run pairing rather than guessing partial', () => {

@@ -3586,7 +3586,8 @@ class ActionTimeDisplay {
      * than not at all, past `RUN_COVERAGE_TOLERANCE_MS` — is not shown beside
      * the game's whole-run `currentCount`: that pairing reads as if the whole
      * run earned a partial run's value. Instead the row names the recorded
-     * window itself ("Since HH:MM: +value") with no action count, since the
+     * window itself ("Since HH:MM: +value", with the date when that window began on
+     * an earlier day) with no action count, since the
      * recorder does not store how many completions its window covers either.
      *
      * @param {Object} action - The running action
@@ -3656,7 +3657,11 @@ class ActionTimeDisplay {
         // count — the recorder does not store how many completions its window covers, and
         // pairing the game's whole-run count with this partial value is exactly the misreading
         // this branch exists to avoid.
-        const sinceTime = formatDateTime(new Date(totals.from), { includeDate: false, includeSeconds: false });
+        // An endless run's recording can reach back past midnight, and a bare clock time then
+        // reads as today; the day is named only when it is not today, as completion times do.
+        const fromDate = new Date(totals.from);
+        const startedToday = fromDate.toDateString() === new Date().toDateString();
+        const sinceTime = formatDateTime(fromDate, { includeDate: !startedToday, includeSeconds: false });
         this.runElement.innerHTML = `<span style="color:#888;">Since ${sinceTime}:</span> ${valueHtml}`;
     }
 
