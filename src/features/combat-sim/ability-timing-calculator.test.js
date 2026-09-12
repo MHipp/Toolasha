@@ -62,12 +62,13 @@ const { getCurrentAbilityTimingStats, calculateEffectiveAbilityTiming } =
 /**
  * A stand-in for the reconstructed Player, with the two lifecycle calls the
  * calculator makes.
- * @param {{abilityHaste?: number, castSpeed?: number, attackLevel?: number}} stats
+ * @param {{abilityHaste?: number, castSpeed?: number, attackLevel?: number, drinks?: Array}} stats
  * @returns {Object}
  */
-function fakePlayer({ abilityHaste = 0, castSpeed = 0, attackLevel = 1 } = {}) {
+function fakePlayer({ abilityHaste = 0, castSpeed = 0, attackLevel = 1, drinks = [] } = {}) {
     return {
         attackLevel,
+        drinks,
         combatDetails: { combatStats: { abilityHaste, castSpeed } },
         generatePermanentBuffs() {
             mocks.extraBuffsSeen = this.extraBuffs;
@@ -130,18 +131,52 @@ describe('getCurrentAbilityTimingStats', () => {
         expect(getCurrentAbilityTimingStats()).toEqual({ abilityHaste: 12, castSpeed: 0.3, attackLevel: 90 });
     });
 
-    test('adds the live drink and seal cast speed the reconstruction cannot model', () => {
-        mocks.playerFactory = () => fakePlayer({ castSpeed: 0.1 });
+    test('adds the equipped drinks and the live seal cast speed the reconstruction cannot model', () => {
+        // Channeling Coffee's cast speed comes from the reconstructed player's own
+        // equipped drinks (Consumable's static buff definition), not a live map —
+        // see the next test for why.
+        mocks.playerFactory = () =>
+            fakePlayer({
+                castSpeed: 0.1,
+                drinks: [{ buffs: [{ typeHrid: '/buff_types/cast_speed', flatBoost: 0.12 }] }, null, null],
+            });
         mocks.characterData = {
-            consumableActionTypeBuffsMap: {
-                '/action_types/combat': [{ typeHrid: '/buff_types/cast_speed', flatBoost: 0.12 }],
-            },
             personalActionTypeBuffsMap: {
                 '/action_types/combat': [{ typeHrid: '/buff_types/cast_speed', flatBoost: 0.03 }],
             },
         };
 
         expect(getCurrentAbilityTimingStats().castSpeed).toBeCloseTo(0.25, 10);
+    });
+
+    test('the drink boost comes from the equipped drink, not consumableActionTypeBuffsMap', () => {
+        // Live capture, 2026-09-11: a character mid-combat with three combat
+        // coffees slotted and `isActive: true` had NO `/action_types/combat` key
+        // in `consumableActionTypeBuffsMap`, and a later reading found the whole
+        // map empty while the same drinks were still active. The server does not
+        // fold trigger-gated combat drinks into that map the way it does a
+        // skilling tea, so a present-but-irrelevant (or absent) map must not
+        // change the answer — only the equipped drink does.
+        mocks.playerFactory = () =>
+            fakePlayer({
+                castSpeed: 0.1,
+                drinks: [{ buffs: [{ typeHrid: '/buff_types/cast_speed', flatBoost: 0.12 }] }, null, null],
+            });
+        mocks.characterData = {
+            consumableActionTypeBuffsMap: {},
+        };
+
+        expect(getCurrentAbilityTimingStats().castSpeed).toBeCloseTo(0.22, 10);
+    });
+
+    test('a drink slot with no relevant buff, or no drink at all, adds nothing', () => {
+        mocks.playerFactory = () =>
+            fakePlayer({
+                castSpeed: 0.1,
+                drinks: [{ buffs: [{ typeHrid: '/buff_types/accuracy', flatBoost: 0.1 }] }, null, null],
+            });
+
+        expect(getCurrentAbilityTimingStats().castSpeed).toBeCloseTo(0.1, 10);
     });
 
     test('does not double-count the buff sources the player reconstruction already carries', () => {

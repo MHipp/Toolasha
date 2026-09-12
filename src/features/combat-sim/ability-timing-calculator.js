@@ -15,10 +15,11 @@
  * `Toolasha.Sim.abilityTimingCalculator` (simExternalGlobals in
  * rollup.config.js), the same way it already reaches the adapter.
  *
- * Every read is live: the DTO is rebuilt from `dataManager` on each call and the
- * consumable/personal buff maps are read off `characterData`, which the socket
- * now mirrors on every change. Nothing here is cached, so a tea swap or a
- * re-equip shows up on the next hover.
+ * Every read is live: the DTO is rebuilt from `dataManager` on each call, the
+ * Labyrinth-seal boost is read off `characterData.personalActionTypeBuffsMap`
+ * (which the socket mirrors on every change), and the combat-drink boost comes
+ * from the equipped drinks' own item data. Nothing here is cached, so a tea
+ * swap, a seal pickup or a re-equip shows up on the next hover.
  */
 
 import dataManager from '../../core/data-manager.js';
@@ -32,32 +33,62 @@ const COMBAT_ACTION_TYPE = '/action_types/combat';
 const CAST_SPEED_BUFF_TYPE = '/buff_types/cast_speed';
 
 /**
- * The buff-map sources the reconstructed Player does NOT already cover.
+ * Sum the flat `/buff_types/cast_speed` boost held by the Labyrinth seals
+ * currently active for combat — the one live-map source the reconstructed
+ * Player does not already cover.
  *
  * Equipment and house rooms arrive as combat stats and permanent buffs; the
  * community, MooPass, guild, achievement and scroll buffs arrive through
  * `buildExtraBuffs`/`buildPlayerExtraBuffs`, exactly as a simulated run gets
- * them. Summing any of those from the live maps as well would count them twice.
- * What is left is the temporary stuff no reconstruction models: the drinks
- * currently ticking and the Labyrinth seals currently held.
+ * them. Summing any of those from the live map as well would count them twice.
+ * A seal is a persistent per-run bonus — structurally a static "held = active"
+ * bonus, the same as a skilling tea — so the server folds it into
+ * `personalActionTypeBuffsMap` the same way it does for every non-combat
+ * action type.
+ *
+ * @param {Object} characterData - dataManager.characterData
+ * @returns {number} Flat boost from currently-held Labyrinth seals
  */
-const LIVE_CAST_SPEED_BUFF_MAPS = ['consumableActionTypeBuffsMap', 'personalActionTypeBuffsMap'];
+function liveSealCastSpeedBoost(characterData) {
+    const buffs = characterData?.personalActionTypeBuffsMap?.[COMBAT_ACTION_TYPE];
+    if (!Array.isArray(buffs)) return 0;
+
+    let total = 0;
+    for (const buff of buffs) {
+        if (buff?.typeHrid === CAST_SPEED_BUFF_TYPE) total += buff.flatBoost || 0;
+    }
+    return total;
+}
 
 /**
- * Sum the flat `/buff_types/cast_speed` boost active for combat across the live
- * buff maps the Player reconstruction does not model.
- * @param {Object} characterData - dataManager.characterData
- * @returns {number} Combined flat boost (e.g. 0.12 for Channeling Coffee)
+ * Sum the flat `/buff_types/cast_speed` boost from the combat drinks currently
+ * equipped.
+ *
+ * Unlike a seal or a skilling tea, a combat drink is trigger-gated — re-drunk
+ * on a cooldown, or on an HP/MP condition — rather than a static "equipped =
+ * always on" bonus, so the server does not fold it into
+ * `consumableActionTypeBuffsMap` the way it does every other action type.
+ * Confirmed live: on a character mid-combat with three combat coffees slotted
+ * and `isActive: true`, `consumableActionTypeBuffsMap` carried no
+ * `/action_types/combat` key at all, and a later reading found the whole map
+ * empty while the same drinks were still active — that key is structurally
+ * absent for combat, not a timing gap. Every other reader of that map in this
+ * codebase (enhancing, alchemy) is non-combat, which is the same story.
+ *
+ * `player.drinks` already holds the equipped set for the reconstruction — the
+ * same `actionTypeDrinkSlotsMap` combat slots, built moments earlier as
+ * `Consumable`s — and each one's `.buffs` is that item's own static buff
+ * definition, which is the only number that matters: combat consumables do
+ * not scale by level the way abilities do.
+ *
+ * @param {Array<{buffs?: Array<{typeHrid?: string, flatBoost?: number}>}|null>} drinks - `player.drinks`
+ * @returns {number} Flat boost from the equipped combat drinks
  */
-function liveCastSpeedFlatBoost(characterData) {
+function liveDrinkCastSpeedBoost(drinks) {
     let total = 0;
-    for (const mapName of LIVE_CAST_SPEED_BUFF_MAPS) {
-        const buffs = characterData?.[mapName]?.[COMBAT_ACTION_TYPE];
-        if (!Array.isArray(buffs)) continue;
-        for (const buff of buffs) {
-            if (buff?.typeHrid === CAST_SPEED_BUFF_TYPE) {
-                total += buff.flatBoost || 0;
-            }
+    for (const drink of drinks ?? []) {
+        for (const buff of drink?.buffs ?? []) {
+            if (buff?.typeHrid === CAST_SPEED_BUFF_TYPE) total += buff.flatBoost || 0;
         }
     }
     return total;
@@ -68,8 +99,9 @@ function liveCastSpeedFlatBoost(characterData) {
  *
  * Reconstructs a `Player` from the live DTO — equipment, house rooms, skill
  * levels — and hands it the same extra buffs a simulated run would get, then
- * adds the drink and seal cast-speed boosts that only the live buff maps know
- * about. Attack level needs no special handling: `CombatUnit.updateCombatDetails`
+ * adds the seal cast-speed boost the live personal-buffs map states and the
+ * drink cast-speed boost the equipped combat drinks' own item data states.
+ * Attack level needs no special handling: `CombatUnit.updateCombatDetails`
  * already folds `attackLevel / 2000` into castSpeed.
  *
  * Ability Haste is deliberately equipment-only, because that is all the engine
@@ -105,7 +137,10 @@ export function getCurrentAbilityTimingStats() {
 
         return {
             abilityHaste: player.combatDetails.combatStats.abilityHaste,
-            castSpeed: player.combatDetails.combatStats.castSpeed + liveCastSpeedFlatBoost(dataManager.characterData),
+            castSpeed:
+                player.combatDetails.combatStats.castSpeed +
+                liveSealCastSpeedBoost(dataManager.characterData) +
+                liveDrinkCastSpeedBoost(player.drinks),
             attackLevel: player.attackLevel,
         };
     } catch (error) {
