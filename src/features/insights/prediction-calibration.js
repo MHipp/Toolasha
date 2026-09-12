@@ -39,6 +39,7 @@ import webSocketHook from '../../core/websocket.js';
 import { calculateGatheringProfit } from '../actions/gathering-profit.js';
 import { calculateProductionProfit } from '../actions/production-profit.js';
 import { LootLogStats } from '../actions/loot-log-stats.js';
+import itemFlowRecorder from '../networth/item-flow-recorder.js';
 import { GATHERING_TYPES, PRODUCTION_TYPES } from '../../utils/profit-constants.js';
 import { runInBackground } from '../../utils/background-work.js';
 import { scriptVersion } from '../../utils/script-version.js';
@@ -94,6 +95,24 @@ registerSyncMerge({
 export const MIN_DURATION_SEC = 60;
 
 /**
+ * How long the live-recorder fallback waits after a gathering run ends before
+ * writing its own pair, so a `loot_log_updated` message for the same run — the
+ * panel happened to be open for at least the end of it — can claim the run
+ * first. `pending`/`recorded` then refuse this path's write outright once that
+ * happens, which is the whole rule: a finished run is one measurement, and
+ * whichever side names it first is the one that counts.
+ *
+ * This stands in for `addSpanExcess` (`gold-sources.js`), which reconciles two
+ * recordings of a continuous stretch by crediting only the excess one saw
+ * beyond the other. That does not fit here: a calibration pair is a single
+ * finished run, not a day's total, so there is no partial span to divide
+ * between the loot log and the recorder — only "which one gets to name this
+ * run's actual", decided by whichever writes first once the grace period
+ * passes with nobody having claimed it. See `_finishLiveRun` and `_recordFromLive`.
+ */
+export const LIVE_FALLBACK_GRACE_MS = 5000;
+
+/**
  * The skill an action belongs to, as the loot log names it.
  * @param {string} actionHrid - e.g. `/actions/milking/cow`
  * @returns {string} e.g. `milking`
@@ -112,6 +131,15 @@ class PredictionCalibration {
         this.pending = new Map();
         /** Ids already written, so a repeated loot log message does not double up */
         this.recorded = new Set();
+        /**
+         * The gathering run `_onActionCompleted` is currently watching, so the
+         * live-recorder fallback notices when it ends even though the loot log
+         * panel is closed: `{id, actionHrid, count, owner}` or null when nothing
+         * gathering is running.
+         */
+        this._liveRun = null;
+        /** Grace-period timers from `_finishLiveRun`, so `disable()` can cancel them */
+        this._liveTimers = new Set();
         /** Serialises the async handler against itself */
         this.queue = Promise.resolve();
         this.lootLogMath = null;
@@ -166,6 +194,12 @@ class PredictionCalibration {
         const handler = (data) => this._onLootLog(data);
         webSocketHook.on('loot_log_updated', handler);
         this.unregisterHandlers.push(() => webSocketHook.off('loot_log_updated', handler));
+
+        // The loot log only arrives while its panel is open; this is how a run
+        // still gets measured through hours it never was. See `_onActionCompleted`.
+        const actionHandler = (data) => this._onActionCompleted(data);
+        dataManager.on('action_completed', actionHandler);
+        this.unregisterHandlers.push(() => dataManager.off('action_completed', actionHandler));
 
         // Nobody is looking at the panel yet, and this is a storage read
         this.ready = runInBackground('predictionCalibration', () => this._load());
@@ -363,6 +397,146 @@ class PredictionCalibration {
     }
 
     /**
+     * Watch gathering completions directly, independent of the loot log: the
+     * game only sends `loot_log_updated` while that panel is open, so it is the
+     * only trigger the pairing logic above has, and a run played with the panel
+     * never opened is never measured at all.
+     *
+     * Shares `this.pending` (the forecast snapshot) and `this.recorded` (the
+     * dedupe set) with the loot-log path rather than keeping its own: a run is
+     * measured once, whichever side notices it first.
+     *
+     * @param {Object} data - An `action_completed` payload
+     */
+    _onActionCompleted(data) {
+        try {
+            const action = data?.endCharacterAction;
+            if (!action?.actionHrid) return;
+            const owner = action.characterID;
+            const charId = dataManager.getCurrentCharacterId();
+            if (owner !== undefined && owner !== null && String(owner) !== String(charId)) return;
+
+            const type = dataManager.getActionDetails(action.actionHrid)?.type;
+            if (!GATHERING_TYPES.includes(type)) {
+                this._finishLiveRun();
+                return;
+            }
+
+            // Not stringified: `pending`/`recorded` are shared with the loot-log
+            // path, which keys them by `entry.characterActionId` as-is (a Map/Set,
+            // so `1` and `"1"` would be two different keys and defeat the dedupe).
+            // `itemFlowRecorder` reads its own object-keyed rows fine either way.
+            const id = action.id ?? action.actionHrid;
+            if (!this._liveRun || this._liveRun.id !== id) {
+                this._finishLiveRun();
+                this._liveRun = { id, actionHrid: action.actionHrid, count: 0, owner: charId };
+                this._snapshotLive(id, action.actionHrid, charId);
+            }
+            this._liveRun.count += 1;
+        } catch (error) {
+            console.error('[PredictionCalibration] Watching a gathering completion failed:', error);
+        }
+    }
+
+    /**
+     * Snapshot a forecast for a run the loot log has not already claimed —
+     * shares `pending` with `_process()`, so whichever side notices the run
+     * first is the one whose snapshot stands.
+     * @param {string} id - The run's id
+     * @param {string} actionHrid - What it is running
+     * @param {string|null} owner - Whose run this is, so a switch mid-predict
+     *   cannot file it under the arriving character
+     */
+    async _snapshotLive(id, actionHrid, owner) {
+        if (this.pending.has(id) || this.recorded.has(id)) return;
+        const predicted = await this._predict(actionHrid);
+        if (predicted === null) return;
+        if (this.pending.has(id) || this.recorded.has(id)) return;
+        if (dataManager.getCurrentCharacterId() !== owner) return;
+        this.pending.set(id, { predicted, at: Date.now() });
+    }
+
+    /**
+     * The gathering run being watched has ended (a different run started, or a
+     * non-gathering action did) — wait `LIVE_FALLBACK_GRACE_MS` before writing
+     * its own pair, so a loot log message for the same run can claim it first.
+     * See `LIVE_FALLBACK_GRACE_MS` for why this replaces `addSpanExcess` here.
+     */
+    _finishLiveRun() {
+        if (!this._liveRun) return;
+        const { id, actionHrid, count, owner } = this._liveRun;
+        this._liveRun = null;
+
+        const timer = setTimeout(() => {
+            this._liveTimers.delete(timer);
+            this._recordFromLive(id, actionHrid, count, owner).catch((error) =>
+                console.error('[PredictionCalibration] Recording from the live recorder failed:', error)
+            );
+        }, LIVE_FALLBACK_GRACE_MS);
+        this._liveTimers.add(timer);
+    }
+
+    /**
+     * Write a pair from the item flow recorder's own gathering data, for a run
+     * the loot log never reported — either the panel was never open during it,
+     * or it was and already wrote the pair, in which case `this.recorded`
+     * refuses this write outright.
+     * @param {string} id - The run's id
+     * @param {string} actionHrid - What it was running
+     * @param {number} actionCount - Completions counted while watching it
+     * @param {string|null} owner - Whose run this is
+     * @returns {Promise<boolean>} Whether a pair was written
+     */
+    async _recordFromLive(id, actionHrid, actionCount, owner) {
+        if (this.recorded.has(id)) return false;
+        const forecast = this.pending.get(id);
+        if (!forecast) return false;
+
+        const totals = await itemFlowRecorder.getRunGathering(id);
+        if (!totals?.gained || Object.keys(totals.gained).length === 0) return false;
+
+        const durationSec = (totals.to - totals.from) / 1000;
+        if (!Number.isFinite(durationSec) || durationSec < MIN_DURATION_SEC) return false;
+
+        if (!this.lootLogMath) this.lootLogMath = new LootLogStats();
+        const profit = this.lootLogMath.calculateProfit({ actionHrid, actionCount, drops: totals.gained });
+        if (!profit || !Number.isFinite(profit.askProfit)) return false;
+        const hours = durationSec / 3600;
+        if (hours <= 0) return false;
+
+        // A standalone write, like addRecord() rather than _record(): it must
+        // notice a character switch and persist itself, there being no batch
+        // pass around it to do either.
+        if (this.ready) await this.ready;
+        this._store();
+        if (this.owner !== owner) return false;
+        if (!this.records) await this._load();
+        if (this.owner !== owner || this.recorded.has(id)) return false;
+
+        this.pending.delete(id);
+        this.records.push({
+            id,
+            actionHrid,
+            actionType: actionTypeOf(actionHrid),
+            t: Date.now(),
+            durationSec,
+            actionCount,
+            predicted: forecast.predicted,
+            actual: profit.askProfit / hours,
+            actualBid: profit.bidProfit / hours,
+            v: scriptVersion(),
+        });
+        this.recorded.add(id);
+
+        if (this.records.length > MAX_RECORDS) {
+            const dropped = this.records.splice(0, this.records.length - MAX_RECORDS);
+            for (const old of dropped) this.recorded.delete(old.id);
+        }
+        await this._save();
+        return true;
+    }
+
+    /**
      * Persist the pairs, folding in what another tab wrote meanwhile. Skipped
      * when storage cannot be read first. `clear()` writes through
      * `clearRecord` instead — the one intentional wipe.
@@ -455,6 +629,9 @@ class PredictionCalibration {
         for (const unregister of this.unregisterHandlers) unregister();
         this.unregisterHandlers = [];
         this.pending.clear();
+        for (const timer of this._liveTimers) clearTimeout(timer);
+        this._liveTimers.clear();
+        this._liveRun = null;
         // The pairs are one character's; forgotten here so the next
         // initialize — which is how a character switch arrives — reads the
         // arriving character's rather than folding these into theirs

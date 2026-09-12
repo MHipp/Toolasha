@@ -17,10 +17,14 @@ const game = vi.hoisted(() => ({
     profitPerHour: 1000,
     /** Loot log handlers, by message type */
     handlers: {},
+    /** data-manager event handlers, by message type — `action_completed` */
+    dmHandlers: {},
     stored: {},
     unavailable: false,
     /** What the loot log's own arithmetic says a finished run paid */
     runProfit: { askProfit: 500, bidProfit: 400 },
+    /** The item flow recorder's own gathering totals, by run id — `getRunGathering`'s stand-in */
+    itemFlowRuns: {},
 }));
 
 vi.mock('../../core/config.js', () => ({ default: { getSetting: () => true } }));
@@ -53,8 +57,19 @@ vi.mock('../../utils/adoption-consent.js', () => ({
 }));
 vi.mock('../../core/data-manager.js', () => ({
     default: {
+        on: (type, handler) => {
+            game.dmHandlers[type] = handler;
+        },
+        off: (type) => {
+            delete game.dmHandlers[type];
+        },
         getCurrentCharacterId: () => game.characterId,
         getActionDetails: () => ({ type: game.actionType }),
+    },
+}));
+vi.mock('../networth/item-flow-recorder.js', () => ({
+    default: {
+        getRunGathering: async (id) => game.itemFlowRuns[id] ?? null,
     },
 }));
 vi.mock('../../core/websocket.js', () => ({
@@ -86,7 +101,8 @@ vi.mock('../actions/loot-log-stats.js', () => ({
 // The work is supposed to wait for a quiet moment; a test has none to wait for
 vi.mock('../../utils/background-work.js', () => ({ runInBackground: async (name, work) => await work() }));
 
-const { PredictionCalibration, actionTypeOf, mergeCalibrationRecords } = await import('./prediction-calibration.js');
+const { PredictionCalibration, actionTypeOf, mergeCalibrationRecords, LIVE_FALLBACK_GRACE_MS } =
+    await import('./prediction-calibration.js');
 
 /**
  * A loot log entry.
@@ -112,6 +128,8 @@ let calibration;
 beforeEach(async () => {
     game.stored = {};
     game.handlers = {};
+    game.dmHandlers = {};
+    game.itemFlowRuns = {};
     // Readable storage is the neutral state. Several tests below make storage
     // unreadable and only some of them put it back, so it has to be reset here
     // rather than in the one describe that plays with it — otherwise a test
@@ -304,6 +322,116 @@ describe('pairing a forecast with a finished run', () => {
         expect(records).toHaveLength(1000);
         expect(records[0].id).toBe('old-1');
         expect(records[records.length - 1].id).toBe(1);
+    });
+});
+
+describe('measuring gathering runs the loot log panel never saw (the live-recorder fallback)', () => {
+    /** One completion of the gathering run at `id`, as `action_completed` delivers it. */
+    const gathering = (id, characterID = 'char-1') =>
+        game.dmHandlers.action_completed({
+            endCharacterAction: { id, characterID, actionHrid: '/actions/milking/cow' },
+        });
+
+    /**
+     * Let the fire-and-forget forecast snapshot settle, without touching fake
+     * timers: `_snapshotLive` awaits `_predict`, which awaits the mocked
+     * `calculateGatheringProfit` — several microtask turns deep — so a couple of
+     * ticks is not always enough.
+     */
+    const flush = async () => {
+        for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    };
+
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    test('writes a pair from the recorder alone when the loot log panel is never opened', async () => {
+        gathering(1);
+        await flush();
+        game.itemFlowRuns[1] = { gained: { '/items/milk': 100 }, from: 0, to: 30 * 60_000 };
+
+        gathering(2); // a different run starting is how the watcher notices run 1 ended
+        await vi.advanceTimersByTimeAsync(LIVE_FALLBACK_GRACE_MS);
+
+        const records = await calibration.getRecords();
+        expect(records).toHaveLength(1);
+        // Half an hour of running that paid 500 (the mocked loot-log arithmetic,
+        // reused for the recorder's own drops) is 1000/h — same rate math as the
+        // loot-log path, just fed from the recorder's own timestamps.
+        expect(records[0]).toMatchObject({ id: 1, actionType: 'milking', predicted: 1000, actual: 1000 });
+    });
+
+    test('an overlapping loot-log and recorder period is not counted twice', async () => {
+        gathering(1);
+        await flush();
+        // The recorder's own duration (30 min) differs from the loot log entry's
+        // (60 min, `entry()`'s default) on purpose — if the wrong side won, or
+        // both wrote, the actual figure below would give it away.
+        game.itemFlowRuns[1] = { gained: { '/items/milk': 100 }, from: 0, to: 30 * 60_000 };
+
+        // The loot log panel happened to be open right as the run finished, and
+        // claims it before the recorder fallback's grace period elapses
+        await send([entry(2, '2026-08-04T11:30:00Z'), entry(1, '2026-08-04T10:00:00Z')]);
+
+        gathering(2); // the watcher's own (later) notice that run 1 ended
+        await vi.advanceTimersByTimeAsync(LIVE_FALLBACK_GRACE_MS);
+
+        const records = await calibration.getRecords();
+        expect(records).toHaveLength(1);
+        // The loot log's own figures (60 min, actual 500/h) — it claimed the run
+        // first, and `recorded` refused the fallback's later write outright.
+        expect(records[0]).toMatchObject({ id: 1, actual: 500 });
+    });
+
+    test('a run the recorder never captured (recording started after the run did, or is off) writes nothing', async () => {
+        gathering(1);
+        await flush();
+        // game.itemFlowRuns[1] deliberately left unset
+
+        gathering(2);
+        await vi.advanceTimersByTimeAsync(LIVE_FALLBACK_GRACE_MS);
+
+        expect(await calibration.getRecords()).toHaveLength(0);
+    });
+
+    test('a run under the minimum duration is not written', async () => {
+        gathering(1);
+        await flush();
+        game.itemFlowRuns[1] = { gained: { '/items/milk': 1 }, from: 0, to: 30_000 };
+
+        gathering(2);
+        await vi.advanceTimersByTimeAsync(LIVE_FALLBACK_GRACE_MS);
+
+        expect(await calibration.getRecords()).toHaveLength(0);
+    });
+
+    test('an action type the recorder does not watch never starts a live run', async () => {
+        game.actionType = '/action_types/combat';
+        game.dmHandlers.action_completed({
+            endCharacterAction: { id: 1, characterID: 'char-1', actionHrid: '/actions/combat/rat' },
+        });
+        await flush();
+        await vi.advanceTimersByTimeAsync(LIVE_FALLBACK_GRACE_MS);
+
+        expect(await calibration.getRecords()).toHaveLength(0);
+        game.actionType = '/action_types/milking';
+    });
+
+    test('disable() cancels a still-pending grace timer, so a switch before it fires writes nothing', async () => {
+        gathering(1);
+        await flush();
+        game.itemFlowRuns[1] = { gained: { '/items/milk': 100 }, from: 0, to: 30 * 60_000 };
+        gathering(2); // schedules the grace-period timer for run 1
+
+        calibration.disable();
+        game.characterId = 'char-2';
+        await calibration.initialize();
+        await calibration.ready;
+
+        await vi.advanceTimersByTimeAsync(LIVE_FALLBACK_GRACE_MS);
+
+        expect(await calibration.getRecords()).toHaveLength(0);
+        game.characterId = 'char-1';
     });
 });
 

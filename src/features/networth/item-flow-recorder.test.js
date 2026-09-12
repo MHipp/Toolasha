@@ -14,6 +14,7 @@ import {
     foldConsumed,
     foldCombatConsumable,
     consumedByAction,
+    gatheringRunTotals,
     CONFIRM_MS,
     default as recorder,
 } from './item-flow-recorder.js';
@@ -231,6 +232,96 @@ describe('recording from the game’s messages', () => {
         });
         await settle();
         expect(gathered()).toEqual([]);
+    });
+});
+
+describe('gatheringRunTotals', () => {
+    test('merges every stretch recorded for a run, across days', () => {
+        const rows = [
+            {
+                d: '2026-08-20',
+                gathering: {
+                    7: {
+                        a: '/actions/foraging/farmland',
+                        stretches: [{ from: 1000, to: 5000, gained: { '/items/sugar': 10 } }],
+                    },
+                },
+            },
+            {
+                d: '2026-08-21',
+                gathering: {
+                    7: {
+                        a: '/actions/foraging/farmland',
+                        stretches: [{ from: 90000, to: 95000, gained: { '/items/sugar': 3, '/items/egg': 1 } }],
+                    },
+                },
+            },
+        ];
+        expect(gatheringRunTotals(rows, '7')).toEqual({
+            gained: { '/items/sugar': 13, '/items/egg': 1 },
+            from: 1000,
+            to: 95000,
+        });
+    });
+
+    test('a run never recorded is null, not an empty total', () => {
+        const rows = [{ d: '2026-08-20', gathering: { 7: { stretches: [{ from: 1, to: 2, gained: {} }] } } }];
+        expect(gatheringRunTotals(rows, '9')).toBeNull();
+        expect(gatheringRunTotals([], '7')).toBeNull();
+        expect(gatheringRunTotals(null, '7')).toBeNull();
+    });
+});
+
+describe('reading one run’s gathering for a caller pairing it with a forecast', () => {
+    beforeEach(async () => {
+        hoisted.saved = [];
+        hoisted.listeners.clear();
+        hoisted.game.charId = 'me';
+        hoisted.game.items = [row('/items/sugar', 100)];
+        hoisted.game.actionTypes = { '/actions/foraging/farmland': '/action_types/foraging' };
+        recorder.cleanup();
+        recorder._rows = [];
+        recorder._charId = null;
+        recorder._loading = null;
+        await recorder.initialize();
+    });
+
+    afterEach(() => recorder.cleanup());
+
+    const items = (data) => hoisted.listeners.get('items_updated')(data);
+
+    test('getRunGathering awaits the load and answers the merged run', async () => {
+        items({
+            endCharacterAction: { id: 42, characterID: 'me', actionHrid: '/actions/foraging/farmland' },
+            endCharacterItems: [row('/items/sugar', 113)],
+        });
+        await settle();
+        expect(await recorder.getRunGathering('42')).toEqual({
+            gained: { '/items/sugar': 13 },
+            from: expect.any(Number),
+            to: expect.any(Number),
+        });
+        expect(await recorder.getRunGathering('does-not-exist')).toBeNull();
+    });
+
+    test('getCachedRunGathering reads synchronously from what is already loaded', async () => {
+        items({
+            endCharacterAction: { id: 42, characterID: 'me', actionHrid: '/actions/foraging/farmland' },
+            endCharacterItems: [row('/items/sugar', 113)],
+        });
+        await settle();
+        expect(recorder.getCachedRunGathering('42').gained).toEqual({ '/items/sugar': 13 });
+        expect(recorder.getCachedRunGathering('does-not-exist')).toBeNull();
+    });
+
+    test('answers null rather than another character’s rows after a switch', async () => {
+        items({
+            endCharacterAction: { id: 42, characterID: 'me', actionHrid: '/actions/foraging/farmland' },
+            endCharacterItems: [row('/items/sugar', 113)],
+        });
+        await settle();
+        hoisted.listeners.get('character_switching')();
+        expect(recorder.getCachedRunGathering('42')).toBeNull();
     });
 });
 

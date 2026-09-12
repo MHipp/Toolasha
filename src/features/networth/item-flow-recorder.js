@@ -218,6 +218,47 @@ export function foldGathering(row, run, actionHrid, t, gained) {
 }
 
 /**
+ * One run's recorded gathering, merged across every stretch recorded for it —
+ * normally one stretch, but a run that crossed local midnight or an unwatched
+ * gap (`GAP_MS`) splits into more than one row's or more than one stretch.
+ *
+ * Shared by both read paths below: `prediction-calibration.js`'s live fallback
+ * (async, wants the whole run once it has ended) and the action panel's "so far
+ * this run" row (sync, wants whatever is in memory right now).
+ *
+ * @param {Array<ItemFlowDay>} rows - Loaded rows
+ * @param {string} run - The character action's id, this recorder's own key
+ * @returns {{gained: Object<string, number>, from: number, to: number}|null} Merged totals,
+ *   or null when this run was never recorded at all (recorder off, storage over quota, or
+ *   recording had not started yet when the run did)
+ */
+export function gatheringRunTotals(rows, run) {
+    // Not `!run`: a numeric action id of 0 is falsy but a perfectly real run —
+    // only a genuinely absent key (null/undefined/empty string) means "no run".
+    if (run === null || run === undefined || run === '') return null;
+    let from = null;
+    let to = null;
+    const gained = {};
+    let found = false;
+
+    for (const row of rows || []) {
+        const held = row?.gathering?.[run];
+        for (const stretch of held?.stretches || []) {
+            if (!Number.isFinite(stretch?.from)) continue;
+            found = true;
+            if (from === null || stretch.from < from) from = stretch.from;
+            const stretchTo = Number.isFinite(stretch.to) && stretch.to > stretch.from ? stretch.to : stretch.from;
+            if (to === null || stretchTo > to) to = stretchTo;
+            for (const [key, count] of Object.entries(stretch.gained || {})) {
+                if (count > 0) gained[key] = (gained[key] || 0) + count;
+            }
+        }
+    }
+
+    return found ? { gained, from, to } : null;
+}
+
+/**
  * Add a count of something consumed to a day's row, in place.
  * @param {ItemFlowDay} row - The day's row, mutated
  * @param {string} kind - Which tally, e.g. `keys`
@@ -465,6 +506,35 @@ class ItemFlowRecorder {
             if (this._generation === generation) this._loading = null;
         }
         return this._generation === generation ? [...this._rows] : [];
+    }
+
+    /**
+     * One run's recorded gathering, loading the rows first if they are not yet
+     * in memory. For a caller that can await — `prediction-calibration.js`'s
+     * live fallback, once a run it is watching has ended.
+     * @param {string} run - The character action's id
+     * @returns {Promise<{gained: Object<string, number>, from: number, to: number}|null>}
+     */
+    async getRunGathering(run) {
+        await this.load();
+        return gatheringRunTotals(this._rows, run);
+    }
+
+    /**
+     * The same, read from whatever is already in memory, for a caller that must
+     * draw inline with no chance to await — the action panel's "so far this
+     * run" row, built synchronously alongside the time and profit lines.
+     *
+     * Answers null before the first load for this character has landed, same as
+     * "never recorded" — the row is forward-only either way, so a caller cannot
+     * tell the two apart, and should not need to.
+     * @param {string} run - The character action's id
+     * @returns {{gained: Object<string, number>, from: number, to: number}|null}
+     */
+    getCachedRunGathering(run) {
+        if (!this.isActive || run === null || run === undefined || run === '') return null;
+        if (this._charId !== this._currentCharId()) return null;
+        return gatheringRunTotals(this._rows, run);
     }
 
     /**
