@@ -22,6 +22,7 @@ import {
     SKILL_TOOL_LOCATION,
 } from './skilling-optimizer-engine.js';
 import { scoreEquipmentSetup } from '../../utils/tea-optimizer.js';
+import { rankHouseRoomUpgrades, compareHouseRoiRows } from '../../utils/house-roi.js';
 import { formatKMB, timeReadable } from '../../utils/formatters.js';
 import { buildEnhancementLevelMap } from '../../utils/loadout-scraper.js';
 import loadoutSnapshotLocal from '../combat/loadout-snapshot.js';
@@ -52,6 +53,16 @@ const SORT_MODES = [
     { value: 'goldGain', label: 'Gold Gain %' },
     { value: 'slot', label: 'Slot Order' },
 ];
+
+// House Rooms board sort control. The same three modes the Equipment Progression offers,
+// meaning the same three things - a room level and a gear upgrade are the same kind of
+// purchase, and a player reading both boards should not have to learn two vocabularies.
+const HOUSE_SORT_MODES = SORT_MODES.filter((mode) => ['value', 'payback', 'cost'].includes(mode.value));
+
+// Said once under the board, because it qualifies every payback figure on it: the gold/hr a
+// room level buys is only collected while you keep running that skill.
+const HOUSE_PAYBACK_NOTE =
+    'Payback assumes you keep running that skill. Rooms are ranked for the skills in your action queue only.';
 
 /**
  * Check whether any mutation added nodes that are, contain, or sit under a tablist.
@@ -91,6 +102,7 @@ class SkillingSimulatorUI {
         this.lastOptimizerResult = null;
         this.optimizerLoadout = null;
         this.optimizerSortMode = 'value';
+        this.houseSortMode = 'value';
 
         // Simulator state
         this.currentSkill = 'Woodcutting';
@@ -1237,6 +1249,158 @@ class SkillingSimulatorUI {
             ? '% shows gain over your compared loadout item for each slot.'
             : '% shows gain over an empty slot. Select a loadout in Compare to see gains over your current gear.';
         container.appendChild(note);
+
+        this._renderHouseRooms(container, result, achievableStats, loadoutItemMap);
+    }
+
+    /**
+     * The House Rooms board: what each room's next level is worth to the skills you are
+     * actually running, beside what that level costs.
+     *
+     * Ranked separately from the equipment list rather than merged into it, because it
+     * answers a different question with a different scope: the equipment board is about the
+     * skill this panel has selected, and a house room is bought once for whatever you run.
+     *
+     * Wrapped in its own try/catch - a house the game has not sent yet, or a room whose data
+     * shape moves, must cost this section and not the equipment recommendations above it.
+     *
+     * @param {HTMLElement} container - Results container, re-rendered whole on a sort change
+     * @param {Object} result - optimizeSkill() result, passed back through on re-render
+     * @param {Object|null} achievableStats - Tea results, passed back through
+     * @param {Map|null} loadoutItemMap - Compare loadout, passed back through
+     * @returns {void}
+     */
+    _renderHouseRooms(container, result, achievableStats, loadoutItemMap) {
+        const section = document.createElement('div');
+        section.style.marginTop = '18px';
+        section.appendChild(this._makeSectionHeader('House Rooms'));
+        container.appendChild(section);
+
+        let board;
+        try {
+            board = rankHouseRoomUpgrades();
+        } catch (error) {
+            console.error('[SkillingOptimizer] Ranking house rooms failed:', error);
+            section.appendChild(this._makeFaintNote('House rooms could not be ranked.'));
+            return;
+        }
+
+        if (!board.skills.length) {
+            section.appendChild(
+                this._makeFaintNote(
+                    'Nothing skilling in your action queue - this board ranks rooms against what you are actually running.'
+                )
+            );
+            return;
+        }
+
+        if (!board.rows.length && !board.excluded.length) {
+            section.appendChild(this._makeFaintNote('No room upgrade left for the skills you have queued.'));
+            return;
+        }
+
+        if (board.rows.length) {
+            section.appendChild(this._makeHouseSortControl(container, result, achievableStats, loadoutItemMap));
+            const spriteUrl =
+                document.querySelector('use[href*="items_sprite"]')?.getAttribute('href')?.split('#')[0] ?? null;
+            const ordered = [...board.rows].sort((a, b) => compareHouseRoiRows(a, b, this.houseSortMode));
+            for (const row of ordered) section.appendChild(this._makeHouseRow(row, spriteUrl));
+        }
+
+        for (const skipped of board.excluded) {
+            section.appendChild(this._makeFaintNote(`${skipped.roomName} - not ranked: ${skipped.reason}`));
+        }
+
+        section.appendChild(this._makeFaintNote(HOUSE_PAYBACK_NOTE));
+    }
+
+    /**
+     * Sort control for the House Rooms board. Re-renders the whole results container on
+     * change, as the Equipment Progression's own control does.
+     * @param {HTMLElement} container - Results container
+     * @param {Object} result - optimizeSkill() result
+     * @param {Object|null} achievableStats - Tea results
+     * @param {Map|null} loadoutItemMap - Compare loadout
+     * @returns {HTMLElement}
+     */
+    _makeHouseSortControl(container, result, achievableStats, loadoutItemMap) {
+        const sortRow = document.createElement('div');
+        sortRow.style.cssText = 'display: flex; align-items: center; gap: 8px; margin-bottom: 10px;';
+
+        const label = document.createElement('span');
+        label.textContent = 'Sort:';
+        label.style.cssText = 'color: rgba(255,255,255,0.5); font-size: 12px; width: 56px; flex-shrink: 0;';
+        sortRow.appendChild(label);
+
+        const select = document.createElement('select');
+        select.style.cssText =
+            'background: #2a2a2a; color: #fff; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; padding: 4px 8px; font-size: 12px; flex: 1; cursor: pointer;';
+        for (const mode of HOUSE_SORT_MODES) {
+            const opt = document.createElement('option');
+            opt.value = mode.value;
+            opt.textContent = mode.label;
+            select.appendChild(opt);
+        }
+        select.value = this.houseSortMode;
+        select.addEventListener('change', () => {
+            this.houseSortMode = select.value;
+            container.innerHTML = '';
+            this._renderOptimizerResults(container, result, achievableStats, loadoutItemMap);
+        });
+        sortRow.appendChild(select);
+
+        return sortRow;
+    }
+
+    /**
+     * One room's row: which level it buys for which skill, what that is worth, what it costs.
+     * @param {Object} row - A row from rankHouseRoomUpgrades()
+     * @param {string|null} spriteUrl - Item sprite sheet URL, for the coin glyph
+     * @returns {HTMLElement}
+     */
+    _makeHouseRow(row, spriteUrl) {
+        const el = document.createElement('div');
+        el.style.cssText = 'display: flex; align-items: center; gap: 8px; margin-bottom: 6px;';
+
+        const name = document.createElement('span');
+        name.style.cssText = 'font-size: 12px; color: rgba(255,255,255,0.85); flex-shrink: 0;';
+        name.textContent = `${row.roomName} Lv${row.currentLevel} → Lv${row.nextLevel}`;
+        el.appendChild(name);
+
+        const forSkill = document.createElement('span');
+        forSkill.style.cssText = 'font-size: 10px; color: rgba(255,255,255,0.38); flex-shrink: 0;';
+        forSkill.textContent = `for ${row.skill}`;
+        el.appendChild(forSkill);
+
+        const gains = [];
+        if (row.xpDelta > 0) gains.push(`+${formatKMB(row.xpDelta)} XP/hr`);
+        if (row.goldDelta > 0) gains.push(`+${formatKMB(row.goldDelta)} gold/hr`);
+        // Alchemy's gold comes from a calculator that cannot be asked about a house it does
+        // not have. Saying nothing would read as "this level earns nothing".
+        if (!row.goldModelled) gains.push('gold effect not modelled');
+
+        if (gains.length) {
+            const gainEl = document.createElement('span');
+            gainEl.style.cssText = 'font-size: 10px; color: rgba(140,210,140,0.65); flex-shrink: 0;';
+            gainEl.textContent = gains.join(' · ');
+            if (row.hasMissingPrices) gainEl.title = UNPRICED_WARNING_TITLE;
+            el.appendChild(gainEl);
+        }
+
+        el.appendChild(this._makeCostPaybackEl(row.cost, row.xpDelta, row.goldDelta || 0, spriteUrl));
+        return el;
+    }
+
+    /**
+     * A small italic aside - the board's caveats and its exclusions.
+     * @param {string} text - What it says
+     * @returns {HTMLElement}
+     */
+    _makeFaintNote(text) {
+        const note = document.createElement('div');
+        note.style.cssText = 'margin-top: 6px; font-size: 10px; color: rgba(255,255,255,0.3); font-style: italic;';
+        note.textContent = text;
+        return note;
     }
 
     /**

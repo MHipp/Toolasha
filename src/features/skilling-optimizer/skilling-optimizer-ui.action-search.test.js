@@ -45,6 +45,13 @@ vi.mock('./skilling-optimizer-engine.js', () => ({
 vi.mock('../../utils/tea-optimizer.js', () => ({
     scoreEquipmentSetup: () => 0,
 }));
+vi.mock('../../utils/house-roi.js', () => ({
+    // The House Rooms board is its own module with its own tests; these files are about the
+    // equipment list, and the real board would reach for a house and an action queue they
+    // do not stand up.
+    rankHouseRoomUpgrades: () => ({ rows: [], excluded: [], skills: [], offBoardRooms: 0 }),
+    compareHouseRoiRows: () => 0,
+}));
 vi.mock('../../utils/loadout-scraper.js', () => ({
     buildEnhancementLevelMap: () => new Map(),
 }));
