@@ -2016,7 +2016,7 @@ class SettingsUI {
             'Device-local — each phone remembers this on its own, separately from any synced setting.';
         launcherBtn.addEventListener('click', async () => {
             try {
-                await overlayTabButton.showLauncher();
+                await overlayTabButton.setLauncherHidden(false);
             } catch (error) {
                 console.error('[SettingsUI] Bringing back the overlay launcher failed:', error);
             }

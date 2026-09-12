@@ -46,7 +46,7 @@ const mocks = vi.hoisted(() => ({
     paletteOpened: 0,
     /** What `overlayTabButton.isLauncherHidden()` currently answers */
     launcherHidden: false,
-    /** Times `overlayTabButton.showLauncher()` was called */
+    /** Times `overlayTabButton.setLauncherHidden()` was called */
     launcherShowCalls: 0,
 }));
 
@@ -293,9 +293,9 @@ vi.mock('../ui/command-palette.js', () => ({
 }));
 vi.mock('../ui/overlay-tab-button.js', () => ({
     default: {
-        isLauncherHidden: async () => mocks.launcherHidden,
-        showLauncher: async () => {
-            mocks.launcherHidden = false;
+        isLauncherHidden: () => mocks.launcherHidden,
+        setLauncherHidden: async (hidden) => {
+            mocks.launcherHidden = Boolean(hidden);
             mocks.launcherShowCalls += 1;
         },
     },
