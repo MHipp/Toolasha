@@ -35,21 +35,54 @@
  * where it is dragged to is remembered, because a fixed spot that happens to sit
  * on top of a control on one phone is a launcher that has to be worked around
  * forever. Desktop is untouched: no mobile mode, no launcher.
+ *
+ * ## Dragging it away
+ *
+ * A launcher that can be moved out of the way can also be moved out of the way
+ * *permanently* — some players simply do not want a floating button on screen.
+ * Rather than add a separate settings toggle nobody finds until they go looking,
+ * dragging it far enough is itself the toggle: a "drop here to hide" zone shows
+ * up near the bottom of the screen for the length of the drag, and releasing the
+ * launcher over it hides the launcher instead of just moving it. This does not
+ * touch how a drag *starts* — it still begins the moment a finger goes down
+ * (`touchAction: 'none'`), because gating that behind a long press would make
+ * every ordinary reposition slower, which is the opposite of the point.
+ *
+ * The hidden flag is stored device-local (`toolasha_local_` prefix, see
+ * `DEVICE_LOCAL_KEY_PREFIXES` in `core/settings-storage.js`) rather than as a
+ * synced setting: hiding the launcher is a statement about *this* screen, and a
+ * phone and a desktop fighting over one synced flag would mean dismissing it on
+ * the phone also takes it off a desktop that never had the problem this solves.
+ * A settings-panel control (elsewhere) flips the flag back — see
+ * `isLauncherHidden`/`setLauncherHidden` below for what it calls.
  */
 
 import config from '../../core/config.js';
 import domObserver from '../../core/dom-observer.js';
+import storage from '../../core/storage.js';
 import overlayPanel, { VISIBILITY_EVENT } from './overlay-panel.js';
 import { restoreGeometry, saveGeometry } from '../../utils/panel-geometry.js';
 import { isMobileMode } from '../../utils/mobile.js';
+import { showToast } from '../../utils/toast.js';
 
 const BUTTON_ID = 'toolasha-overlay-tab';
 const LAUNCHER_ID = 'toolasha-overlay-launcher';
+const DROP_ZONE_ID = 'toolasha-overlay-launcher-dropzone';
 /** Where the launcher was dragged to, shared by every character */
 const LAUNCHER_KEY = 'overlayLauncher';
 const LAUNCHER_SIZE = 40;
 /** Past this a press was a drag rather than a tap, and must not also toggle */
 const DRAG_SLOP = 6;
+/**
+ * Whether the launcher has been dragged away and hidden. Device-local — see the
+ * "Dragging it away" note above for why this must not be a synced setting.
+ */
+const LAUNCHER_HIDDEN_KEY = 'toolasha_local_overlayLauncherHidden';
+/** Size of the "drop here to hide" target, shown only while the launcher is dragged */
+const DROP_ZONE_WIDTH = 180;
+const DROP_ZONE_HEIGHT = 56;
+/** Gap between the drop zone and the bottom edge of the screen */
+const DROP_ZONE_MARGIN = 12;
 
 /** The tab this one wants to sit in front of */
 const SITS_BEFORE = 'Optimizer';
@@ -60,6 +93,23 @@ class OverlayTabButton {
         /** The round button on a phone, which no game screen can take away */
         this.launcher = null;
         this.detachLauncher = null;
+        /** The "drop here to hide" band, present only while the launcher is being dragged */
+        this.dropZone = null;
+        /**
+         * Best-known answer to "is the launcher hidden", kept in memory so
+         * `ensureLauncher` can check it synchronously. Starts `false` (shown)
+         * and is corrected once `loadLauncherHidden` reads the stored flag —
+         * see `initialize` for why that read cannot gate the first paint.
+         */
+        this.launcherHidden = false;
+        /**
+         * Bumped every time something newer than the initial load speaks for
+         * `launcherHidden` (a settings-panel toggle, most likely), so that
+         * load's own answer is ignored if it resolves afterward. Without this
+         * a toggle flipped in the instant right after start-up could be undone
+         * a moment later by the read it raced.
+         */
+        this._launcherHiddenLoadToken = 0;
         this.unregister = null;
         this.unregisterReady = null;
         this.initialized = false;
@@ -72,6 +122,19 @@ class OverlayTabButton {
         if (this.initialized) return;
         if (!config.getSetting('overlayPanel')) return;
         this.initialized = true;
+
+        // Fire-and-forget: whether the launcher was left hidden is read from a
+        // device-local key, and the read is unavoidably async while the launcher
+        // itself is created synchronously below (same trade-off `restoreGeometry`
+        // makes for position — see its own comment). `launcherHidden` starts
+        // `false`, so on a hidden launcher this creates it and then, the moment
+        // the read comes back, immediately takes it back down via `ensureLauncher`.
+        const loadToken = ++this._launcherHiddenLoadToken;
+        this.loadLauncherHidden().then((hidden) => {
+            if (!this.initialized || this._launcherHiddenLoadToken !== loadToken) return;
+            this.launcherHidden = hidden;
+            this.ensureLauncher();
+        });
 
         // The strip is rebuilt whenever the column changes what it shows, so
         // this watches rather than injecting once
@@ -103,6 +166,13 @@ class OverlayTabButton {
         this.detachLauncher = null;
         this.launcher?.remove();
         this.launcher = null;
+        this.hideDropZone();
+        // Reset to the default rather than left stale: the next `initialize()`
+        // re-reads the real answer from storage (device-local, so it survives a
+        // character switch just fine) — there is no reason for the gap before
+        // that read lands to carry forward whatever this character's session
+        // happened to leave behind instead of the ordinary default
+        this.launcherHidden = false;
         this.initialized = false;
     }
 
@@ -186,11 +256,12 @@ class OverlayTabButton {
      * observer that puts the tab switch back can call it too.
      */
     ensureLauncher() {
-        if (!isMobileMode()) {
+        if (!isMobileMode() || this.launcherHidden) {
             this.detachLauncher?.();
             this.detachLauncher = null;
             this.launcher?.remove();
             this.launcher = null;
+            this.hideDropZone();
             return;
         }
         if (this.launcher && document.body?.contains(this.launcher)) {
@@ -272,16 +343,25 @@ class OverlayTabButton {
             const dx = event.clientX - startX;
             const dy = event.clientY - startY;
             if (!moved && Math.abs(dx) < DRAG_SLOP && Math.abs(dy) < DRAG_SLOP) return;
+            const justStarted = !moved;
             moved = true;
 
             const most = {
                 x: Math.max(0, window.innerWidth - LAUNCHER_SIZE),
                 y: Math.max(0, window.innerHeight - LAUNCHER_SIZE),
             };
+            const top = Math.min(Math.max(0, originY + dy), most.y);
             button.style.left = `${Math.min(Math.max(0, originX + dx), most.x)}px`;
-            button.style.top = `${Math.min(Math.max(0, originY + dy), most.y)}px`;
+            button.style.top = `${top}px`;
             button.style.right = 'auto';
             button.style.bottom = 'auto';
+
+            // Shown only once a press has actually become a drag — a tap must
+            // never flash it — and kept live afterward so the zone can say
+            // whether *this* release would land on it
+            const left = Number.parseFloat(button.style.left);
+            if (justStarted) this.showDropZone();
+            this.markDropZoneArmed(this.isOverDropZone(left, top));
         };
 
         const onUp = () => {
@@ -291,6 +371,17 @@ class OverlayTabButton {
             document.removeEventListener('pointerup', onUp);
             document.removeEventListener('pointercancel', onUp);
             if (!moved) return;
+
+            const droppedOnZone = this.isOverDropZone(
+                Number.parseFloat(button.style.left),
+                Number.parseFloat(button.style.top)
+            );
+            this.hideDropZone();
+
+            if (droppedOnZone) {
+                this.dismissLauncherByDrag();
+                return;
+            }
 
             saveGeometry(LAUNCHER_KEY, {
                 left: Number.parseFloat(button.style.left),
@@ -333,7 +424,162 @@ class OverlayTabButton {
             document.removeEventListener('pointermove', onMove);
             document.removeEventListener('pointerup', onUp);
             document.removeEventListener('pointercancel', onUp);
+            this.hideDropZone();
         };
+    }
+
+    /**
+     * Show the "drop here to hide" band along the bottom of the screen.
+     *
+     * Created lazily on the first drag rather than kept around from
+     * `ensureLauncher`, since it must exist for no longer than a drag does —
+     * anything left in the document past that is a stray hit target sitting
+     * over whatever the player looks at next. Idempotent, matching every other
+     * `ensure*` in this file: `onMove` calls it on every drag frame's first
+     * crossing of the slop, not only the first ever drag.
+     */
+    showDropZone() {
+        if (this.dropZone) return;
+        if (!document.body) return;
+
+        const zone = document.createElement('div');
+        zone.id = DROP_ZONE_ID;
+        zone.textContent = 'Drop here to hide';
+        // Purely a visual target — the launcher is what is being dragged, and a
+        // pointer-events-auto band would only get in the way of dropping onto it
+        zone.setAttribute('aria-hidden', 'true');
+        Object.assign(zone.style, {
+            position: 'fixed',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            bottom: `${DROP_ZONE_MARGIN}px`,
+            width: `${DROP_ZONE_WIDTH}px`,
+            height: `${DROP_ZONE_HEIGHT}px`,
+            zIndex: String(config.Z_FLOATING_PANEL),
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            borderRadius: '12px',
+            border: '2px dashed rgba(255, 120, 120, 0.85)',
+            background: 'rgba(40, 8, 8, 0.85)',
+            color: '#ffd7d7',
+            fontFamily: "'Segoe UI', sans-serif",
+            fontSize: '13px',
+            fontWeight: '600',
+            pointerEvents: 'none',
+        });
+        document.body.appendChild(zone);
+        this.dropZone = zone;
+    }
+
+    /** Take the drop zone away — the drag ended, one way or another */
+    hideDropZone() {
+        this.dropZone?.remove();
+        this.dropZone = null;
+    }
+
+    /**
+     * Highlight the drop zone while the launcher is held over it, so letting go
+     * reads as a deliberate choice rather than a surprise.
+     * @param {boolean} armed - Whether the launcher is currently over the zone
+     */
+    markDropZoneArmed(armed) {
+        if (!this.dropZone) return;
+        this.dropZone.style.background = armed ? 'rgba(120, 20, 20, 0.95)' : 'rgba(40, 8, 8, 0.85)';
+        this.dropZone.style.borderColor = armed ? 'rgba(255, 90, 90, 1)' : 'rgba(255, 120, 120, 0.85)';
+    }
+
+    /**
+     * Whether the launcher, at the given `left`/`top`, overlaps the drop zone.
+     *
+     * Computed from the same numbers `onMove` positions the launcher with
+     * rather than `getBoundingClientRect`, so this has an exact answer even in
+     * a test DOM that never actually lays anything out. The zone is centred and
+     * only as wide as it visibly is — a corner the player merely dragged *to*,
+     * such as the clamp at the edge of the screen, must not read as a drop on
+     * a target that was never anywhere near that corner.
+     *
+     * @param {number} left - The launcher's current `left`
+     * @param {number} top - The launcher's current `top`
+     * @returns {boolean}
+     */
+    isOverDropZone(left, top) {
+        if (!Number.isFinite(left) || !Number.isFinite(top)) return false;
+        const zoneLeft = (window.innerWidth - DROP_ZONE_WIDTH) / 2;
+        const zoneRight = zoneLeft + DROP_ZONE_WIDTH;
+        const zoneTop = window.innerHeight - DROP_ZONE_MARGIN - DROP_ZONE_HEIGHT;
+        const zoneBottom = window.innerHeight - DROP_ZONE_MARGIN;
+        return left < zoneRight && left + LAUNCHER_SIZE > zoneLeft && top < zoneBottom && top + LAUNCHER_SIZE > zoneTop;
+    }
+
+    /**
+     * The launcher was dropped on the dismiss zone: hide it, and say where it went.
+     */
+    dismissLauncherByDrag() {
+        this.setLauncherHidden(true).catch((error) => {
+            console.error('[OverlayTabButton] Hiding the launcher after a drag failed:', error);
+        });
+        showToast('Overlay launcher hidden. Bring it back from Toolasha settings → Show the overlay button.', {
+            kind: 'info',
+        });
+    }
+
+    /**
+     * Read the stored hidden flag.
+     *
+     * Device-local, per {@link LAUNCHER_HIDDEN_KEY} — never a synced setting.
+     * @returns {Promise<boolean>}
+     */
+    async loadLauncherHidden() {
+        try {
+            return Boolean(await storage.get(LAUNCHER_HIDDEN_KEY, 'settings', false));
+        } catch (error) {
+            console.error('[OverlayTabButton] Reading whether the launcher was hidden failed:', error);
+            return false;
+        }
+    }
+
+    /**
+     * Whether the launcher is currently hidden, best known.
+     *
+     * Answers from the in-memory cache this module already keeps rather than a
+     * fresh storage read, so a settings-panel control checking this to draw its
+     * toggle stays cheap and synchronous. See `launcherHidden`'s own comment for
+     * why the true answer can lag a page load by one storage round trip.
+     *
+     * @returns {boolean}
+     */
+    isLauncherHidden() {
+        return this.launcherHidden;
+    }
+
+    /**
+     * Set whether the launcher is hidden, and make it so immediately.
+     *
+     * This is the whole of what a settings-panel "Show the overlay button"
+     * control needs: it flips the flag this method writes, and calling it with
+     * `false` both persists that and creates the launcher again on the spot —
+     * no page reload, because `ensureLauncher` runs synchronously before the
+     * write is even awaited.
+     *
+     * @param {boolean} hidden
+     * @returns {Promise<void>}
+     */
+    async setLauncherHidden(hidden) {
+        // Supersedes the initial load kicked off by `initialize`: without this,
+        // a toggle flipped in the instant right after start-up could be undone
+        // a moment later by the read it raced against.
+        this._launcherHiddenLoadToken += 1;
+        this.launcherHidden = Boolean(hidden);
+        // Applied before the write settles — the player must see the launcher
+        // go (or come back) at once, not three seconds later when the debounced
+        // save happens to land.
+        this.ensureLauncher();
+        try {
+            await storage.set(LAUNCHER_HIDDEN_KEY, this.launcherHidden, 'settings');
+        } catch (error) {
+            console.error('[OverlayTabButton] Saving whether the launcher is hidden failed:', error);
+        }
     }
 
     /**

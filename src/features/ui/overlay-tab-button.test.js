@@ -24,6 +24,28 @@ vi.mock('../../core/dom-observer.js', () => ({
     },
 }));
 
+/** What the module has written to the device-local hidden key, and its value */
+const deviceStorage = vi.hoisted(() => ({ data: {} }));
+vi.mock('../../core/storage.js', () => ({
+    default: {
+        get: async (key, _store, fallback) =>
+            Object.hasOwn(deviceStorage.data, key) ? deviceStorage.data[key] : fallback,
+        set: async (key, value) => {
+            deviceStorage.data[key] = value;
+            return true;
+        },
+    },
+}));
+
+/** Toasts shown, so the drag-to-dismiss confirmation can be checked without a real DOM toast */
+const toasts = vi.hoisted(() => ({ shown: [] }));
+vi.mock('../../utils/toast.js', () => ({
+    showToast: (message, options) => {
+        toasts.shown.push({ message, options });
+        return null;
+    },
+}));
+
 /** Whether the script is acting like a phone, decided per test */
 const device = vi.hoisted(() => ({ mobile: false }));
 vi.mock('../../utils/mobile.js', () => ({
@@ -114,12 +136,25 @@ function press(element, from, to) {
     element.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 }
 
+/** Flush the microtask queue so a pending storage.get()/set() promise settles */
+async function flush() {
+    await Promise.resolve();
+    await Promise.resolve();
+}
+
+/** @returns {HTMLElement|null} */
+function theDropZone() {
+    return document.getElementById('toolasha-overlay-launcher-dropzone');
+}
+
 beforeEach(() => {
     panel.open = false;
     panel.toggles = 0;
     device.mobile = false;
     geometry.saved = {};
     geometry.written = null;
+    deviceStorage.data = {};
+    toasts.shown = [];
     window.innerWidth = 400;
     window.innerHeight = 800;
 });
@@ -461,5 +496,213 @@ describe('moving the launcher out of the way', () => {
 
         expect(theLauncher().style.left).toBe('30px');
         expect(theLauncher().style.top).toBe('200px');
+    });
+});
+
+describe('dragging it away to dismiss it', () => {
+    /**
+     * A pointer gesture that stops short of releasing, so a test can inspect
+     * mid-drag state (the drop zone) before the drag ends.
+     * @param {HTMLElement} element - What is being pressed
+     * @param {number[]} from - `[x, y]` where the finger went down
+     * @param {number[]} to - `[x, y]` where it is now
+     */
+    function dragTo(element, from, to) {
+        const at = (type, [x, y], target) =>
+            target.dispatchEvent(
+                new window.PointerEvent(type, { clientX: x, clientY: y, button: 0, pointerId: 1, bubbles: true })
+            );
+        at('pointerdown', from, element);
+        at('pointermove', to, document);
+    }
+
+    /** Release wherever the last `dragTo` left off */
+    function release(at = [0, 0]) {
+        document.dispatchEvent(new window.PointerEvent('pointerup', { clientX: at[0], clientY: at[1], pointerId: 1 }));
+    }
+
+    test('the drop zone is absent until a press actually becomes a drag', () => {
+        device.mobile = true;
+        overlayTabButton.initialize();
+        expect(theDropZone()).toBeNull();
+
+        // Still under DRAG_SLOP — a tap in progress, not a drag
+        dragTo(theLauncher(), [300, 700], [302, 701]);
+        expect(theDropZone()).toBeNull();
+
+        release([302, 701]);
+        expect(theDropZone()).toBeNull();
+    });
+
+    test('it appears once the press has travelled far enough to be a drag', () => {
+        device.mobile = true;
+        overlayTabButton.initialize();
+
+        dragTo(theLauncher(), [100, 100], [250, 400]);
+
+        expect(theDropZone()).toBeTruthy();
+    });
+
+    test('releasing away from it removes it and still just moves the launcher', () => {
+        device.mobile = true;
+        overlayTabButton.initialize();
+
+        // Lands at left 150 / top 300 — nowhere near the centred zone hugging
+        // the bottom of an 800px-tall screen
+        press(theLauncher(), [100, 100], [250, 400]);
+
+        expect(theDropZone()).toBeNull();
+        expect(theLauncher()).toBeTruthy();
+        expect(theLauncher().style.left).toBe('150px');
+        expect(geometry.written).toEqual({ key: 'overlayLauncher', value: { left: 150, top: 300 } });
+    });
+
+    test('dropping it on the zone hides the launcher and writes the device-local key', async () => {
+        device.mobile = true;
+        overlayTabButton.initialize();
+
+        // originX/Y are 0 in happy-dom, so the drop lands at left 150 / top 750 —
+        // inside the centred 180×56 zone sitting 12px off the bottom of an
+        // 800px-tall, 400px-wide screen
+        dragTo(theLauncher(), [50, 50], [200, 800]);
+        expect(theDropZone()).toBeTruthy();
+        release([200, 800]);
+        await flush();
+
+        expect(theLauncher()).toBeNull();
+        expect(theDropZone()).toBeNull();
+        expect(deviceStorage.data['toolasha_local_overlayLauncherHidden']).toBe(true);
+        // Dropping it must not also record it as moved-and-left-here
+        expect(geometry.written).toBeNull();
+    });
+
+    test('dropping it on the zone does not toggle the overlay', async () => {
+        device.mobile = true;
+        overlayTabButton.initialize();
+
+        dragTo(theLauncher(), [50, 50], [200, 800]);
+        release([200, 800]);
+        await flush();
+
+        expect(panel.toggles).toBe(0);
+    });
+
+    test('it says where the launcher went, and how to get it back', async () => {
+        device.mobile = true;
+        overlayTabButton.initialize();
+
+        dragTo(theLauncher(), [50, 50], [200, 800]);
+        release([200, 800]);
+        await flush();
+
+        expect(toasts.shown).toHaveLength(1);
+        expect(toasts.shown[0].message).toMatch(/Toolasha settings/i);
+        expect(toasts.shown[0].message).toMatch(/Show the overlay button/i);
+    });
+
+    test('every write to the device-local key stays under the toolasha_local_ prefix', async () => {
+        device.mobile = true;
+        overlayTabButton.initialize();
+
+        dragTo(theLauncher(), [50, 50], [200, 800]);
+        release([200, 800]);
+        await flush();
+
+        for (const key of Object.keys(deviceStorage.data)) {
+            expect(key.startsWith('toolasha_local_')).toBe(true);
+        }
+    });
+
+    test('a corner the drag merely clamps to is not the drop zone', () => {
+        // The existing off-screen clamp test drags to the extreme bottom-right
+        // corner; that must keep being an ordinary clamp; not every drag that
+        // lands near the bottom edge is a drop on the (small, centred) zone
+        device.mobile = true;
+        overlayTabButton.initialize();
+
+        press(theLauncher(), [300, 700], [9000, 9000]);
+
+        expect(theLauncher()).toBeTruthy();
+        expect(geometry.written).not.toBeNull();
+    });
+});
+
+describe('the settings-side control', () => {
+    test('setLauncherHidden(true) hides the launcher immediately and persists it', async () => {
+        device.mobile = true;
+        overlayTabButton.initialize();
+        expect(theLauncher()).toBeTruthy();
+
+        await overlayTabButton.setLauncherHidden(true);
+
+        expect(theLauncher()).toBeNull();
+        expect(overlayTabButton.isLauncherHidden()).toBe(true);
+        expect(deviceStorage.data['toolasha_local_overlayLauncherHidden']).toBe(true);
+    });
+
+    test('setLauncherHidden(false) creates the launcher again with no reload', async () => {
+        device.mobile = true;
+        deviceStorage.data['toolasha_local_overlayLauncherHidden'] = true;
+        overlayTabButton.initialize();
+        await flush();
+        expect(theLauncher()).toBeNull();
+
+        await overlayTabButton.setLauncherHidden(false);
+
+        expect(theLauncher()).toBeTruthy();
+        expect(overlayTabButton.isLauncherHidden()).toBe(false);
+        expect(deviceStorage.data['toolasha_local_overlayLauncherHidden']).toBe(false);
+    });
+});
+
+describe('a launcher left hidden', () => {
+    test('the stored flag means no launcher is created on load', async () => {
+        device.mobile = true;
+        deviceStorage.data['toolasha_local_overlayLauncherHidden'] = true;
+        overlayTabButton.initialize();
+        await flush();
+
+        expect(theLauncher()).toBeNull();
+        expect(theDropZone()).toBeNull();
+    });
+
+    test('with the flag false, or unset, the launcher opens as usual', async () => {
+        device.mobile = true;
+        overlayTabButton.initialize();
+        await flush();
+
+        expect(theLauncher()).toBeTruthy();
+    });
+
+    test('desktop gets neither a launcher nor a drop zone regardless of the flag', async () => {
+        device.mobile = false;
+        deviceStorage.data['toolasha_local_overlayLauncherHidden'] = false;
+        buildTabs();
+        overlayTabButton.initialize();
+        await flush();
+
+        expect(theLauncher()).toBeNull();
+        expect(theDropZone()).toBeNull();
+    });
+
+    test('a character switch tears the drop zone down along with everything else', () => {
+        device.mobile = true;
+        overlayTabButton.initialize();
+
+        // Left mid-drag, deliberately not released — this is what a character
+        // switch has to clean up if it lands mid-gesture, not just what a
+        // normal release already tidies up on its own
+        const at = (type, [x, y], target) =>
+            target.dispatchEvent(
+                new window.PointerEvent(type, { clientX: x, clientY: y, button: 0, pointerId: 1, bubbles: true })
+            );
+        at('pointerdown', [100, 100], theLauncher());
+        at('pointermove', [250, 400], document);
+        expect(theDropZone()).toBeTruthy();
+
+        overlayTabButton.cleanup();
+
+        expect(theLauncher()).toBeNull();
+        expect(theDropZone()).toBeNull();
     });
 });
