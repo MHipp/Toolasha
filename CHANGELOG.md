@@ -6,6 +6,16 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The gold panel counts what combat eats, and four boards answer a new question
+
+- Combat food and drink are recorded as they are used, instead of only from the last twenty archived runs, so a long grind's consumable cost — and the net gold from combat — are no longer understated. A run both recordings saw counts once, at the larger figure.
+- The offline summary now says when you were away past your offline cap: how long over, and roughly what those hours would have earned at this haul's own rate.
+- The enhancement board gains profit per hour at the level you are aiming for, bounded by what that market can absorb. An item nobody quotes says so and sorts last, rather than looking free.
+- The skilling optimizer ranks house rooms by what the next level adds to the skills you actually run, with a payback time. A room whose bonus cannot be modelled is named and left out instead of scored at zero.
+- Calibration keeps measuring gathering runs the loot log never saw, so its verdicts build on hours played rather than hours with that panel open.
+- The action panel shows what the run under way has actually produced so far, beside what it predicted.
+- The Upgrade tab's budget plan can confirm its whole basket in one simulation, on the same seed, so interactions between the picks show up beside the summed estimate. It runs only when you ask.
+
 ### A buff board, a stale-capital view, and the gold panel joins the rest
 
 - New buff board: every buff on the action you are running, by source and size, with a picker for the other action types. Combat drink buffs are read from the live fight, and tea supply is shown as the drink timer's estimate — the game states no expiry for a buff, so nothing pretends to be a countdown.
