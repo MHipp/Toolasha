@@ -193,6 +193,37 @@ describe('the marketplace buy-strategy default change is new-installs-only, by d
     });
 });
 
+describe('the time-format default change to "auto" is new-installs-only, by design', () => {
+    // market_listingTimeFormat's schema default moved from '24hour' to 'auto',
+    // and — like the buy-strategy default above — it has no DEFAULT_REWRITES
+    // entry. An existing user's stored '24hour' or '12hour' is a choice they
+    // made, not a stale default to be nudged onto the device clock.
+    const KEY = 'script_settingsMap_alice';
+
+    beforeEach(() => {
+        stored.clear();
+        settingsStorage.currentCharacterId = 'alice';
+        settingsStorage.currentCharacterName = 'Alice';
+    });
+
+    test('an existing user with 24hour stored keeps 24hour after load', async () => {
+        stored.set(`json:${KEY}`, {
+            market_listingTimeFormat: { id: 'market_listingTimeFormat', type: 'select', value: '24hour' },
+        });
+
+        const settings = await settingsStorage.loadSettings();
+
+        expect(settings.market_listingTimeFormat.value).toBe('24hour');
+        expect(stored.get(`json:${KEY}`).market_listingTimeFormat.value).toBe('24hour');
+    });
+
+    test('a fresh install with nothing stored gets auto', async () => {
+        const settings = await settingsStorage.loadSettings();
+
+        expect(settings.market_listingTimeFormat.value).toBe('auto');
+    });
+});
+
 describe('SettingsStorage copy-from-character', () => {
     beforeEach(() => {
         stored.clear();

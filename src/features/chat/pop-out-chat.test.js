@@ -10,8 +10,12 @@
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
+const popoutSettings = vi.hoisted(() => ({ timeFormat: '24hour' }));
 vi.mock('../../core/config.js', () => ({
-    default: { getSetting: () => true, getSettingValue: (_key, def) => def },
+    default: {
+        getSetting: () => true,
+        getSettingValue: (key, def) => (key === 'market_listingTimeFormat' ? popoutSettings.timeFormat : def),
+    },
 }));
 vi.mock('../../core/data-manager.js', () => ({ default: { getCurrentCharacterName: () => 'Tester' } }));
 vi.mock('../../core/websocket.js', () => ({ default: { on: () => {}, off: () => {} } }));
@@ -467,4 +471,49 @@ describe('pop-out chat window: visual-viewport tracking lifecycle', () => {
 
         expect(viewportState.calls).toHaveLength(0);
     });
+});
+
+describe('pop-out chat window: time format is resolved before crossing into the generated script', () => {
+    const originalDateTimeFormat = Intl.DateTimeFormat;
+
+    afterEach(() => {
+        Intl.DateTimeFormat = originalDateTimeFormat;
+        popoutSettings.timeFormat = '24hour';
+    });
+
+    test("'24hour' interpolates a literal false", () => {
+        popoutSettings.timeFormat = '24hour';
+        const html = new PopOutChat()._buildPopoutHTML();
+        expect(html).toContain('const use12Hour = false;');
+    });
+
+    test("'12hour' interpolates a literal true", () => {
+        popoutSettings.timeFormat = '12hour';
+        const html = new PopOutChat()._buildPopoutHTML();
+        expect(html).toContain('const use12Hour = true;');
+    });
+
+    test(
+        "'auto' is resolved to this device's own locale before the template string is built — " +
+            "the generated script never sees the raw 'auto' string, which would otherwise silently " +
+            'behave like 24-hour',
+        () => {
+            popoutSettings.timeFormat = 'auto';
+            // A 12-hour locale: naively comparing the raw setting to '12hour' (as the old code did)
+            // would always print false for 'auto', regardless of locale. Resolving it correctly
+            // must print true here.
+            // A real function, not an arrow: pop-out-chat.js resolves this through `new
+            // Intl.DateTimeFormat(...)`, and `new` on an arrow function throws.
+            // eslint-disable-next-line prefer-arrow-callback
+            Intl.DateTimeFormat = vi.fn(function () {
+                return { resolvedOptions: () => ({ hourCycle: 'h12', hour12: true }) };
+            });
+
+            const html = new PopOutChat()._buildPopoutHTML();
+
+            expect(html).toContain('const use12Hour = true;');
+            expect(html).not.toContain("'auto'");
+            expect(html).not.toMatch(/use12Hour = ['"]/);
+        }
+    );
 });

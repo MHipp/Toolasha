@@ -3,7 +3,7 @@
  * Testing pure functions for formatting numbers and time
  */
 
-import { describe, test, expect, vi } from 'vitest';
+import { describe, test, expect, vi, afterEach } from 'vitest';
 import {
     numberFormatter,
     timeReadable,
@@ -21,6 +21,7 @@ import {
     parseKMB,
     isSameLocalDay,
     formatActivityStatusTime,
+    isTwelveHourClock,
 } from './formatters.js';
 import { MAGNITUDE_SUFFIXES } from './number-parser.js';
 
@@ -608,5 +609,114 @@ describe('formatActivityStatusTime', () => {
     test('no preferences at all still formats, on the schema defaults', () => {
         const later = new Date(2026, 7, 27, 18, 30, 0).getTime();
         expect(formatActivityStatusTime(later, {}, now)).toBe('18:30');
+    });
+});
+
+describe('isTwelveHourClock', () => {
+    test("'12hour' forces AM/PM whatever the locale says", () => {
+        expect(isTwelveHourClock('12hour')).toBe(true);
+    });
+
+    test("'24hour' forces 24-hour whatever the locale says", () => {
+        expect(isTwelveHourClock('24hour')).toBe(false);
+    });
+});
+
+/**
+ * 'auto' resolves through this device's own `Intl` locale data, cached once per module
+ * instance — so these tests reset the module registry and re-import fresh between the two
+ * directions, the same way a phone and a desktop each resolve it independently on their own
+ * clock rather than agreeing on whichever one saved the setting last.
+ */
+describe('automatic time format follows the device locale', () => {
+    const originalDateTimeFormat = Intl.DateTimeFormat;
+
+    afterEach(() => {
+        Intl.DateTimeFormat = originalDateTimeFormat;
+        vi.doUnmock('../core/config.js');
+        vi.resetModules();
+    });
+
+    function mockLocaleHourCycle(resolvedOptions) {
+        // A real function, not an arrow: formatters.js calls `new Intl.DateTimeFormat(...)`,
+        // and `new` on an arrow function throws.
+        // eslint-disable-next-line prefer-arrow-callback
+        Intl.DateTimeFormat = vi.fn(function () {
+            return { resolvedOptions: () => resolvedOptions };
+        });
+    }
+
+    test('a 12-hour locale (h12) resolves auto to AM/PM', async () => {
+        mockLocaleHourCycle({ locale: 'en-US', hourCycle: 'h12', hour12: true });
+        vi.resetModules();
+        const fresh = await import('./formatters.js');
+
+        expect(fresh.isTwelveHourClock('auto')).toBe(true);
+    });
+
+    test('a 24-hour locale (h23) resolves auto to 24-hour', async () => {
+        mockLocaleHourCycle({ locale: 'de-DE', hourCycle: 'h23', hour12: false });
+        vi.resetModules();
+        const fresh = await import('./formatters.js');
+
+        expect(fresh.isTwelveHourClock('auto')).toBe(false);
+    });
+
+    test('the resolution is cached: a locale change mid-session does not retroactively flip it', async () => {
+        mockLocaleHourCycle({ locale: 'en-US', hourCycle: 'h12', hour12: true });
+        vi.resetModules();
+        const fresh = await import('./formatters.js');
+
+        expect(fresh.isTwelveHourClock('auto')).toBe(true);
+        mockLocaleHourCycle({ locale: 'de-DE', hourCycle: 'h23', hour12: false });
+        expect(fresh.isTwelveHourClock('auto')).toBe(true);
+    });
+
+    test('formatDateTime under auto prints "4:58 PM" on a 12-hour locale', async () => {
+        mockLocaleHourCycle({ locale: 'en-US', hourCycle: 'h12', hour12: true });
+        vi.doMock('../core/config.js', () => ({
+            default: {
+                getSetting: () => undefined,
+                getSettingValue: (key, defaultValue) => (key === 'market_listingTimeFormat' ? 'auto' : defaultValue),
+            },
+        }));
+        vi.resetModules();
+        const fresh = await import('./formatters.js');
+
+        const time = fresh.formatDateTime(new Date(2026, 7, 27, 16, 58, 0), {
+            includeDate: false,
+            includeSeconds: false,
+        });
+        expect(time).toBe('4:58 PM');
+    });
+
+    test('formatDateTime under auto prints "16:58" on a 24-hour locale', async () => {
+        mockLocaleHourCycle({ locale: 'de-DE', hourCycle: 'h23', hour12: false });
+        vi.doMock('../core/config.js', () => ({
+            default: {
+                getSetting: () => undefined,
+                getSettingValue: (key, defaultValue) => (key === 'market_listingTimeFormat' ? 'auto' : defaultValue),
+            },
+        }));
+        vi.resetModules();
+        const fresh = await import('./formatters.js');
+
+        const time = fresh.formatDateTime(new Date(2026, 7, 27, 16, 58, 0), {
+            includeDate: false,
+            includeSeconds: false,
+        });
+        expect(time).toBe('16:58');
+    });
+
+    test('formatActivityStatusTime — the character-select path — resolves auto with no config at all', async () => {
+        mockLocaleHourCycle({ locale: 'en-US', hourCycle: 'h12', hour12: true });
+        vi.resetModules();
+        const fresh = await import('./formatters.js');
+
+        const now = new Date(2026, 7, 27, 12, 0, 0).getTime();
+        const later = new Date(2026, 7, 27, 16, 58, 0).getTime();
+        // No config import at all in this module instance: the character-select screen has no
+        // active character and therefore no settings context, yet 'auto' still resolves.
+        expect(fresh.formatActivityStatusTime(later, { timeFormat: 'auto' }, now)).toBe('4:58 PM');
     });
 });

@@ -593,6 +593,46 @@ export function formatLargeNumber(value, decimals) {
 }
 
 /**
+ * This device's own locale preference for a 12-hour vs. 24-hour clock, resolved once per page
+ * load and cached — `Intl.DateTimeFormat` is cheap but the answer cannot change without a
+ * reload, so there is no reason to redo it on every call.
+ */
+let _cachedLocalePrefersTwelveHour = null;
+
+function _localePrefersTwelveHour() {
+    if (_cachedLocalePrefersTwelveHour === null) {
+        try {
+            const resolved = new Intl.DateTimeFormat(undefined, { hour: 'numeric' }).resolvedOptions();
+            _cachedLocalePrefersTwelveHour =
+                resolved.hour12 ?? (resolved.hourCycle === 'h11' || resolved.hourCycle === 'h12');
+        } catch (error) {
+            console.error('[Formatters] Failed to resolve locale hour cycle, defaulting to 12-hour:', error);
+            _cachedLocalePrefersTwelveHour = true;
+        }
+    }
+    return _cachedLocalePrefersTwelveHour;
+}
+
+/**
+ * Resolve a `market_listingTimeFormat`-style setting value to whether the clock should show as
+ * 12-hour (with AM/PM) or 24-hour. `'12hour'` and `'24hour'` force their format regardless of
+ * locale. `'auto'` asks this device's own `Intl` locale data — it is resolved fresh on every
+ * device the setting reaches, never at save time, because the setting syncs between devices and
+ * a phone and a desktop on different locales must each follow their own clock.
+ *
+ * This is the single place that answers the question, so `formatDateTime` and every direct
+ * reader of the setting (pop-out chat, the character activity collector, the character-select
+ * display) resolve it the same way and can never disagree.
+ * @param {string} timeFormatSetting - '12hour' | '24hour' | 'auto'
+ * @returns {boolean} true when the clock should show 12-hour AM/PM
+ */
+export function isTwelveHourClock(timeFormatSetting) {
+    if (timeFormatSetting === '12hour') return true;
+    if (timeFormatSetting === '24hour') return false;
+    return _localePrefersTwelveHour();
+}
+
+/**
  * Format a Date using the user's date/time format settings.
  * @param {Date} date - The date to format
  * @param {Object} [options]
@@ -603,7 +643,7 @@ export function formatLargeNumber(value, decimals) {
  */
 export function formatDateTime(date, options = {}) {
     const { includeDate = true, includeTime = true, includeSeconds = true, includeYear = false } = options;
-    const use24h = config.getSettingValue('market_listingTimeFormat', '24hour') === '24hour';
+    const use12h = isTwelveHourClock(config.getSettingValue('market_listingTimeFormat', '24hour'));
     const dateFormat = config.getSettingValue('market_listingDateFormat', 'MM-DD');
 
     const parts = [];
@@ -617,7 +657,7 @@ export function formatDateTime(date, options = {}) {
     }
 
     if (includeTime) {
-        const timeOpts = { hour: 'numeric', minute: '2-digit', hour12: !use24h };
+        const timeOpts = { hour: 'numeric', minute: '2-digit', hour12: use12h };
         if (includeSeconds) timeOpts.second = '2-digit';
         parts.push(date.toLocaleString('en-US', timeOpts).trim());
     }
@@ -650,16 +690,16 @@ export function isSameLocalDay(a, b) {
  * Callers pass the account-level preference mirror instead. Same-day shows time only; a
  * different day shows a short date + time. Seconds are never shown here.
  * @param {number} timestamp - Epoch ms to format
- * @param {{dateFormat?: string, timeFormat?: string}} prefs - `dateFormat`: 'MM-DD'|'DD-MM'; `timeFormat`: '12hour'|'24hour'
+ * @param {{dateFormat?: string, timeFormat?: string}} prefs - `dateFormat`: 'MM-DD'|'DD-MM'; `timeFormat`: '12hour'|'24hour'|'auto'
  * @param {number} [now] - Epoch ms to compare against (defaults to `Date.now()`)
  * @returns {string}
  */
 export function formatActivityStatusTime(timestamp, prefs = {}, now = Date.now()) {
     const { dateFormat = 'MM-DD', timeFormat = '24hour' } = prefs;
     const date = new Date(timestamp);
-    const use24h = timeFormat === '24hour';
+    const use12h = isTwelveHourClock(timeFormat);
 
-    const timePart = date.toLocaleString('en-US', { hour: 'numeric', minute: '2-digit', hour12: !use24h }).trim();
+    const timePart = date.toLocaleString('en-US', { hour: 'numeric', minute: '2-digit', hour12: use12h }).trim();
 
     if (isSameLocalDay(timestamp, now)) {
         return timePart;

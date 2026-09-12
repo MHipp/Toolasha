@@ -1609,12 +1609,13 @@ export const settingsGroups = {
                 id: 'market_listingTimeFormat',
                 label: 'Time format for date/time display',
                 type: 'select',
-                default: '24hour',
+                default: 'auto',
                 options: [
+                    { value: 'auto', label: "Automatic (match this device's clock)" },
                     { value: '24hour', label: '24-hour (14:30)' },
                     { value: '12hour', label: '12-hour (2:30 PM)' },
                 ],
-                help: 'Time format used in marketplace listings and action completion times',
+                help: "Time format used for every date and time Toolasha shows, not just marketplace listings and action completion times. Automatic follows each device's own clock and is resolved separately per device.",
             },
             market_listingDateFormat: {
                 id: 'market_listingDateFormat',

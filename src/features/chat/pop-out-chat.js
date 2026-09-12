@@ -8,7 +8,7 @@ import config from '../../core/config.js';
 import dataManager from '../../core/data-manager.js';
 import webSocketHook from '../../core/websocket.js';
 import domObserver from '../../core/dom-observer.js';
-import { formatKMB } from '../../utils/formatters.js';
+import { formatKMB, isTwelveHourClock } from '../../utils/formatters.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
 import { initVisualViewportTracking } from '../../utils/visual-viewport.js';
 import { chatBlockList } from './chat-block-list.js';
@@ -1310,7 +1310,7 @@ class PopOutChat {
   function formatTime(isoString) {
     if (!isoString) return '';
     const d = new Date(isoString);
-    const use12Hour = ${config.getSettingValue('market_listingTimeFormat', '24hour') === '12hour'};
+    const use12Hour = ${isTwelveHourClock(config.getSettingValue('market_listingTimeFormat', '24hour'))};
     return d
         .toLocaleString('en-US', { hour: '2-digit', minute: '2-digit', hour12: use12Hour })
         .trim();

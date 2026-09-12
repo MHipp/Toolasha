@@ -128,6 +128,11 @@ class CharacterActivityCollector {
     /**
      * Copy the settings character select will need into an account-level key, since it renders
      * with no active character and cannot read per-character settings at all.
+     *
+     * `timeFormat` is mirrored as-is, including `'auto'` — it is deliberately left unresolved
+     * here. Resolving it now would bake in whichever device last mirrored it; instead
+     * `formatActivityStatusTime` resolves it against `Intl` on the device that renders it, so a
+     * phone and a desktop on different locales each follow their own clock.
      * @returns {Promise<void>}
      */
     async mirrorAccountPreferences() {

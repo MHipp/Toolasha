@@ -52,6 +52,21 @@ describe('marketplace autofill strategy defaults', () => {
     });
 });
 
+describe('time format defaults', () => {
+    test('new installs follow the device clock, and the help text covers every date/time display', () => {
+        const setting = getSettingDefinition('market_listingTimeFormat');
+        // 'auto' only ever applies to a fresh install; an existing user's stored
+        // '24hour'/'12hour' choice is untouched (see settings-storage.test.js).
+        expect(setting.default).toBe('auto');
+        expect(setting.options.map((o) => o.value)).toEqual(['auto', '24hour', '12hour']);
+        // The help text used to claim it only covered listings and completion times, full stop;
+        // 16 other views print through the same setting, so the text now says it governs
+        // everything and only mentions listings/completions as one example among many.
+        expect(setting.help).not.toMatch(/^time format used in marketplace listings/i);
+        expect(setting.help).toMatch(/every date and time/i);
+    });
+});
+
 describe('startup recovery defaults', () => {
     test('automatic recovery ships off, and its help says what turning it on does', () => {
         const setting = getSettingDefinition('startupRecovery_autoReload');
