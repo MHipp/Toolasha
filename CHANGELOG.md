@@ -16,7 +16,7 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 - A liquidity check asks a third-party server about each item, with a ten-second timeout, and used to do it one item at a time — which is what left the pinned page blank on its first open. Those lookups now run four at a time, the same politeness limit two other features already use, and two surfaces asking about the same item share one request instead of paying for two.
 - The goal planner and the alchemy ranking check their items that way too. The alchemy ranking now shows its rows immediately, each marked "checking…" until its own cap lands, with its true uncapped figure in the meantime rather than a zero. The planner still waits for its full sweep — it has no per-row view to fill in — but the sweep itself is no longer serial.
-- An item's tooltip can name the saved loadouts it is slotted in, the way ability books already do. Off by default. A loadout set to use the highest copy you own marks that copy alone rather than every stack of the item, and "no loadouts saved" reads differently from "not in any loadout".
+- An item's tooltip can name the saved loadouts it is slotted in, the way ability books already do, and on by default like theirs. A loadout set to use the highest copy you own marks that copy alone rather than every stack of the item, and "no loadouts saved" reads differently from "not in any loadout".
 
 ### The pinned page opens at once, and the overlay button can be put away
 

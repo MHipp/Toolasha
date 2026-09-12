@@ -830,8 +830,11 @@ export const settingsGroups = {
                 id: 'itemTooltip_loadoutMarks',
                 label: 'Show which saved loadouts an item is in',
                 type: 'checkbox',
-                default: false,
-                help: "Names the saved loadouts an item's tooltip is slotted into — equipment at its exact enhancement level (or any level, for a loadout not pinned to one), plus food and drinks. Says so when it is in none, and says so separately when you have not saved any loadout at all.",
+                default: true,
+                help:
+                    'Names the saved loadouts an item is slotted in: equipment at the level the loadout uses — its ' +
+                    "pinned level, or the highest copy you own if it isn't pinned — plus food and drinks. Says so " +
+                    "when it's in none, and separately when you haven't saved any loadouts.",
             },
             itemTooltip_abilityFreshCost: {
                 id: 'itemTooltip_abilityFreshCost',
