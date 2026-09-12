@@ -177,6 +177,43 @@ export async function capXPHRowProfit(row) {
     }
 }
 
+/**
+ * The Profit/hr cell's inner HTML: the coloured figure with its liquidity marker when the market
+ * bounds it, or a label — never a bare dash — when the row could not be priced at all.
+ *
+ * The marker is a sibling element with its own left margin (`liquidityMarkerHtml`), the same
+ * markup {@link file://./../actions/production-arbitrage-board.js} appends after a capped figure,
+ * but nothing here can rely on layout alone to read as two things — a `·` between the value and the
+ * marker keeps them legible as separate facts, not one run-on token, however tight a table cell
+ * renders it. And a throttle that crushes the rate to (rounded) nothing is not the same fact as a
+ * genuine zero: the row said no profit for a different reason, so it says `~0` and names the
+ * uncapped figure in its tooltip rather than sitting there as a bare `0` next to the badge.
+ *
+ * @param {Object} r - A row from {@link calculateItemXPH} / {@link capXPHRowProfit}
+ * @returns {string} Inner HTML for the cell
+ */
+export function profitCellHTML(r) {
+    if (r.profitPerHour === null) {
+        const label = r.profitUnavailableReason === 'unpriced' ? 'unpriced' : 'no cost data';
+        const title =
+            r.profitUnavailableReason === 'unpriced'
+                ? 'No market price for the enhanced item at this level'
+                : 'No cost data available for this item';
+        return `<span style="color:#444;" title="${title}">${label}</span>`;
+    }
+
+    const color = r.profitPerHour < 0 ? '#ff6b6b' : '#00c896';
+    const rounded = Math.round(r.profitPerHour);
+    const cappedToNothing = Boolean(r.liquidityLimit) && rounded === 0;
+    const text = cappedToNothing ? '~0' : `${formatKMB(rounded)}${r.costPartial ? '*' : ''}`;
+    const valueTitle = cappedToNothing
+        ? ` title="Market volume caps this to next to nothing — uncapped it would be ${formatKMB(Math.round(r.uncappedProfitPerHour) || 0)}/hr."`
+        : '';
+    const marker = r.liquidityLimit ? liquidityMarkerHtml(r.liquidityLimit, { compact: true }) : '';
+    const separator = marker ? ' · ' : '';
+    return `<span style="color:${color};"${valueTitle}>${text}</span>${separator}${marker}`;
+}
+
 class XPHCalculator {
     constructor() {
         this.isInitialized = false;
@@ -618,32 +655,10 @@ class XPHCalculator {
                 <td style="${tdR}${r.costPerHour === null ? ' color:#444;' : ''}">
                     ${r.costPerHour !== null ? `${formatKMB(Math.round(r.costPerHour))}${r.costPartial ? '*' : ''}` : '—'}
                 </td>
-                <td style="${tdR}">${this._profitCellHTML(r)}</td>
+                <td style="${tdR}">${profitCellHTML(r)}</td>
             </tr>`
             )
             .join('');
-    }
-
-    /**
-     * Profit/hr cell contents: the coloured figure with its liquidity marker when the market
-     * bounds it, or a label — never a bare dash — when the row could not be priced at all.
-     * @param {Object} r - A row from {@link calculateItemXPH} / {@link capXPHRowProfit}
-     * @returns {string} Inner HTML for the cell
-     * @private
-     */
-    _profitCellHTML(r) {
-        if (r.profitPerHour === null) {
-            const label = r.profitUnavailableReason === 'unpriced' ? 'unpriced' : 'no cost data';
-            const title =
-                r.profitUnavailableReason === 'unpriced'
-                    ? 'No market price for the enhanced item at this level'
-                    : 'No cost data available for this item';
-            return `<span style="color:#444;" title="${title}">${label}</span>`;
-        }
-
-        const color = r.profitPerHour < 0 ? '#ff6b6b' : '#00c896';
-        const marker = r.liquidityLimit ? liquidityMarkerHtml(r.liquidityLimit, { compact: true }) : '';
-        return `<span style="color:${color};">${formatKMB(Math.round(r.profitPerHour))}${r.costPartial ? '*' : ''}</span>${marker}`;
     }
 
     disable() {

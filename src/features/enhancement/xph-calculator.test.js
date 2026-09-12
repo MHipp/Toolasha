@@ -98,7 +98,8 @@ vi.mock('../../utils/liquidity-cap.js', () => ({
         capCalls.push(args);
         return Promise.resolve(liquidityResult);
     }),
-    liquidityMarkerHtml: () => '',
+    liquidityMarkerHtml: (limit, { compact = false } = {}) =>
+        limit ? `<span title="${limit.note} — ${limit.detail}">${compact ? 'vol-capped' : limit.note}</span>` : '',
 }));
 
 vi.mock('../../utils/background-work.js', () => ({
@@ -107,9 +108,10 @@ vi.mock('../../utils/background-work.js', () => ({
 
 let calculateItemXPH;
 let capXPHRowProfit;
+let profitCellHTML;
 
 beforeAll(async () => {
-    ({ calculateItemXPH, capXPHRowProfit } = await import('./xph-calculator.js'));
+    ({ calculateItemXPH, capXPHRowProfit, profitCellHTML } = await import('./xph-calculator.js'));
 });
 
 const itemDetails = { name: 'Test Sword', itemLevel: 10, enhancementCosts: [{ itemHrid: MATERIAL, count: 1 }] };
@@ -231,5 +233,47 @@ describe('capXPHRowProfit', () => {
 
         expect(bounded).toBe(row);
         expect(capCalls).toHaveLength(0);
+    });
+});
+
+describe('profitCellHTML', () => {
+    test('an uncapped row is unchanged: the figure alone, no marker', () => {
+        const html = profitCellHTML({ profitPerHour: 7300000000, costPartial: false, liquidityLimit: null });
+
+        expect(html).not.toContain('vol-capped');
+        expect(html).toBe('<span style="color:#00c896;">7.3B</span>');
+    });
+
+    test('a capped row renders the value and the marker as separate, separated things', () => {
+        const html = profitCellHTML({
+            profitPerHour: 500,
+            costPartial: false,
+            liquidityLimit: { kind: 'volume', note: 'limited by market volume (~1/week)', detail: 'X trades ~1/week.' },
+        });
+
+        expect(html).toContain('vol-capped');
+        expect(html).toContain('500</span>');
+        // Not glued together: the value's closing tag and the marker's opening tag are not adjacent.
+        expect(html).not.toMatch(/<\/span><span/);
+    });
+
+    test('a profit capped all the way to (rounded) nothing reads as ~0, not a bare 0', () => {
+        const html = profitCellHTML({
+            profitPerHour: 0.3,
+            uncappedProfitPerHour: 900000,
+            costPartial: false,
+            liquidityLimit: { kind: 'volume', note: 'limited by market volume (~1/week)', detail: 'X trades ~1/week.' },
+        });
+
+        expect(html).toContain('~0');
+        expect(html).not.toMatch(/>0<\/span>/);
+        expect(html).toContain('900.0K');
+        expect(html).toContain('vol-capped');
+    });
+
+    test('a row that could not be priced at all is labelled, not zero or free', () => {
+        const html = profitCellHTML({ profitPerHour: null, profitUnavailableReason: 'unpriced' });
+
+        expect(html).toContain('unpriced');
     });
 });
