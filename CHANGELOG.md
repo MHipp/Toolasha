@@ -6,6 +6,11 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Leftovers: the task crafting walk lets go of its materials, and stock you are wearing or selling stops counting
+
+- The merged task crafting walk claimed its materials and, like the crafting plan did, never released them. The claim now ends with the walk, and claims left over from before are cleared on the next load.
+- Missing Materials and the crafting plan's shopping list counted a copy you were wearing, or had listed on the marketplace, as stock a recipe could use. A recipe can only spend what is in your bag, so a bill could come out short: with a shield worn and another in the bag, a recipe needing two read as nothing missing.
+
 ### Reported: a crafting plan held onto materials it had finished with, and its shopping list was for one item
 
 - Pressing Buy Missing Materials or Start guided walk claimed that plan's materials against your bag and never let go, so the claim sat there for a week. The marketplace strip read "11,679 reserved by Crafting plan: Holy Bulwark" with nothing queued, and because a claim hides that stock from everything else, Missing never fell however much you bought. A plan's claim now lasts exactly as long as its panel — a running guided walk and an open buy trip keep theirs — and claims left over from before are cleared on the next load.
