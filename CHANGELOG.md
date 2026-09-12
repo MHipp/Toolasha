@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### The action bar's run line stops claiming a run was never recorded
+
+- The "This run" line under a gathering action was worked out once, as the page loaded, before the recorder had started — and an endless action's header never changes, so nothing redrew it. It read "started before recording" all session while the run was being recorded underneath. It now redraws when the recorder catches up and as it records.
+- On a run that began before recording did, the line put the game's action count for the whole run beside a value covering only the recorded part, so a nine-day run read as a quarter of a million actions earning a few hundred million. It now says what it measured instead, like "Since 21:01: +514M". A run recorded from its start still reads "This run: N actions".
+- In the released script the recorder was copied into three separate bundles, and the copies the action bar and calibration read were never started, so the line could never show a figure there at all. It is one shared recorder now, and the build check refuses a second copy.
+
 ### Leftovers: the task crafting walk lets go of its materials, and stock you are wearing or selling stops counting
 
 - The merged task crafting walk claimed its materials and, like the crafting plan did, never released them. The claim now ends with the walk, and claims left over from before are cleared on the next load.
