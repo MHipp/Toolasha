@@ -8,10 +8,21 @@
 
 import config from '../../core/config.js';
 import domObserver from '../../core/dom-observer.js';
+import storage from '../../core/storage.js';
 import marketAPI from '../../api/marketplace.js';
 import { createTimerRegistry } from '../../utils/timer-registry.js';
+import { isMobileMode } from '../../utils/mobile.js';
 import actionPanelSort from './action-panel-sort.js';
 import { displayGatheringProfit, displayProductionProfit } from './profit-display.js';
+
+/**
+ * Device-local key for whether the mobile "sort/mode/craft/refresh" row was
+ * left open. `toolasha_local_` keeps it out of settings sync, exports, and
+ * backups (see `DEVICE_LOCAL_KEY_PREFIXES` in `core/settings-storage.js`) —
+ * a phone and a desktop each remember their own collapsed/expanded state
+ * instead of fighting over one synced value.
+ */
+const CONTROLS_EXPANDED_KEY = 'toolasha_local_actionFilterControlsExpanded';
 
 class ActionFilter {
     constructor() {
@@ -31,6 +42,11 @@ class ActionFilter {
         this._updateModeBtn = null;
         this._updateCraftBtn = null;
         this._updateSortBtn = null;
+        // Mobile-only collapsible row — see injectFilterInput(). Desktop never
+        // creates these, so they stay null there.
+        this.controlsToggle = null; // The compact "show controls" button
+        this.controlsWrapper = null; // Holds sort/mode/craft/refresh when collapsible
+        this._controlsExpanded = false;
     }
 
     /**
@@ -113,6 +129,9 @@ class ActionFilter {
         this.modeButton = null;
         this.refreshButton = null;
         this.noResultsMessage = null;
+        this.controlsToggle = null;
+        this.controlsWrapper = null;
+        this._controlsExpanded = false;
 
         // The h1 has display: block from game CSS, need to override it
         const anyVisible =
@@ -170,6 +189,84 @@ class ActionFilter {
             input.style.display = 'none';
         }
 
+        // Mobile mode: the sort/mode/craft/refresh buttons collapse behind one
+        // compact toggle on the filter input's row instead of eating two more
+        // full-width rows above the action list. Desktop is untouched — no
+        // wrapper, no toggle, buttons attach straight to the title bar exactly
+        // as before.
+        // No point collapsing an empty row behind a toggle: if the user has
+        // switched off sort, pricing mode, craft, and profit/hr (which is what
+        // gates the refresh button), there is nothing for the toggle to reveal.
+        const hasControlsToShow =
+            config.getSetting('actionPanel_showSort') ||
+            config.getSetting('actionPanel_showPricingMode') ||
+            config.getSetting('actionPanel_showCraftToggle') ||
+            this._profitPerHourVisible();
+        const mobile = isMobileMode() && hasControlsToShow;
+        // Where the four control buttons get attached: the title bar directly
+        // on desktop (unchanged), or a collapsible wrapper on mobile.
+        let controlsHost = null;
+
+        if (mobile) {
+            const toggle = document.createElement('button');
+            toggle.id = 'mwi-action-controls-toggle';
+            toggle.type = 'button';
+            toggle.textContent = '⋯';
+            toggle.title = 'Show sort, pricing mode, craft, and price-refresh controls';
+            toggle.setAttribute('aria-label', 'Show sort, pricing mode, craft, and price-refresh controls');
+            toggle.setAttribute('aria-expanded', 'false');
+            toggle.setAttribute('aria-controls', 'mwi-action-controls');
+            toggle.style.cssText = `
+                padding: 8px 12px;
+                font-size: 14px;
+                border: 1px solid rgba(255, 255, 255, 0.23);
+                border-radius: 4px;
+                background: transparent;
+                cursor: pointer;
+                font-family: inherit;
+                flex-shrink: 0;
+            `;
+            toggle.addEventListener('click', () => {
+                const next = !this._controlsExpanded;
+                this._applyControlsExpanded(next);
+                storage.set(CONTROLS_EXPANDED_KEY, next, 'settings').catch((error) => {
+                    console.error('[ActionFilter] Failed to save whether the mobile controls row was open:', error);
+                });
+            });
+            input.insertAdjacentElement('afterend', toggle);
+            this.controlsToggle = toggle;
+
+            const wrapper = document.createElement('div');
+            wrapper.id = 'mwi-action-controls';
+            wrapper.style.cssText = `
+                display: none;
+                flex-direction: row;
+                flex-wrap: wrap;
+                gap: 15px;
+                width: 100%;
+            `;
+            toggle.insertAdjacentElement('afterend', wrapper);
+            this.controlsWrapper = wrapper;
+            controlsHost = wrapper;
+
+            // Collapsed until proven otherwise — a device that never stored a
+            // preference (or storage that cannot be read) gets the compact
+            // single-row default the mobile layout exists for.
+            this._controlsExpanded = false;
+            storage
+                .get(CONTROLS_EXPANDED_KEY, 'settings', false)
+                .then((expanded) => {
+                    // The page may have navigated away, or the filter been torn
+                    // down/rebuilt, while this read was in flight — only apply it
+                    // to the wrapper it was read for.
+                    if (this.controlsWrapper !== wrapper || !expanded) return;
+                    this._applyControlsExpanded(true);
+                })
+                .catch((error) => {
+                    console.error('[ActionFilter] Failed to read whether the mobile controls row was open:', error);
+                });
+        }
+
         // Create sort toggle button
         const SORT_MODES = ['default', 'profit', 'xp', 'coinsPerXp'];
         const SORT_LABELS = {
@@ -206,7 +303,11 @@ class ActionFilter {
             updateSortBtn();
             actionPanelSort.sortPanelsByProfit();
         });
-        input.insertAdjacentElement('afterend', sortBtn);
+        if (controlsHost) {
+            controlsHost.appendChild(sortBtn);
+        } else {
+            input.insertAdjacentElement('afterend', sortBtn);
+        }
         this.sortButton = sortBtn;
 
         if (!config.getSetting('actionPanel_showSort')) {
@@ -240,7 +341,11 @@ class ActionFilter {
             updateModeBtn();
             await this._refreshProfitDisplays();
         });
-        sortBtn.insertAdjacentElement('afterend', modeBtn);
+        if (controlsHost) {
+            controlsHost.appendChild(modeBtn);
+        } else {
+            sortBtn.insertAdjacentElement('afterend', modeBtn);
+        }
         this.modeButton = modeBtn;
 
         if (!config.getSetting('actionPanel_showPricingMode')) {
@@ -274,7 +379,11 @@ class ActionFilter {
             updateCraftBtn();
             await this._refreshProfitDisplays();
         });
-        modeBtn.insertAdjacentElement('afterend', craftBtn);
+        if (controlsHost) {
+            controlsHost.appendChild(craftBtn);
+        } else {
+            modeBtn.insertAdjacentElement('afterend', craftBtn);
+        }
         this.craftButton = craftBtn;
 
         if (!config.getSetting('actionPanel_showCraftToggle')) {
@@ -302,7 +411,11 @@ class ActionFilter {
         refreshBtn.addEventListener('click', async () => {
             await this.refreshPrices();
         });
-        craftBtn.insertAdjacentElement('afterend', refreshBtn);
+        if (controlsHost) {
+            controlsHost.appendChild(refreshBtn);
+        } else {
+            craftBtn.insertAdjacentElement('afterend', refreshBtn);
+        }
         this.refreshButton = refreshBtn;
 
         // Only useful where profit/hr is actually drawn — no separate setting.
@@ -324,6 +437,26 @@ class ActionFilter {
             config.getSetting('actionPanel_showProfitPerHour_gathering') ||
             config.getSetting('actionPanel_showProfitPerHour_production')
         );
+    }
+
+    /**
+     * Show or hide the mobile controls row and reflect the state on the toggle
+     * button. UI only — callers that mean to persist the change also write
+     * `CONTROLS_EXPANDED_KEY` (the toggle's click handler does; the storage
+     * read-back in `injectFilterInput` deliberately does not, since applying a
+     * value just read from storage is not a new preference to save).
+     * @param {boolean} expanded - Whether the row should be visible
+     */
+    _applyControlsExpanded(expanded) {
+        this._controlsExpanded = expanded;
+        if (this.controlsWrapper) {
+            this.controlsWrapper.style.display = expanded ? 'flex' : 'none';
+        }
+        if (this.controlsToggle) {
+            this.controlsToggle.setAttribute('aria-expanded', String(expanded));
+            this.controlsToggle.style.borderColor = expanded ? config.COLOR_ACCENT : 'rgba(255, 255, 255, 0.23)';
+            this.controlsToggle.style.color = expanded ? config.COLOR_ACCENT : 'inherit';
+        }
     }
 
     /**
@@ -599,6 +732,19 @@ class ActionFilter {
             this.refreshButton = null;
         }
 
+        // Mobile-only wrapper/toggle (see injectFilterInput) — no-op on desktop,
+        // where these are never created.
+        if (this.controlsWrapper && this.controlsWrapper.parentElement) {
+            this.controlsWrapper.remove();
+        }
+        this.controlsWrapper = null;
+
+        if (this.controlsToggle && this.controlsToggle.parentElement) {
+            this.controlsToggle.remove();
+        }
+        this.controlsToggle = null;
+        this._controlsExpanded = false;
+
         this._updateModeBtn = null;
         this._updateCraftBtn = null;
         this._updateSortBtn = null;
@@ -620,10 +766,12 @@ class ActionFilter {
 
         // The title element contains multiple children:
         // - Our injected filter input
+        // - In mobile mode, the collapsible controls wrapper (also a <div>,
+        //   and never the skill name — skipped by id like the input)
         // - A div with the skill name text
-        // Find the div that contains the skill name (not our input)
+        // Find the div that contains the skill name (not ours)
         for (const child of this.currentTitleElement.children) {
-            if (child.id === 'mwi-action-filter') continue;
+            if (child.id === 'mwi-action-filter' || child.id === 'mwi-action-controls') continue;
             if (child.tagName === 'DIV' && child.textContent) {
                 return child.textContent.trim();
             }
