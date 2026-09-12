@@ -13,6 +13,10 @@ import { readScoped } from '../../utils/character-key.js';
 const mocks = vi.hoisted(() => ({
     upgradeResult: { baseline: null, results: [], food: null },
     onRun: null,
+    /** What `confirmUpgradeBudgetPlan` resolves with; null means "not called yet" */
+    confirmResult: { ok: true, metrics: {}, deltas: {}, economics: {}, noise: {}, totalCost: 0 },
+    /** Called with (picks, context) whenever the "Confirm together" button runs the basket */
+    onConfirm: null,
     zones: [],
     saved: [],
     watched: [],
@@ -348,6 +352,10 @@ vi.mock('./upgrade-advisor.js', async (importOriginal) => {
         runUpgradeAnalysis: async (...args) => {
             mocks.onRun?.(...args);
             return mocks.upgradeResult;
+        },
+        confirmUpgradeBudgetPlan: async (...args) => {
+            mocks.onConfirm?.(...args);
+            return mocks.confirmResult;
         },
     };
 });
@@ -3285,6 +3293,134 @@ describe('the budget box', () => {
         );
 
         expect(html).toContain('Nothing in the list both fits');
+    });
+});
+
+describe('confirming a basket together', () => {
+    /** A context shaped like `runUpgradeAnalysis` hands back alongside its rows */
+    const CONTEXT = {
+        gameData: {},
+        playerDTOs: [{ hrid: 'player1', equipment: {} }],
+        playerIndex: 0,
+        playerHrid: 'player1',
+        zoneHrid: '/actions/combat/fly',
+        difficultyTier: 0,
+        hours: 1,
+        communityBuffs: {},
+        seed: 7,
+        precision: null,
+        baselineResult: {},
+        baseline: BASELINE,
+    };
+
+    const twoPickResults = () => ({
+        baseline: BASELINE,
+        results: [
+            row('Ring', { slot: '/equipment_types/ring', cost: 100, profitGain: 50 }),
+            row('Amulet', { slot: '/equipment_types/amulet', cost: 200, profitGain: 30 }),
+        ],
+        food: null,
+        context: CONTEXT,
+    });
+
+    beforeEach(() => {
+        mocks.upgradeResult = { baseline: null, results: [], food: null };
+        mocks.onConfirm = null;
+        mocks.confirmResult = {
+            ok: true,
+            metrics: { dps: 100, xpPerHour: 1000, profitPerHour: 1080, deathsPerHour: 0, encountersPerHour: 10 },
+            deltas: {},
+            economics: { profitGainPerHour: 80 },
+            noise: {},
+            totalCost: 300,
+        };
+        ui.buildPanel();
+        ui._upgradeBudget = 500_000_000;
+        ui._upgradePlanMetric = 'profit';
+    });
+
+    afterEach(() => {
+        ui._upgradeBudget = 0;
+        ui.destroy();
+    });
+
+    test('a plan does not confirm itself — the button sits there until clicked', () => {
+        ui._renderUpgradeResults(twoPickResults());
+        const container = ui.panel.querySelector('#mwi-csim-upgrade-results');
+
+        expect(container.querySelector('#mwi-csim-budget-confirm')).toBeTruthy();
+        expect(container.textContent).not.toContain('summed');
+        expect(mocks.onConfirm).toBeNull();
+    });
+
+    test('clicking it applies every chosen pick to one DTO and shows it is running', async () => {
+        ui._renderUpgradeResults(twoPickResults());
+        const container = ui.panel.querySelector('#mwi-csim-upgrade-results');
+        let received = null;
+        mocks.onConfirm = (picks, context) => {
+            received = { picks, context };
+        };
+
+        container.querySelector('#mwi-csim-budget-confirm').click();
+
+        // The synchronous half of the click handler runs before the sim
+        // resolves — the "running" state is on screen the instant it starts,
+        // not only after the first promise tick
+        expect(container.textContent).toContain('Simulating the whole basket together');
+
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(received).toBeTruthy();
+        expect(received.picks.map((p) => p.candidate.description)).toEqual(['Ring', 'Amulet']);
+        expect(received.context).toBe(CONTEXT);
+    });
+
+    test('shows the summed and combined figures distinctly once the run lands', async () => {
+        ui._renderUpgradeResults(twoPickResults());
+        const container = ui.panel.querySelector('#mwi-csim-upgrade-results');
+
+        container.querySelector('#mwi-csim-budget-confirm').click();
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(container.textContent).toContain('summed');
+        expect(container.textContent).toContain('together');
+        expect(container.querySelector('#mwi-csim-budget-confirm')).toBeNull();
+    });
+
+    test('an inapplicable combination reports why instead of a number', async () => {
+        mocks.confirmResult = {
+            ok: false,
+            reason: 'Ring and Amulet cannot both be worn at once, so this basket cannot be simulated as one loadout.',
+        };
+        ui._renderUpgradeResults(twoPickResults());
+        const container = ui.panel.querySelector('#mwi-csim-upgrade-results');
+
+        container.querySelector('#mwi-csim-budget-confirm').click();
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(container.textContent).toContain('Could not confirm the basket together');
+        expect(container.textContent).toContain('cannot both be worn at once');
+        expect(container.textContent).not.toContain('summed');
+    });
+
+    test('confirming the basket does not change which picks the plan chose', async () => {
+        ui._renderUpgradeResults(twoPickResults());
+        const container = ui.panel.querySelector('#mwi-csim-upgrade-results');
+        const picksBefore = ui._lastBudgetPlan.picks.map((p) => p.candidate.description).sort();
+
+        container.querySelector('#mwi-csim-budget-confirm').click();
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const picksAfter = ui._lastBudgetPlan.picks.map((p) => p.candidate.description).sort();
+        expect(picksAfter).toEqual(picksBefore);
     });
 });
 

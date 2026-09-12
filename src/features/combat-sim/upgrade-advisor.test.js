@@ -203,6 +203,7 @@ const {
     conflictKey,
     conflictKeys,
     planWithinBudget,
+    confirmUpgradeBudgetPlan,
     valuePerMillion,
     goldPerPercent,
     replacedIn,
@@ -2728,6 +2729,158 @@ describe('what a budget buys', () => {
         );
 
         expect(plan.attemptsSaved).toBeCloseTo(2, 5);
+    });
+});
+
+describe('confirmUpgradeBudgetPlan', () => {
+    const PLAYER_HRID = '/players/p1';
+
+    /** A context shaped like `runUpgradeAnalysis` hands back alongside its rows */
+    function baseContext(gameData, over = {}) {
+        return {
+            gameData,
+            playerDTOs: [
+                {
+                    hrid: PLAYER_HRID,
+                    equipment: {
+                        [MAIN_HAND]: { hrid: '/items/fine_sword', enhancementLevel: 0 },
+                        [BACK]: { hrid: '/items/plain_cape', enhancementLevel: 0 },
+                    },
+                },
+            ],
+            playerIndex: 0,
+            playerHrid: PLAYER_HRID,
+            zoneHrid: '/actions/combat/fly',
+            difficultyTier: 0,
+            hours: 1,
+            communityBuffs: {},
+            seed: 42,
+            precision: null,
+            baselineResult: {
+                simulatedTime: 3600 * 1e9,
+                experienceGained: {},
+                deaths: {},
+                encounters: 0,
+                totalDamageDealt: {},
+            },
+            baseline: { xpPerHour: 0, profitPerHour: 0, deathsPerHour: 0, encountersPerHour: 0, dps: 0 },
+            ...over,
+        };
+    }
+
+    const swordPick = (over = {}) => ({
+        candidate: {
+            type: 'tier',
+            slot: MAIN_HAND,
+            currentHrid: '/items/fine_sword',
+            upgradeHrid: '/items/regal_sword_refined',
+            upgradeLevel: 0,
+            description: 'Sword upgrade',
+        },
+        cost: 1000,
+        ...over,
+    });
+    const capePick = (over = {}) => ({
+        candidate: {
+            type: 'tier',
+            slot: BACK,
+            currentHrid: '/items/plain_cape',
+            upgradeHrid: '/items/grand_cape_refined',
+            upgradeLevel: 0,
+            description: 'Cape upgrade',
+        },
+        cost: 500,
+        ...over,
+    });
+
+    beforeEach(() => {
+        runSimulation.mockReset();
+        calculateSimRevenue.mockReset();
+    });
+
+    test("applies every chosen pick to one DTO and simulates once, at the plan's own seed", async () => {
+        const gameData = buildGameData();
+        calculateSimRevenue.mockImplementation((simResult) => ({ netPerHour: simResult.profit || 0 }));
+        runSimulation.mockImplementation(async ({ playerDTOs }) => {
+            const dto = playerDTOs[0];
+            const hasSword = dto.equipment[MAIN_HAND].hrid === '/items/regal_sword_refined';
+            const hasCape = dto.equipment[BACK].hrid === '/items/grand_cape_refined';
+            return {
+                simulatedTime: 3600 * 1e9,
+                experienceGained: {},
+                deaths: {},
+                encounters: 10,
+                totalDamageDealt: {},
+                profit: (hasSword ? 100 : 0) + (hasCape ? 50 : 0),
+            };
+        });
+
+        const picks = [swordPick(), capePick()];
+        const result = await confirmUpgradeBudgetPlan(picks, baseContext(gameData));
+
+        expect(runSimulation).toHaveBeenCalledTimes(1);
+        const [callParams, , callOptions] = runSimulation.mock.calls[0];
+        // Both picks landed on the one DTO the sim actually ran
+        expect(callParams.playerDTOs[0].equipment[MAIN_HAND].hrid).toBe('/items/regal_sword_refined');
+        expect(callParams.playerDTOs[0].equipment[BACK].hrid).toBe('/items/grand_cape_refined');
+        // Same seed and worker count as the passes the plan was built from —
+        // otherwise the combined figure would be noise, not a measurement
+        expect(callParams.seed).toBe(42);
+        expect(callOptions).toEqual({ workers: 1 });
+        expect(result.ok).toBe(true);
+        expect(result.metrics.profitPerHour).toBe(150);
+        expect(result.totalCost).toBe(1500);
+        // The context's own player DTO is a template, not something the run mutates
+        expect(baseContext(gameData).playerDTOs[0].equipment[MAIN_HAND].hrid).toBe('/items/fine_sword');
+    });
+
+    test('confirming a basket does not change what was picked', async () => {
+        const gameData = buildGameData();
+        calculateSimRevenue.mockReturnValue({ netPerHour: 0 });
+        runSimulation.mockResolvedValue({
+            simulatedTime: 3600 * 1e9,
+            experienceGained: {},
+            deaths: {},
+            encounters: 0,
+            totalDamageDealt: {},
+        });
+
+        const picks = [swordPick(), capePick()];
+        const before = JSON.stringify(picks);
+        await confirmUpgradeBudgetPlan(picks, baseContext(gameData));
+
+        expect(JSON.stringify(picks)).toBe(before);
+    });
+
+    test('two picks for the same slot cannot be worn together, and it says so instead of a number', async () => {
+        const gameData = buildGameData();
+        const picks = [
+            swordPick({ candidate: { ...swordPick().candidate, description: 'Sword A' } }),
+            swordPick({
+                candidate: { ...swordPick().candidate, upgradeHrid: '/items/other_sword', description: 'Sword B' },
+            }),
+        ];
+
+        const result = await confirmUpgradeBudgetPlan(picks, baseContext(gameData));
+
+        expect(result.ok).toBe(false);
+        expect(result.reason).toMatch(/cannot both be worn/);
+        expect(runSimulation).not.toHaveBeenCalled();
+    });
+
+    test('an empty basket is refused rather than simulated', async () => {
+        const result = await confirmUpgradeBudgetPlan([], baseContext(buildGameData()));
+
+        expect(result.ok).toBe(false);
+        expect(runSimulation).not.toHaveBeenCalled();
+    });
+
+    test('a context with nothing usable in it is refused rather than guessed at', async () => {
+        const result = await confirmUpgradeBudgetPlan([swordPick()], {});
+
+        expect(result.ok).toBe(false);
+        expect(result.reason).toMatch(/no longer available/);
+        expect(runSimulation).not.toHaveBeenCalled();
     });
 });
 

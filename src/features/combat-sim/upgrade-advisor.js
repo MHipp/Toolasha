@@ -3186,7 +3186,10 @@ export function explainUpgradeCost(candidate, gameData, isSelf = true) {
  *   guildShrineCapToGuild, optimizeFood, auraSwapsOnly }
  * @param {Function} onProgress - Called with { current, total, description }
  * @param {Object} [options] - { abortSignal: () => boolean }
- * @returns {Promise<Object>} { baseline, results: [{candidate, cost, metrics, deltas, goldPer}], food }
+ * @returns {Promise<Object>} { baseline, results: [{candidate, cost, metrics, deltas, goldPer}], food,
+ *   context: { gameData, playerDTOs, playerIndex, playerHrid, zoneHrid, difficultyTier, hours, communityBuffs,
+ *   seed, precision, baselineResult, baseline } } — `context` is what `confirmUpgradeBudgetPlan` needs to
+ *   re-run a chosen set of picks under the same conditions this analysis ran under
  */
 export async function runUpgradeAnalysis(params, onProgress, options = {}) {
     const {
@@ -3581,6 +3584,24 @@ export async function runUpgradeAnalysis(params, onProgress, options = {}) {
         food,
         // Explains an empty house result rather than leaving it as "no upgrades"
         houseScan: candidateModes.includes('house') ? describeHouseScan(playerDTO, gameData) : null,
+        // Enough to re-run this exact analysis on a chosen set of picks at once —
+        // same seed, same zone, same everything else — which is what a budget
+        // plan's confirming run needs to mean anything. See
+        // `confirmUpgradeBudgetPlan`.
+        context: {
+            gameData,
+            playerDTOs,
+            playerIndex,
+            playerHrid,
+            zoneHrid,
+            difficultyTier,
+            hours,
+            communityBuffs,
+            seed: simSeed,
+            precision,
+            baselineResult,
+            baseline: baselineMetrics,
+        },
     };
 }
 
@@ -5093,6 +5114,130 @@ export function planWithinBudget(results, budget, { baselineFights = [], include
     }
 
     return { picks, totalCost: spent, attemptsSaved, skipped, budget };
+}
+
+/**
+ * What a budget plan's picks are worth bought *together*, rather than summed.
+ *
+ * `planUpgradeBudget` values every row against the same lone baseline, one at a
+ * time — the right way to rank them, but not to add them up. Two upgrades can
+ * trip the same accuracy threshold, compete for the same food or mana margin,
+ * or feed the same stat, and the only way to see that is to wear all of them
+ * at once and run the zone again. This is the labyrinth side's
+ * `runLabyrinthCombinationCheck`, for the plain all-fights plan: one DTO, one
+ * zone, one simulation.
+ *
+ * Same seed and the same zone/difficulty/hours/community-buffs as the passes
+ * the plan was built from — carried in `context`, which is exactly what
+ * `runUpgradeAnalysis` hands back alongside its rows — so the combined figure
+ * is comparable to the summed one instead of being a fresh sample that differs
+ * for its own reasons.
+ *
+ * `planWithinBudget`'s own bookkeeping keeps a second claim on one slot out of
+ * the final picks (see its "gold spent on nothing" back-out), so two picks
+ * sharing a `conflictKeys` slot should not reach here — but this runs
+ * independently of how the plan was chosen, so a pair that does collide is
+ * refused rather than silently having the second overwrite the first on the
+ * DTO and print a number that was never actually simulated.
+ *
+ * @param {Array<Object>} picks - `plan.picks` from `planUpgradeBudget`
+ * @param {Object} context - `{ gameData, playerDTOs, playerIndex, playerHrid, zoneHrid, difficultyTier, hours,
+ *   communityBuffs, seed, precision, baselineResult, baseline }`, as returned by `runUpgradeAnalysis`
+ * @returns {Promise<{ok: true, metrics: Object, deltas: Object, economics: Object, noise: Object,
+ *   totalCost: number} | {ok: false, reason: string}>}
+ */
+export async function confirmUpgradeBudgetPlan(picks, context) {
+    if (!picks?.length) return { ok: false, reason: 'The plan is empty — nothing to confirm.' };
+
+    const {
+        gameData,
+        playerDTOs,
+        playerIndex,
+        playerHrid,
+        zoneHrid,
+        difficultyTier,
+        hours,
+        communityBuffs,
+        seed,
+        precision = null,
+        baselineResult,
+        baseline,
+    } = context || {};
+    if (!gameData || !playerDTOs?.[playerIndex] || !baselineResult || !baseline) {
+        return { ok: false, reason: 'The analysis this plan came from is no longer available — run it again.' };
+    }
+
+    const candidates = picks.map((pick) => pick.candidate);
+
+    // Any two picks sharing a conflict key would write to the same equipment
+    // slot, ability, house room, shrine, community buff or scroll — the plan
+    // may have chosen them for different loadouts, but there is only one DTO
+    // here for both to share, and only one of them can actually be worn.
+    const claimedBy = new Map();
+    for (const candidate of candidates) {
+        if (candidate.type === 'combat_level') {
+            return {
+                ok: false,
+                reason: 'Combat levels are not a purchase and cannot be confirmed as part of a basket.',
+            };
+        }
+        for (const key of conflictKeys(candidate)) {
+            const holder = claimedBy.get(key);
+            if (holder && holder !== candidate.description) {
+                return {
+                    ok: false,
+                    reason:
+                        `"${candidate.description}" and "${holder}" cannot both be worn at once, so this basket ` +
+                        'cannot be simulated as one loadout.',
+                };
+            }
+            claimedBy.set(key, candidate.description);
+        }
+    }
+
+    let dto;
+    let combinedBuffs = communityBuffs;
+    try {
+        dto = candidates.reduce((acc, candidate) => applyCandidateToDTO(acc, candidate), playerDTOs[playerIndex]);
+        for (const candidate of candidates) combinedBuffs = applyCommunityBuffCandidate(combinedBuffs, candidate);
+    } catch (error) {
+        return { ok: false, reason: `Could not apply the basket together: ${error.message}` };
+    }
+
+    const combinedDTOs = playerDTOs.map((player, i) => (i === playerIndex ? dto : player));
+
+    let combinedResult;
+    try {
+        combinedResult = await runSimulation(
+            {
+                gameData,
+                playerDTOs: combinedDTOs,
+                zoneHrid,
+                difficultyTier,
+                hours,
+                communityBuffs: combinedBuffs,
+                seed,
+                isTaskFight: false,
+                ...(precision ? { precision } : {}),
+            },
+            null,
+            // One worker, same as the baseline and every candidate pass this is
+            // being compared against — the shared seed only cancels sampling
+            // noise while every run draws the same stream the same way (see the
+            // note on the baseline call in `runUpgradeAnalysis`).
+            { workers: 1 }
+        );
+    } catch (error) {
+        return { ok: false, reason: `Simulating the basket failed: ${error.message}` };
+    }
+
+    const totalCost = picks.reduce((sum, pick) => sum + (Number.isFinite(pick.cost) ? pick.cost : 0), 0);
+    const metrics = computeMetrics(combinedResult, gameData, playerHrid, hours);
+    const deltas = computeDeltas(baseline, metrics);
+    const economics = computeEconomics(totalCost, baseline, metrics);
+    const noise = rateDeltaNoisePct(baselineResult, combinedResult, playerHrid);
+
+    return { ok: true, metrics, deltas, economics, noise, totalCost };
 }
 
 /**

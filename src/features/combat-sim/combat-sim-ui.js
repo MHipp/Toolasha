@@ -85,6 +85,7 @@ import {
     houseUpgradeMaterials,
     assignRankScores,
     planWithinBudget,
+    confirmUpgradeBudgetPlan,
     explainUpgradeCost,
     COST_SOURCES,
     RANK_PLACES,
@@ -6458,6 +6459,10 @@ class CombatSimUI {
         this._upgradeResultsData = null;
         this._restoredUpgradeAt = null;
         this._restoredUpgradeMeta = null;
+        // The confirming run is keyed to the plan it confirmed (see
+        // `_budgetPlanKey`); a departing character's basket has nothing to say
+        // about the arriving one's
+        this._budgetConfirm = null;
         this._simHistory = [];
         this._comparisonIndex = null;
         this._comparisonBaseline = null;
@@ -8381,6 +8386,9 @@ class CombatSimUI {
                 body = `<div style="color:#888; font-size:11px;">Nothing in the list both fits ${money(budget)}
                     and improves ${plan.metric.label}.</div>`;
             } else {
+                // What `_wireBudgetConfirm` reads to run the confirming
+                // simulation on click — the exact picks this render is showing
+                this._lastBudgetPlan = plan;
                 const picks = plan.picks
                     .map(
                         (pick) => `<div style="display:flex; justify-content:space-between; gap:10px; padding:1px 0;">
@@ -8408,7 +8416,7 @@ class CombatSimUI {
                         ${money(plan.totalCost)} of ${money(budget)} ·
                         <span style="color:#4caf50; font-weight:600;">${plan.metric.format(plan.gainTotal)}</span>
                         <span style="color:#666;"> if gains in different slots add up</span>
-                    </div>${provisional}`;
+                    </div>${provisional}${this._renderBudgetConfirm(plan, baseline)}`;
             }
         }
 
@@ -8432,6 +8440,129 @@ class CombatSimUI {
             </div>
             ${body ? `<div style="margin-top:6px;">${body}</div>` : ''}
         </div>`;
+    }
+
+    /**
+     * A name for a plan that changes whenever the plan itself does.
+     *
+     * The confirming run is expensive, so its result is kept across renders
+     * that do not touch the plan (opening a detail row, sorting the table) —
+     * but a different budget, a different axis or a different set of picks
+     * has nothing to say about a run that answered a different question, and
+     * showing it anyway would be a stale confirmation labelled as a fresh one.
+     * @param {Object} plan - From `planUpgradeBudget`
+     * @returns {string} A key stable across re-renders of the same plan
+     * @private
+     */
+    _budgetPlanKey(plan) {
+        return [plan.budget, plan.metric.key, ...plan.picks.map((pick) => `${upgradeRowKey(pick)}:${pick.cost}`)].join(
+            '|'
+        );
+    }
+
+    /**
+     * The "confirm together" control beneath a budget plan: a button before
+     * anything has run, a status line while it does, and the two figures side
+     * by side once it has — or the reason there is no second figure at all.
+     *
+     * Opt-in and manual, because this is a real simulation of the whole zone
+     * over again, not the free arithmetic the summed figure is. The button is
+     * the only thing that starts it.
+     * @param {Object} plan - From `planUpgradeBudget`
+     * @param {Object} baseline - Baseline metrics, for reading the combined gain
+     *   the same way every other row's gain is read
+     * @returns {string} HTML
+     * @private
+     */
+    _renderBudgetConfirm(plan, baseline) {
+        const key = this._budgetPlanKey(plan);
+        if (this._budgetConfirm?.key !== key) {
+            this._budgetConfirm = { key, status: 'idle', result: null, error: null };
+        }
+        const state = this._budgetConfirm;
+        const btnStyle =
+            'background:#1a1a2e; color:#8ab4f8; border:1px solid #333; border-radius:3px; ' +
+            'padding:2px 8px; font-size:11px; cursor:pointer; font-family:inherit;';
+        const wrap = (inner) =>
+            `<div style="margin-top:6px; padding-top:6px; border-top:1px dashed #222;">${inner}</div>`;
+
+        if (state.status === 'running') {
+            return wrap(
+                `<div style="color:#888; font-size:11px;">Simulating the whole basket together — this can take
+                    a few minutes…</div>`
+            );
+        }
+        if (state.status === 'error') {
+            return wrap(
+                `<div style="color:#e8a87c; font-size:11px;">Could not confirm the basket together:
+                    ${escapeAttribute(state.error)}</div>`
+            );
+        }
+        if (state.status === 'done') {
+            const combinedGain = plan.metric.gain(
+                { metrics: state.result.metrics, economics: state.result.economics },
+                baseline
+            );
+            return wrap(
+                `<div style="font-size:11px; color:#aaa;">summed
+                    <span style="color:#4caf50; font-weight:600;">${plan.metric.format(plan.gainTotal)}</span>
+                    · together
+                    <span style="color:#4caf50; font-weight:600;">${plan.metric.format(combinedGain)}</span>
+                    <span style="color:#666;" title="Every pick worn at once, simulated in one run against the same
+                        seed and settings the plan itself was measured with.">— all picks worn at once, one
+                        run</span>
+                </div>`
+            );
+        }
+        // idle
+        return wrap(
+            `<button id="mwi-csim-budget-confirm" style="${btnStyle}" title="Simulate every picked upgrade worn at
+                once, in a single run, to see whether they still add up the way the summed estimate says. Takes
+                minutes — nothing runs until this is clicked.">Confirm together</button>`
+        );
+    }
+
+    /**
+     * Wire the "Confirm together" button: run the basket, remember where it
+     * landed, and redraw so the figure (or the reason there is none) shows up
+     * beside the summed one.
+     * @param {HTMLElement} container - Upgrade results container
+     * @private
+     */
+    _wireBudgetConfirm(container) {
+        const btn = container.querySelector('#mwi-csim-budget-confirm');
+        if (!btn || !this._budgetConfirm) return;
+        const key = this._budgetConfirm.key;
+        btn.addEventListener('click', async () => {
+            const context = this._upgradeResultsData?.context;
+            const plan = this._lastBudgetPlan;
+            if (!context || !plan || this._budgetPlanKey(plan) !== key) {
+                this._budgetConfirm = {
+                    key,
+                    status: 'error',
+                    result: null,
+                    error: 'The plan has changed since — replan and try again.',
+                };
+                this._renderUpgradeResults(this._upgradeResultsData);
+                return;
+            }
+            this._budgetConfirm = { key, status: 'running', result: null, error: null };
+            this._renderUpgradeResults(this._upgradeResultsData);
+            let outcome;
+            try {
+                outcome = await confirmUpgradeBudgetPlan(plan.picks, context);
+            } catch (error) {
+                outcome = { ok: false, reason: error.message };
+            }
+            // The plan on screen may have moved on (a replan, a new analysis)
+            // while the run was in flight; a result for a question nobody is
+            // asking any more is not shown
+            if (this._budgetConfirm.key !== key) return;
+            this._budgetConfirm = outcome.ok
+                ? { key, status: 'done', result: outcome, error: null }
+                : { key, status: 'error', result: null, error: outcome.reason };
+            this._renderUpgradeResults(this._upgradeResultsData);
+        });
     }
 
     /**
@@ -8647,6 +8778,7 @@ class CombatSimUI {
         }
         this._wireUpgradeColumnMenu(container);
         this._wireUpgradeBudget(container);
+        this._wireBudgetConfirm(container);
         wireUpgradeRowActions(container);
 
         // Every measured figure, whatever the ⚙ menu is currently showing — the
