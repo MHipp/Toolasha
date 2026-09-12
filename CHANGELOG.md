@@ -6,6 +6,12 @@ All changes to this fork since diverging from upstream (Celasha/Toolasha at v2.8
 
 ## Unreleased — branch `main`
 
+### Reported: a crafting plan held onto materials it had finished with, and its shopping list was for one item
+
+- Pressing Buy Missing Materials or Start guided walk claimed that plan's materials against your bag and never let go, so the claim sat there for a week. The marketplace strip read "11,679 reserved by Crafting plan: Holy Bulwark" with nothing queued, and because a claim hides that stock from everything else, Missing never fell however much you bought. A plan's claim now lasts exactly as long as its panel — a running guided walk and an open buy trip keep theirs — and claims left over from before are cleared on the next load.
+- The panel's shopping list, cost, time and XP were for one item while the button beneath it bought for the whole run, so the two quoted different numbers for the same job and the panel could send you short. The panel is now sized to the run, and the button uses the very same plan rather than working one out again.
+- A detail panel the game reused for another action kept showing the previous item's plan, and its claim with it.
+
 ### Market volume checks stop queueing, and an item can say which loadouts it is in
 
 - A liquidity check asks a third-party server about each item, with a ten-second timeout, and used to do it one item at a time — which is what left the pinned page blank on its first open. Those lookups now run four at a time, the same politeness limit two other features already use, and two surfaces asking about the same item share one request instead of paying for two.
