@@ -19,6 +19,8 @@ import marketAPI from '../../api/marketplace.js';
 import { calculateGatheringProfit } from './gathering-profit.js';
 import profitCalculator from '../market/profit-calculator.js';
 import alchemyProfitCalculator from '../market/alchemy-profit-calculator.js';
+import itemFlowRecorder from '../networth/item-flow-recorder.js';
+import { GATHERING_ACTION_TYPES, lootEntryValue } from '../networth/gold-sources.js';
 import { calculateActionStats } from '../../utils/action-calculator.js';
 import { getAlchemyCoinCost, getAlchemyTypeFromActionHrid } from '../../utils/alchemy-fees.js';
 import { timeReadable, formatWithSeparator, formatDateTime } from '../../utils/formatters.js';
@@ -35,6 +37,7 @@ import {
     parseGourmetBonus,
 } from '../../utils/tea-parser.js';
 import { getAlchemySuccessBonus } from '../../utils/buff-parser.js';
+import { getItemPrices } from '../../utils/market-data.js';
 import { capProfitData, liquidityMarkerHtml } from '../../utils/liquidity-cap.js';
 import { badgeHtml, calibrationBadgeFor } from '../../utils/calibration-badge.js';
 import {
@@ -162,6 +165,7 @@ class ActionTimeDisplay {
     constructor() {
         this.displayElement = null;
         this.profitElement = null;
+        this.runElement = null;
         this.isInitialized = false;
         this.updateTimer = null;
         this.unregisterQueueObserver = null;
@@ -809,6 +813,7 @@ class ActionTimeDisplay {
         // Clear display element reference (already removed from DOM by game)
         this.displayElement = null;
         this.profitElement = null;
+        this.runElement = null;
 
         // Re-initialize action panel display for new character
         this.waitForActionPanel();
@@ -880,6 +885,7 @@ class ActionTimeDisplay {
         }
         this.displayElement = null;
         this.profitElement = null;
+        this.runElement = null;
 
         // Remove any orphaned copies of our injected elements before creating fresh ones.
         // The game can swap out the action-name subtree in a way that drops one of our two
@@ -893,6 +899,7 @@ class ActionTimeDisplay {
         // duplicate is cleared, keying the idempotent injection so exactly one of each exists.
         document.querySelectorAll('[data-mwi-action-bar-widget="time"]').forEach((el) => el.remove());
         document.querySelectorAll('[data-mwi-action-bar-widget="profit"]').forEach((el) => el.remove());
+        document.querySelectorAll('[data-mwi-action-bar-widget="run"]').forEach((el) => el.remove());
 
         const actionNameContainer = document.querySelector('div[class*="Header_actionName"]');
         if (!actionNameContainer) {
@@ -931,6 +938,19 @@ class ActionTimeDisplay {
         `;
         this.displayElement.parentNode.insertBefore(this.profitElement, this.displayElement.nextSibling);
 
+        // Create "so far this run" element (below the profit line)
+        this.runElement = document.createElement('div');
+        this.runElement.id = 'mwi-action-run-display';
+        this.runElement.setAttribute('data-mwi-action-bar-widget', 'run');
+        this.runElement.style.cssText = `
+            font-size: 0.9em;
+            color: var(--text-color-secondary, ${config.COLOR_TEXT_SECONDARY});
+            line-height: 1.4;
+            text-align: left;
+            white-space: pre-wrap;
+        `;
+        this.profitElement.parentNode.insertBefore(this.runElement, this.profitElement.nextSibling);
+
         this.cleanupRegistry.registerCleanup(() => {
             if (this.displayElement && this.displayElement.parentNode) {
                 this.displayElement.parentNode.removeChild(this.displayElement);
@@ -940,6 +960,10 @@ class ActionTimeDisplay {
                 this.profitElement.parentNode.removeChild(this.profitElement);
             }
             this.profitElement = null;
+            if (this.runElement && this.runElement.parentNode) {
+                this.runElement.parentNode.removeChild(this.runElement);
+            }
+            this.runElement = null;
         });
     }
 
@@ -982,6 +1006,7 @@ class ActionTimeDisplay {
         if (!actionNameElement || !actionNameElement.textContent) {
             this.displayElement.innerHTML = '';
             this.clearBarProfit();
+            this.clearRunSoFar();
             // Clear any appended stats from the game's div
             this.clearAppendedStats(actionNameElement);
             // Reconnect observer
@@ -998,6 +1023,7 @@ class ActionTimeDisplay {
         if (actionNameText.includes('Doing nothing')) {
             this.displayElement.innerHTML = '';
             this.clearBarProfit();
+            this.clearRunSoFar();
             this.clearAppendedStats(actionNameElement);
             // Reconnect observer
             this.reconnectActionNameObserver(actionNameElement);
@@ -1024,6 +1050,7 @@ class ActionTimeDisplay {
             // header is the labyrinth's (or a name nothing queued matches), so
             // it had been left standing under the wrong activity
             this.clearBarProfit();
+            this.clearRunSoFar();
             this.clearAppendedStats(actionNameElement);
             // The name matched nothing queued, which the labyrinth does every
             // time — its header reads "Labyrinth - Mimic Lv.252" and no action
@@ -1046,6 +1073,7 @@ class ActionTimeDisplay {
         if (!actionDetails) {
             this.displayElement.innerHTML = '';
             this.clearBarProfit();
+            this.clearRunSoFar();
             this.clearAppendedStats(actionNameElement);
             // Reconnect observer
             this.reconnectActionNameObserver(actionNameElement);
@@ -1056,6 +1084,7 @@ class ActionTimeDisplay {
         if (actionDetails.type === '/action_types/combat') {
             this.displayElement.innerHTML = '';
             this.clearBarProfit();
+            this.clearRunSoFar();
             this.clearAppendedStats(actionNameElement);
 
             this.applyActionBarWidth(actionNameElement, true);
@@ -1067,6 +1096,7 @@ class ActionTimeDisplay {
         // Handle enhancing actions with specialized display
         if (actionDetails.type === '/action_types/enhancing') {
             this.clearBarProfit();
+            this.clearRunSoFar();
             this.buildEnhancingDisplay(action, actionDetails, actionNameElement);
             this.reconnectActionNameObserver(actionNameElement);
             return;
@@ -1378,6 +1408,10 @@ class ActionTimeDisplay {
 
         // Line 3: Profit display (async, non-blocking)
         this.updateActionBarProfit(action, remainingQueuedActions);
+
+        // Line 4: "So far this run" — synchronous, from the item flow recorder's
+        // own in-memory ledger, so it draws on the same pass as the time line
+        this.updateRunSoFar(action, actionDetails);
 
         // Reconnect observer to watch for game's updates
         this.reconnectActionNameObserver(actionNameElement);
@@ -3442,6 +3476,82 @@ class ActionTimeDisplay {
         if (this.profitElement) this.profitElement.innerHTML = '';
     }
 
+    /**
+     * Blank the "so far this run" line — same occasions as `clearBarProfit()`:
+     * the header has moved to an action with nothing to show for it.
+     */
+    clearRunSoFar() {
+        if (this.runElement) this.runElement.innerHTML = '';
+    }
+
+    /**
+     * "So far this run": actions completed and what the drops are worth at
+     * today's prices, for the action currently running.
+     *
+     * Gathering only — foraging, woodcutting, milking — because that is all
+     * `item-flow-recorder.js` watches; every other action type leaves the row
+     * blank rather than guess. Synchronous and cheap: the recorder keeps its
+     * rows in memory once loaded, so this never blocks a paint the way the
+     * profit line's calculators do.
+     *
+     * `action.currentCount` is the game's own completions count for this
+     * queued run — it counts from when the run itself started, not from when
+     * the script did, unlike anything this component could track on its own.
+     * A nonzero count with nothing recorded means recording began after the
+     * run did (a reload, the feature toggled on, storage recovering from a
+     * quota) — the row says so rather than print a lying zero. A run that
+     * simply has not completed anything yet (count 0) is not that: it is
+     * ordinary, and the row stays blank until it has something to show.
+     *
+     * A run only partly covered — recording started partway through it rather
+     * than not at all — is not distinguished from full coverage: `currentCount`
+     * says only whether the run had *any* history before recording, not how
+     * much. That is an accepted understatement, not a silent zero.
+     *
+     * @param {Object} action - The running action
+     * @param {Object} actionDetails - Its action details
+     */
+    updateRunSoFar(action, actionDetails) {
+        if (!this.runElement) return;
+        if (!config.getSetting('actionBar_showProfit')) {
+            this.runElement.innerHTML = '';
+            return;
+        }
+        if (!GATHERING_ACTION_TYPES.includes(actionDetails.type)) {
+            this.runElement.innerHTML = '';
+            return;
+        }
+
+        const completed = Number(action.currentCount) || 0;
+        if (completed <= 0) {
+            this.runElement.innerHTML = '';
+            return;
+        }
+
+        const run = action.id ?? action.actionHrid;
+        const totals = itemFlowRecorder.getCachedRunGathering(run);
+
+        if (!totals?.gained || Object.keys(totals.gained).length === 0) {
+            this.runElement.innerHTML =
+                '<span style="color:#888;">This run:</span> ' +
+                '<span style="color:#888;">started before recording</span>';
+            return;
+        }
+
+        const value = lootEntryValue(
+            { drops: totals.gained },
+            (itemHrid, level) => getItemPrices(itemHrid, level)?.ask ?? null
+        );
+        const color =
+            value >= 0
+                ? config.getSettingValue('color_profit', '#4ade80')
+                : config.getSettingValue('color_loss', '#f87171');
+        const sign = value >= 0 ? '+' : '';
+        this.runElement.innerHTML =
+            `<span style="color:#888;">This run:</span> ${completed.toLocaleString()} actions · ` +
+            `<span style="color:${color}; font-weight:600;">${sign}${this.formatLargeNumber(Math.abs(Math.round(value)))}</span>`;
+    }
+
     async updateActionBarProfit(action, remainingActions) {
         if (!this.profitElement) return;
         if (!config.getSetting('actionBar_showProfit')) {
@@ -3535,6 +3645,7 @@ class ActionTimeDisplay {
             this.cleanupRegistry.cleanupAll();
             this.displayElement = null;
             this.profitElement = null;
+            this.runElement = null;
             this.updateTimer = null;
             this.unregisterQueueObserver = null;
             this.actionNameObserver = null;

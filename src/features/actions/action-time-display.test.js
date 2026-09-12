@@ -11,6 +11,12 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const game = vi.hoisted(() => ({
     itemDetails: {},
+    /** The item flow recorder's cached gathering for whatever run id a test asks about */
+    runGathering: null,
+    /** Ask prices `updateRunSoFar` prices the recorder's drops at, by item hrid */
+    prices: {},
+    /** Settings a test wants to flip from the blanket `false` every other test relies on */
+    settings: {},
 }));
 
 // Track every watcher setupActionNameObserver creates and whether it was
@@ -53,7 +59,10 @@ vi.mock('../enhancement/enhancement-xp.js', () => ({
 }));
 
 vi.mock('../../core/config.js', () => ({
-    default: { getSetting: () => false, getSettingValue: (_k, fallback) => fallback },
+    default: {
+        getSetting: (key) => game.settings[key] ?? false,
+        getSettingValue: (_k, fallback) => fallback,
+    },
 }));
 
 vi.mock('../../core/dom-observer.js', () => ({
@@ -71,6 +80,12 @@ vi.mock('../../api/marketplace.js', () => ({
 vi.mock('./gathering-profit.js', () => ({ calculateGatheringProfit: async () => null }));
 vi.mock('../market/profit-calculator.js', () => ({ default: { calculate: async () => null } }));
 vi.mock('../market/alchemy-profit-calculator.js', () => ({ default: { calculate: async () => null } }));
+vi.mock('../networth/item-flow-recorder.js', () => ({
+    default: { getCachedRunGathering: () => game.runGathering },
+}));
+vi.mock('../../utils/market-data.js', () => ({
+    getItemPrices: (itemHrid) => (game.prices[itemHrid] ? { ask: game.prices[itemHrid] } : null),
+}));
 
 const actionTimeDisplayModule = await import('./action-time-display.js');
 const actionTimeDisplay = actionTimeDisplayModule.default;
@@ -90,6 +105,9 @@ const hashFor = (itemHrid, level = 0) => `char1::/item_locations/inventory::${it
 beforeEach(() => {
     progress.elapsed = () => 0;
     enhancement.predictions = null;
+    game.runGathering = null;
+    game.prices = {};
+    game.settings = {};
     game.itemDetails = {
         [CHEESE]: {
             itemHrid: CHEESE,
@@ -321,6 +339,74 @@ describe('parseInventoryCountFromActionName — locale-grouped counts', () => {
 
     test('no trailing count is null, not zero', () => {
         expect(parseInventoryCountFromActionName('Coinify: Item')).toBeNull();
+    });
+});
+
+describe('updateRunSoFar — "so far this run"', () => {
+    const gatheringDetails = { hrid: '/actions/milking/cow', type: '/action_types/milking' };
+    const productionDetails = { hrid: '/actions/cooking/cake', type: '/action_types/cooking' };
+
+    beforeEach(() => {
+        game.settings.actionBar_showProfit = true;
+        actionTimeDisplay.runElement = { innerHTML: '' };
+    });
+
+    afterEach(() => {
+        actionTimeDisplay.runElement = null;
+    });
+
+    test('shows actions completed and their value, priced at today’s ask', () => {
+        game.runGathering = { gained: { '/items/milk': 100 }, from: 0, to: 1000 };
+        game.prices['/items/milk'] = 10;
+
+        actionTimeDisplay.updateRunSoFar({ id: 1, currentCount: 100 }, gatheringDetails);
+
+        expect(actionTimeDisplay.runElement.innerHTML).toContain('100 actions');
+        expect(actionTimeDisplay.runElement.innerHTML).toContain('1,000');
+    });
+
+    test('says the run predates recording rather than printing a lying zero', () => {
+        // The game says 50 completions already happened; the recorder has
+        // nothing for this run at all — it started watching after this run did.
+        game.runGathering = null;
+
+        actionTimeDisplay.updateRunSoFar({ id: 1, currentCount: 50 }, gatheringDetails);
+
+        expect(actionTimeDisplay.runElement.innerHTML).toContain('started before recording');
+    });
+
+    test('a run that has not completed anything yet is blank, not "predates recording"', () => {
+        game.runGathering = null;
+
+        actionTimeDisplay.updateRunSoFar({ id: 1, currentCount: 0 }, gatheringDetails);
+
+        expect(actionTimeDisplay.runElement.innerHTML).toBe('');
+    });
+
+    test('an action type the recorder does not cover leaves the row blank', () => {
+        game.runGathering = { gained: { '/items/cake': 5 }, from: 0, to: 1000 };
+        game.prices['/items/cake'] = 500;
+
+        actionTimeDisplay.updateRunSoFar({ id: 1, currentCount: 100 }, productionDetails);
+
+        expect(actionTimeDisplay.runElement.innerHTML).toBe('');
+    });
+
+    test('the row is blank when the profit line is turned off', () => {
+        game.settings.actionBar_showProfit = false;
+        game.runGathering = { gained: { '/items/milk': 100 }, from: 0, to: 1000 };
+
+        actionTimeDisplay.updateRunSoFar({ id: 1, currentCount: 100 }, gatheringDetails);
+
+        expect(actionTimeDisplay.runElement.innerHTML).toBe('');
+    });
+
+    test('clearRunSoFar blanks whatever was there', () => {
+        actionTimeDisplay.runElement.innerHTML = 'stale content';
+
+        actionTimeDisplay.clearRunSoFar();
+
+        expect(actionTimeDisplay.runElement.innerHTML).toBe('');
     });
 });
 
